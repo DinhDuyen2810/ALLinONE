@@ -21,5 +21,6 @@ protected:
     void keyPressEvent(QKeyEvent* event) override;
 
 private:
-    QPoint m_currentPos;
+    QPoint m_currentPos;  // pixel vật lý (Win32)
+    QPoint m_localPos;    // pixel logic trong widget, chỉ để vẽ
 };

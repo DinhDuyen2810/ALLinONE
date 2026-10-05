@@ -40,5 +40,8 @@ void MouseCapture::startCapture()
         });
 
         overlay->show();
+        overlay->raise();
+        overlay->activateWindow();
+        overlay->setFocus();
     });
 }

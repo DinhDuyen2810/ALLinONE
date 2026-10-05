@@ -6,6 +6,22 @@
 #include <QScreen>
 #include <QCursor>
 
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
+namespace
+{
+// Tọa độ vật lý khớp với SetCursorPos (process là Per-Monitor DPI aware),
+// khác với tọa độ logic của Qt khi màn hình scale != 100%.
+QPoint nativeCursorPos()
+{
+    POINT pt;
+    if (GetCursorPos(&pt))
+        return QPoint(pt.x, pt.y);
+    return QCursor::pos();
+}
+}
+
 CoordinateOverlay::CoordinateOverlay(QWidget* parent)
     : QWidget(parent, Qt::Window | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint | Qt::Tool)
 {
@@ -21,12 +37,15 @@ CoordinateOverlay::CoordinateOverlay(QWidget* parent)
         fullGeometry = fullGeometry.united(screen->geometry());
     }
     setGeometry(fullGeometry);
-    m_currentPos = QCursor::pos();
+    m_currentPos = nativeCursorPos();
+    m_localPos = mapFromGlobal(QCursor::pos());
+    setFocusPolicy(Qt::StrongFocus);
 }
 
 void CoordinateOverlay::mouseMoveEvent(QMouseEvent* event)
 {
-    m_currentPos = event->globalPosition().toPoint();
+    m_currentPos = nativeCursorPos();
+    m_localPos = event->position().toPoint();
     update();
 }
 
@@ -34,7 +53,7 @@ void CoordinateOverlay::mousePressEvent(QMouseEvent* event)
 {
     if (event->button() == Qt::LeftButton)
     {
-        QPoint pt = event->globalPosition().toPoint();
+        QPoint pt = nativeCursorPos();
         emit pointCaptured(pt.x(), pt.y());
         close();
     }
@@ -58,7 +77,7 @@ void CoordinateOverlay::paintEvent(QPaintEvent* /*event*/)
     painter.fillRect(rect(), QColor(0, 0, 0, 40));
 
     // Draw crosshair around current mouse position
-    QPoint localPos = mapFromGlobal(m_currentPos);
+    QPoint localPos = m_localPos;
     painter.setPen(QPen(QColor(0, 200, 255, 200), 1, Qt::DashLine));
     painter.drawLine(0, localPos.y(), width(), localPos.y());
     painter.drawLine(localPos.x(), 0, localPos.x(), height());

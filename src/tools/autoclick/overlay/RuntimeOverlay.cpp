@@ -8,6 +8,9 @@ RuntimeOverlay::RuntimeOverlay(QWidget* parent)
     : QWidget(parent, Qt::Window | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint | Qt::Tool)
 {
     setAttribute(Qt::WA_TranslucentBackground);
+    // HUD không được cướp focus của cửa sổ đích, nếu không phím gõ sẽ vào HUD
+    setAttribute(Qt::WA_ShowWithoutActivating);
+    setWindowFlag(Qt::WindowDoesNotAcceptFocus, true);
     setFixedSize(320, 190);
 
     auto* mainLayout = new QVBoxLayout(this);
@@ -82,6 +85,9 @@ void RuntimeOverlay::setRoundInfo(int currentRound, int totalRounds)
 
 void RuntimeOverlay::setActionInfo(int actionIndex, int totalActions, const QString& currentDesc, const QString& nextDesc, int targetX, int targetY)
 {
+    m_totalCountdownMs = 0;
+    m_lastRemainingMs = 0;
+    m_progressBar->setValue(0);
     m_actionLabel->setText(QString("Action %1/%2: %3").arg(actionIndex).arg(totalActions).arg(currentDesc));
     m_nextActionLabel->setText(QString("Next: %1").arg(nextDesc));
 
@@ -93,8 +99,10 @@ void RuntimeOverlay::setCountdown(qint64 remainingMs, const QString& phase)
     double sec = remainingMs / 1000.0;
     m_countdownLabel->setText(QString("%1: %2 s").arg(phase).arg(sec, 0, 'f', 2));
 
-    if (remainingMs > m_totalCountdownMs)
+    // Tick mới có remaining lớn hơn tick trước => bắt đầu một pha chờ mới
+    if (remainingMs > m_lastRemainingMs)
         m_totalCountdownMs = static_cast<int>(remainingMs);
+    m_lastRemainingMs = remainingMs;
 
     if (m_totalCountdownMs > 0)
     {
@@ -108,7 +116,13 @@ void RuntimeOverlay::updateOverlayPosition(int targetX, int targetY)
     m_targetX = targetX;
     m_targetY = targetY;
 
-    QScreen* screen = QGuiApplication::screenAt(QPoint(targetX, targetY));
+    // Tọa độ đích là pixel vật lý (Win32); Qt dùng pixel logic nên quy đổi theo DPR
+    QScreen* primary = QGuiApplication::primaryScreen();
+    const qreal dpr = primary ? primary->devicePixelRatio() : 1.0;
+    const int logicalX = static_cast<int>(targetX / dpr);
+    const int logicalY = static_cast<int>(targetY / dpr);
+
+    QScreen* screen = QGuiApplication::screenAt(QPoint(logicalX, logicalY));
     if (!screen)
         screen = QGuiApplication::primaryScreen();
     if (!screen)
@@ -119,7 +133,7 @@ void RuntimeOverlay::updateOverlayPosition(int targetX, int targetY)
 
     // Check collision: if target point is inside overlay rect with 60px padding
     QRect dangerRect = overlayRect.adjusted(-60, -60, 60, 60);
-    if (dangerRect.contains(targetX, targetY))
+    if (dangerRect.contains(logicalX, logicalY))
     {
         // Reposition to another corner to avoid collision
         int left = screenGeom.left() + 30;
@@ -128,8 +142,8 @@ void RuntimeOverlay::updateOverlayPosition(int targetX, int targetY)
         int bottom = screenGeom.bottom() - height() - 40;
 
         // If target is in top half, move to bottom, and vice versa
-        int newX = (targetX > screenGeom.center().x()) ? left : right;
-        int newY = (targetY < screenGeom.center().y()) ? bottom : top;
+        int newX = (logicalX > screenGeom.center().x()) ? left : right;
+        int newY = (logicalY < screenGeom.center().y()) ? bottom : top;
 
         move(newX, newY);
     }

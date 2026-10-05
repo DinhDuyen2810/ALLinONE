@@ -41,4 +41,5 @@ private:
     int m_targetX{0};
     int m_targetY{0};
     int m_totalCountdownMs{1000};
+    qint64 m_lastRemainingMs{0};
 };
