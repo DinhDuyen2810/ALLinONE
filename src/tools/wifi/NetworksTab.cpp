@@ -58,6 +58,7 @@ void NetworksTab::buildUi()
     root->setSpacing(10);
 
     m_banner = new QLabel(this);
+    m_banner->setWordWrap(true);
     m_banner->setStyleSheet(WifiUi::bannerStyle(false));
     m_banner->setText("Chưa kết nối WiFi nào.");
     root->addWidget(m_banner);

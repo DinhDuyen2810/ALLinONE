@@ -8,7 +8,7 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Multimedia Svg)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Multimedia Svg Network)
 
 # ---- Lõi QR (không phụ thuộc widget) + thư viện bên thứ ba ----
 add_library(qr_core STATIC
@@ -80,6 +80,8 @@ target_link_libraries(wifi_tests PRIVATE wifi_core)
 add_library(wifi_ui STATIC
     src/tools/wifi/engine/WlanController.h
     src/tools/wifi/engine/WlanController.cpp
+    src/tools/wifi/engine/SpeedTestRunner.h
+    src/tools/wifi/engine/SpeedTestRunner.cpp
     src/tools/wifi/WifiUiStyle.h
     src/tools/wifi/ConnectDialog.h
     src/tools/wifi/ConnectDialog.cpp
@@ -87,11 +89,13 @@ add_library(wifi_ui STATIC
     src/tools/wifi/NetworksTab.cpp
     src/tools/wifi/ProfilesTab.h
     src/tools/wifi/ProfilesTab.cpp
+    src/tools/wifi/SpeedTestTab.h
+    src/tools/wifi/SpeedTestTab.cpp
     src/tools/wifi/WifiWindow.h
     src/tools/wifi/WifiWindow.cpp
 )
 target_include_directories(wifi_ui PUBLIC src)
-target_link_libraries(wifi_ui PUBLIC wifi_core Qt6::Widgets wlanapi)
+target_link_libraries(wifi_ui PUBLIC wifi_core Qt6::Widgets Qt6::Network wlanapi)
 
 # ---- Kiểm thử "khói" UI WiFi: cmake --build build --target wifi_ui_tests ----
 add_executable(wifi_ui_tests EXCLUDE_FROM_ALL tests/wifi_ui_tests.cpp src/core/Logger.cpp)

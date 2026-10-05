@@ -38,6 +38,11 @@ inline QString inputStyle()
            "QComboBox QAbstractItemView { background-color: #ffffff; color: #1f2328; selection-background-color: #0969da; selection-color: #ffffff; }";
 }
 
+inline QString cardStyle()
+{
+    return "background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 12px;";
+}
+
 inline QString groupStyle()
 {
     return "QGroupBox { color: #0969da; font-weight: bold; border: 1px solid #d0d7de; border-radius: 12px; margin-top: 10px; padding-top: 14px; background-color: #ffffff; }"

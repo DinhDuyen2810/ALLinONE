@@ -65,7 +65,7 @@ int main(int argc, char** argv)
         CHECK(true);
 
         auto* tabs = win.findChild<QTabWidget*>();
-        CHECK(tabs != nullptr && tabs->count() == 2);
+        CHECK(tabs != nullptr && tabs->count() == 3);
         if (tabs)
         {
             tabs->setCurrentIndex(1);
@@ -76,6 +76,18 @@ int main(int argc, char** argv)
 
         auto* combo = win.findChild<QComboBox*>();
         CHECK(combo != nullptr);
+
+        if (qEnvironmentVariableIsSet("WIFI_UI_SHOTS"))
+        {
+            const QString dir = qEnvironmentVariable("WIFI_UI_SHOTS");
+            const char* names[] = {"networks", "profiles", "speedtest"};
+            for (int i = 0; i < 3 && tabs; ++i)
+            {
+                tabs->setCurrentIndex(i);
+                app.processEvents();
+                win.grab().save(dir + "/" + names[i] + ".png");
+            }
+        }
     }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);
