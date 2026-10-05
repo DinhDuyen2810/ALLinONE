@@ -1,0 +1,291 @@
+# ONE FOR ALL - BỘ CÔNG CỤ ĐA NĂNG DESKTOP
+
+> **Phiên bản:** 1.0.5  
+> **Ngôn ngữ:** C++20  
+> **GUI Framework:** Qt 6.11.1 (MinGW 64-bit)  
+> **Hệ điều hành:** Windows 10 / Windows 11  
+> **Build System:** CMake + Ninja  
+
+---
+
+## 1. Tổng quan dự án
+
+`One for ALL` là nền tảng ứng dụng desktop dạng **modular suite**, quy tụ nhiều công cụ tiện ích độc lập vào một giao diện điều phối duy nhất. Mỗi công cụ hoạt động độc lập trong cửa sổ riêng (`QWidget* createWindow()`), không gây ảnh hưởng lẫn nhau và dễ dàng mở rộng thêm các module mới trong tương lai.
+
+### Danh mục các module:
+1. **Auto Click** *(Đã hoàn thiện giai đoạn 1)*: Tự động hóa chuỗi thao tác chuột & bàn phím chuyên nghiệp.
+2. **Connect Together** *(Dự kiến)*: Đồng bộ & chia sẻ thiết bị nội bộ.
+3. **QR Tools** *(Dự kiến)*: Tạo & quét mã QR đa năng.
+4. **Disk Cleanup** *(Dự kiến)*: Dọn dẹp tệp tin rác & tối ưu ổ đĩa.
+5. **Android Phone Control** *(Dự kiến)*: Điều khiển điện thoại Android qua máy tính.
+6. **Downloader** *(Dự kiến)*: Tải media đa luồng.
+7. **Security Gateway** *(Dự kiến)*: Giám sát kết nối mạng an toàn.
+8. **VPN & Location** *(Dự kiến)*: Quản lý mạng riêng ảo & định vị.
+9. **WiFi Connection** *(Dự kiến)*: Quản lý & phân tích kết nối WiFi.
+
+---
+
+## 2. Kiến trúc hệ thống (Architecture)
+
+### 2.1. Kiến trúc Shell & Module mở rộng (Plugin/Tool Architecture)
+Ứng dụng sử dụng mô hình **Inversion of Control (IoC)** và **Factory Pattern** thông qua interface `ITool`:
+
+```text
+               +----------------------------------+
+               |           MainWindow             |
+               +-----------------+----------------+
+                                 |
+                                 v
+               +----------------------------------+
+               |          ToolManager             |
+               +-----------------+----------------+
+                                 |
+           +---------------------+---------------------+
+           |                     |                     |
+           v                     v                     v
+     AutoClickTool       ConnectTogetherTool        QRTool ...
+   (createWindow())        (createWindow())      (createWindow())
+           |
+           v
+   [AutoClickWindow]
+ (Cửa sổ độc lập)
+```
+
+- **`ITool`**: Interface định nghĩa danh tính, tên, icon, trạng thái sẵn sàng và phương thức tạo cửa sổ `createWindow()`.
+- **`ToolManager`**: Quản lý đăng ký, tra cứu và duyệt danh sách các tool khả dụng.
+- **`MainWindow`**: Sidebar điều hướng hiện đại, hiển thị chi tiết thông tin và khởi chạy từng tool thành các cửa sổ độc lập mà không nhồi nhét UI vào cùng một khung nhìn.
+
+---
+
+### 2.2. Kiến trúc Module Auto Click
+
+Auto Click được xây dựng theo mô hình **Đa Tầng Phân Lập (Layered Architecture)**, chia tách hoàn toàn giữa Giao diện người dùng (UI), Dữ liệu (Model), Động cơ thực thi (Engine), và Giao tiếp hệ điều hành (Win32 Layer):
+
+```text
++-------------------------------------------------------------------------------+
+|                            TẦNG GIAO DIỆN (UI LAYER)                          |
+|                                                                               |
+|  +---------------------+   +---------------------+   +---------------------+  |
+|  |   ChainListWidget   |   |   ActionListWidget  |   | ActionEditorWidget  |  |
+|  |  (Danh sách chuỗi)  |   | (Bảng các hành động)|   |  (Biên tập tham số) |  |
+|  +----------+----------+   +----------+----------+   +----------+----------+  |
+|             \                         |                        /              |
+|              +------------------------+-----------------------+               |
+|                                       v                                       |
+|                               AutoClickWindow                                 |
++---------------------------------------+---------------------------------------+
+                                        | (Signals / Slots)
+                                        v
++-------------------------------------------------------------------------------+
+|                            TẦNG DỮ LIỆU (DATA MODEL)                          |
+|                                                                               |
+|  - Action: Kiểu, Tọa độ X/Y, Timing (waitBefore, waitAfter, duration), Key    |
+|  - ActionChain: Danh sách Action, Số lần lặp (Repeat / Infinite), Clone deep  |
+|  - ActionSerializer: Lưu trữ và nạp cấu hình JSON (profiles/)                 |
++---------------------------------------+---------------------------------------+
+                                        | (Chạy trên QThread riêng)
+                                        v
++-------------------------------------------------------------------------------+
+|                            TẦNG ĐỘNG CƠ (ENGINE LAYER)                        |
+|                                                                               |
+|  +-------------------------------------------------------------------------+  |
+|  | ActionRunner (Kế thừa QThread)                                          |  |
+|  |  - Quản lý vòng lặp Repeat & Trạng thái (Running, Paused, Stopping...)  |  |
+|  |  - Quản lý Countdown đếm ngược từng 50ms cho WaitBefore/After/Duration  |  |
+|  |  - std::atomic_bool stopRequested (Dừng an toàn tức thì không treo)    |  |
+|  +------------------------------------+------------------------------------+  |
+|                                       |                                       |
+|                                       v                                       |
+|  +-------------------------------------------------------------------------+  |
+|  | InputController                                                         |  |
+|  |  - Lớp duy nhất giao tiếp với Windows SendInput / SetCursorPos          |  |
+|  |  - Hỗ trợ Drag nội suy mượt mà, Hold chuột, Unicode Type Text, Hotkey   |  |
+|  +------------------------------------+------------------------------------+  |
++---------------------------------------|---------------------------------------+
+                                        |
+       +--------------------------------+--------------------------------+
+       |                                                                 |
+       v                                                                 v
++---------------+                                              +-------------------+
+|  Win32 API    |                                              |  RuntimeOverlay   |
+| (SendInput)   |                                              |  (HUD Widget)     |
+|       |       |                                              |  - Đếm ngược      |
+|       v       |                                              |  - Tự tránh chuột |
+| Target Window |                                              +-------------------+
++---------------+
+```
+
+---
+
+### 2.3. Năm Quy Tắc Thiết Kế Cốt Lõi (Core Design Rules)
+
+1. **Rule 1 – UI không trực tiếp điều khiển thiết bị:** UI chỉ gửi dữ liệu model sang `ActionRunner`, việc điều khiển chuột/phím phải đi qua `InputController`.
+2. **Rule 2 – Model hoàn toàn độc lập với UI:** Cấu trúc `Action` và `ActionChain` không phụ thuộc vào `QWidget` hay bất kỳ thành phần đồ họa nào.
+3. **Rule 3 – Win32 API được cô lập triệt để:** Các hàm Win32 như `SendInput`, `SetCursorPos`, `SetProcessDpiAwarenessContext` chỉ nằm ở `InputController`, `MouseCapture` và `main.cpp`.
+4. **Rule 4 – Chuẩn hóa thời gian bằng `std::chrono::milliseconds`:** Không dùng kiểu số nguyên tùy tiện rải rác.
+5. **Rule 5 – ActionRunner không bao giờ chạy trên GUI Thread:** Luôn chạy trên `QThread` tách biệt với cờ nguyên tử `std::atomic_bool` để giao diện không bị đơ giật trong lúc chờ độ trễ (Sleep/Wait).
+
+---
+
+## 3. Cấu trúc thư mục dự án
+
+```text
+D:\ALLinONE\
+├── CMakeLists.txt              # Cấu hình biên dịch CMake C++20 & Qt6
+├── README.md                   # Tài liệu kiến trúc & nhật ký cập nhật
+├── OneForAll.lnk               # Shortcut khởi chạy trực tiếp ứng dụng
+├── run_app.bat                 # Script khởi chạy nhanh One for ALL
+├── build_app.bat               # Script tự động cấu hình, biên dịch và đóng gói exe
+│
+├── OneForAll_Release\          # Thư mục bản Release độc lập (chạy trực tiếp không cần cài đặt)
+│   ├── OneForAll.exe           # File thực thi chính
+│   ├── Qt6Core.dll, Qt6Gui.dll, Qt6Widgets.dll ...
+│   ├── libstdc++-6.dll, libgcc_s_seh-1.dll, libwinpthread-1.dll
+│   ├── platforms\qwindows.dll  # Plugin hiển thị Windows
+│   ├── profiles\               # Cấu hình JSON đi kèm
+│   └── logs\                   # Thư mục log
+│
+├── assets\
+│   └── resources.qrc           # File tài nguyên Qt Resource biên dịch icon
+│
+├── icon\                       # Bộ icon các công cụ
+│   ├── autoclicker.jpg
+│   ├── QR.jpg
+│   ├── cleaner.png
+│   ├── con_device.png
+│   ├── download.png
+│   ├── gateway.png
+│   ├── pcTOphone.png
+│   ├── vpn.jpg
+│   └── wifi.png
+│
+├── profiles\                   # Thư mục lưu cấu hình chuỗi hành động JSON
+│   └── default.json
+│
+├── logs\                       # Thư mục ghi log hệ thống
+│   ├── app.log
+│   └── autoclick.log
+│
+└── src\
+    ├── main.cpp                # Điểm khởi chạy & thiết lập Per-Monitor DPI v2
+    │
+    ├── core\                   # Tầng lõi ứng dụng
+    │   ├── Tool.h              # Interface ITool
+    │   ├── ToolManager.h       # Quản lý đăng ký tool
+    │   ├── ToolManager.cpp
+    │   ├── IconHelper.h        # Tiện ích bo tròn & tạo badge nền trắng cho icon
+    │   ├── Logger.h            # Hệ thống log đa luồng
+    │   └── Logger.cpp
+    │
+    ├── ui\                     # Giao diện chính điều phối
+    │   ├── MainWindow.h
+    │   └── MainWindow.cpp
+    │
+    └── tools\
+        └── autoclick\          # Module Auto Click
+            ├── AutoClickTool.h
+            ├── AutoClickTool.cpp
+            ├── AutoClickWindow.h
+            ├── AutoClickWindow.cpp
+            │
+            ├── model\          # Data Model
+            │   ├── Action.h
+            │   ├── Action.cpp
+            │   ├── ActionChain.h
+            │   └── ActionChain.cpp
+            │
+            ├── engine\         # Runtime Engine & Input
+            │   ├── InputController.h
+            │   ├── InputController.cpp
+            │   ├── ActionRunner.h
+            │   └── ActionRunner.cpp
+            │
+            ├── capture\        # Tương tác bắt tọa độ màn hình
+            │   ├── CoordinateOverlay.h
+            │   ├── CoordinateOverlay.cpp
+            │   ├── MouseCapture.h
+            │   └── MouseCapture.cpp
+            │
+            ├── overlay\        # HUD hiển thị trạng thái runtime
+            │   ├── RuntimeOverlay.h
+            │   └── RuntimeOverlay.cpp
+            │
+            ├── storage\        # Lưu trữ profile JSON
+            │   ├── ActionSerializer.h
+            │   └── ActionSerializer.cpp
+            │
+            └── widgets\        # Các thành phần giao diện 3 cột
+                ├── ChainListWidget.h
+                ├── ChainListWidget.cpp
+                ├── ActionListWidget.h
+                ├── ActionListWidget.cpp
+                ├── ActionEditorWidget.h
+                └── ActionEditorWidget.cpp
+```
+
+---
+
+## 4. Hướng dẫn Khởi Chạy & Biên Dịch (Run & Build Guide)
+
+### 4.1. Khởi chạy trực tiếp (Không cần cài đặt thêm)
+Bản build hoàn chỉnh đã được đóng gói đầy đủ trong thư mục `OneForAll_Release\`. Bạn có thể chạy ngay bằng các cách sau:
+- **Cách 1:** Click đúp vào file shortcut **`OneForAll.lnk`** ngay tại thư mục gốc `D:\ALLinONE\`.
+- **Cách 2:** Click đúp vào file **`run_app.bat`** tại thư mục gốc.
+- **Cách 3:** Vào thư mục `D:\ALLinONE\OneForAll_Release\` và click đúp vào file **`OneForAll.exe`**.
+
+### 4.2. Môi trường yêu cầu (Khi muốn tự build lại mã nguồn)
+- **Qt:** Qt 6.11.1 MinGW 64-bit (`D:\Qt\6.11.1\mingw_64`)
+- **Compiler:** GCC/G++ 13.1.0 64-bit (`D:\Qt\Tools\mingw1310_64\bin`)
+- **CMake:** 3.30+ (`D:\Qt\Tools\CMake_64\bin`)
+- **Ninja:** 1.12+ (`D:\Qt\Tools\Ninja`)
+
+### 4.3. Tự động build lại 1-click
+Chỉ cần chạy file **`build_app.bat`**, script sẽ tự động:
+1. Cấu hình CMake với Qt 6.11.1.
+2. Biên dịch bằng Ninja.
+3. Đóng gói đầy đủ các runtime DLLs bằng `windeployqt`.
+
+---
+
+## 5. Hướng dẫn sử dụng Auto Click (User Guide)
+
+1. **Khởi động ứng dụng:** Mở `OneForAll.exe`, chọn mục **Auto Click** trên sidebar bên trái và bấm **Mở Cửa Sổ Auto Click**.
+2. **Khu vực 1 - Action Chains (Bên trái):**
+   - Bấm `+ Add` để thêm chuỗi mới, `Clone` để nhân bản, `Delete` để xóa.
+   - Nhấp chuột phải vào từng chuỗi để đổi tên hoặc chạy nhanh.
+3. **Khu vực 2 - Action List (Ở giữa):**
+   - Hiển thị bảng hành động chi tiết (`#`, `Loại`, `Mô tả`, `Chờ trước`, `Chờ sau`, `Thời lượng`).
+   - Hỗ trợ các nút: `+ Add Action`, `Clone`, `Before` (chèn trước), `After` (chèn sau), `▲ Up` / `▼ Down` (di chuyển thứ tự), `Delete`.
+4. **Khu vực 3 - Action Settings (Bên phải):**
+   - Cho phép chọn loại: **Mouse Click, Mouse Drag, Mouse Hold, Type Text, Hotkey, Key Press, Scroll**.
+   - Bấm nút **🎯 Capture** để lấy tọa độ màn hình trực tiếp: Cửa sổ ứng dụng sẽ tự động ẩn đi, di chuyển chuột đến vị trí mong muốn và click để chọn (hoặc nhấn `ESC` để hủy).
+   - Thiết lập thời gian: `Wait Before` (thời gian chờ trước), `Wait After` (thời gian chờ sau), `Duration` (thời lượng kéo thả/giữ).
+   - Bấm **✓ Lưu hành động (Apply)** để áp dụng thay đổi vào danh sách.
+5. **Thực thi (Run & Stop):**
+   - Nhập số lần lặp tại ô `Repeat` (hoặc tích chọn `Infinite` để lặp vô hạn).
+   - Bấm **▶ Bắt đầu chạy (RUN)**.
+   - Một **Runtime HUD Overlay** sẽ hiển thị trên màn hình: cho biết vòng lặp hiện tại, hành động đang làm, hành động kế tiếp và thanh đếm ngược thời gian thực.
+   - HUD Overlay áp dụng thuật toán tự động đổi góc màn hình để **không che khuất tọa độ mà chuột sắp thao tác**.
+   - Bấm **■ Dừng lại (STOP)** tại cửa sổ chính hoặc trực tiếp trên nút Dừng của Overlay để hủy thực thi an toàn bất cứ lúc nào.
+6. **Lưu & Xuất cấu hình:**
+   - Bấm `💾 Lưu cấu hình (Save)` để ghi nhớ toàn bộ chain vào `profiles/default.json`.
+   - Bấm `📤 Xuất file` hoặc `📥 Nhập file` để chia sẻ profile JSON sang máy khác.
+
+---
+
+## 6. Nhật ký cập nhật kiến trúc & tính năng (Changelog)
+
+> [!IMPORTANT]
+> **Quy định bắt buộc:** Mọi sửa đổi, bổ sung tính năng hoặc điều chỉnh cấu trúc mã nguồn trong các bước tiếp theo đều phải được cập nhật và ghi nhận chi tiết vào bảng nhật ký bên dưới.
+
+| Ngày cập nhật | Phiên bản | Tác giả / Tác vụ | Nội dung thay đổi kiến trúc & tính năng | Các file liên quan |
+|---|---|---|---|---|
+| **2026-09-21** | **v1.0.0** | Khởi tạo dự án (Phase 1 & MVP Auto Click) | - Xây dựng kiến trúc đa module `One for ALL` (`ITool`, `ToolManager`, `MainWindow`).<br>- Tích hợp bộ icon từ thư mục `icon/` vào Qt Resource (`assets/resources.qrc`).<br>- Triển khai đầy đủ module `Auto Click` với 3 khu vực UI: Chains, Action List, Settings Editor.<br>- Xây dựng `InputController` cô lập Win32 SendInput/SetCursorPos.<br>- Xây dựng `ActionRunner` chạy trên `QThread` với atomic cancel và live countdown tick.<br>- Xây dựng `CoordinateOverlay` & `MouseCapture` lấy tọa độ toàn desktop.<br>- Xây dựng `RuntimeOverlay` HUD tự động tính toán vị trí tránh va chạm chuột.<br>- Xây dựng `ActionSerializer` hỗ trợ lưu/đọc cấu hình JSON.<br>- Thiết lập Per-Monitor DPI Awareness v2.<br>- Cung cấp script tự động build và đóng gói `build_app.bat`. | `CMakeLists.txt`<br>`src/main.cpp`<br>`src/core/*`<br>`src/ui/*`<br>`src/tools/autoclick/*`<br>`assets/resources.qrc`<br>`README.md` |
+| **2026-09-21** | **v1.0.1** | Đóng gói bản Release độc lập (Standalone Package) | - Tạo gói phân phối độc lập hoàn chỉnh tại thư mục `OneForAll_Release/`.<br>- Tích hợp đầy đủ các DLL Qt6 (`Qt6Core`, `Qt6Gui`, `Qt6Widgets`...) và MinGW runtime (`libstdc++-6`, `libgcc_s_seh-1`...).<br>- Tạo shortcut khởi chạy trực tiếp `OneForAll.lnk` tại thư mục gốc.<br>- Cập nhật `run_app.bat` trỏ vào bản Release. | `OneForAll_Release/*`<br>`OneForAll.lnk`<br>`run_app.bat`<br>`README.md` |
+| **2026-09-22** | **v1.0.2** | Cấu hình Windows GUI Subsystem (Triệt tiêu cửa sổ Shell) | - Thiết lập cờ `WIN32` trong `CMakeLists.txt` (`add_executable(OneForAll WIN32 ...)`).<br>- Chuyển đổi subsystem từ Console sang Windows GUI thuần túy, loại bỏ hoàn toàn cửa sổ dòng lệnh đen khi khởi chạy `OneForAll.exe`.<br>- Cập nhật file thực thi mới vào gói phát hành `OneForAll_Release/`. | `CMakeLists.txt`<br>`OneForAll_Release/OneForAll.exe`<br>`README.md` |
+| **2026-09-22** | **v1.0.3** | Hiện đại hóa UI & Hỗ trợ badge nền trắng cho Icon | - Xây dựng lớp tiện ích `IconHelper` (`src/core/IconHelper.h`) tự động vẽ nền trắng bo tròn góc (antialiased rounded white badge) cho tất cả các icon, giải quyết triệt để vấn đề các icon PNG trong suốt bị chìm vào theme tối (Dark mode).<br>- Hiện đại hóa toàn diện giao diện `MainWindow`: Card hiển thị nổi với bo góc 18px, hiệu ứng hover mượt mà trên sidebar (bo góc 10px, chiều cao 52px), nút bấm dạng pill hiện đại (bo góc 10px).<br>- Hiện đại hóa giao diện `AutoClickWindow` và các widget con: Bo tròn góc mượt mà cho bảng hành động (`ActionListWidget`), danh sách chuỗi (`ChainListWidget`), khung tham số (`ActionEditorWidget`), HUD (`RuntimeOverlay` bo góc 16px) và màn hình chụp tọa độ (`CoordinateOverlay`).<br>- Đồng bộ lại bản build Release không có cửa sổ shell. | `src/core/IconHelper.h`<br>`src/core/Tool.h`<br>`src/core/ToolManager.h/.cpp`<br>`src/tools/autoclick/AutoClickTool.h/.cpp`<br>`src/ui/MainWindow.cpp`<br>`src/tools/autoclick/AutoClickWindow.cpp`<br>`src/tools/autoclick/widgets/*`<br>`src/tools/autoclick/overlay/RuntimeOverlay.cpp`<br>`src/tools/autoclick/capture/CoordinateOverlay.cpp`<br>`CMakeLists.txt`<br>`OneForAll_Release/OneForAll.exe`<br>`README.md` |
+| **2026-09-22** | **v1.0.4** | Chuyển đổi toàn diện sang Giao diện Sáng (Light Theme) | - Thiết kế lại toàn bộ hệ thống màu theo phong cách **Light Theme hiện đại** (tương tự macOS & Windows 11 Fluent Light): nền chính xám sáng `#f6f8fa`, các thẻ card & bảng biểu màu trắng tinh khiết `#ffffff`, viền mảnh tinh tế `#d0d7de`, chữ màu than tối `#1f2328` sắc nét dễ đọc.<br>- Tối ưu hóa `IconHelper`: Bổ sung đường viền mảnh khử răng cưa bao quanh badge icon, giúp các icon nổi bật rõ ràng trên nền sáng.<br>- Chuyển đổi toàn bộ màu sắc trong `MainWindow`, `PlaceholderTool`, `AutoClickWindow`, `ChainListWidget`, `ActionListWidget`, `ActionEditorWidget`, `RuntimeOverlay` và `CoordinateOverlay` sang tone sáng đồng bộ.<br>- Đóng gói bản Release mới vào `OneForAll_Release/OneForAll.exe`. | `src/core/IconHelper.h`<br>`src/ui/MainWindow.cpp`<br>`src/core/ToolManager.cpp`<br>`src/tools/autoclick/AutoClickWindow.cpp`<br>`src/tools/autoclick/widgets/*`<br>`src/tools/autoclick/overlay/RuntimeOverlay.cpp`<br>`src/tools/autoclick/capture/CoordinateOverlay.cpp`<br>`OneForAll_Release/OneForAll.exe`<br>`README.md` |
+| **2026-09-24** | **v1.0.5** | Triệt tiêu cuộn ngang & Tối ưu hóa cuộn dọc (Responsive Layout) | - **Triệt tiêu hoàn toàn thanh cuộn ngang**: Thiết lập `setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff)` và ẩn thanh cuộn ngang thông qua stylesheet toàn cục `QScrollBar:horizontal { height: 0px; background: transparent; }`.<br>- **Tối ưu hóa Bảng hành động (`ActionListWidget`)**: Bảng tự động co giãn cột mô tả (`QHeaderView::Stretch`), thu gọn văn bản tự động thêm dấu `...` (`Qt::ElideRight`), hiển thị tooltip đầy đủ khi rê chuột, sắp xếp cụm 7 nút điều khiển thành 2 hàng nhỏ gọn (4 nút + 3 nút) giúp loại bỏ giới hạn chiều rộng tối thiểu.<br>- **Hỗ trợ cuộn dọc chuyên biệt cho Cấu hình (`ActionEditorWidget`)**: Tích hợp `QScrollArea` cuộn dọc mượt mà cho khối cài đặt tham số hành động và thời gian, giữ nút *Lưu hành động* cố định ở đáy bảng điều khiển.<br>- **Cố định giới hạn co giãn**: Thêm `setMinimumWidth` cho từng cột trong `QSplitter` và `setMinimumSize` cho cửa sổ chính, ngăn chặn tình trạng bị ép biến dạng giao diện.<br>- Cập nhật bản build Release mới nhất vào `OneForAll_Release/OneForAll.exe`. | `src/ui/MainWindow.cpp`<br>`src/tools/autoclick/AutoClickWindow.cpp`<br>`src/tools/autoclick/widgets/ChainListWidget.cpp`<br>`src/tools/autoclick/widgets/ActionListWidget.cpp`<br>`src/tools/autoclick/widgets/ActionEditorWidget.cpp`<br>`OneForAll_Release/OneForAll.exe`<br>`README.md` |
+
+---
+*Dự án được phát triển theo tài liệu đặc tả thiết kế [OneForAll_AutoClick_Design.md](file:///d:/ALLinONE/OneForAll_AutoClick_Design.md).*

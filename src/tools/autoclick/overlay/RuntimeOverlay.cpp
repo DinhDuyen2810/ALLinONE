@@ -1,0 +1,147 @@
+#include "RuntimeOverlay.h"
+#include <QPainter>
+#include <QGuiApplication>
+#include <QScreen>
+#include <QHBoxLayout>
+
+RuntimeOverlay::RuntimeOverlay(QWidget* parent)
+    : QWidget(parent, Qt::Window | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint | Qt::Tool)
+{
+    setAttribute(Qt::WA_TranslucentBackground);
+    setFixedSize(320, 190);
+
+    auto* mainLayout = new QVBoxLayout(this);
+    mainLayout->setContentsMargins(16, 14, 16, 14);
+    mainLayout->setSpacing(6);
+
+    // Header layout
+    auto* headerLayout = new QHBoxLayout();
+    m_chainLabel = new QLabel("Auto Click Running", this);
+    m_chainLabel->setStyleSheet("color: #0969da; font-weight: bold; font-size: 13px;");
+    m_roundLabel = new QLabel("Round 1/1", this);
+    m_roundLabel->setStyleSheet("color: #57606a; font-size: 11px; font-weight: 500;");
+    headerLayout->addWidget(m_chainLabel);
+    headerLayout->addStretch();
+    headerLayout->addWidget(m_roundLabel);
+    mainLayout->addLayout(headerLayout);
+
+    // Action info
+    m_actionLabel = new QLabel("Action: Ready", this);
+    m_actionLabel->setStyleSheet("color: #1f2328; font-size: 12px; font-weight: bold;");
+    m_actionLabel->setWordWrap(true);
+    mainLayout->addWidget(m_actionLabel);
+
+    m_nextActionLabel = new QLabel("Next: -", this);
+    m_nextActionLabel->setStyleSheet("color: #57606a; font-size: 11px;");
+    m_nextActionLabel->setWordWrap(true);
+    mainLayout->addWidget(m_nextActionLabel);
+
+    // Countdown & Progress
+    m_countdownLabel = new QLabel("Countdown: 0.0s", this);
+    m_countdownLabel->setStyleSheet("color: #9a6700; font-size: 12px; font-family: monospace; font-weight: 600;");
+    mainLayout->addWidget(m_countdownLabel);
+
+    m_progressBar = new QProgressBar(this);
+    m_progressBar->setFixedHeight(6);
+    m_progressBar->setTextVisible(false);
+    m_progressBar->setStyleSheet(
+        "QProgressBar { background-color: #eaeef2; border-radius: 3px; }"
+        "QProgressBar::chunk { background-color: #0969da; border-radius: 3px; }"
+    );
+    mainLayout->addWidget(m_progressBar);
+
+    // Bottom stop button
+    auto* bottomLayout = new QHBoxLayout();
+    bottomLayout->addStretch();
+    m_stopButton = new QPushButton("■ Dừng lại (Stop)", this);
+    m_stopButton->setFixedSize(130, 28);
+    m_stopButton->setCursor(Qt::PointingHandCursor);
+    m_stopButton->setStyleSheet(
+        "QPushButton { background-color: #cf222e; color: white; border: none; border-radius: 8px; font-weight: bold; font-size: 11px; }"
+        "QPushButton:hover { background-color: #a40e26; }"
+        "QPushButton:pressed { background-color: #82071e; }"
+    );
+    connect(m_stopButton, &QPushButton::clicked, this, &RuntimeOverlay::stopClicked);
+    bottomLayout->addWidget(m_stopButton);
+    mainLayout->addLayout(bottomLayout);
+
+    // Default position: top right
+    QScreen* screen = QGuiApplication::primaryScreen();
+    if (screen)
+    {
+        QRect screenGeom = screen->availableGeometry();
+        move(screenGeom.right() - width() - 20, screenGeom.top() + 40);
+    }
+}
+
+void RuntimeOverlay::setRoundInfo(int currentRound, int totalRounds)
+{
+    QString totalStr = (totalRounds > 0) ? QString::number(totalRounds) : "∞";
+    m_roundLabel->setText(QString("Round %1 / %2").arg(currentRound).arg(totalStr));
+}
+
+void RuntimeOverlay::setActionInfo(int actionIndex, int totalActions, const QString& currentDesc, const QString& nextDesc, int targetX, int targetY)
+{
+    m_actionLabel->setText(QString("Action %1/%2: %3").arg(actionIndex).arg(totalActions).arg(currentDesc));
+    m_nextActionLabel->setText(QString("Next: %1").arg(nextDesc));
+
+    updateOverlayPosition(targetX, targetY);
+}
+
+void RuntimeOverlay::setCountdown(qint64 remainingMs, const QString& phase)
+{
+    double sec = remainingMs / 1000.0;
+    m_countdownLabel->setText(QString("%1: %2 s").arg(phase).arg(sec, 0, 'f', 2));
+
+    if (remainingMs > m_totalCountdownMs)
+        m_totalCountdownMs = static_cast<int>(remainingMs);
+
+    if (m_totalCountdownMs > 0)
+    {
+        int progress = static_cast<int>((1.0 - (static_cast<double>(remainingMs) / m_totalCountdownMs)) * 100);
+        m_progressBar->setValue(progress);
+    }
+}
+
+void RuntimeOverlay::updateOverlayPosition(int targetX, int targetY)
+{
+    m_targetX = targetX;
+    m_targetY = targetY;
+
+    QScreen* screen = QGuiApplication::screenAt(QPoint(targetX, targetY));
+    if (!screen)
+        screen = QGuiApplication::primaryScreen();
+    if (!screen)
+        return;
+
+    QRect screenGeom = screen->availableGeometry();
+    QRect overlayRect = geometry();
+
+    // Check collision: if target point is inside overlay rect with 60px padding
+    QRect dangerRect = overlayRect.adjusted(-60, -60, 60, 60);
+    if (dangerRect.contains(targetX, targetY))
+    {
+        // Reposition to another corner to avoid collision
+        int left = screenGeom.left() + 30;
+        int right = screenGeom.right() - width() - 30;
+        int top = screenGeom.top() + 40;
+        int bottom = screenGeom.bottom() - height() - 40;
+
+        // If target is in top half, move to bottom, and vice versa
+        int newX = (targetX > screenGeom.center().x()) ? left : right;
+        int newY = (targetY < screenGeom.center().y()) ? bottom : top;
+
+        move(newX, newY);
+    }
+}
+
+void RuntimeOverlay::paintEvent(QPaintEvent* /*event*/)
+{
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+
+    // Light sleek container background with rounded corners
+    painter.setBrush(QColor(255, 255, 255, 248));
+    painter.setPen(QPen(QColor(9, 105, 218, 180), 1.5));
+    painter.drawRoundedRect(rect().adjusted(1, 1, -1, -1), 16, 16);
+}

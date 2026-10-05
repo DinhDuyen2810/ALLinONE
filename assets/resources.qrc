@@ -1,0 +1,14 @@
+<RCC>
+    <qresource prefix="/icons">
+        <file alias="autoclicker.jpg">../icon/autoclicker.jpg</file>
+        <file alias="QR.jpg">../icon/QR.jpg</file>
+        <file alias="cleaner.png">../icon/cleaner.png</file>
+        <file alias="con_device.png">../icon/con_device.png</file>
+        <file alias="download.png">../icon/download.png</file>
+        <file alias="gateway.png">../icon/gateway.png</file>
+        <file alias="pcTOphone.png">../icon/pcTOphone.png</file>
+        <file alias="vpn.jpg">../icon/vpn.jpg</file>
+        <file alias="wifi.png">../icon/wifi.png</file>
+        <file alias="back.png">../icon/back.png</file>
+    </qresource>
+</RCC>
