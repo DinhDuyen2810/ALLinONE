@@ -42,11 +42,11 @@
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`. `run_app.bat` chạy `OneForAll_Release\OneForAll.exe`. Thư mục `build/`, `OneForAll_Release/`, `logs/` không được commit (xem `.gitignore`).
 
 ## 6. Vấn đề đã biết (chưa sửa)
-- Pause chưa có UI; `requestPause()` ghi đè state từ thread GUI.
-- `requestStop()` luôn đặt state `Stopping`, kể cả khi runner không chạy.
-- `closeEvent` chỉ hỏi xác nhận khi state `Running`; `wait(2000)` chạy trên GUI thread.
-- `AutoClickWindow` không có `WA_DeleteOnClose` nên mỗi lần mở không được giải phóng.
+- Pause/Resume đã an toàn ở tầng runner nhưng chưa có nút trên UI.
+- Chưa có hotkey dừng toàn cục (chỉ nút Stop trên cửa sổ và HUD).
 - Profile lưu text (kể cả mật khẩu trong TypeText) dạng plain text.
+- Không có checkbox bật/tắt từng action trên UI (field `enabled` chỉ đọc từ JSON).
+- Việc quy đổi tọa độ cho HUD giả định mọi màn hình cùng DPR với màn hình chính.
 
 ## 7. Quy trình làm việc
 Mỗi lần sửa code: commit riêng với message mô tả rõ, và cập nhật file này (mục 3-6 nếu cấu trúc/hành vi đổi) cùng bảng lịch sử bên dưới.
@@ -55,3 +55,15 @@ Mỗi lần sửa code: commit riêng với message mô tả rõ, và cập nh�
 | Ngày | Commit | Nội dung |
 |---|---|---|
 | 2026-10-05 | Initial | Đưa toàn bộ source lên Git, thêm `.gitignore` và `PROJECT_OVERVIEW.md` |
+| 2026-10-06 | Fix Auto Click | Sửa engine, UI và tọa độ, xem chi tiết bên dưới |
+
+### Chi tiết lần sửa 2026-10-06 (v1.0.6)
+- **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `
+` thành Enter, `	` thành Tab; Drag bị dừng thì không nhảy tới điểm cuối.
+- **ActionRunner:** `requestStop/Pause/Resume` chỉ đổi state khi thread đang chạy; cờ stop/pause reset trong `setChain()` thay vì đầu `run()` (không mất yêu cầu dừng ngay sau `start()`).
+- **Tọa độ capture:** `CoordinateOverlay` lấy tọa độ bằng `GetCursorPos` (pixel vật lý, khớp `SetCursorPos`), trước đây dùng tọa độ logic Qt nên lệch khi Windows scale khác 100%. Overlay nhận focus để ESC hoạt động.
+- **RuntimeOverlay:** HUD không cướp focus (`WA_ShowWithoutActivating`, `WindowDoesNotAcceptFocus`) nên phím gõ không rơi vào HUD; progress bar countdown reset đúng ở mỗi pha; tọa độ đích quy đổi sang pixel logic khi né HUD.
+- **AutoClickWindow:** menu "Run Chain" chạy đúng chain được chọn và không chạy khi runner đang chạy; Repeat/Infinite lưu vào chain khi đổi (không mất khi đổi chain hoặc Save); closeEvent hỏi xác nhận cả khi runner đang Paused/Stopping; Load/Import từ file rỗng không làm mất danh sách chain.
+- **AutoClickTool:** chỉ một cửa sổ Auto Click (mở lại thì dùng lại), tránh nhiều runner tranh chấp chuột.
+- **ActionSerializer:** clamp giá trị enum/`repeatCount` đọc từ JSON.
+- Kiểm thử: harness riêng (click, TypeText Unicode, phím mũi tên, lặp 2 vòng, 8 action, dừng giữa chừng) chạy đạt trên Windows thật.
