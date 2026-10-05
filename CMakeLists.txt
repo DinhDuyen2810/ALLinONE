@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(OneForAll VERSION 1.0.0 LANGUAGES CXX)
+project(OneForAll VERSION 1.0.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -8,7 +8,33 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Multimedia Svg)
+
+# ---- Lõi QR (không phụ thuộc widget) + thư viện bên thứ ba ----
+add_library(qr_core STATIC
+    src/tools/qr/QRCodec.h
+    src/tools/qr/QRCodec.cpp
+    src/tools/qr/QRPayload.h
+    src/tools/qr/QRPayload.cpp
+    src/third_party/qrcodegen/qrcodegen.cpp
+    src/third_party/quirc/quirc.c
+    src/third_party/quirc/decode.c
+    src/third_party/quirc/identify.c
+    src/third_party/quirc/version_db.c
+)
+target_include_directories(qr_core PUBLIC src)
+target_link_libraries(qr_core PUBLIC Qt6::Core Qt6::Gui)
+# quirc mặc định chỉ có 254 vùng liên thông (pixel 8-bit) nên mã QR mật độ cao (version >= ~26) không được tìm thấy
+target_compile_definitions(qr_core PRIVATE QUIRC_MAX_REGIONS=65534)
+# Code bên thứ ba: không cảnh báo
+set_source_files_properties(
+    src/third_party/quirc/quirc.c src/third_party/quirc/decode.c
+    src/third_party/quirc/identify.c src/third_party/quirc/version_db.c
+    PROPERTIES COMPILE_FLAGS "-w")
+
+# ---- Kiểm thử lõi QR: cmake --build build --target qr_tests ----
+add_executable(qr_tests EXCLUDE_FROM_ALL tests/qr_tests.cpp)
+target_link_libraries(qr_tests PRIVATE qr_core Qt6::Svg)
 
 set(SOURCES
     src/main.cpp
