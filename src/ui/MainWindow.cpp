@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "../tools/autoclick/AutoClickTool.h"
+#include "../tools/qr/QRTool.h"
 #include "core/IconHelper.h"
 #include <QHBoxLayout>
 #include <QVBoxLayout>
@@ -32,8 +33,7 @@ void MainWindow::registerTools()
     tm.registerTool(std::make_unique<PlaceholderTool>(
         "connect", "Connect Together", "Kết nối và đồng bộ thiết bị qua mạng nội bộ.", ":/icons/con_device.png"));
 
-    tm.registerTool(std::make_unique<PlaceholderTool>(
-        "qr", "QR Tools", "Tạo và quét mã QR đa năng với nhiều định dạng tùy chỉnh.", ":/icons/QR.jpg"));
+    tm.registerTool(std::make_unique<QRTool>());
 
     tm.registerTool(std::make_unique<PlaceholderTool>(
         "disk", "Disk Cleanup", "Dọn dẹp rác hệ thống, file tạm và tối ưu hóa dung lượng ổ cứng.", ":/icons/cleaner.png"));

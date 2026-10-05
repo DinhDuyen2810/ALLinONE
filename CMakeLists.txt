@@ -36,6 +36,31 @@ set_source_files_properties(
 add_executable(qr_tests EXCLUDE_FROM_ALL tests/qr_tests.cpp)
 target_link_libraries(qr_tests PRIVATE qr_core Qt6::Svg)
 
+# ---- Giao diện QR (static lib để dùng chung với bộ kiểm thử UI) ----
+add_library(qr_ui STATIC
+    src/tools/qr/QRWindow.h
+    src/tools/qr/QRWindow.cpp
+    src/tools/qr/QRGenerateTab.h
+    src/tools/qr/QRGenerateTab.cpp
+    src/tools/qr/QRScanTab.h
+    src/tools/qr/QRScanTab.cpp
+    src/tools/qr/QRHistoryTab.h
+    src/tools/qr/QRHistoryTab.cpp
+    src/tools/qr/QRHistoryStore.h
+    src/tools/qr/QRHistoryStore.cpp
+    src/tools/qr/QRImageView.h
+    src/tools/qr/QRImageView.cpp
+    src/tools/qr/ScreenSnipOverlay.h
+    src/tools/qr/ScreenSnipOverlay.cpp
+    src/tools/qr/QRUiStyle.h
+)
+target_include_directories(qr_ui PUBLIC src)
+target_link_libraries(qr_ui PUBLIC qr_core Qt6::Widgets Qt6::Multimedia)
+
+# ---- Kiểm thử UI QR: cmake --build build --target qr_ui_tests ----
+add_executable(qr_ui_tests EXCLUDE_FROM_ALL tests/qr_ui_tests.cpp src/core/Logger.cpp)
+target_link_libraries(qr_ui_tests PRIVATE qr_ui)
+
 set(SOURCES
     src/main.cpp
     src/core/Tool.h
@@ -46,6 +71,8 @@ set(SOURCES
     src/core/Logger.cpp
     src/ui/MainWindow.h
     src/ui/MainWindow.cpp
+    src/tools/qr/QRTool.h
+    src/tools/qr/QRTool.cpp
     src/tools/autoclick/AutoClickTool.h
     src/tools/autoclick/AutoClickTool.cpp
     src/tools/autoclick/AutoClickWindow.h
@@ -85,6 +112,7 @@ target_link_libraries(OneForAll PRIVATE
     Qt6::Core
     Qt6::Gui
     Qt6::Widgets
+    qr_ui
     user32
     dwmapi
 )
