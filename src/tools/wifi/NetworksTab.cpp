@@ -70,7 +70,8 @@ void NetworksTab::buildUi()
     m_disconnectBtn = new QPushButton("⛔ Ngắt kết nối", this);
     m_forgetBtn = new QPushButton("🗑 Quên mạng này", this);
     m_hiddenBtn = new QPushButton("➕ Kết nối mạng ẩn...", this);
-    for (QPushButton* b : {m_scanBtn, m_connectBtn, m_disconnectBtn, m_forgetBtn, m_hiddenBtn})
+    m_loveBtn = new QPushButton("💜 Love WiFi", this);
+    for (QPushButton* b : {m_scanBtn, m_connectBtn, m_disconnectBtn, m_forgetBtn, m_hiddenBtn, m_loveBtn})
     {
         b->setStyleSheet(WifiUi::buttonStyle());
         b->setCursor(Qt::PointingHandCursor);
@@ -80,6 +81,8 @@ void NetworksTab::buildUi()
     m_connectBtn->setEnabled(false);
     m_disconnectBtn->setEnabled(false);
     m_forgetBtn->setEnabled(false);
+    m_loveBtn->setEnabled(false);
+    m_loveBtn->setToolTip("Chọn một mạng để bày tỏ tình cảm 💜");
     bar->addStretch();
     root->addLayout(bar);
 
@@ -88,6 +91,7 @@ void NetworksTab::buildUi()
     connect(m_disconnectBtn, &QPushButton::clicked, this, &NetworksTab::onDisconnectClicked);
     connect(m_forgetBtn, &QPushButton::clicked, this, &NetworksTab::onForgetClicked);
     connect(m_hiddenBtn, &QPushButton::clicked, this, &NetworksTab::onHiddenClicked);
+    connect(m_loveBtn, &QPushButton::clicked, this, &NetworksTab::onLoveClicked);
 
     m_table = new QTableWidget(0, 5, this);
     m_table->setHorizontalHeaderLabels({"", "Tên mạng (SSID)", "Bảo mật", "Tín hiệu", "Trạng thái"});
@@ -245,6 +249,17 @@ void NetworksTab::onSelectionChanged()
     m_connectBtn->setEnabled(has && !m_networks[row].connected);
     m_disconnectBtn->setEnabled(has && m_networks[row].connected);
     m_forgetBtn->setEnabled(has && m_networks[row].hasProfile);
+    m_loveBtn->setEnabled(has);
+}
+
+void NetworksTab::onLoveClicked()
+{
+    const WifiNetwork net = selectedNetwork();
+    if (net.ssid.isEmpty())
+        return;
+
+    QMessageBox::information(this, "💜 Love WiFi",
+                             QString("Yes, \"%1\" love you too! 💜").arg(net.ssid));
 }
 
 void NetworksTab::onConnectClicked()

@@ -31,6 +31,7 @@ private slots:
     void onDisconnectClicked();
     void onForgetClicked();
     void onHiddenClicked();
+    void onLoveClicked();
     void onSelectionChanged();
     void onPollTick();
 
@@ -51,6 +52,7 @@ private:
     QPushButton* m_disconnectBtn{nullptr};
     QPushButton* m_forgetBtn{nullptr};
     QPushButton* m_hiddenBtn{nullptr};
+    QPushButton* m_loveBtn{nullptr};
     QLabel* m_statusLabel{nullptr};
 
     QList<WifiNetwork> m_networks;
