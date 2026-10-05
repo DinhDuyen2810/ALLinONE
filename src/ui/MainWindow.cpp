@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 #include "../tools/autoclick/AutoClickTool.h"
 #include "../tools/qr/QRTool.h"
+#include "../tools/wifi/WifiTool.h"
 #include "core/IconHelper.h"
 #include <QHBoxLayout>
 #include <QVBoxLayout>
@@ -50,8 +51,7 @@ void MainWindow::registerTools()
     tm.registerTool(std::make_unique<PlaceholderTool>(
         "vpn", "VPN & Location", "Mạng riêng ảo bảo mật và chuyển vùng vị trí địa lý linh hoạt.", ":/icons/vpn.jpg"));
 
-    tm.registerTool(std::make_unique<PlaceholderTool>(
-        "wifi", "WiFi Connection", "Quản lý kết nối WiFi, xem mật khẩu đã lưu và phân tích tín hiệu.", ":/icons/wifi.png"));
+    tm.registerTool(std::make_unique<WifiTool>());
 
     // Populate sidebar list
     m_toolListWidget->clear();

@@ -61,6 +61,42 @@ target_link_libraries(qr_ui PUBLIC qr_core Qt6::Widgets Qt6::Multimedia)
 add_executable(qr_ui_tests EXCLUDE_FROM_ALL tests/qr_ui_tests.cpp src/core/Logger.cpp)
 target_link_libraries(qr_ui_tests PRIVATE qr_ui)
 
+# ---- Lõi WiFi (XML hồ sơ WLAN, thuần Qt, không phụ thuộc Win32) ----
+add_library(wifi_core STATIC
+    src/tools/wifi/model/WifiSecurity.h
+    src/tools/wifi/model/WifiNetwork.h
+    src/tools/wifi/model/WifiProfile.h
+    src/tools/wifi/engine/WlanProfileXml.h
+    src/tools/wifi/engine/WlanProfileXml.cpp
+)
+target_include_directories(wifi_core PUBLIC src)
+target_link_libraries(wifi_core PUBLIC Qt6::Core)
+
+# ---- Kiểm thử lõi WiFi: cmake --build build --target wifi_tests ----
+add_executable(wifi_tests EXCLUDE_FROM_ALL tests/wifi_tests.cpp)
+target_link_libraries(wifi_tests PRIVATE wifi_core)
+
+# ---- Giao diện WiFi + WlanController (gọi Windows WLAN API, chỉ build được trên Windows) ----
+add_library(wifi_ui STATIC
+    src/tools/wifi/engine/WlanController.h
+    src/tools/wifi/engine/WlanController.cpp
+    src/tools/wifi/WifiUiStyle.h
+    src/tools/wifi/ConnectDialog.h
+    src/tools/wifi/ConnectDialog.cpp
+    src/tools/wifi/NetworksTab.h
+    src/tools/wifi/NetworksTab.cpp
+    src/tools/wifi/ProfilesTab.h
+    src/tools/wifi/ProfilesTab.cpp
+    src/tools/wifi/WifiWindow.h
+    src/tools/wifi/WifiWindow.cpp
+)
+target_include_directories(wifi_ui PUBLIC src)
+target_link_libraries(wifi_ui PUBLIC wifi_core Qt6::Widgets wlanapi)
+
+# ---- Kiểm thử "khói" UI WiFi: cmake --build build --target wifi_ui_tests ----
+add_executable(wifi_ui_tests EXCLUDE_FROM_ALL tests/wifi_ui_tests.cpp src/core/Logger.cpp)
+target_link_libraries(wifi_ui_tests PRIVATE wifi_ui)
+
 set(SOURCES
     src/main.cpp
     src/core/Tool.h
@@ -73,6 +109,8 @@ set(SOURCES
     src/ui/MainWindow.cpp
     src/tools/qr/QRTool.h
     src/tools/qr/QRTool.cpp
+    src/tools/wifi/WifiTool.h
+    src/tools/wifi/WifiTool.cpp
     src/tools/autoclick/AutoClickTool.h
     src/tools/autoclick/AutoClickTool.cpp
     src/tools/autoclick/AutoClickWindow.h
@@ -113,6 +151,7 @@ target_link_libraries(OneForAll PRIVATE
     Qt6::Gui
     Qt6::Widgets
     qr_ui
+    wifi_ui
     user32
     dwmapi
 )
