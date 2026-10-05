@@ -69,10 +69,13 @@ private:
     void setupUi();
     void loadDefaultProfile();
     void syncUiWithCurrentChain();
+    void updateRepeatFromUi();
+    void startChain(int index);
     ActionChain* currentChain();
 
     std::vector<ActionChain> m_chains;
     int m_currentChainIndex{0};
+    bool m_syncingUi{false};
 
     // UI Widgets
     QSplitter* m_splitter;

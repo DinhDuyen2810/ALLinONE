@@ -265,7 +265,7 @@ void MainWindow::onOpenToolClicked()
         QWidget* win = m_selectedTool->createWindow();
         if (win)
         {
-            win->show();
+            win->showNormal();
             win->raise();
             win->activateWindow();
         }

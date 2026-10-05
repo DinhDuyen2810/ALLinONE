@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../core/Tool.h"
+#include <QPointer>
 
 class AutoClickTool : public ITool
 {
@@ -16,4 +17,7 @@ public:
     bool isAvailable() const override { return true; }
 
     QWidget* createWindow() override;
+
+private:
+    QPointer<QWidget> m_window; // chỉ cho phép một cửa sổ Auto Click để tránh nhiều runner tranh chấp chuột
 };

@@ -47,21 +47,16 @@ AutoClickWindow::~AutoClickWindow()
 
 void AutoClickWindow::closeEvent(QCloseEvent* event)
 {
-    if (m_runner && m_runner->isRunningState())
+    if (m_runner && m_runner->isRunning())
     {
         auto reply = QMessageBox::question(this, "Đang thực thi", "Chuỗi thao tác đang chạy. Bạn có muốn dừng lại và đóng cửa sổ?", QMessageBox::Yes | QMessageBox::No);
-        if (reply == QMessageBox::Yes)
-        {
-            m_runner->requestStop();
-            m_runner->wait(2000);
-            if (m_overlay) m_overlay->hide();
-            event->accept();
-        }
-        else
+        if (reply != QMessageBox::Yes)
         {
             event->ignore();
             return;
         }
+        m_runner->requestStop();
+        m_runner->wait(3000);
     }
     if (m_overlay) m_overlay->hide();
     event->accept();
@@ -150,7 +145,7 @@ void AutoClickWindow::setupUi()
     connect(m_chainListWidget, &ChainListWidget::cloneChainClicked, this, &AutoClickWindow::onCloneChain);
     connect(m_chainListWidget, &ChainListWidget::deleteChainClicked, this, &AutoClickWindow::onDeleteChain);
     connect(m_chainListWidget, &ChainListWidget::renameChainClicked, this, &AutoClickWindow::onRenameChain);
-    connect(m_chainListWidget, &ChainListWidget::runChainClicked, this, [this](int /*index*/) { onRunClicked(); });
+    connect(m_chainListWidget, &ChainListWidget::runChainClicked, this, [this](int index) { startChain(index); });
 
     // Wire Action signals
     connect(m_actionListWidget, &ActionListWidget::actionSelectionChanged, this, &AutoClickWindow::onActionSelected);
@@ -203,6 +198,10 @@ void AutoClickWindow::setupUi()
     m_infiniteCheck->setStyleSheet("color: #57606a; font-weight: 500;");
     connect(m_infiniteCheck, &QCheckBox::toggled, this, [this](bool checked) {
         m_repeatSpin->setEnabled(!checked);
+        updateRepeatFromUi();
+    });
+    connect(m_repeatSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int) {
+        updateRepeatFromUi();
     });
 
     m_statusLabel = new QLabel("Trạng thái: Sẵn sàng (Idle)", this);
@@ -291,6 +290,7 @@ ActionChain* AutoClickWindow::currentChain()
 void AutoClickWindow::syncUiWithCurrentChain()
 {
     ActionChain* chain = currentChain();
+    m_syncingUi = true;
     if (chain)
     {
         m_actionListWidget->setActions(chain->actions);
@@ -321,6 +321,15 @@ void AutoClickWindow::syncUiWithCurrentChain()
         m_actionListWidget->setActions({});
         m_actionEditorWidget->clear();
     }
+    m_syncingUi = false;
+}
+
+void AutoClickWindow::updateRepeatFromUi()
+{
+    if (m_syncingUi)
+        return;
+    if (ActionChain* chain = currentChain())
+        chain->repeatCount = m_infiniteCheck->isChecked() ? -1 : m_repeatSpin->value();
 }
 
 void AutoClickWindow::onChainSelected(int index)
@@ -499,6 +508,28 @@ void AutoClickWindow::onActionSaved(const Action& action, int actionIndex)
 
 void AutoClickWindow::onRunClicked()
 {
+    startChain(m_currentChainIndex);
+}
+
+void AutoClickWindow::startChain(int index)
+{
+    if (m_runner->isRunning())
+    {
+        // Thread có thể vừa phát tín hiệu kết thúc nhưng chưa thoát hẳn
+        if (!m_runner->wait(300))
+            return;
+    }
+
+    if (index < 0 || index >= static_cast<int>(m_chains.size()))
+        return;
+
+    if (index != m_currentChainIndex)
+    {
+        m_currentChainIndex = index;
+        m_chainListWidget->setSelectedChainIndex(index);
+        syncUiWithCurrentChain();
+    }
+
     ActionChain* chain = currentChain();
     if (!chain || chain->actions.empty())
     {
@@ -586,10 +617,14 @@ void AutoClickWindow::onSaveProfile()
 void AutoClickWindow::onLoadProfile()
 {
     QString path = ActionSerializer::getDefaultProfilePath();
-    if (ActionSerializer::loadFromFile(path, m_chains))
+    std::vector<ActionChain> loaded;
+    if (ActionSerializer::loadFromFile(path, loaded) && !loaded.empty())
     {
+        m_chains = loaded;
         m_currentChainIndex = 0;
         m_chainListWidget->setChains(m_chains);
+        m_chainListWidget->setSelectedChainIndex(0);
+        m_currentChainIndex = 0;
         syncUiWithCurrentChain();
         QMessageBox::information(this, "Nạp cấu hình", "Đã nạp thành công cấu hình từ: " + path);
     }
@@ -621,7 +656,7 @@ void AutoClickWindow::onImportProfile()
     if (!path.isEmpty())
     {
         std::vector<ActionChain> loaded;
-        if (ActionSerializer::loadFromFile(path, loaded))
+        if (ActionSerializer::loadFromFile(path, loaded) && !loaded.empty())
         {
             m_chains = loaded;
             m_currentChainIndex = 0;

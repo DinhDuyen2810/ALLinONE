@@ -14,5 +14,7 @@ QIcon AutoClickTool::icon() const
 
 QWidget* AutoClickTool::createWindow()
 {
-    return new AutoClickWindow();
+    if (!m_window)
+        m_window = new AutoClickWindow();
+    return m_window;
 }

@@ -21,6 +21,8 @@ QString ActionSerializer::getDefaultProfilePath()
     return "profiles/default.json";
 }
 
+static int clampInt(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
 static QString actionTypeToString(ActionType type)
 {
     switch (type)
@@ -126,6 +128,8 @@ bool ActionSerializer::fromJsonString(const QString& jsonStr, std::vector<Action
         chain.description = chainObj["description"].toString().toStdString();
         chain.enabled = chainObj["enabled"].toBool(true);
         chain.repeatCount = chainObj["repeatCount"].toInt(1);
+        if (chain.repeatCount == 0 || chain.repeatCount < -1)
+            chain.repeatCount = 1;
 
         QJsonArray actionsArr = chainObj["actions"].toArray();
         for (const auto& actVal : actionsArr)
@@ -144,10 +148,10 @@ bool ActionSerializer::fromJsonString(const QString& jsonStr, std::vector<Action
             action.startY = actObj["startY"].toInt(100);
             action.endX = actObj["endX"].toInt(500);
             action.endY = actObj["endY"].toInt(500);
-            action.mouseButton = static_cast<MouseButtonType>(actObj["mouseButton"].toInt(0));
+            action.mouseButton = static_cast<MouseButtonType>(clampInt(actObj["mouseButton"].toInt(0), 0, 2));
 
             action.text = actObj["text"].toString().toStdString();
-            action.textMode = static_cast<TextTypeMode>(actObj["textMode"].toInt(0));
+            action.textMode = static_cast<TextTypeMode>(clampInt(actObj["textMode"].toInt(0), 0, 1));
             action.keyCode = actObj["keyCode"].toInt(13);
             action.keyName = actObj["keyName"].toString("ENTER").toStdString();
             action.modCtrl = actObj["modCtrl"].toBool(false);
@@ -155,7 +159,7 @@ bool ActionSerializer::fromJsonString(const QString& jsonStr, std::vector<Action
             action.modShift = actObj["modShift"].toBool(false);
             action.modWin = actObj["modWin"].toBool(false);
 
-            action.scrollDirection = static_cast<ScrollDirection>(actObj["scrollDirection"].toInt(0));
+            action.scrollDirection = static_cast<ScrollDirection>(clampInt(actObj["scrollDirection"].toInt(0), 0, 3));
             action.scrollAmount = actObj["scrollAmount"].toInt(5);
 
             chain.actions.push_back(action);
