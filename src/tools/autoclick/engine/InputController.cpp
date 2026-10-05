@@ -5,6 +5,36 @@
 #include <thread>
 #include <algorithm>
 #include <cmath>
+#include <vector>
+
+namespace
+{
+bool isExtendedKey(int vk)
+{
+    switch (vk)
+    {
+        case VK_UP: case VK_DOWN: case VK_LEFT: case VK_RIGHT:
+        case VK_HOME: case VK_END: case VK_PRIOR: case VK_NEXT:
+        case VK_INSERT: case VK_DELETE: case VK_LWIN: case VK_RWIN:
+            return true;
+        default:
+            return false;
+    }
+}
+
+INPUT makeKeyInput(int vk, bool keyUp)
+{
+    INPUT in = {0};
+    in.type = INPUT_KEYBOARD;
+    in.ki.wVk = static_cast<WORD>(vk);
+    in.ki.wScan = static_cast<WORD>(MapVirtualKeyW(static_cast<UINT>(vk), MAPVK_VK_TO_VSC));
+    if (isExtendedKey(vk))
+        in.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
+    if (keyUp)
+        in.ki.dwFlags |= KEYEVENTF_KEYUP;
+    return in;
+}
+}
 
 void InputController::moveMouse(int x, int y)
 {
@@ -70,10 +100,14 @@ void InputController::drag(int startX, int startY, int endX, int endY, std::chro
     int stepInterval = 20; // 20ms per step
     int steps = std::max(1, totalMs / stepInterval);
 
+    bool stopped = false;
     for (int i = 1; i <= steps; ++i)
     {
         if (stopFlag && stopFlag->load())
+        {
+            stopped = true;
             break;
+        }
 
         double t = static_cast<double>(i) / steps;
         int currentX = startX + static_cast<int>((endX - startX) * t);
@@ -83,8 +117,11 @@ void InputController::drag(int startX, int startY, int endX, int endY, std::chro
         std::this_thread::sleep_for(std::chrono::milliseconds(stepInterval));
     }
 
-    moveMouse(endX, endY);
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    if (!stopped)
+    {
+        moveMouse(endX, endY);
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
     mouseUp(MouseButtonType::Left);
 }
 
@@ -112,66 +149,32 @@ void InputController::hold(int x, int y, MouseButtonType button, std::chrono::mi
 
 void InputController::pressKey(int keyCode)
 {
-    INPUT inputs[2] = {0};
-
-    inputs[0].type = INPUT_KEYBOARD;
-    inputs[0].ki.wVk = static_cast<WORD>(keyCode);
-
-    inputs[1].type = INPUT_KEYBOARD;
-    inputs[1].ki.wVk = static_cast<WORD>(keyCode);
-    inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
-
+    INPUT inputs[2] = { makeKeyInput(keyCode, false), makeKeyInput(keyCode, true) };
     SendInput(2, inputs, sizeof(INPUT));
 }
 
 void InputController::hotkey(bool ctrl, bool alt, bool shift, bool win, int keyCode)
 {
+    std::vector<int> mods;
+    if (ctrl)  mods.push_back(VK_CONTROL);
+    if (alt)   mods.push_back(VK_MENU);
+    if (shift) mods.push_back(VK_SHIFT);
+    if (win)   mods.push_back(VK_LWIN);
+
     std::vector<INPUT> downInputs;
+    for (int vk : mods)
+        downInputs.push_back(makeKeyInput(vk, false));
+    downInputs.push_back(makeKeyInput(keyCode, false));
+
+    // Nhả phím chính trước, sau đó nhả modifier theo thứ tự ngược
     std::vector<INPUT> upInputs;
+    upInputs.push_back(makeKeyInput(keyCode, true));
+    for (auto it = mods.rbegin(); it != mods.rend(); ++it)
+        upInputs.push_back(makeKeyInput(*it, true));
 
-    auto addMod = [&](WORD vk) {
-        INPUT down = {0};
-        down.type = INPUT_KEYBOARD;
-        down.ki.wVk = vk;
-        downInputs.push_back(down);
-
-        INPUT up = {0};
-        up.type = INPUT_KEYBOARD;
-        up.ki.wVk = vk;
-        up.ki.dwFlags = KEYEVENTF_KEYUP;
-        upInputs.push_back(up);
-    };
-
-    if (ctrl)  addMod(VK_CONTROL);
-    if (alt)   addMod(VK_MENU);
-    if (shift) addMod(VK_SHIFT);
-    if (win)   addMod(VK_LWIN);
-
-    // Main key
-    INPUT keyDn = {0};
-    keyDn.type = INPUT_KEYBOARD;
-    keyDn.ki.wVk = static_cast<WORD>(keyCode);
-    downInputs.push_back(keyDn);
-
-    INPUT keyUp = {0};
-    keyUp.type = INPUT_KEYBOARD;
-    keyUp.ki.wVk = static_cast<WORD>(keyCode);
-    keyUp.ki.dwFlags = KEYEVENTF_KEYUP;
-    upInputs.insert(upInputs.begin(), keyUp); // key up first, then modifiers release
-
-    // Send modifiers down and key down
-    if (!downInputs.empty())
-    {
-        SendInput(static_cast<UINT>(downInputs.size()), downInputs.data(), sizeof(INPUT));
-    }
-
+    SendInput(static_cast<UINT>(downInputs.size()), downInputs.data(), sizeof(INPUT));
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
-
-    // Send key up and modifiers up
-    if (!upInputs.empty())
-    {
-        SendInput(static_cast<UINT>(upInputs.size()), upInputs.data(), sizeof(INPUT));
-    }
+    SendInput(static_cast<UINT>(upInputs.size()), upInputs.data(), sizeof(INPUT));
 }
 
 void InputController::typeText(const std::string& text, TextTypeMode mode, std::chrono::milliseconds duration, const std::atomic_bool* stopFlag)
@@ -198,6 +201,16 @@ void InputController::typeText(const std::string& text, TextTypeMode mode, std::
     {
         if (stopFlag && stopFlag->load())
             break;
+
+        if (ch == 13) // CR
+            continue;
+        if (ch == 10 || ch == 9) // LF -> Enter, TAB -> Tab
+        {
+            pressKey(ch == 10 ? VK_RETURN : VK_TAB);
+            if (charDelay > 0)
+                std::this_thread::sleep_for(std::chrono::milliseconds(charDelay));
+            continue;
+        }
 
         INPUT inputs[2] = {0};
         inputs[0].type = INPUT_KEYBOARD;

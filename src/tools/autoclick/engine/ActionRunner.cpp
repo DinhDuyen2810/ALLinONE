@@ -17,17 +17,25 @@ ActionRunner::~ActionRunner()
 void ActionRunner::setChain(const ActionChain& chain)
 {
     m_chain = chain;
+    m_stopRequested = false;
+    m_pauseRequested = false;
 }
 
 void ActionRunner::requestStop()
 {
     m_stopRequested = true;
+    if (!isRunning())
+        return;
+
     m_state = RunnerState::Stopping;
     emit stateChanged(RunnerState::Stopping);
 }
 
 void ActionRunner::requestPause()
 {
+    if (!isRunning() || m_stopRequested)
+        return;
+
     m_pauseRequested = true;
     m_state = RunnerState::Paused;
     emit stateChanged(RunnerState::Paused);
@@ -35,6 +43,9 @@ void ActionRunner::requestPause()
 
 void ActionRunner::requestResume()
 {
+    if (!isRunning() || m_stopRequested)
+        return;
+
     m_pauseRequested = false;
     m_state = RunnerState::Running;
     emit stateChanged(RunnerState::Running);
@@ -107,8 +118,6 @@ void ActionRunner::executeAction(const Action& action)
 
 void ActionRunner::run()
 {
-    m_stopRequested = false;
-    m_pauseRequested = false;
     m_state = RunnerState::Running;
     emit stateChanged(RunnerState::Running);
 
