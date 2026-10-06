@@ -101,6 +101,24 @@ target_link_libraries(wifi_ui PUBLIC wifi_core Qt6::Widgets Qt6::Network wlanapi
 add_executable(wifi_ui_tests EXCLUDE_FROM_ALL tests/wifi_ui_tests.cpp src/core/Logger.cpp)
 target_link_libraries(wifi_ui_tests PRIVATE wifi_ui)
 
+# ---- Lõi Connect Together (mã hóa, giao thức, mã ghép đôi) - thuần Qt + Windows CNG, test được ----
+add_library(connect_core STATIC
+    src/tools/connect/model/ScreenSide.h
+    src/tools/connect/model/PeerInfo.h
+    src/tools/connect/engine/PairingCode.h
+    src/tools/connect/engine/PairingCode.cpp
+    src/tools/connect/engine/ProtocolMessage.h
+    src/tools/connect/engine/ProtocolMessage.cpp
+    src/tools/connect/engine/CryptoSession.h
+    src/tools/connect/engine/CryptoSession.cpp
+)
+target_include_directories(connect_core PUBLIC src)
+target_link_libraries(connect_core PUBLIC Qt6::Core Qt6::Network bcrypt)
+
+# ---- Kiểm thử lõi Connect Together: cmake --build build --target connect_tests ----
+add_executable(connect_tests EXCLUDE_FROM_ALL tests/connect_tests.cpp)
+target_link_libraries(connect_tests PRIVATE connect_core)
+
 set(SOURCES
     src/main.cpp
     src/core/Tool.h
