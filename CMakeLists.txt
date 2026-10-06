@@ -105,12 +105,19 @@ target_link_libraries(wifi_ui_tests PRIVATE wifi_ui)
 add_library(connect_core STATIC
     src/tools/connect/model/ScreenSide.h
     src/tools/connect/model/PeerInfo.h
+    src/tools/connect/model/PairedPeer.h
     src/tools/connect/engine/PairingCode.h
     src/tools/connect/engine/PairingCode.cpp
     src/tools/connect/engine/ProtocolMessage.h
     src/tools/connect/engine/ProtocolMessage.cpp
     src/tools/connect/engine/CryptoSession.h
     src/tools/connect/engine/CryptoSession.cpp
+    src/tools/connect/engine/PeerStore.h
+    src/tools/connect/engine/PeerStore.cpp
+    src/tools/connect/engine/NetworkSession.h
+    src/tools/connect/engine/NetworkSession.cpp
+    src/tools/connect/engine/PeerDiscovery.h
+    src/tools/connect/engine/PeerDiscovery.cpp
 )
 target_include_directories(connect_core PUBLIC src)
 target_link_libraries(connect_core PUBLIC Qt6::Core Qt6::Network bcrypt)

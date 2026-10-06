@@ -42,9 +42,13 @@
 | `src/tools/connect/engine/PairingCode.*` | Mã ghép đôi 9 số, sinh/kiểm tra/định dạng (thuần Qt) |
 | `src/tools/connect/engine/ProtocolMessage.*` | Khung thông điệp nhị phân giữa 2 máy (thuần Qt, QDataStream) |
 | `src/tools/connect/engine/CryptoSession.*` | AES-256-GCM qua Windows CNG (bcrypt.dll), suy khóa PBKDF2 |
+| `src/tools/connect/model/PairedPeer.h` | Máy đã ghép đôi, lưu lâu dài (id, tên, khóa dài hạn, vị trí) |
+| `src/tools/connect/engine/PeerStore.*` | Lưu/nạp danh sách peer đã ghép đôi, `profiles/connect_peers.json` |
+| `src/tools/connect/engine/NetworkSession.*` | Phiên TCP đóng khung + mã hóa đầu-cuối (CryptoSession) |
+| `src/tools/connect/engine/PeerDiscovery.*` | Khám phá máy trong LAN qua UDP broadcast (chỉ thông tin công khai) |
 | `src/tools/wifi/WifiTool.*` | `ITool` của WiFi (một cửa sổ duy nhất) |
 | `src/third_party/` | qrcodegen (MIT), quirc (ISC), xem `THIRD_PARTY.md` |
-| `tests/` | `qr_tests`/`qr_ui_tests`, `wifi_tests`/`wifi_ui_tests`, `connect_tests` (mã hóa/giao thức/mã ghép đôi Connect Together, 256 kiểm tra, không cần mạng) |
+| `tests/` | `qr_tests`/`qr_ui_tests`, `wifi_tests`/`wifi_ui_tests`, `connect_tests` (403 kiểm tra: mã hóa, giao thức, lưu trữ peer, TCP loopback thật, UDP broadcast LAN thật) |
 | `assets/resources.qrc`, `icon/` | Icon nhúng vào exe |
 | `profiles/default.json` | Profile mặc định (chain mẫu) |
 | `build_app.bat`, `run_app.bat` | Build + đóng gói (`windeployqt`), chạy bản Release |
@@ -94,13 +98,20 @@ chỉ hoạt động trong LAN; không có chế độ ẩn/im lặng; kênh tru
   256-bit ngẫu nhiên mới cho các phiên sau - giống mô hình ghép đôi Bluetooth (mã PIN ngắn hạn bootstrap
   khóa dài hạn mạnh).
 
-**Chưa làm (còn lại rất nhiều):** lưu trữ peer đã ghép đôi (`profiles/`), khám phá máy trong LAN (UDP
-broadcast), phiên TCP mã hóa thực tế, hook bàn phím/chuột toàn cục (Win32, chỉ cô lập trong 1 lớp, chỉ
-bật khi đang chia sẻ quyền điều khiển), tiêm input ở máy nhận (SendInput), phát hiện chuột chạm biên màn
-hình để chuyển quyền điều khiển, đồng bộ clipboard, giao diện (hiển thị/nhập mã ghép đôi, danh sách máy,
-lưới sắp xếp màn hình), nối vào `MainWindow`. Phần hook/injection toàn cục chỉ kiểm thử được một phần
-trên 1 máy (hook cài/gỡ không crash, input tiêm ra đúng) - trải nghiệm chuột "đi qua biên sang máy khác"
-cần ít nhất 2 máy thật để xác nhận, tôi sẽ nói rõ khi tới phần đó.
+**Đã xong lớp mạng, đã test thật (403 kiểm tra):**
+- `PeerStore`: lưu/nạp `profiles/connect_peers.json`, gồm khóa dài hạn nhị phân qua Base64.
+- `NetworkSession`: phiên TCP đóng khung (4 byte độ dài + gói AES-GCM), test qua **TCP loopback thật**
+  trên máy này - gửi 2 chiều, payload 2MB ráp khung đúng, 50 thông điệp liên tiếp không trộn khung,
+  gói sai khóa bị từ chối và không làm hỏng phiên, dữ liệu rác không làm sập server.
+- `PeerDiscovery`: khám phá LAN qua UDP broadcast, test qua **broadcast UDP thật** trên máy này (không
+  phải giả lập) - 2 instance thấy nhau đúng, tự lọc bỏ chính mình.
+
+**Chưa làm (còn lại):** hook bàn phím/chuột toàn cục (Win32, chỉ cô lập trong 1 lớp, chỉ bật khi đang
+chia sẻ quyền điều khiển), tiêm input ở máy nhận (SendInput), phát hiện chuột chạm biên màn hình để
+chuyển quyền điều khiển, đồng bộ clipboard, giao diện (hiển thị/nhập mã ghép đôi, danh sách máy, lưới
+sắp xếp màn hình), `ConnectSessionController` điều phối toàn bộ, nối vào `MainWindow`. Phần hook/injection
+toàn cục chỉ kiểm thử được một phần trên 1 máy (hook cài/gỡ không crash, input tiêm ra đúng) - trải nghiệm
+chuột "đi qua biên sang máy khác" cần ít nhất 2 máy thật để xác nhận, tôi sẽ nói rõ khi tới phần đó.
 
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`. `run_app.bat` chạy `OneForAll_Release\OneForAll.exe`. Thư mục `build/`, `OneForAll_Release/`, `logs/` không được commit (xem `.gitignore`).
@@ -125,6 +136,7 @@ Mỗi lần sửa code: commit riêng với message mô tả rõ, và cập nh�
 | 2026-10-06 | Speed Test | Thêm đo tốc độ mạng (ping/jitter/download/upload) vào WiFi Connection; từ chối lại yêu cầu dò mật khẩu từ file (v1.0.9) |
 | 2026-10-06 | Love WiFi | Nút vui "Love WiFi" trong tab Mạng xung quanh; từ chối 2 lần nữa các biến thể thu nhỏ của yêu cầu dò mật khẩu (v1.0.10) |
 | 2026-10-07 | Connect Together (nền tảng) | Bắt đầu module tham khảo Mouse without Borders: mã hóa AES-256-GCM (Windows CNG), mã ghép đôi, khung giao thức - 256 test. Chưa có mạng/UI (v1.1.0) |
+| 2026-10-07 | Connect Together (mạng) | Lưu trữ peer, phiên TCP mã hóa, khám phá LAN qua UDP - test thật (loopback TCP + broadcast UDP thật trên máy), 403 test. Chưa có hook input/UI (v1.1.1) |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `
