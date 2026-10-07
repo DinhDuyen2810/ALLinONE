@@ -79,6 +79,44 @@ int main(int argc, char** argv)
     }
     QDir(destDir).removeRecursively(); // dọn dẹp tệp test thật sau khi xong
 
+    // Hồi quy lỗi THẬT phát hiện khi tự kiểm tra tay (nhiều tải song song): một URL trả lỗi HTTP thật
+    // (404) từng khiến nội dung TRANG LỖI (HTML "Not Found") bị ghi nhầm vào tệp đích - người dùng thấy
+    // trạng thái "Thất bại" nhưng vẫn có một tệp rác nằm lại. Xác nhận lại bằng URL THẬT chắc chắn 404
+    // (miền thật, đường dẫn chắc chắn không tồn tại) - đã sửa: không còn tệp nào được tạo ra khi lỗi.
+    {
+        const QString errDestPath = destDir + "/should-not-exist.bin";
+        QDir().mkpath(destDir);
+        QFile::remove(errDestPath);
+
+        FileDownloader errDownloader;
+        bool errGotFinished = false, errOk = true; // errOk mặc định true để xác nhận nó TỰ chuyển false
+        QObject::connect(&errDownloader, &FileDownloader::itemFinished, [&](int, bool ok) {
+            errOk = ok;
+            errGotFinished = true;
+        });
+        const int errId = errDownloader.enqueue(
+            "https://www.google.com/duong-dan-chac-chan-khong-ton-tai-oneforall-test-404", errDestPath);
+        errDownloader.start(errId);
+
+        QEventLoop errLoop;
+        QTimer errTimeoutTimer;
+        errTimeoutTimer.setSingleShot(true);
+        QObject::connect(&errTimeoutTimer, &QTimer::timeout, &errLoop, &QEventLoop::quit);
+        QObject::connect(&errDownloader, &FileDownloader::itemFinished, &errLoop, &QEventLoop::quit);
+        errTimeoutTimer.start(15000);
+        errLoop.exec();
+
+        std::printf("Hoi quy loi HTTP that: gotFinished=%d ok=%d tonTaiTepRac=%d\n", errGotFinished, errOk,
+                   QFileInfo::exists(errDestPath));
+        CHECK(errGotFinished);
+        if (errGotFinished)
+        {
+            CHECK(!errOk); // URL chắc chắn không tồn tại - phải báo thất bại thật
+            CHECK(!QFileInfo::exists(errDestPath)); // KHÔNG được để lại tệp rác (nội dung trang lỗi)
+        }
+        QDir(destDir).removeRecursively();
+    }
+
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);
     std::printf("\nLUU Y: khong tu dong chay yt-dlp.exe that (quet trang/tai video nen tang) trong test\n");
     std::printf("nay - can tu kiem tra tay qua giao dien.\n");

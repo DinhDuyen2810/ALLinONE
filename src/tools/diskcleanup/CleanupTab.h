@@ -22,6 +22,10 @@ public:
     explicit CleanupTab(QWidget* parent = nullptr);
     ~CleanupTab() override;
 
+    /// Đang xóa THẬT (qua Thùng rác) - CleanupExecutor không hỗ trợ hủy giữa chừng (một lệnh
+    /// SHFileOperationW xử lý cả lô), nên KHÔNG an toàn để đóng cửa sổ lúc này.
+    bool isCleaningNow() const;
+
 private slots:
     void onScanClicked();
     void onCleanClicked();

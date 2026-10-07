@@ -45,8 +45,18 @@ PartitionTab::PartitionTab(QWidget* parent)
 
 PartitionTab::~PartitionTab()
 {
+    // KHÔNG hủy giữa chừng (an toàn đĩa quan trọng hơn đóng cửa sổ nhanh) - nhưng CŨNG không được để
+    // QThread bị hủy đối tượng trong lúc vẫn đang thực sự chạy (hành vi KHÔNG XÁC ĐỊNH theo tài liệu
+    // Qt). Co giãn lớn có thể mất VÀI PHÚT - 5 giây không đủ, nên chờ KHÔNG GIỚI HẠN thời gian ở đây.
+    // Bình thường không tới mức này: DiskCleanupWindow::closeEvent() đã CHẶN đóng cửa sổ hẳn trong lúc
+    // đang đổi kích thước, đây chỉ là lưới an toàn cuối cùng (vd nếu widget bị hủy theo đường khác).
     if (m_resizer && m_resizer->isRunning())
-        m_resizer->wait(5000); // không hủy giữa chừng - để script PowerShell tự hoàn tất an toàn
+        m_resizer->wait();
+}
+
+bool PartitionTab::isResizingNow() const
+{
+    return m_resizer && m_resizer->isRunning();
 }
 
 void PartitionTab::buildUi()

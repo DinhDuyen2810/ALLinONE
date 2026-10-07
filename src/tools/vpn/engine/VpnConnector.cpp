@@ -46,12 +46,27 @@ void VpnConnector::run()
         emit operationFinished(false, "Không khởi chạy được rasdial.exe.");
         return;
     }
-    // Bắt tay giao thức VPN qua mạng có thể mất tới nửa phút với máy chủ chậm/xa.
-    if (!proc.waitForFinished(45000))
+
+    // Chờ theo từng bước nhỏ (200ms) thay vì một lần chờ dài 45s duy nhất - cho phép requestCancel()
+    // dừng SỚM (vd người dùng đóng cửa sổ giữa chừng) thay vì phải đợi hết timeout.
+    bool finished = false;
+    bool canceled = false;
+    for (int waited = 0; waited < 45000; waited += 200)
+    {
+        finished = proc.waitForFinished(200);
+        if (finished)
+            break;
+        if (m_cancelRequested)
+        {
+            canceled = true;
+            break;
+        }
+    }
+    if (!finished)
     {
         proc.kill();
         proc.waitForFinished(2000);
-        emit operationFinished(false, "Hết thời gian chờ kết nối VPN.");
+        emit operationFinished(false, canceled ? "Đã hủy." : "Hết thời gian chờ kết nối VPN.");
         return;
     }
 

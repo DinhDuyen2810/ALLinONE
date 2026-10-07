@@ -129,8 +129,13 @@ void FileDownloader::startNetworkRequest(int id)
 
     auto receivedCounter = std::make_shared<qint64>(resuming ? existingSize : 0);
     auto headerChecked = std::make_shared<bool>(false);
+    // true nếu server trả mã trạng thái HTTP THÀNH CÔNG (2xx) - chỉ ghi dữ liệu nhận được vào tệp đích
+    // khi đúng trường hợp này. Phát hiện THẬT qua kiểm tra tay: trước đây luôn ghi bất kể mã trạng thái,
+    // khiến nội dung TRANG LỖI (vd HTML "404 Not Found") bị ghi nhầm vào tệp đích khi URL sai/hỏng -
+    // người dùng thấy trạng thái "Thất bại" nhưng vẫn có một tệp trông như đã tải (chứa rác) nằm lại.
+    auto httpOk = std::make_shared<bool>(true); // mặc định true cho tới khi biết mã trạng thái thật (đọc ở readyRead đầu tiên)
 
-    connect(reply, &QNetworkReply::readyRead, this, [this, id, reply, file, resuming, receivedCounter, headerChecked]() {
+    connect(reply, &QNetworkReply::readyRead, this, [this, id, reply, file, resuming, receivedCounter, headerChecked, httpOk]() {
         if (!m_items.contains(id))
             return;
         auto& it2 = m_items[id];
@@ -139,27 +144,42 @@ void FileDownloader::startNetworkRequest(int id)
         {
             *headerChecked = true;
             const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-            const bool serverHonoredRange = resuming && httpStatus == 206;
-            if (resuming && !serverHonoredRange)
+            *httpOk = httpStatus >= 200 && httpStatus < 300;
+
+            if (*httpOk)
             {
-                // Server bỏ qua Range (trả 200 OK như tải mới) - tải lại từ đầu, không phải lỗi thật.
-                file->close();
-                file->open(QIODevice::WriteOnly | QIODevice::Truncate);
-                *receivedCounter = 0;
+                const bool serverHonoredRange = resuming && httpStatus == 206;
+                // CHỈ coi là "server bỏ qua Range, trả lại từ đầu" khi mã trạng thái CHÍNH XÁC là 200 -
+                // hồi quy lỗi thật: trước đây coi MỌI mã khác 206 (kể cả 404/500...) là "tải lại từ
+                // đầu", khiến một lần resume gặp lỗi thật (vd link hỏng/mạng chập chờn) XÓA MẤT phần đã
+                // tải đúng từ trước bằng cách ghi đè (Truncate) trước khi kịp biết đó là lỗi.
+                if (resuming && httpStatus == 200)
+                {
+                    file->close();
+                    file->open(QIODevice::WriteOnly | QIODevice::Truncate);
+                    *receivedCounter = 0;
+                }
+                const QVariant lenHeader = reply->header(QNetworkRequest::ContentLengthHeader);
+                if (lenHeader.isValid())
+                    it2.totalBytes = serverHonoredRange ? (*receivedCounter + lenHeader.toLongLong()) : lenHeader.toLongLong();
             }
-            const QVariant lenHeader = reply->header(QNetworkRequest::ContentLengthHeader);
-            if (lenHeader.isValid())
-                it2.totalBytes = serverHonoredRange ? (*receivedCounter + lenHeader.toLongLong()) : lenHeader.toLongLong();
         }
 
-        const QByteArray chunk = reply->readAll();
-        file->write(chunk);
-        *receivedCounter += chunk.size();
-        it2.receivedBytes = *receivedCounter;
+        if (*httpOk)
+        {
+            const QByteArray chunk = reply->readAll();
+            file->write(chunk);
+            *receivedCounter += chunk.size();
+            it2.receivedBytes = *receivedCounter;
+        }
+        else
+        {
+            reply->readAll(); // xả bỏ nội dung trang lỗi (vd HTML "404") - KHÔNG ghi vào tệp đích
+        }
         emit itemUpdated(id);
     });
 
-    connect(reply, &QNetworkReply::finished, this, [this, id, reply, file]() {
+    connect(reply, &QNetworkReply::finished, this, [this, id, reply, file, resuming]() {
         file->close();
         m_activeReplies.remove(id);
         reply->deleteLater();
@@ -181,6 +201,11 @@ void FileDownloader::startNetworkRequest(int id)
         {
             it2.status = DownloadItem::Status::Failed;
             it2.error = reply->errorString();
+            // Chỉ xóa tệp nếu đây là lần tải MỚI (không phải đang tiếp tục) - tránh xóa mất phần đã tải
+            // ĐÚNG từ trước nếu lần thử lại (resume) này mới là lần gặp lỗi (vd mạng chập chờn giữa
+            // chừng) - để người dùng còn cơ hội tiếp tục tải lại từ chỗ cũ sau này.
+            if (!resuming)
+                QFile::remove(it2.destPath);
             emit itemUpdated(id);
             emit itemFinished(id, false);
         }

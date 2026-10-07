@@ -71,6 +71,8 @@ void DirectDownloadTab::buildUi()
     folderRow->addWidget(folderCaption);
     m_folderLabel = new QLabel(m_saveFolder, this);
     m_folderLabel->setStyleSheet("color: #1f2328; font-size: 12px;");
+    m_folderLabel->setWordWrap(true); // đường dẫn thư mục có thể rất dài - tránh bị cắt cụt không thấy hết
+    m_folderLabel->setToolTip(m_saveFolder);
     folderRow->addWidget(m_folderLabel, 1);
     m_chooseFolderBtn = new QPushButton("Đổi...", this);
     m_chooseFolderBtn->setStyleSheet(DownloaderUi::buttonStyle());
@@ -219,6 +221,7 @@ void DirectDownloadTab::onChooseFolderClicked()
         return;
     m_saveFolder = dir;
     m_folderLabel->setText(m_saveFolder);
+    m_folderLabel->setToolTip(m_saveFolder);
 }
 
 void DirectDownloadTab::onStartAllClicked()

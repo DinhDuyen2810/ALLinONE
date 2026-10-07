@@ -18,6 +18,12 @@ public:
     explicit SecurityGatewayWindow(QWidget* parent = nullptr);
     ~SecurityGatewayWindow() override;
 
+protected:
+    /// Chặn đóng cửa sổ (hỏi xác nhận) nếu đang quét mã độc - tránh hủy QThread đang thực sự chạy
+    /// (hành vi KHÔNG XÁC ĐỊNH theo tài liệu Qt) khi FullScan có thể chạy hàng giờ. Hủy quét ở đây AN
+    /// TOÀN (Defender tự dừng gọn, khác hẳn hủy giữa chừng một thao tác đổi kích thước phân vùng).
+    void closeEvent(QCloseEvent* event) override;
+
 private:
     void buildUi();
 

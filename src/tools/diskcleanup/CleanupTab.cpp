@@ -41,8 +41,18 @@ CleanupTab::~CleanupTab()
         m_scanner->requestStop();
         m_scanner->wait(3000);
     }
+    // CleanupExecutor KHÔNG hỗ trợ hủy giữa chừng (một lệnh SHFileOperationW xử lý CẢ LÔ, không có móc
+    // nào để dừng sớm) - xóa hàng nghìn tệp thật (vd cache trình duyệt) có thể mất LÂU HƠN 5 giây, nên
+    // wait(5000) không đủ và sẽ khiến QThread bị hủy đối tượng trong lúc vẫn đang thực sự chạy (hành vi
+    // KHÔNG XÁC ĐỊNH theo tài liệu Qt). Bình thường không tới đây: DiskCleanupWindow::closeEvent() đã
+    // CHẶN đóng cửa sổ hẳn trong lúc đang dọn dẹp - đây chỉ là lưới an toàn cuối cùng.
     if (m_executor && m_executor->isRunning())
-        m_executor->wait(5000);
+        m_executor->wait();
+}
+
+bool CleanupTab::isCleaningNow() const
+{
+    return m_executor && m_executor->isRunning();
 }
 
 void CleanupTab::buildUi()

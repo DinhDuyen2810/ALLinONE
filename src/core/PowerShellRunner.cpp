@@ -31,6 +31,11 @@ namespace PowerShellRunner
 
 QByteArray run(const QString& script, bool* ok, QString* error, int timeoutMs)
 {
+    return runCancelable(script, nullptr, ok, error, timeoutMs);
+}
+
+QByteArray runCancelable(const QString& script, const std::atomic_bool* cancelFlag, bool* ok, QString* error, int timeoutMs)
+{
     *ok = false;
     QProcess proc;
     proc.setProgram("powershell.exe");
@@ -42,12 +47,29 @@ QByteArray run(const QString& script, bool* ok, QString* error, int timeoutMs)
         return {};
     }
 
-    if (!proc.waitForFinished(timeoutMs))
+    // Chờ theo từng bước nhỏ (200ms) thay vì một lần chờ dài duy nhất - cho phép kiểm tra cancelFlag
+    // định kỳ để hủy SỚM thay vì phải đợi hết timeoutMs (quan trọng với các lệnh có thể chạy hàng giờ
+    // như Start-MpScan quét toàn bộ máy).
+    bool finished = false;
+    bool canceled = false;
+    for (int waited = 0; waited < timeoutMs; waited += 200)
+    {
+        finished = proc.waitForFinished(200);
+        if (finished)
+            break;
+        if (cancelFlag && cancelFlag->load())
+        {
+            canceled = true;
+            break;
+        }
+    }
+
+    if (!finished)
     {
         proc.kill();
         proc.waitForFinished(2000);
-        if (error) *error = "Hết thời gian chờ PowerShell";
-        return {};
+        if (error) *error = canceled ? "Đã hủy." : "Hết thời gian chờ PowerShell";
+        return proc.readAllStandardOutput();
     }
 
     const QByteArray out = proc.readAllStandardOutput();

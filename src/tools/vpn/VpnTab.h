@@ -32,6 +32,11 @@ public:
     explicit VpnTab(QWidget* parent = nullptr);
     ~VpnTab() override;
 
+    bool isBusy() const;
+    /// Hủy giữa chừng (an toàn - kill() rasdial.exe, VPN chỉ có 2 trạng thái "đã nối"/"chưa nối", không
+    /// có trạng thái dở dang nguy hiểm) rồi CHỜ tới khi luồng thoát hẳn - gọi trước khi đóng cửa sổ.
+    void cancelAndWait(int waitMs = 3000);
+
 private slots:
     void onRefreshClicked();
     void onAddClicked();

@@ -25,6 +25,10 @@ public:
     explicit PartitionTab(QWidget* parent = nullptr);
     ~PartitionTab() override;
 
+    /// Đang đổi kích thước phân vùng THẬT - KHÔNG an toàn để hủy giữa chừng (có thể làm hỏng hệ thống
+    /// tệp), khác hẳn các thao tác khác trong ứng dụng (quét/dọn dẹp/kết nối VPN) vốn hủy được an toàn.
+    bool isResizingNow() const;
+
 private slots:
     void onRefreshClicked();
     void onRelaunchElevatedClicked();

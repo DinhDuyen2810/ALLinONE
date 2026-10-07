@@ -14,6 +14,11 @@ public:
     explicit VpnControlWindow(QWidget* parent = nullptr);
     ~VpnControlWindow() override;
 
+protected:
+    /// Chặn đóng cửa sổ (hỏi xác nhận) nếu đang kết nối/ngắt kết nối VPN - tránh hủy QThread đang thực
+    /// sự chạy (hành vi KHÔNG XÁC ĐỊNH theo tài liệu Qt), vì bắt tay VPN có thể mất tới 45 giây.
+    void closeEvent(QCloseEvent* event) override;
+
 private:
     void buildUi();
 

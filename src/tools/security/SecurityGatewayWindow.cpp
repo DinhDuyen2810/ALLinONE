@@ -6,6 +6,8 @@
 #include "core/IconHelper.h"
 #include "core/Logger.h"
 
+#include <QCloseEvent>
+#include <QMessageBox>
 #include <QTabWidget>
 #include <QVBoxLayout>
 
@@ -36,6 +38,25 @@ SecurityGatewayWindow::SecurityGatewayWindow(QWidget* parent)
 }
 
 SecurityGatewayWindow::~SecurityGatewayWindow() = default;
+
+void SecurityGatewayWindow::closeEvent(QCloseEvent* event)
+{
+    if (m_scanTab && m_scanTab->isScanningNow())
+    {
+        const auto reply = QMessageBox::question(
+            this, "Đang quét mã độc",
+            "Đang quét mã độc (có thể là quét toàn bộ máy, mất nhiều thời gian). Đóng cửa sổ sẽ HỦY "
+            "quét giữa chừng (an toàn - giống bấm Hủy trên Windows Security). Bạn có muốn tiếp tục đóng?",
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (reply != QMessageBox::Yes)
+        {
+            event->ignore();
+            return;
+        }
+        m_scanTab->cancelScanAndWait();
+    }
+    event->accept();
+}
 
 void SecurityGatewayWindow::buildUi()
 {

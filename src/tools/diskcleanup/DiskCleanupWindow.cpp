@@ -7,6 +7,8 @@
 #include "core/IconHelper.h"
 #include "core/Logger.h"
 
+#include <QCloseEvent>
+#include <QMessageBox>
 #include <QTabWidget>
 #include <QVBoxLayout>
 
@@ -37,6 +39,29 @@ DiskCleanupWindow::DiskCleanupWindow(QWidget* parent)
 }
 
 DiskCleanupWindow::~DiskCleanupWindow() = default;
+
+void DiskCleanupWindow::closeEvent(QCloseEvent* event)
+{
+    if (m_partitionTab && m_partitionTab->isResizingNow())
+    {
+        QMessageBox::warning(
+            this, "Đang đổi kích thước phân vùng",
+            "Không thể đóng cửa sổ trong lúc đang đổi kích thước phân vùng - hủy giữa chừng có thể làm "
+            "hỏng hệ thống tệp. Vui lòng đợi quá trình hoàn tất rồi đóng lại.");
+        event->ignore();
+        return;
+    }
+    if (m_cleanupTab && m_cleanupTab->isCleaningNow())
+    {
+        QMessageBox::warning(
+            this, "Đang dọn dẹp",
+            "Không thể đóng cửa sổ trong lúc đang xóa tệp - vui lòng đợi quá trình dọn dẹp hoàn tất rồi "
+            "đóng lại.");
+        event->ignore();
+        return;
+    }
+    event->accept();
+}
 
 void DiskCleanupWindow::buildUi()
 {

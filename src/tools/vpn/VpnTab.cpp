@@ -35,8 +35,24 @@ VpnTab::VpnTab(QWidget* parent)
 
 VpnTab::~VpnTab()
 {
-    if (m_connector && m_connector->isRunning())
-        m_connector->wait(3000);
+    // KHÔNG chỉ wait(3000) suông - bắt tay VPN thật có thể mất tới 45 giây (máy chủ chậm/xa), 3 giây
+    // gần như chắc chắn không đủ trong trường hợp đó, khiến QThread bị hủy đối tượng trong lúc vẫn đang
+    // thực sự chạy (hành vi KHÔNG XÁC ĐỊNH theo tài liệu Qt). Phải HỦY (an toàn) rồi mới chờ.
+    cancelAndWait(3000);
+}
+
+bool VpnTab::isBusy() const
+{
+    return m_connector && m_connector->isRunning();
+}
+
+void VpnTab::cancelAndWait(int waitMs)
+{
+    if (!isBusy())
+        return;
+    m_connector->requestCancel();
+    if (!m_connector->wait(waitMs))
+        m_connector->wait(); // vẫn chưa thoát - đợi thêm, không bao giờ để nơi gọi hủy đối tượng lúc còn chạy
 }
 
 void VpnTab::buildUi()
@@ -63,8 +79,10 @@ void VpnTab::buildUi()
     auto* locTextLayout = new QVBoxLayout();
     m_locationIpLabel = new QLabel("Đang kiểm tra...", this);
     m_locationIpLabel->setStyleSheet("color: #1f2328; font-weight: bold; font-size: 14px;");
+    m_locationIpLabel->setWordWrap(true);
     m_locationPlaceLabel = new QLabel("", this);
     m_locationPlaceLabel->setStyleSheet("color: #57606a; font-size: 12px;");
+    m_locationPlaceLabel->setWordWrap(true);
     locTextLayout->addWidget(m_locationIpLabel);
     locTextLayout->addWidget(m_locationPlaceLabel);
     locLayout->addLayout(locTextLayout, 1);

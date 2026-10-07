@@ -4,6 +4,8 @@
 #include "core/IconHelper.h"
 #include "core/Logger.h"
 
+#include <QCloseEvent>
+#include <QMessageBox>
 #include <QVBoxLayout>
 
 VpnControlWindow::VpnControlWindow(QWidget* parent)
@@ -29,6 +31,25 @@ VpnControlWindow::VpnControlWindow(QWidget* parent)
 }
 
 VpnControlWindow::~VpnControlWindow() = default;
+
+void VpnControlWindow::closeEvent(QCloseEvent* event)
+{
+    if (m_vpnTab && m_vpnTab->isBusy())
+    {
+        const auto reply = QMessageBox::question(
+            this, "Đang xử lý VPN",
+            "Đang kết nối/ngắt kết nối VPN. Đóng cửa sổ sẽ HỦY thao tác này giữa chừng (an toàn). Bạn "
+            "có muốn tiếp tục đóng?",
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (reply != QMessageBox::Yes)
+        {
+            event->ignore();
+            return;
+        }
+        m_vpnTab->cancelAndWait();
+    }
+    event->accept();
+}
 
 void VpnControlWindow::buildUi()
 {
