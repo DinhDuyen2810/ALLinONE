@@ -12,7 +12,7 @@ ActionListWidget::ActionListWidget(QWidget* parent)
     mainLayout->setContentsMargins(8, 8, 8, 8);
     mainLayout->setSpacing(8);
 
-    auto* header = new QLabel("ACTION LIST", this);
+    auto* header = new QLabel("DANH SÁCH HÀNH ĐỘNG", this);
     QFont font = header->font();
     font.setBold(true);
     header->setFont(font);
@@ -56,13 +56,13 @@ ActionListWidget::ActionListWidget(QWidget* parent)
     auto* btnLayout = new QVBoxLayout();
     btnLayout->setSpacing(4);
 
-    m_addButton = new QPushButton("+ Add Action", this);
-    m_cloneButton = new QPushButton("Clone", this);
-    m_insertBeforeBtn = new QPushButton("Before", this);
-    m_insertAfterBtn = new QPushButton("After", this);
-    m_moveUpBtn = new QPushButton("▲ Up", this);
-    m_moveDownBtn = new QPushButton("▼ Down", this);
-    m_deleteBtn = new QPushButton("Delete", this);
+    m_addButton = new QPushButton("+ Thêm hành động", this);
+    m_cloneButton = new QPushButton("Nhân bản", this);
+    m_insertBeforeBtn = new QPushButton("Trước", this);
+    m_insertAfterBtn = new QPushButton("Sau", this);
+    m_moveUpBtn = new QPushButton("▲ Lên", this);
+    m_moveDownBtn = new QPushButton("▼ Xuống", this);
+    m_deleteBtn = new QPushButton("Xóa", this);
 
     m_addButton->setCursor(Qt::PointingHandCursor);
     m_cloneButton->setCursor(Qt::PointingHandCursor);
@@ -205,16 +205,16 @@ void ActionListWidget::onCustomContextMenuRequested(const QPoint& pos)
     if (row < 0) return;
 
     QMenu menu(this);
-    QAction* editAct = menu.addAction("Edit");
-    QAction* cloneAct = menu.addAction("Clone");
+    QAction* editAct = menu.addAction("Sửa");
+    QAction* cloneAct = menu.addAction("Nhân bản");
     menu.addSeparator();
-    QAction* insBeforeAct = menu.addAction("Insert Before");
-    QAction* insAfterAct = menu.addAction("Insert After");
+    QAction* insBeforeAct = menu.addAction("Chèn trước");
+    QAction* insAfterAct = menu.addAction("Chèn sau");
     menu.addSeparator();
-    QAction* upAct = menu.addAction("Move Up");
-    QAction* downAct = menu.addAction("Move Down");
+    QAction* upAct = menu.addAction("Di chuyển lên");
+    QAction* downAct = menu.addAction("Di chuyển xuống");
     menu.addSeparator();
-    QAction* delAct = menu.addAction("Delete");
+    QAction* delAct = menu.addAction("Xóa");
 
     QAction* chosen = menu.exec(m_table->mapToGlobal(pos));
     if (!chosen) return;

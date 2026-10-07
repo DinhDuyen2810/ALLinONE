@@ -49,7 +49,7 @@ void ActionEditorWidget::setupUi()
     mainLayout->setContentsMargins(8, 8, 8, 8);
     mainLayout->setSpacing(8);
 
-    auto* header = new QLabel("ACTION SETTINGS", this);
+    auto* header = new QLabel("CÀI ĐẶT HÀNH ĐỘNG", this);
     QFont font = header->font();
     font.setBold(true);
     header->setFont(font);
@@ -72,10 +72,10 @@ void ActionEditorWidget::setupUi()
 
     // Type selection
     auto* typeLayout = new QHBoxLayout();
-    auto* typeLabel = new QLabel("Type:", this);
+    auto* typeLabel = new QLabel("Loại:", this);
     typeLabel->setStyleSheet("color: #1f2328; font-weight: bold; font-size: 12px;");
     m_typeCombo = new QComboBox(this);
-    m_typeCombo->addItems({"Mouse Click", "Mouse Drag", "Mouse Hold", "Type Text", "Hotkey", "Key Press", "Scroll"});
+    m_typeCombo->addItems({"Click chuột", "Kéo chuột", "Giữ chuột", "Gõ văn bản", "Phím tắt", "Nhấn phím", "Cuộn"});
     m_typeCombo->setStyleSheet(
         "QComboBox { background-color: #ffffff; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 6px 10px; font-size: 12px; }"
         "QComboBox:hover { border-color: #0969da; }"
@@ -119,16 +119,16 @@ void ActionEditorWidget::setupUi()
 
     m_waitBeforeSpin = new QSpinBox(this);
     styleSpin(m_waitBeforeSpin);
-    timingLayout->addRow("Wait Before:", m_waitBeforeSpin);
+    timingLayout->addRow("Chờ trước:", m_waitBeforeSpin);
 
     m_waitAfterSpin = new QSpinBox(this);
     styleSpin(m_waitAfterSpin);
     m_waitAfterSpin->setValue(500);
-    timingLayout->addRow("Wait After:", m_waitAfterSpin);
+    timingLayout->addRow("Chờ sau:", m_waitAfterSpin);
 
     m_durationSpin = new QSpinBox(this);
     styleSpin(m_durationSpin);
-    timingLayout->addRow("Duration:", m_durationSpin);
+    timingLayout->addRow("Thời lượng:", m_durationSpin);
 
     contentLayout->addWidget(timingGroup);
     contentLayout->addStretch();
@@ -157,9 +157,9 @@ QWidget* ActionEditorWidget::createClickPage()
     layout->setSpacing(8);
 
     m_clickButtonCombo = new QComboBox(w);
-    m_clickButtonCombo->addItems({"Left", "Right", "Middle"});
+    m_clickButtonCombo->addItems({"Trái", "Phải", "Giữa"});
     m_clickButtonCombo->setStyleSheet("background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 5px 8px; font-size: 12px;");
-    layout->addRow("Button:", m_clickButtonCombo);
+    layout->addRow("Nút:", m_clickButtonCombo);
 
     auto* posLayout = new QHBoxLayout();
     m_clickXSpin = new QSpinBox(w);
@@ -173,7 +173,7 @@ QWidget* ActionEditorWidget::createClickPage()
     m_clickXSpin->setStyleSheet(spinStyle);
     m_clickYSpin->setStyleSheet(spinStyle);
 
-    m_captureClickPosBtn = new QPushButton("🎯 Capture", w);
+    m_captureClickPosBtn = new QPushButton("🎯 Lấy tọa độ", w);
     m_captureClickPosBtn->setCursor(Qt::PointingHandCursor);
     m_captureClickPosBtn->setStyleSheet("QPushButton { background-color: #0969da; color: white; border: none; border-radius: 8px; padding: 5px 12px; font-size: 11px; font-weight: bold; } QPushButton:hover { background-color: #0854b0; }");
     connect(m_captureClickPosBtn, &QPushButton::clicked, this, [this]() {
@@ -184,7 +184,7 @@ QWidget* ActionEditorWidget::createClickPage()
     posLayout->addWidget(m_clickXSpin);
     posLayout->addWidget(m_clickYSpin);
     posLayout->addWidget(m_captureClickPosBtn);
-    layout->addRow("Position:", posLayout);
+    layout->addRow("Vị trí:", posLayout);
 
     return w;
 }
@@ -208,7 +208,7 @@ QWidget* ActionEditorWidget::createDragPage()
     m_dragStartXSpin->setStyleSheet(spinStyle);
     m_dragStartYSpin->setStyleSheet(spinStyle);
 
-    m_captureDragStartBtn = new QPushButton("🎯 Capture", w);
+    m_captureDragStartBtn = new QPushButton("🎯 Lấy tọa độ", w);
     m_captureDragStartBtn->setCursor(Qt::PointingHandCursor);
     m_captureDragStartBtn->setStyleSheet("QPushButton { background-color: #0969da; color: white; border: none; border-radius: 8px; padding: 5px 12px; font-size: 11px; font-weight: bold; } QPushButton:hover { background-color: #0854b0; }");
     connect(m_captureDragStartBtn, &QPushButton::clicked, this, [this]() {
@@ -219,7 +219,7 @@ QWidget* ActionEditorWidget::createDragPage()
     startLayout->addWidget(m_dragStartXSpin);
     startLayout->addWidget(m_dragStartYSpin);
     startLayout->addWidget(m_captureDragStartBtn);
-    layout->addRow("Start:", startLayout);
+    layout->addRow("Điểm đầu:", startLayout);
 
     auto* endLayout = new QHBoxLayout();
     m_dragEndXSpin = new QSpinBox(w);
@@ -231,7 +231,7 @@ QWidget* ActionEditorWidget::createDragPage()
     m_dragEndXSpin->setStyleSheet(spinStyle);
     m_dragEndYSpin->setStyleSheet(spinStyle);
 
-    m_captureDragEndBtn = new QPushButton("🎯 Capture", w);
+    m_captureDragEndBtn = new QPushButton("🎯 Lấy tọa độ", w);
     m_captureDragEndBtn->setCursor(Qt::PointingHandCursor);
     m_captureDragEndBtn->setStyleSheet("QPushButton { background-color: #0969da; color: white; border: none; border-radius: 8px; padding: 5px 12px; font-size: 11px; font-weight: bold; } QPushButton:hover { background-color: #0854b0; }");
     connect(m_captureDragEndBtn, &QPushButton::clicked, this, [this]() {
@@ -242,7 +242,7 @@ QWidget* ActionEditorWidget::createDragPage()
     endLayout->addWidget(m_dragEndXSpin);
     endLayout->addWidget(m_dragEndYSpin);
     endLayout->addWidget(m_captureDragEndBtn);
-    layout->addRow("End:", endLayout);
+    layout->addRow("Điểm cuối:", endLayout);
 
     return w;
 }
@@ -255,9 +255,9 @@ QWidget* ActionEditorWidget::createHoldPage()
     layout->setSpacing(8);
 
     m_holdButtonCombo = new QComboBox(w);
-    m_holdButtonCombo->addItems({"Left", "Right", "Middle"});
+    m_holdButtonCombo->addItems({"Trái", "Phải", "Giữa"});
     m_holdButtonCombo->setStyleSheet("background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 5px 8px; font-size: 12px;");
-    layout->addRow("Button:", m_holdButtonCombo);
+    layout->addRow("Nút:", m_holdButtonCombo);
 
     auto* posLayout = new QHBoxLayout();
     m_holdXSpin = new QSpinBox(w);
@@ -270,7 +270,7 @@ QWidget* ActionEditorWidget::createHoldPage()
     m_holdXSpin->setStyleSheet(spinStyle);
     m_holdYSpin->setStyleSheet(spinStyle);
 
-    m_captureHoldPosBtn = new QPushButton("🎯 Capture", w);
+    m_captureHoldPosBtn = new QPushButton("🎯 Lấy tọa độ", w);
     m_captureHoldPosBtn->setCursor(Qt::PointingHandCursor);
     m_captureHoldPosBtn->setStyleSheet("QPushButton { background-color: #0969da; color: white; border: none; border-radius: 8px; padding: 5px 12px; font-size: 11px; font-weight: bold; } QPushButton:hover { background-color: #0854b0; }");
     connect(m_captureHoldPosBtn, &QPushButton::clicked, this, [this]() {
@@ -281,7 +281,7 @@ QWidget* ActionEditorWidget::createHoldPage()
     posLayout->addWidget(m_holdXSpin);
     posLayout->addWidget(m_holdYSpin);
     posLayout->addWidget(m_captureHoldPosBtn);
-    layout->addRow("Position:", posLayout);
+    layout->addRow("Vị trí:", posLayout);
 
     return w;
 }
@@ -296,12 +296,12 @@ QWidget* ActionEditorWidget::createTextPage()
     m_textEdit = new QLineEdit(w);
     m_textEdit->setPlaceholderText("Nhập văn bản cần gõ...");
     m_textEdit->setStyleSheet("background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 6px 10px; font-size: 12px;");
-    layout->addRow("Text:", m_textEdit);
+    layout->addRow("Văn bản:", m_textEdit);
 
     m_textModeCombo = new QComboBox(w);
     m_textModeCombo->addItems({"Instant (Gõ lập tức)", "Char-by-Char (Gõ từng ký tự)"});
     m_textModeCombo->setStyleSheet("background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 5px 8px; font-size: 12px;");
-    layout->addRow("Mode:", m_textModeCombo);
+    layout->addRow("Chế độ:", m_textModeCombo);
 
     return w;
 }
@@ -335,7 +335,7 @@ QWidget* ActionEditorWidget::createHotkeyPage()
     layout->addLayout(modsLayout);
 
     auto* keyLayout = new QHBoxLayout();
-    auto* keyLabel = new QLabel("Key:", w);
+    auto* keyLabel = new QLabel("Phím:", w);
     keyLabel->setStyleSheet("color: #1f2328; font-weight: bold; font-size: 12px;");
     m_hotkeyKeyCombo = new QComboBox(w);
     for (const auto& k : KEY_LIST)
@@ -363,7 +363,7 @@ QWidget* ActionEditorWidget::createKeyPressPage()
         m_keyPressCombo->addItem(k.name, k.vk);
     }
     m_keyPressCombo->setStyleSheet("background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 5px 8px; font-size: 12px;");
-    layout->addRow("Key:", m_keyPressCombo);
+    layout->addRow("Phím:", m_keyPressCombo);
 
     return w;
 }
@@ -378,13 +378,13 @@ QWidget* ActionEditorWidget::createScrollPage()
     m_scrollDirectionCombo = new QComboBox(w);
     m_scrollDirectionCombo->addItems({"Down (Xuống)", "Up (Lên)", "Left (Trái)", "Right (Phải)"});
     m_scrollDirectionCombo->setStyleSheet("background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 5px 8px; font-size: 12px;");
-    layout->addRow("Direction:", m_scrollDirectionCombo);
+    layout->addRow("Hướng:", m_scrollDirectionCombo);
 
     m_scrollAmountSpin = new QSpinBox(w);
     m_scrollAmountSpin->setRange(1, 100);
     m_scrollAmountSpin->setValue(5);
     m_scrollAmountSpin->setStyleSheet("background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 4px 8px; font-size: 12px;");
-    layout->addRow("Amount:", m_scrollAmountSpin);
+    layout->addRow("Số bước:", m_scrollAmountSpin);
 
     return w;
 }

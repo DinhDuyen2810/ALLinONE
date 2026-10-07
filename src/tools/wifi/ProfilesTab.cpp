@@ -39,13 +39,19 @@ void ProfilesTab::buildUi()
     root->setContentsMargins(10, 10, 10, 10);
     root->setSpacing(10);
 
-    auto* bar = new QHBoxLayout();
-    bar->setSpacing(8);
-
+    // Checkbox nằm RIÊNG một hàng (không chung hàng với 5 nút bên dưới): ở độ rộng cửa sổ bình thường,
+    // nhãn dài "Hiện mật khẩu đã lưu (cần quyền Administrator)" cộng 5 nút không đủ chỗ trên cùng 1
+    // hàng - QCheckBox không tự rút gọn chữ (không giống QLabel/ô bảng), layout co nó lại nhỏ hơn chữ
+    // cần thiết khiến chữ bị cắt cụt giữa chừng, rất khó đọc.
+    auto* checkRow = new QHBoxLayout();
     m_showPasswordsCheck = new QCheckBox("👁 Hiện mật khẩu đã lưu (cần quyền Administrator)", this);
     connect(m_showPasswordsCheck, &QCheckBox::toggled, this, &ProfilesTab::onShowPasswordsToggled);
-    bar->addWidget(m_showPasswordsCheck);
-    bar->addStretch();
+    checkRow->addWidget(m_showPasswordsCheck);
+    checkRow->addStretch();
+    root->addLayout(checkRow);
+
+    auto* bar = new QHBoxLayout();
+    bar->setSpacing(8);
 
     m_connectBtn = new QPushButton("🔗 Kết nối", this);
     m_connectBtn->setStyleSheet(WifiUi::primaryButtonStyle());

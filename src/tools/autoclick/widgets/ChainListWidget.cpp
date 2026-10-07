@@ -13,7 +13,7 @@ ChainListWidget::ChainListWidget(QWidget* parent)
     mainLayout->setContentsMargins(8, 8, 8, 8);
     mainLayout->setSpacing(8);
 
-    auto* header = new QLabel("ACTION CHAINS", this);
+    auto* header = new QLabel("CHUỖI HÀNH ĐỘNG", this);
     QFont font = header->font();
     font.setBold(true);
     header->setFont(font);
@@ -36,13 +36,15 @@ ChainListWidget::ChainListWidget(QWidget* parent)
     connect(m_listWidget, &QListWidget::currentRowChanged, this, &ChainListWidget::chainSelectionChanged);
     connect(m_listWidget, &QListWidget::customContextMenuRequested, this, &ChainListWidget::onCustomContextMenuRequested);
 
-    // Button row
-    auto* btnLayout = new QHBoxLayout();
+    // Xếp DỌC từng nút một (không xếp ngang): panel này khá hẹp (chỉ rộng tối thiểu 160px) - "Nhân bản"
+    // dài hơn "Clone" tiếng Anh trước đây, 3 nút xếp ngang dễ bị bóp nhỏ hơn chữ cần thiết khiến chữ bị
+    // cắt xén ở giữa (QPushButton tự căn giữa chữ, không tự rút gọn như QLabel).
+    auto* btnLayout = new QVBoxLayout();
     btnLayout->setSpacing(6);
 
-    m_addButton = new QPushButton("+ Add", this);
-    m_cloneButton = new QPushButton("Clone", this);
-    m_deleteButton = new QPushButton("Delete", this);
+    m_addButton = new QPushButton("+ Thêm", this);
+    m_cloneButton = new QPushButton("Nhân bản", this);
+    m_deleteButton = new QPushButton("Xóa", this);
 
     m_addButton->setCursor(Qt::PointingHandCursor);
     m_cloneButton->setCursor(Qt::PointingHandCursor);
@@ -118,11 +120,11 @@ void ChainListWidget::onCustomContextMenuRequested(const QPoint& pos)
     if (row < 0) return;
 
     QMenu menu(this);
-    QAction* runAction = menu.addAction("Run Chain");
-    QAction* cloneAction = menu.addAction("Clone");
-    QAction* renameAction = menu.addAction("Rename");
+    QAction* runAction = menu.addAction("Chạy chuỗi này");
+    QAction* cloneAction = menu.addAction("Nhân bản");
+    QAction* renameAction = menu.addAction("Đổi tên");
     menu.addSeparator();
-    QAction* deleteAction = menu.addAction("Delete");
+    QAction* deleteAction = menu.addAction("Xóa");
 
     QAction* chosen = menu.exec(m_listWidget->mapToGlobal(pos));
     if (!chosen) return;
@@ -139,7 +141,7 @@ void ChainListWidget::onCustomContextMenuRequested(const QPoint& pos)
     {
         bool ok = false;
         QString oldText = m_listWidget->currentItem()->text().split(" (").first();
-        QString newName = QInputDialog::getText(this, "Rename Chain", "Tên chuỗi mới:", QLineEdit::Normal, oldText, &ok);
+        QString newName = QInputDialog::getText(this, "Đổi tên chuỗi", "Tên chuỗi mới:", QLineEdit::Normal, oldText, &ok);
         if (ok && !newName.trimmed().isEmpty())
         {
             emit renameChainClicked(row, newName.trimmed());

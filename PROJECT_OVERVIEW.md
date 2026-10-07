@@ -84,6 +84,18 @@
 - **Capture tọa độ:** ẩn cửa sổ → overlay phủ toàn desktop → click lấy điểm / ESC hủy → điền vào ô X/Y.
 - **HUD:** always-on-top, hiện round/action hiện tại/kế tiếp/countdown/nút Stop, tự né điểm chuột sắp thao tác.
 - **Lưu trữ:** JSON, Save/Load profile mặc định, Import/Export file.
+- **Đã sửa lỗi UI thật (rà soát toàn bộ 5 tính năng theo yêu cầu người dùng):** toàn bộ panel "ACTION
+  CHAINS"/"ACTION LIST"/"ACTION SETTINGS" và nhãn form (Type/Button/Position/Wait Before/Wait After/
+  Duration...) từng thuần tiếng Anh - lạc tông với phần còn lại của ứng dụng (toàn tiếng Việt). Đã dịch
+  toàn bộ nhãn/nút/HUD runtime overlay/thông báo đếm ngược sang tiếng Việt. **Xác nhận an toàn trước khi
+  sửa:** các giá trị combo box (`Action Type`, `Mouse Button`...) chỉ đọc/ghi theo CHỈ SỐ
+  (`currentIndex()`), và `Action::typeName()/description()` (hiển thị) hoàn toàn độc lập với
+  `ActionSerializer`'s `actionTypeToString()` (khóa PascalCase riêng để lưu JSON) - dịch chữ hiển thị
+  không ảnh hưởng gì tới các hồ sơ `.json` đã lưu trước đó. Tên phím (ENTER/TAB/ESC/mũi tên...) và
+  Ctrl/Alt/Shift/Win giữ nguyên tiếng Anh (quy ước bàn phím toàn cầu). Phát hiện và sửa thêm 1 lỗi tự
+  gây ra: 3 nút "+ Thêm/Nhân bản/Xóa" dưới panel Chuỗi hành động (panel hẹp, rộng tối thiểu 160px) bị
+  cắt chữ ở giữa khi xếp ngang (QPushButton tự căn giữa chữ, không tự rút gọn như QLabel) - đã đổi sang
+  xếp dọc từng nút.
 
 ## 4b. QR Tools
 - **Tạo mã:** 8 loại nội dung (Văn bản, URL, WiFi, Email, SMS, Điện thoại, Vị trí, vCard). Tùy chọn: mức sửa lỗi L/M/Q/H, kích thước ảnh, viền trắng, màu mã/nền, ô bo tròn, logo giữa mã (tự dùng mức H). Xem trước trực tiếp, cảnh báo độ tương phản, tự giải mã lại ảnh vừa tạo để bảo đảm quét được. Lưu PNG/JPG/BMP/SVG, sao chép vào clipboard.
@@ -97,6 +109,11 @@
 - **Hồ sơ đã lưu:** liệt kê hồ sơ Windows đã lưu, checkbox "Hiện mật khẩu" (cần quyền Administrator - `WLAN_PROFILE_GET_PLAINTEXT_KEY`), sao chép mật khẩu, xuất/nhập XML, xóa hồ sơ.
 - **An toàn:** `WlanController` là lớp DUY NHẤT gọi WLAN API (cô lập Win32 như `InputController` của Auto Click). `WlanProfileXml` (dựng/phân tích XML hồ sơ) tách riêng, không phụ thuộc Win32 nên test được bằng `wifi_tests` không cần phần cứng.
 - **Giới hạn đã biết:** một số hằng số WLAN API (`WLAN_PROFILE_GET_PLAINTEXT_KEY`, cờ `WLAN_AVAILABLE_NETWORK_*`, DOT11_PHY_TYPE VHT/HE) không có trong header `wlanapi.h`/`windot11.h` của MinGW đang dùng (SDK cũ hơn) nên được `#define`/so khớp số nguyên thủ công theo tài liệu Microsoft - xem chú thích trong `WlanController.cpp`. WPA3-Enterprise/802.1X không hỗ trợ kết nối nhanh (cần chứng chỉ).
+- **Đã sửa lỗi UI thật (rà soát toàn bộ 5 tính năng):** checkbox "Hiện mật khẩu đã lưu (cần quyền
+  Administrator)" ở tab Hồ sơ đã lưu từng chung 1 hàng ngang với 5 nút (Kết nối/Sao chép/Xuất/Nhập/Xóa)
+  - ở độ rộng cửa sổ bình thường không đủ chỗ, `QCheckBox` không tự rút gọn chữ nên bị co nhỏ hơn chữ
+  cần thiết, hiển thị cắt cụt giữa chừng ("...cần quyền Administrat"). Đã tách checkbox ra một hàng
+  riêng phía trên hàng nút.
 
 ## 4d. Đo tốc độ mạng
 - Tab thứ 3 trong WiFi Connection. Đo ping (8 mẫu, tuần tự), jitter (độ lệch trung bình giữa các mẫu liên tiếp), tốc độ tải xuống, tốc độ tải lên - qua HTTPS tới endpoint đo tốc độ công khai của Cloudflare (`speed.cloudflare.com/__down`, `/__up`, giống hệt backend mà speed.cloudflare.com dùng, không cần khóa API).
@@ -324,6 +341,7 @@ Mỗi lần sửa code: commit riêng với message mô tả rõ, và cập nh�
 | 2026-10-07 | Disk Cleanup (phản hồi khi quét ổ lớn) | Người dùng báo quét ổ C: 120GB bị Windows đánh dấu "Không phản hồi". Đo thật: luồng giao diện không hề bị chặn (độ trễ lớn nhất 21ms trong lúc quét thật ~390.000 tệp/20s) - đổi `CleanupScanner`/`CleanupExecutor`/`LargeFileScanner`/`DuplicateFinder` sang `QThread::LowPriority`, tăng tần suất báo tiến độ (mỗi 200 tệp) kèm đường dẫn đang xử lý để người dùng thấy ứng dụng vẫn chạy (v1.5.1) |
 | 2026-10-07 | Disk Cleanup (sửa "Không phản hồi" THẬT ở Tìm tệp trùng lặp) | Người dùng báo lại: Tìm tệp trùng lặp trên ổ C: vẫn bị Task Manager đánh dấu "Không phản hồi" thật (không chỉ cảm giác). Nguyên nhân: `DuplicateFinder` cũ phát `groupFound` cho TỪNG nhóm một, không giới hạn - thư mục cache trình duyệt (nhiều hồ sơ Chrome, cỡ khối cố định) tạo ra hàng trăm/nghìn nhóm, dồn dập đủ để chiếm trọn một lượt xử lý sự kiện của Qt. Sửa: `DuplicateFinder` gom toàn bộ trong bộ nhớ, sắp xếp theo lãng phí giảm dần, cắt `setMaxGroups()` (mặc định 500), CHỈ phát `scanFinished` một lần (đúng mẫu `LargeFileScanner`); UI dựng cả cây 1 lần (`setUpdatesEnabled(false)`), nhóm mặc định thu gọn. Đo lại thật: quét ~20.300 tệp dữ liệu Chrome trong 60s liên tục, độ trễ lớn nhất chỉ 22ms. 167 test lõi (+11 test hồi quy giới hạn/sắp xếp nhóm) (v1.5.2) |
 | 2026-10-07 | Disk Cleanup (căn cột + sửa lỗi dọn dẹp 0x2) | Người dùng báo 2 lỗi kèm ảnh: (1) cột "Kích thước" ở Tìm tệp trùng lặp bị dạt giữa, thừa khoảng trắng - do `QTreeWidget` mặc định `stretchLastSection=true` đè lên cấu hình cột, đã tắt + căn phải chữ; (2) Dọn dẹp theo hạng mục báo lỗi "mã lỗi 0x2" (ERROR_FILE_NOT_FOUND) - do tệp tạm tự bị xóa giữa lúc quét và lúc bấm Dọn dẹp (bình thường với `%TEMP%`/cache), khiến `SHFileOperationW` báo thất bại cho CẢ LÔ dù phần lớn tệp vẫn xóa được. Sửa `CleanupExecutor`: lọc trước tệp đã tự mất (coi là đã đạt mục tiêu), kiểm tra lại THẬT sau khi xóa để báo freedBytes/deletedCount chính xác, chỉ thất bại khi không giải phóng được gì; `RecycleBinOps` dịch mã lỗi Win32 phổ biến sang tiếng Việt. 176 test lõi (+9 hồi quy mô phỏng tệp tự mất) (v1.5.3) |
+| 2026-10-07 | Rà soát toàn bộ 5 tính năng (UI + hoạt động) | Theo yêu cầu người dùng: rà kỹ Auto Click/Connect Together/QR Tools/WiFi Connection/Disk Cleanup - build lại + chạy toàn bộ 895 kiểm tra tự động (đều qua), chụp ảnh từng màn hình để soát giao diện. Phát hiện/sửa: (1) **Auto Click toàn bộ panel/nhãn/HUD từng thuần tiếng Anh** ("ACTION CHAINS", "Type:", "Wait Before:", HUD "Auto Click Running"...) trong khi phần còn lại ứng dụng toàn tiếng Việt - dịch hết, đã xác nhận an toàn (combo box đọc/ghi theo chỉ số, `Action::typeName()` độc lập hoàn toàn với khóa JSON của `ActionSerializer`); phát hiện thêm 1 lỗi tự gây ra khi dịch (nút "Nhân bản" bị cắt chữ do panel hẹp) và sửa luôn (xếp dọc thay vì ngang). (2) WiFi: checkbox "Hiện mật khẩu đã lưu" bị cắt chữ do chung hàng với 5 nút - tách hàng riêng. (3) **Xác nhận dứt điểm** nghi vấn hiển thị cũ ở tab Ghép đôi (Connect Together, nêu từ v1.2.0): dựng cửa sổ hiện THẬT trên màn hình (không `WA_DontShowOnScreen`) rồi chụp - chữ hiển thị hoàn toàn bình thường, xác nhận đó chỉ là hiện tượng chụp ảnh widget ẩn, không phải lỗi code. |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `

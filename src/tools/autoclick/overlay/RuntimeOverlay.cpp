@@ -19,9 +19,9 @@ RuntimeOverlay::RuntimeOverlay(QWidget* parent)
 
     // Header layout
     auto* headerLayout = new QHBoxLayout();
-    m_chainLabel = new QLabel("Auto Click Running", this);
+    m_chainLabel = new QLabel("Auto Click đang chạy", this);
     m_chainLabel->setStyleSheet("color: #0969da; font-weight: bold; font-size: 13px;");
-    m_roundLabel = new QLabel("Round 1/1", this);
+    m_roundLabel = new QLabel("Vòng 1/1", this);
     m_roundLabel->setStyleSheet("color: #57606a; font-size: 11px; font-weight: 500;");
     headerLayout->addWidget(m_chainLabel);
     headerLayout->addStretch();
@@ -29,18 +29,18 @@ RuntimeOverlay::RuntimeOverlay(QWidget* parent)
     mainLayout->addLayout(headerLayout);
 
     // Action info
-    m_actionLabel = new QLabel("Action: Ready", this);
+    m_actionLabel = new QLabel("Hành động: Sẵn sàng", this);
     m_actionLabel->setStyleSheet("color: #1f2328; font-size: 12px; font-weight: bold;");
     m_actionLabel->setWordWrap(true);
     mainLayout->addWidget(m_actionLabel);
 
-    m_nextActionLabel = new QLabel("Next: -", this);
+    m_nextActionLabel = new QLabel("Tiếp theo: -", this);
     m_nextActionLabel->setStyleSheet("color: #57606a; font-size: 11px;");
     m_nextActionLabel->setWordWrap(true);
     mainLayout->addWidget(m_nextActionLabel);
 
     // Countdown & Progress
-    m_countdownLabel = new QLabel("Countdown: 0.0s", this);
+    m_countdownLabel = new QLabel("Đếm ngược: 0.0s", this);
     m_countdownLabel->setStyleSheet("color: #9a6700; font-size: 12px; font-family: monospace; font-weight: 600;");
     mainLayout->addWidget(m_countdownLabel);
 
@@ -80,7 +80,7 @@ RuntimeOverlay::RuntimeOverlay(QWidget* parent)
 void RuntimeOverlay::setRoundInfo(int currentRound, int totalRounds)
 {
     QString totalStr = (totalRounds > 0) ? QString::number(totalRounds) : "∞";
-    m_roundLabel->setText(QString("Round %1 / %2").arg(currentRound).arg(totalStr));
+    m_roundLabel->setText(QString("Vòng %1 / %2").arg(currentRound).arg(totalStr));
 }
 
 void RuntimeOverlay::setActionInfo(int actionIndex, int totalActions, const QString& currentDesc, const QString& nextDesc, int targetX, int targetY)
@@ -88,8 +88,8 @@ void RuntimeOverlay::setActionInfo(int actionIndex, int totalActions, const QStr
     m_totalCountdownMs = 0;
     m_lastRemainingMs = 0;
     m_progressBar->setValue(0);
-    m_actionLabel->setText(QString("Action %1/%2: %3").arg(actionIndex).arg(totalActions).arg(currentDesc));
-    m_nextActionLabel->setText(QString("Next: %1").arg(nextDesc));
+    m_actionLabel->setText(QString("Hành động %1/%2: %3").arg(actionIndex).arg(totalActions).arg(currentDesc));
+    m_nextActionLabel->setText(QString("Tiếp theo: %1").arg(nextDesc));
 
     updateOverlayPosition(targetX, targetY);
 }

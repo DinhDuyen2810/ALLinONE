@@ -124,7 +124,7 @@ bool ActionSerializer::fromJsonString(const QString& jsonStr, std::vector<Action
         QJsonObject chainObj = chainVal.toObject();
         ActionChain chain;
         chain.id = chainObj["id"].toString().toStdString();
-        chain.name = chainObj["name"].toString("New Chain").toStdString();
+        chain.name = chainObj["name"].toString("Chain Mới").toStdString();
         chain.description = chainObj["description"].toString().toStdString();
         chain.enabled = chainObj["enabled"].toBool(true);
         chain.repeatCount = chainObj["repeatCount"].toInt(1);

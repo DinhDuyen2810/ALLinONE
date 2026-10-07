@@ -5,41 +5,44 @@ QString Action::typeName() const
 {
     switch (type)
     {
-        case ActionType::MouseClick: return "Mouse Click";
-        case ActionType::MouseDrag:  return "Mouse Drag";
-        case ActionType::MouseHold:  return "Mouse Hold";
-        case ActionType::TypeText:   return "Type Text";
-        case ActionType::Hotkey:     return "Hotkey";
-        case ActionType::KeyPress:   return "Key Press";
-        case ActionType::Scroll:     return "Scroll";
+        case ActionType::MouseClick: return "Click chuột";
+        case ActionType::MouseDrag:  return "Kéo chuột";
+        case ActionType::MouseHold:  return "Giữ chuột";
+        case ActionType::TypeText:   return "Gõ văn bản";
+        case ActionType::Hotkey:     return "Phím tắt";
+        case ActionType::KeyPress:   return "Nhấn phím";
+        case ActionType::Scroll:     return "Cuộn";
     }
-    return "Unknown";
+    return "Không rõ";
 }
 
 QString Action::description() const
 {
+    // Chỉ dùng để HIỂN THỊ trong cột "Mô tả" - độc lập hoàn toàn với actionTypeToString() của
+    // ActionSerializer (dùng khóa PascalCase riêng để lưu JSON), nên đổi chữ ở đây không ảnh hưởng gì
+    // tới các hồ sơ đã lưu trước đó.
     auto btnStr = [](MouseButtonType btn) -> QString {
         switch (btn) {
-            case MouseButtonType::Left:   return "Left";
-            case MouseButtonType::Right:  return "Right";
-            case MouseButtonType::Middle: return "Middle";
+            case MouseButtonType::Left:   return "Trái";
+            case MouseButtonType::Right:  return "Phải";
+            case MouseButtonType::Middle: return "Giữa";
         }
-        return "Left";
+        return "Trái";
     };
 
     switch (type)
     {
         case ActionType::MouseClick:
-            return QString("Click %1 at (%2, %3)").arg(btnStr(mouseButton)).arg(x).arg(y);
+            return QString("Click %1 tại (%2, %3)").arg(btnStr(mouseButton)).arg(x).arg(y);
 
         case ActionType::MouseDrag:
-            return QString("Drag (%1, %2) -> (%3, %4) [%5ms]").arg(startX).arg(startY).arg(endX).arg(endY).arg(duration.count());
+            return QString("Kéo (%1, %2) → (%3, %4) [%5ms]").arg(startX).arg(startY).arg(endX).arg(endY).arg(duration.count());
 
         case ActionType::MouseHold:
-            return QString("Hold %1 at (%2, %3) for %4ms").arg(btnStr(mouseButton)).arg(x).arg(y).arg(duration.count());
+            return QString("Giữ %1 tại (%2, %3) trong %4ms").arg(btnStr(mouseButton)).arg(x).arg(y).arg(duration.count());
 
         case ActionType::TypeText:
-            return QString("Type \"%1\" (%2)").arg(QString::fromStdString(text)).arg(textMode == TextTypeMode::Instant ? "Instant" : "Char-by-char");
+            return QString("Gõ \"%1\" (%2)").arg(QString::fromStdString(text)).arg(textMode == TextTypeMode::Instant ? "tức thì" : "từng ký tự");
 
         case ActionType::Hotkey:
         {
@@ -48,24 +51,24 @@ QString Action::description() const
             if (modAlt)   mods << "Alt";
             if (modShift) mods << "Shift";
             if (modWin)   mods << "Win";
-            mods << QString::fromStdString(keyName.empty() ? "Key" : keyName);
-            return QString("Hotkey %1").arg(mods.join(" + "));
+            mods << QString::fromStdString(keyName.empty() ? "Phím" : keyName);
+            return QString("Phím tắt %1").arg(mods.join(" + "));
         }
 
         case ActionType::KeyPress:
-            return QString("Press %1").arg(QString::fromStdString(keyName.empty() ? "Key" : keyName));
+            return QString("Nhấn %1").arg(QString::fromStdString(keyName.empty() ? "Phím" : keyName));
 
         case ActionType::Scroll:
         {
             QString dir;
             switch (scrollDirection) {
-                case ScrollDirection::Down:  dir = "Down"; break;
-                case ScrollDirection::Up:    dir = "Up"; break;
-                case ScrollDirection::Left:  dir = "Left"; break;
-                case ScrollDirection::Right: dir = "Right"; break;
+                case ScrollDirection::Down:  dir = "xuống"; break;
+                case ScrollDirection::Up:    dir = "lên"; break;
+                case ScrollDirection::Left:  dir = "trái"; break;
+                case ScrollDirection::Right: dir = "phải"; break;
             }
-            return QString("Scroll %1 by %2").arg(dir).arg(scrollAmount);
+            return QString("Cuộn %1, %2 bước").arg(dir).arg(scrollAmount);
         }
     }
-    return "Action";
+    return "Hành động";
 }

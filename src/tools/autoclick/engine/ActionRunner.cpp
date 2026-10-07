@@ -194,7 +194,7 @@ void ActionRunner::run()
             // 1. Wait Before
             if (act.waitBefore.count() > 0)
             {
-                if (!sleepWithCountdown(act.waitBefore, "Wait Before"))
+                if (!sleepWithCountdown(act.waitBefore, "Chờ trước"))
                     break;
             }
 
@@ -207,7 +207,7 @@ void ActionRunner::run()
             // 3. Wait After
             if (act.waitAfter.count() > 0)
             {
-                if (!sleepWithCountdown(act.waitAfter, "Wait After"))
+                if (!sleepWithCountdown(act.waitAfter, "Chờ sau"))
                     break;
             }
 
