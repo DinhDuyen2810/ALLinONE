@@ -2,6 +2,7 @@
 #include "storage/ActionSerializer.h"
 #include "core/Logger.h"
 
+#include <algorithm>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QFileDialog>
@@ -31,6 +32,8 @@ AutoClickWindow::AutoClickWindow(QWidget* parent)
     // Capture signals
     connect(m_actionEditorWidget, &ActionEditorWidget::captureRequested, this, &AutoClickWindow::onCaptureRequested);
     connect(m_mouseCapture, &MouseCapture::pointCaptured, m_actionEditorWidget, &ActionEditorWidget::onPositionCaptured);
+    connect(m_actionEditorWidget, &ActionEditorWidget::dragGestureCaptureRequested, m_mouseCapture, &MouseCapture::startDragGestureCapture);
+    connect(m_mouseCapture, &MouseCapture::dragGestureCaptured, m_actionEditorWidget, &ActionEditorWidget::onDragGestureCaptured);
 
     loadDefaultProfile();
 }
@@ -134,9 +137,11 @@ void AutoClickWindow::setupUi()
     m_splitter->addWidget(m_chainListWidget);
     m_splitter->addWidget(m_actionListWidget);
     m_splitter->addWidget(m_actionEditorWidget);
+    // Danh sách hành động rộng hơn, Cài đặt hẹp hơn một chút - cột Mô tả trước đây bị cắt cụt quá sớm
+    // ("Clic...", "Gõ ...") do panel Cài đặt chiếm quá nhiều chỗ so với nhu cầu thực tế của nó.
     m_splitter->setStretchFactor(0, 2); // 20%
-    m_splitter->setStretchFactor(1, 5); // 50%
-    m_splitter->setStretchFactor(2, 3); // 30%
+    m_splitter->setStretchFactor(1, 6); // 60%
+    m_splitter->setStretchFactor(2, 2); // 20%
     mainLayout->addWidget(m_splitter, 1);
 
     // Wire Chain signals
@@ -153,9 +158,9 @@ void AutoClickWindow::setupUi()
     connect(m_actionListWidget, &ActionListWidget::editActionClicked, this, &AutoClickWindow::onEditAction);
     connect(m_actionListWidget, &ActionListWidget::cloneActionClicked, this, &AutoClickWindow::onCloneAction);
     connect(m_actionListWidget, &ActionListWidget::deleteActionClicked, this, &AutoClickWindow::onDeleteAction);
-    connect(m_actionListWidget, &ActionListWidget::insertActionClicked, this, &AutoClickWindow::onInsertAction);
-    connect(m_actionListWidget, &ActionListWidget::moveActionClicked, this, &AutoClickWindow::onMoveAction);
+    connect(m_actionListWidget, &ActionListWidget::actionMoved, this, &AutoClickWindow::onActionMoved);
     connect(m_actionEditorWidget, &ActionEditorWidget::actionSaved, this, &AutoClickWindow::onActionSaved);
+    connect(m_actionEditorWidget, &ActionEditorWidget::dirtyChanged, this, &AutoClickWindow::onEditorDirtyChanged);
 
     // 3. Bottom Control Bar
     auto* bottomBar = new QHBoxLayout();
@@ -192,6 +197,10 @@ void AutoClickWindow::setupUi()
     m_repeatSpin->setValue(1);
     m_repeatSpin->setFixedWidth(84);
     m_repeatSpin->setFixedHeight(32);
+    // Chỉ cho nhập số, bỏ nút mũi tên tăng/giảm theo yêu cầu - gõ số trực tiếp nhanh hơn khi cần số lần
+    // lặp lớn (vd vài trăm/nghìn lần).
+    m_repeatSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
+    m_repeatSpin->setAlignment(Qt::AlignCenter);
     m_repeatSpin->setStyleSheet("background-color: #ffffff; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 4px; font-weight: bold;");
 
     m_infiniteCheck = new QCheckBox("Vô hạn (Infinite)", this);
@@ -456,34 +465,31 @@ void AutoClickWindow::onDeleteAction(int index)
     }
 }
 
-void AutoClickWindow::onInsertAction(int index, bool before)
+void AutoClickWindow::onEditorDirtyChanged(bool dirty)
 {
-    ActionChain* chain = currentChain();
-    if (!chain) return;
-
-    Action newAct;
-    int insertPos = before ? index : index + 1;
-    if (insertPos < 0) insertPos = 0;
-    if (insertPos > static_cast<int>(chain->actions.size())) insertPos = static_cast<int>(chain->actions.size());
-
-    chain->actions.insert(chain->actions.begin() + insertPos, newAct);
-    m_actionListWidget->setActions(chain->actions);
-    m_actionListWidget->setSelectedActionIndex(insertPos);
-    m_actionEditorWidget->setAction(newAct, insertPos);
+    m_actionListWidget->setRowDirty(m_actionListWidget->selectedActionIndex(), dirty);
 }
 
-void AutoClickWindow::onMoveAction(int index, int direction)
+void AutoClickWindow::onActionMoved(int from, int to)
 {
     ActionChain* chain = currentChain();
     if (!chain) return;
 
-    int newIdx = index + direction;
-    if (newIdx >= 0 && newIdx < static_cast<int>(chain->actions.size()))
-    {
-        std::swap(chain->actions[index], chain->actions[newIdx]);
-        m_actionListWidget->setActions(chain->actions);
-        m_actionListWidget->setSelectedActionIndex(newIdx);
-    }
+    const int count = static_cast<int>(chain->actions.size());
+    if (from < 0 || from >= count || to < 0 || to >= count || from == to)
+        return;
+
+    // Di chuyển đúng MỘT phần tử từ chỉ số from sang đúng chỉ số to (giữ nguyên thứ tự tương đối của
+    // mọi phần tử còn lại) - cách chuẩn dùng std::rotate, tránh tính sai lệch chỉ số dễ gặp nếu tự
+    // erase() rồi insert() thủ công (chỉ số to đổi ý nghĩa ngay sau khi erase phần tử phía trước nó).
+    auto& actions = chain->actions;
+    if (from < to)
+        std::rotate(actions.begin() + from, actions.begin() + from + 1, actions.begin() + to + 1);
+    else
+        std::rotate(actions.begin() + to, actions.begin() + from, actions.begin() + from + 1);
+
+    m_actionListWidget->setActions(chain->actions);
+    m_actionListWidget->setSelectedActionIndex(to);
 }
 
 void AutoClickWindow::onActionSaved(const Action& action, int actionIndex)
@@ -543,6 +549,10 @@ void AutoClickWindow::startChain(int index)
     m_stopButton->setEnabled(true);
     m_statusLabel->setText("Trạng thái: Đang thực thi...");
 
+    // Thu nhỏ cửa sổ quản lý TRƯỚC khi bắt đầu thao tác thật - tránh chính cửa sổ này che/nhận nhầm
+    // click/gõ phím của chuỗi hành động (vd nếu vị trí click trùng với cửa sổ quản lý). HUD (RuntimeOverlay)
+    // vẫn hiện riêng để theo dõi tiến trình.
+    showMinimized();
     m_overlay->show();
 
     m_runner->setChain(*chain);

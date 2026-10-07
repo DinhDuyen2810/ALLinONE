@@ -1,8 +1,17 @@
 #include "Logger.h"
 #include <QDir>
 #include <QDateTime>
+#include <QFileInfo>
 #include <QTextStream>
 #include <QDebug>
+
+namespace
+{
+// Phát hiện THẬT khi rà soát độ ổn định chạy dài (Auto Click 24 giờ liên tục): mỗi hành động ghi ít
+// nhất 1 dòng log, chạy nhiều giờ không giới hạn kích thước có thể khiến tệp log phình to - đặt mức
+// trần hợp lý (không ảnh hưởng chẩn đoán sự cố bình thường, vài MB là quá đủ cho một phiên làm việc).
+constexpr qint64 kMaxLogFileBytes = 10 * 1024 * 1024; // 10 MB
+} // namespace
 
 Logger& Logger::instance()
 {
@@ -10,13 +19,26 @@ Logger& Logger::instance()
     return s_instance;
 }
 
+void Logger::rotateIfTooLarge(QFile& file)
+{
+    QFileInfo info(file.fileName());
+    if (info.exists() && info.size() > kMaxLogFileBytes)
+    {
+        const QString oldPath = file.fileName() + ".1";
+        QFile::remove(oldPath);      // bỏ bản ".1" cũ nếu có (chỉ giữ 1 bản sao lưu, đủ cho nhu cầu xem lại gần nhất)
+        QFile::rename(file.fileName(), oldPath);
+    }
+}
+
 Logger::Logger()
 {
     ensureLogDir();
     m_appLogFile.setFileName("logs/app.log");
+    rotateIfTooLarge(m_appLogFile);
     m_appLogFile.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text);
 
     m_autoclickLogFile.setFileName("logs/autoclick.log");
+    rotateIfTooLarge(m_autoclickLogFile);
     m_autoclickLogFile.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text);
 }
 
@@ -61,21 +83,47 @@ void Logger::log(LogLevel level, const QString& module, const QString& message)
     // Print to debug console
     qDebug().noquote() << formatted.trimmed();
 
-    // Write to app.log
-    if (m_appLogFile.isOpen())
-    {
-        QTextStream stream(&m_appLogFile);
-        stream << formatted;
-        m_appLogFile.flush();
-    }
+    // Phát hiện THẬT khi rà soát độ ổn định chạy dài: flush() ép ghi đĩa thật ngay lập tức, tốn chi phí
+    // I/O thật mỗi lần gọi. Một phiên Auto Click chạy 24 giờ với hành động lặp lại nhanh (vd mỗi 1-2
+    // giây) có thể ghi log hàng chục nghìn lần - flush() đồng bộ mỗi lần như cũ có thể làm chậm/giật
+    // thời gian của chính luồng thực thi hành động (ActionRunner gọi Logger trực tiếp, không qua luồng
+    // riêng). Chỉ flush NGAY với Warning/Error (hiếm, quan trọng để chẩn đoán sự cố không bị mất nếu
+    // crash đột ngột) - còn Info/Debug chỉ flush định kỳ (mỗi 20 dòng), vẫn đủ mới để xem log gần thời
+    // gian thực khi cần, không ép ghi đĩa mỗi dòng.
+    const bool forceFlush = (level == LogLevel::Warning || level == LogLevel::Error);
+    ++m_callsSinceFlush;
+    const bool doFlush = forceFlush || m_callsSinceFlush >= 20;
+    if (doFlush)
+        m_callsSinceFlush = 0;
 
-    // If autoclick module, write to autoclick.log too
-    if (module.compare("AutoClick", Qt::CaseInsensitive) == 0 && m_autoclickLogFile.isOpen())
-    {
-        QTextStream stream(&m_autoclickLogFile);
+    // Xoay vòng tệp log nếu đã quá lớn - kiểm tra ĐỊNH KỲ (mỗi 500 dòng, không phải mỗi dòng, tránh
+    // thêm một lệnh gọi hệ thống stat() mỗi lần ghi) để một phiên chạy rất dài (không khởi động lại ứng
+    // dụng) vẫn được xoay vòng giữa chừng, không chỉ lúc khởi động Logger.
+    ++m_callsSinceRotateCheck;
+    const bool checkRotate = m_callsSinceRotateCheck >= 500;
+    if (checkRotate)
+        m_callsSinceRotateCheck = 0;
+
+    auto writeTo = [&](QFile& file) {
+        if (!file.isOpen())
+            return;
+
+        if (checkRotate && file.size() > kMaxLogFileBytes)
+        {
+            file.close();
+            rotateIfTooLarge(file);
+            file.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text);
+        }
+
+        QTextStream stream(&file);
         stream << formatted;
-        m_autoclickLogFile.flush();
-    }
+        if (doFlush)
+            file.flush();
+    };
+
+    writeTo(m_appLogFile);
+    if (module.compare("AutoClick", Qt::CaseInsensitive) == 0)
+        writeTo(m_autoclickLogFile);
 }
 
 void Logger::info(const QString& module, const QString& message)

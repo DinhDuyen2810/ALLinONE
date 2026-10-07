@@ -9,6 +9,9 @@
 #include <QStackedWidget>
 #include "../model/Action.h"
 #include "../capture/MouseCapture.h"
+#include "../capture/HotkeyCapture.h"
+
+class QLabel;
 
 class ActionEditorWidget : public QWidget
 {
@@ -24,16 +27,23 @@ public:
 signals:
     void actionSaved(const Action& action, int actionIndex);
     void captureRequested(int targetField); // 0: single pos, 1: drag start, 2: drag end
+    void dragGestureCaptureRequested(); // bắt trọn thao tác kéo thật (nhấn-kéo-thả), xem DragGestureCapture.h
+    /// Phát khi có thay đổi CHƯA LƯU (dirty=true) hoặc vừa lưu/nạp xong (dirty=false) - AutoClickWindow
+    /// dùng để hiện dấu "*" ở dòng tương ứng trong ActionListWidget.
+    void dirtyChanged(bool dirty);
 
 public slots:
     void onPositionCaptured(int x, int y);
+    void onDragGestureCaptured(int startX, int startY, int endX, int endY);
 
 private slots:
     void onTypeChanged(int index);
     void onApplyClicked();
+    void markDirty();
 
 private:
     void setupUi();
+    void connectDirtyTracking();
     QWidget* createClickPage();
     QWidget* createDragPage();
     QWidget* createHoldPage();
@@ -44,6 +54,8 @@ private:
 
     int m_currentIndex{-1};
     int m_capturingField{0}; // 0: X,Y; 1: startX,startY; 2: endX,endY
+    bool m_loadingAction{false}; // true trong lúc setAction() đang nạp giá trị - tránh markDirty() giả
+    bool m_dirty{false};
 
     QComboBox* m_typeCombo;
     QStackedWidget* m_pagesStack;
@@ -66,6 +78,7 @@ private:
     QSpinBox* m_dragEndXSpin;
     QSpinBox* m_dragEndYSpin;
     QPushButton* m_captureDragEndBtn;
+    QPushButton* m_captureDragGestureBtn;
 
     // Hold widgets
     QComboBox* m_holdButtonCombo;
@@ -83,6 +96,9 @@ private:
     QCheckBox* m_shiftCheck;
     QCheckBox* m_winCheck;
     QComboBox* m_hotkeyKeyCombo;
+    QPushButton* m_captureHotkeyBtn;
+    QLabel* m_hotkeyCaptureStatus;
+    HotkeyCapture* m_hotkeyCapture{nullptr};
 
     // Key Press widgets
     QComboBox* m_keyPressCombo;

@@ -27,8 +27,11 @@ signals:
 
 private slots:
     void onCustomContextMenuRequested(const QPoint& pos);
+    void onItemDoubleClicked(QListWidgetItem* item);
 
 private:
+    void promptRename(int row);
+
     QListWidget* m_listWidget;
     QPushButton* m_addButton;
     QPushButton* m_cloneButton;

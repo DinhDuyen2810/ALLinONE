@@ -39,8 +39,37 @@ static const KeyInfo KEY_LIST[] = {
 
 ActionEditorWidget::ActionEditorWidget(QWidget* parent)
     : QWidget(parent)
+    , m_hotkeyCapture(new HotkeyCapture(this))
 {
     setupUi();
+
+    connect(m_hotkeyCapture, &HotkeyCapture::hotkeyCaptured, this,
+            [this](bool ctrl, bool alt, bool shift, bool win, int vkCode) {
+        m_ctrlCheck->setChecked(ctrl);
+        m_altCheck->setChecked(alt);
+        m_shiftCheck->setChecked(shift);
+        m_winCheck->setChecked(win);
+
+        const int idx = m_hotkeyKeyCombo->findData(vkCode);
+        if (idx >= 0)
+        {
+            m_hotkeyKeyCombo->setCurrentIndex(idx);
+            m_hotkeyCaptureStatus->setText("✓ Đã bắt được tổ hợp phím.");
+        }
+        else
+        {
+            m_hotkeyCaptureStatus->setText(
+                QString("⚠ Đã bắt phím bổ trợ (Ctrl/Alt/Shift/Win) nhưng phím chính (mã %1) chưa có "
+                        "trong danh sách hỗ trợ - chọn phím thủ công ở dưới.").arg(vkCode));
+        }
+        m_captureHotkeyBtn->setText("🎯 Bắt tổ hợp phím");
+        m_captureHotkeyBtn->setEnabled(true);
+    });
+    connect(m_hotkeyCapture, &HotkeyCapture::captureCancelled, this, [this]() {
+        m_hotkeyCaptureStatus->setText("Đã hủy bắt tổ hợp phím.");
+        m_captureHotkeyBtn->setText("🎯 Bắt tổ hợp phím");
+        m_captureHotkeyBtn->setEnabled(true);
+    });
 }
 
 void ActionEditorWidget::setupUi()
@@ -147,6 +176,55 @@ void ActionEditorWidget::setupUi()
     );
     connect(m_applyButton, &QPushButton::clicked, this, &ActionEditorWidget::onApplyClicked);
     mainLayout->addWidget(m_applyButton);
+
+    connectDirtyTracking();
+}
+
+void ActionEditorWidget::connectDirtyTracking()
+{
+    // Theo yêu cầu người dùng: khi sửa một hành động mà chưa bấm "Lưu hành động (Apply)", dòng tương
+    // ứng trong danh sách phải hiện dấu "*" để biết còn thay đổi chưa lưu - nối TẤT CẢ điều khiển có
+    // thể sửa vào markDirty(). m_loadingAction chặn các lần gọi giả do chính setAction() tự đặt giá trị
+    // (setValue/setCurrentIndex cũng phát tín hiệu valueChanged/currentIndexChanged như người dùng gõ thật).
+    connect(m_typeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &ActionEditorWidget::markDirty);
+    connect(m_waitBeforeSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, &ActionEditorWidget::markDirty);
+    connect(m_waitAfterSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, &ActionEditorWidget::markDirty);
+    connect(m_durationSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, &ActionEditorWidget::markDirty);
+
+    connect(m_clickButtonCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &ActionEditorWidget::markDirty);
+    connect(m_clickXSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, &ActionEditorWidget::markDirty);
+    connect(m_clickYSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, &ActionEditorWidget::markDirty);
+
+    connect(m_dragStartXSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, &ActionEditorWidget::markDirty);
+    connect(m_dragStartYSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, &ActionEditorWidget::markDirty);
+    connect(m_dragEndXSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, &ActionEditorWidget::markDirty);
+    connect(m_dragEndYSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, &ActionEditorWidget::markDirty);
+
+    connect(m_holdButtonCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &ActionEditorWidget::markDirty);
+    connect(m_holdXSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, &ActionEditorWidget::markDirty);
+    connect(m_holdYSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, &ActionEditorWidget::markDirty);
+
+    connect(m_textEdit, &QLineEdit::textChanged, this, &ActionEditorWidget::markDirty);
+    connect(m_textModeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &ActionEditorWidget::markDirty);
+
+    connect(m_ctrlCheck, &QCheckBox::toggled, this, &ActionEditorWidget::markDirty);
+    connect(m_altCheck, &QCheckBox::toggled, this, &ActionEditorWidget::markDirty);
+    connect(m_shiftCheck, &QCheckBox::toggled, this, &ActionEditorWidget::markDirty);
+    connect(m_winCheck, &QCheckBox::toggled, this, &ActionEditorWidget::markDirty);
+    connect(m_hotkeyKeyCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &ActionEditorWidget::markDirty);
+
+    connect(m_keyPressCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &ActionEditorWidget::markDirty);
+
+    connect(m_scrollDirectionCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &ActionEditorWidget::markDirty);
+    connect(m_scrollAmountSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, &ActionEditorWidget::markDirty);
+}
+
+void ActionEditorWidget::markDirty()
+{
+    if (m_loadingAction || m_dirty)
+        return;
+    m_dirty = true;
+    emit dirtyChanged(true);
 }
 
 QWidget* ActionEditorWidget::createClickPage()
@@ -243,6 +321,19 @@ QWidget* ActionEditorWidget::createDragPage()
     endLayout->addWidget(m_dragEndYSpin);
     endLayout->addWidget(m_captureDragEndBtn);
     layout->addRow("Điểm cuối:", endLayout);
+
+    // Bắt TRỌN thao tác kéo thật (nhấn-kéo-thả) thay vì phải bắt riêng từng điểm đầu/cuối: ứng dụng tự
+    // ẩn đi, người dùng kéo chuột thật như bình thường (màn hình/ứng dụng phía dưới vẫn nhận được thao
+    // tác thật), thả ra là xong - ứng dụng tự điền cả 2 điểm rồi tự hiện lại.
+    m_captureDragGestureBtn = new QPushButton("🖐 Bắt thao tác kéo thật", w);
+    m_captureDragGestureBtn->setCursor(Qt::PointingHandCursor);
+    m_captureDragGestureBtn->setStyleSheet(
+        "QPushButton { background-color: #1f883d; color: white; border: none; border-radius: 8px; padding: 7px 12px; font-size: 11px; font-weight: bold; } "
+        "QPushButton:hover { background-color: #1a7f37; }");
+    connect(m_captureDragGestureBtn, &QPushButton::clicked, this, [this]() {
+        emit dragGestureCaptureRequested();
+    });
+    layout->addRow("", m_captureDragGestureBtn);
 
     return w;
 }
@@ -347,6 +438,25 @@ QWidget* ActionEditorWidget::createHotkeyPage()
     keyLayout->addWidget(m_hotkeyKeyCombo, 1);
     layout->addLayout(keyLayout);
 
+    // Bắt tổ hợp phím THẬT (vd Ctrl+Shift+S) thay vì phải tự tick từng ô - bấm nút rồi nhấn tổ hợp
+    // phím mong muốn một lần, ứng dụng tự điền đúng các ô bên trên. Checkbox vẫn độc lập với nhau nên
+    // tổ hợp 3 phím bổ trợ cùng lúc (Ctrl+Shift+Win+...) vẫn luôn được hỗ trợ dù bắt tay hay bắt THẬT.
+    m_captureHotkeyBtn = new QPushButton("🎯 Bắt tổ hợp phím", w);
+    m_captureHotkeyBtn->setCursor(Qt::PointingHandCursor);
+    m_captureHotkeyBtn->setStyleSheet("QPushButton { background-color: #0969da; color: white; border: none; border-radius: 8px; padding: 6px 12px; font-size: 11px; font-weight: bold; } QPushButton:hover { background-color: #0854b0; }");
+    connect(m_captureHotkeyBtn, &QPushButton::clicked, this, [this]() {
+        m_captureHotkeyBtn->setText("Đang chờ... nhấn tổ hợp phím (Esc để hủy)");
+        m_captureHotkeyBtn->setEnabled(false);
+        m_hotkeyCaptureStatus->setText("");
+        m_hotkeyCapture->startCapture();
+    });
+    layout->addWidget(m_captureHotkeyBtn);
+
+    m_hotkeyCaptureStatus = new QLabel(w);
+    m_hotkeyCaptureStatus->setWordWrap(true);
+    m_hotkeyCaptureStatus->setStyleSheet("color: #57606a; font-size: 11px;");
+    layout->addWidget(m_hotkeyCaptureStatus);
+
     return w;
 }
 
@@ -396,6 +506,7 @@ void ActionEditorWidget::onTypeChanged(int index)
 
 void ActionEditorWidget::setAction(const Action& action, int actionIndex)
 {
+    m_loadingAction = true; // chặn markDirty() trong lúc TỰ nạp giá trị dưới đây
     m_currentIndex = actionIndex;
     m_typeCombo->setCurrentIndex(static_cast<int>(action.type));
     m_pagesStack->setCurrentIndex(static_cast<int>(action.type));
@@ -433,6 +544,13 @@ void ActionEditorWidget::setAction(const Action& action, int actionIndex)
 
     m_scrollDirectionCombo->setCurrentIndex(static_cast<int>(action.scrollDirection));
     m_scrollAmountSpin->setValue(action.scrollAmount);
+
+    m_loadingAction = false;
+    if (m_dirty)
+    {
+        m_dirty = false;
+        emit dirtyChanged(false);
+    }
 }
 
 Action ActionEditorWidget::getAction() const
@@ -503,9 +621,22 @@ void ActionEditorWidget::onPositionCaptured(int x, int y)
     }
 }
 
+void ActionEditorWidget::onDragGestureCaptured(int startX, int startY, int endX, int endY)
+{
+    m_dragStartXSpin->setValue(startX);
+    m_dragStartYSpin->setValue(startY);
+    m_dragEndXSpin->setValue(endX);
+    m_dragEndYSpin->setValue(endY);
+}
+
 void ActionEditorWidget::onApplyClicked()
 {
     emit actionSaved(getAction(), m_currentIndex);
+    if (m_dirty)
+    {
+        m_dirty = false;
+        emit dirtyChanged(false);
+    }
 }
 
 void ActionEditorWidget::clear()

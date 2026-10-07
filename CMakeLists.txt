@@ -414,6 +414,10 @@ set(SOURCES
     src/tools/autoclick/capture/CoordinateOverlay.cpp
     src/tools/autoclick/capture/MouseCapture.h
     src/tools/autoclick/capture/MouseCapture.cpp
+    src/tools/autoclick/capture/HotkeyCapture.h
+    src/tools/autoclick/capture/HotkeyCapture.cpp
+    src/tools/autoclick/capture/DragGestureCapture.h
+    src/tools/autoclick/capture/DragGestureCapture.cpp
     src/tools/autoclick/overlay/RuntimeOverlay.h
     src/tools/autoclick/overlay/RuntimeOverlay.cpp
     src/tools/autoclick/widgets/ChainListWidget.h

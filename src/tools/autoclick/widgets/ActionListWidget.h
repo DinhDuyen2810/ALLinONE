@@ -16,6 +16,9 @@ public:
     void setActions(const std::vector<Action>& actions);
     int selectedActionIndex() const;
     void setSelectedActionIndex(int index);
+    /// Đánh dấu (hoặc bỏ đánh dấu) dòng đang có thay đổi CHƯA LƯU bằng dấu "*" ở cột số thứ tự - gọi
+    /// khi ActionEditorWidget phát hiện người dùng sửa một trường mà chưa bấm "Lưu hành động".
+    void setRowDirty(int row, bool dirty);
 
 signals:
     void actionSelectionChanged(int index);
@@ -23,8 +26,9 @@ signals:
     void editActionClicked(int index);
     void cloneActionClicked(int index);
     void deleteActionClicked(int index);
-    void insertActionClicked(int index, bool before);
-    void moveActionClicked(int index, int direction); // -1 up, +1 down
+    /// Người dùng kéo-thả hàng từ vị trí `from` sang `to` (đã là chỉ số SAU khi kéo - nơi nhận tự làm
+    /// phép hoán đổi/di chuyển trong dữ liệu gốc rồi gọi lại setActions()).
+    void actionMoved(int from, int to);
 
 private slots:
     void onCustomContextMenuRequested(const QPoint& pos);
@@ -33,9 +37,6 @@ private:
     QTableWidget* m_table;
     QPushButton* m_addButton;
     QPushButton* m_cloneButton;
-    QPushButton* m_insertBeforeBtn;
-    QPushButton* m_insertAfterBtn;
-    QPushButton* m_moveUpBtn;
-    QPushButton* m_moveDownBtn;
     QPushButton* m_deleteBtn;
+    int m_dirtyRow{-1};
 };

@@ -4,6 +4,43 @@
 #include <QLabel>
 #include <QHeaderView>
 #include <QMenu>
+#include <QDropEvent>
+#include <QMouseEvent>
+#include <QColor>
+#include <functional>
+
+namespace
+{
+/// QTableWidget con tự xử lý kéo-thả để đổi vị trí hàng. KHÔNG dùng cơ chế dropMimeData mặc định của
+/// QTableWidget cho việc này - đó là mô hình theo TỪNG Ô (cell), không theo HÀNG hoàn chỉnh, nên kéo-thả
+/// nhiều cột dễ làm xáo trộn/mất dữ liệu giữa các ô thay vì di chuyển trọn vẹn một hành động. Thay vào
+/// đó: tự bắt sự kiện thả, chỉ dùng nó để biết "từ hàng nào, tới hàng nào", rồi để nơi sở hữu dữ liệu
+/// thật (ActionListWidget -> AutoClickWindow) tự sắp xếp lại std::vector<Action> và vẽ lại toàn bộ bảng -
+/// không bao giờ để Qt tự ghép dữ liệu ô theo cơ chế mặc định của nó.
+class ReorderableTable : public QTableWidget
+{
+public:
+    using QTableWidget::QTableWidget;
+
+    std::function<void(int from, int to)> onRowMoved;
+
+protected:
+    void dropEvent(QDropEvent* event) override
+    {
+        const int fromRow = currentRow();
+        const QPoint pos = event->position().toPoint();
+        int toRow = rowAt(pos.y());
+        if (toRow < 0)
+            toRow = (pos.y() <= 0) ? 0 : (rowCount() - 1);
+
+        event->setDropAction(Qt::IgnoreAction); // không để Qt tự ghép dữ liệu ô mặc định
+        event->accept();
+
+        if (fromRow >= 0 && toRow >= 0 && fromRow != toRow && onRowMoved)
+            onRowMoved(fromRow, toRow);
+    }
+};
+} // namespace
 
 ActionListWidget::ActionListWidget(QWidget* parent)
     : QWidget(parent)
@@ -19,7 +56,12 @@ ActionListWidget::ActionListWidget(QWidget* parent)
     header->setStyleSheet("color: #0969da; font-size: 11px; font-weight: bold; letter-spacing: 1.5px; padding-left: 4px;");
     mainLayout->addWidget(header);
 
-    m_table = new QTableWidget(this);
+    auto* hint = new QLabel("Kéo-thả một hàng để đổi vị trí", this);
+    hint->setStyleSheet("color: #8c959f; font-size: 10px; padding-left: 4px;");
+    mainLayout->addWidget(hint);
+
+    auto* reorderableTable = new ReorderableTable(this);
+    m_table = reorderableTable;
     m_table->setColumnCount(6);
     m_table->setHorizontalHeaderLabels({"#", "Loại", "Mô tả", "Chờ trước", "Chờ sau", "Thời lượng"});
     m_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
@@ -35,9 +77,22 @@ ActionListWidget::ActionListWidget(QWidget* parent)
     m_table->setWordWrap(false);
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setSelectionMode(QAbstractItemView::SingleSelection);
+    // Thiếu dòng này là nguyên nhân lỗi giao diện thật đã gặp: double-click vào ô mở trình soạn
+    // thảo mặc định của Qt (QLineEdit trần, không theo style ứng dụng) đè lên nội dung ô - trông như
+    // một khối viên thuốc/kẻ lạ chồng lên chữ. Sửa hành động phải qua panel bên phải, không sửa trực
+    // tiếp trên bảng.
+    m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_table->setContextMenuPolicy(Qt::CustomContextMenu);
     m_table->verticalHeader()->setVisible(false);
     m_table->setShowGrid(false);
+
+    // Kéo-thả để đổi vị trí hành động thay cho nút Lên/Xuống trước đây.
+    m_table->setDragEnabled(true);
+    m_table->setAcceptDrops(true);
+    m_table->setDropIndicatorShown(true);
+    m_table->setDragDropMode(QAbstractItemView::InternalMove);
+    m_table->setDefaultDropAction(Qt::MoveAction);
+    reorderableTable->onRowMoved = [this](int from, int to) { emit actionMoved(from, to); };
 
     m_table->setStyleSheet(
         "QTableWidget { background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 12px; gridline-color: transparent; padding: 4px; }"
@@ -52,24 +107,17 @@ ActionListWidget::ActionListWidget(QWidget* parent)
     });
     connect(m_table, &QTableWidget::customContextMenuRequested, this, &ActionListWidget::onCustomContextMenuRequested);
 
-    // Toolbar buttons (2 rows to prevent horizontal squishing)
-    auto* btnLayout = new QVBoxLayout();
-    btnLayout->setSpacing(4);
+    // Chỉ còn 3 nút theo đúng yêu cầu: Thêm, Nhân bản, Xóa - "Chèn trước/sau" và "Lên/Xuống" trước đây
+    // được thay bằng kéo-thả trực tiếp trên danh sách, ít bước hơn và trực quan hơn.
+    auto* btnLayout = new QHBoxLayout();
+    btnLayout->setSpacing(6);
 
     m_addButton = new QPushButton("+ Thêm hành động", this);
     m_cloneButton = new QPushButton("Nhân bản", this);
-    m_insertBeforeBtn = new QPushButton("Trước", this);
-    m_insertAfterBtn = new QPushButton("Sau", this);
-    m_moveUpBtn = new QPushButton("▲ Lên", this);
-    m_moveDownBtn = new QPushButton("▼ Xuống", this);
     m_deleteBtn = new QPushButton("Xóa", this);
 
     m_addButton->setCursor(Qt::PointingHandCursor);
     m_cloneButton->setCursor(Qt::PointingHandCursor);
-    m_insertBeforeBtn->setCursor(Qt::PointingHandCursor);
-    m_insertAfterBtn->setCursor(Qt::PointingHandCursor);
-    m_moveUpBtn->setCursor(Qt::PointingHandCursor);
-    m_moveDownBtn->setCursor(Qt::PointingHandCursor);
     m_deleteBtn->setCursor(Qt::PointingHandCursor);
 
     QString btnStyle =
@@ -79,27 +127,11 @@ ActionListWidget::ActionListWidget(QWidget* parent)
 
     m_addButton->setStyleSheet(btnStyle);
     m_cloneButton->setStyleSheet(btnStyle);
-    m_insertBeforeBtn->setStyleSheet(btnStyle);
-    m_insertAfterBtn->setStyleSheet(btnStyle);
-    m_moveUpBtn->setStyleSheet(btnStyle);
-    m_moveDownBtn->setStyleSheet(btnStyle);
     m_deleteBtn->setStyleSheet(btnStyle);
 
-    auto* row1 = new QHBoxLayout();
-    row1->setSpacing(6);
-    row1->addWidget(m_addButton);
-    row1->addWidget(m_cloneButton);
-    row1->addWidget(m_insertBeforeBtn);
-    row1->addWidget(m_insertAfterBtn);
-
-    auto* row2 = new QHBoxLayout();
-    row2->setSpacing(6);
-    row2->addWidget(m_moveUpBtn);
-    row2->addWidget(m_moveDownBtn);
-    row2->addWidget(m_deleteBtn);
-
-    btnLayout->addLayout(row1);
-    btnLayout->addLayout(row2);
+    btnLayout->addWidget(m_addButton);
+    btnLayout->addWidget(m_cloneButton);
+    btnLayout->addWidget(m_deleteBtn);
     mainLayout->addLayout(btnLayout);
 
     connect(m_addButton, &QPushButton::clicked, this, &ActionListWidget::addActionClicked);
@@ -107,26 +139,6 @@ ActionListWidget::ActionListWidget(QWidget* parent)
     connect(m_cloneButton, &QPushButton::clicked, this, [this]() {
         int row = selectedActionIndex();
         if (row >= 0) emit cloneActionClicked(row);
-    });
-
-    connect(m_insertBeforeBtn, &QPushButton::clicked, this, [this]() {
-        int row = selectedActionIndex();
-        if (row >= 0) emit insertActionClicked(row, true);
-    });
-
-    connect(m_insertAfterBtn, &QPushButton::clicked, this, [this]() {
-        int row = selectedActionIndex();
-        if (row >= 0) emit insertActionClicked(row, false);
-    });
-
-    connect(m_moveUpBtn, &QPushButton::clicked, this, [this]() {
-        int row = selectedActionIndex();
-        if (row > 0) emit moveActionClicked(row, -1);
-    });
-
-    connect(m_moveDownBtn, &QPushButton::clicked, this, [this]() {
-        int row = selectedActionIndex();
-        if (row >= 0 && row < m_table->rowCount() - 1) emit moveActionClicked(row, 1);
     });
 
     connect(m_deleteBtn, &QPushButton::clicked, this, [this]() {
@@ -146,7 +158,12 @@ void ActionListWidget::setActions(const std::vector<Action>& actions)
         int row = m_table->rowCount();
         m_table->insertRow(row);
 
-        auto* itemIdx = new QTableWidgetItem(QString("%1").arg(i + 1, 2, 10, QChar('0')));
+        const bool dirty = (static_cast<int>(i) == m_dirtyRow);
+        QString idxText = QString("%1").arg(i + 1, 2, 10, QChar('0'));
+        if (dirty)
+            idxText += " *";
+
+        auto* itemIdx = new QTableWidgetItem(idxText);
         auto* itemType = new QTableWidgetItem(act.typeName());
         auto* itemDesc = new QTableWidgetItem(act.description());
         auto* itemBefore = new QTableWidgetItem(QString("%1 ms").arg(act.waitBefore.count()));
@@ -160,6 +177,11 @@ void ActionListWidget::setActions(const std::vector<Action>& actions)
         if (act.duration.count() > 0)
         {
             itemDur->setToolTip(QString("Thời lượng thao tác: %1 ms").arg(act.duration.count()));
+        }
+        if (dirty)
+        {
+            itemIdx->setToolTip("Có thay đổi CHƯA LƯU - bấm \"Lưu hành động (Apply)\" ở panel bên phải để lưu lại");
+            itemIdx->setForeground(QColor("#9a6700"));
         }
 
         itemIdx->setTextAlignment(Qt::AlignCenter);
@@ -199,6 +221,43 @@ void ActionListWidget::setSelectedActionIndex(int index)
     }
 }
 
+void ActionListWidget::setRowDirty(int row, bool dirty)
+{
+    const int newDirtyRow = dirty ? row : -1;
+    if (newDirtyRow == m_dirtyRow)
+        return;
+
+    const int oldDirtyRow = m_dirtyRow;
+    m_dirtyRow = newDirtyRow;
+
+    // Chỉ cập nhật lại CỘT SỐ của (tối đa) 2 hàng liên quan thay vì vẽ lại cả bảng - rẻ hơn nhiều vì
+    // onPositionCaptured/các trường trong ActionEditorWidget có thể gọi hàm này liên tục khi người dùng
+    // đang gõ/chỉnh từng ký tự.
+    auto refreshIndexCell = [this](int r) {
+        if (r < 0 || r >= m_table->rowCount())
+            return;
+        auto* item = m_table->item(r, 0);
+        if (!item)
+            return;
+        QString text = QString("%1").arg(r + 1, 2, 10, QChar('0'));
+        if (r == m_dirtyRow)
+        {
+            text += " *";
+            item->setToolTip("Có thay đổi CHƯA LƯU - bấm \"Lưu hành động (Apply)\" ở panel bên phải để lưu lại");
+            item->setForeground(QColor("#9a6700"));
+        }
+        else
+        {
+            item->setToolTip(QString());
+            item->setForeground(m_table->palette().text());
+        }
+        item->setText(text);
+    };
+
+    refreshIndexCell(oldDirtyRow);
+    refreshIndexCell(newDirtyRow);
+}
+
 void ActionListWidget::onCustomContextMenuRequested(const QPoint& pos)
 {
     int row = m_table->currentRow();
@@ -208,12 +267,6 @@ void ActionListWidget::onCustomContextMenuRequested(const QPoint& pos)
     QAction* editAct = menu.addAction("Sửa");
     QAction* cloneAct = menu.addAction("Nhân bản");
     menu.addSeparator();
-    QAction* insBeforeAct = menu.addAction("Chèn trước");
-    QAction* insAfterAct = menu.addAction("Chèn sau");
-    menu.addSeparator();
-    QAction* upAct = menu.addAction("Di chuyển lên");
-    QAction* downAct = menu.addAction("Di chuyển xuống");
-    menu.addSeparator();
     QAction* delAct = menu.addAction("Xóa");
 
     QAction* chosen = menu.exec(m_table->mapToGlobal(pos));
@@ -221,9 +274,5 @@ void ActionListWidget::onCustomContextMenuRequested(const QPoint& pos)
 
     if (chosen == editAct) emit editActionClicked(row);
     else if (chosen == cloneAct) emit cloneActionClicked(row);
-    else if (chosen == insBeforeAct) emit insertActionClicked(row, true);
-    else if (chosen == insAfterAct) emit insertActionClicked(row, false);
-    else if (chosen == upAct) { if (row > 0) emit moveActionClicked(row, -1); }
-    else if (chosen == downAct) { if (row < m_table->rowCount() - 1) emit moveActionClicked(row, 1); }
     else if (chosen == delAct) emit deleteActionClicked(row);
 }

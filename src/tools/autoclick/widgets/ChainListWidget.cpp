@@ -22,6 +22,10 @@ ChainListWidget::ChainListWidget(QWidget* parent)
 
     m_listWidget = new QListWidget(this);
     m_listWidget->setContextMenuPolicy(Qt::CustomContextMenu);
+    // Không dùng trình sửa tên mặc định của Qt (ô nhập trần không theo style ứng dụng, lại không đi
+    // qua renameChainClicked/cập nhật đúng dữ liệu) - double-click mở hộp thoại Đổi tên thật thay vào đó.
+    m_listWidget->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_listWidget->setToolTip("Nhấp đúp hoặc chuột phải để đổi tên");
     m_listWidget->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_listWidget->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     m_listWidget->setTextElideMode(Qt::ElideRight);
@@ -35,6 +39,7 @@ ChainListWidget::ChainListWidget(QWidget* parent)
 
     connect(m_listWidget, &QListWidget::currentRowChanged, this, &ChainListWidget::chainSelectionChanged);
     connect(m_listWidget, &QListWidget::customContextMenuRequested, this, &ChainListWidget::onCustomContextMenuRequested);
+    connect(m_listWidget, &QListWidget::itemDoubleClicked, this, &ChainListWidget::onItemDoubleClicked);
 
     // Xếp DỌC từng nút một (không xếp ngang): panel này khá hẹp (chỉ rộng tối thiểu 160px) - "Nhân bản"
     // dài hơn "Clone" tiếng Anh trước đây, 3 nút xếp ngang dễ bị bóp nhỏ hơn chữ cần thiết khiến chữ bị
@@ -139,16 +144,32 @@ void ChainListWidget::onCustomContextMenuRequested(const QPoint& pos)
     }
     else if (chosen == renameAction)
     {
-        bool ok = false;
-        QString oldText = m_listWidget->currentItem()->text().split(" (").first();
-        QString newName = QInputDialog::getText(this, "Đổi tên chuỗi", "Tên chuỗi mới:", QLineEdit::Normal, oldText, &ok);
-        if (ok && !newName.trimmed().isEmpty())
-        {
-            emit renameChainClicked(row, newName.trimmed());
-        }
+        promptRename(row);
     }
     else if (chosen == deleteAction)
     {
         emit deleteChainClicked(row);
+    }
+}
+
+void ChainListWidget::onItemDoubleClicked(QListWidgetItem* item)
+{
+    const int row = m_listWidget->row(item);
+    if (row >= 0)
+        promptRename(row);
+}
+
+void ChainListWidget::promptRename(int row)
+{
+    auto* item = m_listWidget->item(row);
+    if (!item)
+        return;
+
+    bool ok = false;
+    QString oldText = item->text().split(" (").first();
+    QString newName = QInputDialog::getText(this, "Đổi tên chuỗi", "Tên chuỗi mới:", QLineEdit::Normal, oldText, &ok);
+    if (ok && !newName.trimmed().isEmpty())
+    {
+        emit renameChainClicked(row, newName.trimmed());
     }
 }

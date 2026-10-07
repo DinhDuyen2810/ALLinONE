@@ -3,6 +3,8 @@
 #include <QObject>
 #include <QWidget>
 
+class DragGestureCapture;
+
 class MouseCapture : public QObject
 {
     Q_OBJECT
@@ -12,10 +14,17 @@ public:
 
     void startCapture();
 
+    /// Ẩn cửa sổ chính rồi chờ một thao tác KÉO CHUỘT THẬT (nhấn-kéo-thả) - khác startCapture() (chỉ
+    /// bắt 1 điểm bằng cú click): không chặn thao tác thật lên màn hình/ứng dụng phía dưới, chỉ quan
+    /// sát tọa độ nhấn xuống/thả ra. Xem DragGestureCapture.h.
+    void startDragGestureCapture();
+
 signals:
     void pointCaptured(int x, int y);
     void captureCancelled();
+    void dragGestureCaptured(int startX, int startY, int endX, int endY);
 
 private:
     QWidget* m_parentWindow;
+    DragGestureCapture* m_dragGestureCapture;
 };

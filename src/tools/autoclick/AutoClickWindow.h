@@ -39,9 +39,9 @@ private slots:
     void onEditAction(int index);
     void onCloneAction(int index);
     void onDeleteAction(int index);
-    void onInsertAction(int index, bool before);
-    void onMoveAction(int index, int direction);
+    void onActionMoved(int from, int to);
     void onActionSaved(const Action& action, int actionIndex);
+    void onEditorDirtyChanged(bool dirty);
 
     // Runner slots
     void onRunClicked();
