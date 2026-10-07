@@ -4,7 +4,7 @@
 > Tài liệu kiến trúc chi tiết và changelog tính năng nằm ở [README.md](README.md); đặc tả thiết kế ở [OneForAll_AutoClick_Design.md](OneForAll_AutoClick_Design.md).
 
 ## 1. Dự án là gì
-Ứng dụng desktop Windows (C++20, Qt 6.11 MinGW, CMake + Ninja) dạng launcher gồm 9 công cụ. Hiện **Auto Click**, **QR Tools**, **WiFi Connection**, **Connect Together** (tham khảo Mouse without Borders), **Disk Cleanup** (tham khảo CCleaner/BleachBit/Windows Disk Cleanup) và **Android Phone Control** (dựa trên scrcpy) hoàn chỉnh; 3 tool còn lại (Downloader, Security Gateway, VPN & Location) là `PlaceholderTool` (màn hình "đang phát triển").
+Ứng dụng desktop Windows (C++20, Qt 6.11 MinGW, CMake + Ninja) dạng launcher gồm 9 công cụ. Hiện **Auto Click**, **QR Tools**, **WiFi Connection**, **Connect Together** (tham khảo Mouse without Borders), **Disk Cleanup** (tham khảo CCleaner/BleachBit/Windows Disk Cleanup), **Android Phone Control** (dựa trên scrcpy) và **VPN & Location** (VPN gốc Windows + vị trí theo IP) hoàn chỉnh; 2 tool còn lại (Downloader, Security Gateway) là `PlaceholderTool` (màn hình "đang phát triển").
 
 ## 2. Luồng khởi động
 `main.cpp` đặt Per-Monitor DPI v2 → `QApplication` → `Logger` ghi `logs/app.log` → `MainWindow`.
@@ -79,9 +79,19 @@
 | `src/tools/android/DevicesTab.*` | Danh sách thiết bị, tùy chọn điều khiển (độ phân giải/bitrate/fps/ghi hình...), nút Điều khiển |
 | `src/tools/android/AndroidControlWindow.*` | Cửa sổ Android Phone Control |
 | `src/tools/android/AndroidControlTool.*` | `ITool` của Android Phone Control (một cửa sổ duy nhất) |
+| `src/core/WinElevation.*` | Kiểm tra/khởi chạy lại với quyền Administrator (Win32, dùng chung Disk Cleanup + VPN) |
+| `src/core/PowerShellRunner.*` | Chạy script PowerShell qua `-EncodedCommand` (Base64 UTF-16LE), trả stdout/stderr/mã lỗi (dùng chung) |
+| `src/tools/vpn/model/VpnProfile.h` | `VpnProfile`, `VpnTunnelType` (struct/enum thuần, không có trường mật khẩu) |
+| `src/tools/vpn/engine/VpnController.*` | Thêm/liệt kê/xóa hồ sơ VPN qua PowerShell (`Add`/`Get`/`Remove-VpnConnection`), lưu nhãn quốc gia riêng |
+| `src/tools/vpn/engine/VpnConnector.*` | Kết nối/ngắt kết nối VPN qua `rasdial.exe` trên QThread riêng (nhận username/password lúc chạy) |
+| `src/tools/vpn/engine/PublicIpChecker.*` | Tra cứu IP công khai + vị trí (quốc gia/thành phố) hiện tại qua `ipwho.is`, thuần Qt Network |
+| `src/tools/vpn/AddVpnProfileDialog.*` | Hộp thoại thêm hồ sơ VPN (tên/quốc gia/máy chủ/giao thức/tên đăng nhập) |
+| `src/tools/vpn/VpnTab.*` | Tab chính: vị trí hiện tại theo IP, bảng hồ sơ VPN, Kết nối/Ngắt kết nối |
+| `src/tools/vpn/VpnControlWindow.*` | Cửa sổ VPN & Location |
+| `src/tools/vpn/VpnControlTool.*` | `ITool` của VPN & Location (một cửa sổ duy nhất) |
 | `src/third_party/` | qrcodegen (MIT), quirc (ISC), xem `THIRD_PARTY.md` |
 | `vendor/scrcpy/` | scrcpy + adb đóng gói (Apache-2.0, KHÔNG commit Git) - xem `THIRD_PARTY.md` |
-| `tests/` | `qr_tests`/`qr_ui_tests`, `wifi_tests`/`wifi_ui_tests`, `connect_tests`/`connect_ui_tests` (506 + 2, ghép đôi 2 chiều thật qua TCP, ổn định qua 40+ lần chạy liên tiếp), `diskcleanup_tests`/`diskcleanup_ui_tests` (176 + 19 kiểm tra, có xóa file thật qua Thùng rác, liệt kê phân vùng thật), `android_tests`/`android_ui_tests` (45 + 7 kiểm tra, có gọi `adb devices` thật - chỉ đọc) |
+| `tests/` | `qr_tests`/`qr_ui_tests`, `wifi_tests`/`wifi_ui_tests`, `connect_tests`/`connect_ui_tests` (506 + 2, ghép đôi 2 chiều thật qua TCP, ổn định qua 40+ lần chạy liên tiếp), `diskcleanup_tests`/`diskcleanup_ui_tests` (176 + 19 kiểm tra, có xóa file thật qua Thùng rác, liệt kê phân vùng thật), `android_tests`/`android_ui_tests` (45 + 7 kiểm tra, có gọi `adb devices` thật - chỉ đọc), `vpn_tests`/`vpn_ui_tests` (41 + 6 kiểm tra, có gọi `Get-VpnConnection` thật - chỉ đọc) |
 | `assets/resources.qrc`, `icon/` | Icon nhúng vào exe |
 | `profiles/default.json` | Profile mặc định (chain mẫu) |
 | `build_app.bat`, `run_app.bat` | Build + đóng gói (`windeployqt`), chạy bản Release |
@@ -371,6 +381,76 @@ cần cài driver USB riêng của hãng). Người dùng cần tự cắm đi�
 (thay vì cửa sổ riêng của scrcpy) - cần kỹ thuật tái gán cửa sổ gốc Win32 (`SetParent`) khá tinh vi,
 không làm trong bản đầu để giữ độ tin cậy cao (cửa sổ riêng của scrcpy là triển khai đã kiểm chứng).
 
+## 4h. VPN & Location (đã hoàn thiện)
+Yêu cầu người dùng: "VPN và location có thể chuyển đổi IP qua nhiều quốc gia và đổi vị trí GPS trong 1
+quốc gia". Đã nghiên cứu qua tài liệu chính thức (Microsoft Learn, TechNet lưu trữ) trước khi quyết
+định kiến trúc cho cả 2 phần, thay vì đoán:
+
+**VPN (đổi IP qua nhiều quốc gia) - làm đầy đủ:**
+- `VpnController`: gọi PowerShell module `VpnClient` có sẵn của Windows - `Add-VpnConnection` (thêm hồ
+  sơ, mặc định per-user, KHÔNG cần quyền Administrator - khác hẳn `-AllUserConnection`),
+  `Get-VpnConnection` (liệt kê, chỉ đọc), `Remove-VpnConnection` (xóa). Nhãn quốc gia do người dùng tự
+  đặt lưu riêng (`profiles/vpn_profiles.json`) vì Windows không biết khái niệm "quốc gia" của một VPN.
+- `VpnConnector` (QThread riêng, tránh trùng tên với `QThread::finished` như `CleanupExecutor` trước đó -
+  đã đổi tên tín hiệu thành `operationFinished`): kết nối/ngắt kết nối qua `rasdial.exe` - cách duy nhất
+  xác nhận được truyền username+password trực tiếp cho `rasdial "tên" username password`;
+  `Connect-VpnConnection`/`Disconnect-VpnConnection` của PowerShell tồn tại nhưng không có tài liệu
+  chính thức và không nhận tham số thông tin đăng nhập.
+- **Không lưu mật khẩu trong hồ sơ** - `VpnProfile` không có trường password; `VpnTab::onConnectClicked()`
+  hỏi username+password qua hộp thoại (ô mật khẩu ẩn ký tự) mỗi lần bấm Kết nối.
+- Người dùng tự mang tài khoản VPN của mình (Mullvad/NordVPN/ProtonVPN/VPN cơ quan...) - ứng dụng không
+  cấp máy chủ VPN, chỉ là lớp quản lý/kết nối.
+
+**Location (đổi vị trí GPS trong 1 quốc gia) - CÓ CHỦ ĐÍCH KHÔNG LÀM, đã giải thích với người dùng:**
+API định vị thật của Windows (`Geolocator.DefaultGeoposition`, WinRT) bị khóa sau quyền năng "System
+location" hạn chế - CHỈ cấp cho app đóng gói MSIX đã qua xét duyệt/cấp phép đặc biệt của Microsoft Store.
+Một app Win32 không đóng gói như `OneForAll.exe` KHÔNG thể gọi được, dù chạy với quyền Administrator -
+đây là giới hạn kiến trúc của Windows, không phải thiếu quyền. Cách còn lại (ghi thẳng registry dịch vụ
+định vị) không có tài liệu chính thức của Microsoft, không thể tự kiểm chứng đúng/sai trong môi trường
+này, và rủi ro làm hỏng dịch vụ định vị thật của máy người dùng - **từ chối làm** vì không chấp nhận được.
+
+**Thay thế trung thực đã làm:** `PublicIpChecker` tra cứu quốc gia/thành phố suy ra từ địa chỉ IP công
+khai hiện tại qua `ipwho.is` (HTTPS, không cần khóa API) - đúng cơ chế mà hầu hết website/dịch vụ thật và
+cả sản phẩm VPN thương mại dùng để hiển thị "vị trí" sau khi đổi IP. Đổi sang VPN ở quốc gia khác thì vị
+trí hiển thị đổi theo THẬT (do đi qua IP máy chủ VPN), không phải số liệu giả lập.
+
+**Lỗi THẬT phát hiện và sửa qua kiểm tra trên Windows thật (không chỉ test nội dung script):**
+`buildAddConnectionScript()` từng gọi cứng `-AuthenticationMethod MSChapv2` cho MỌI loại tunnel. Thử
+thêm hồ sơ với `TunnelType=Ikev2` (lựa chọn mặc định/khuyến nghị của `AddVpnProfileDialog`) bị Windows từ
+chối thật: `"IKEv2 tunnel type only supports Eap and Machine certificate as authentication method."`.
+Sửa bằng `authMethodForTunnelType()`: `Ikev2` → `Eap` (Windows dùng EAP-MSCHAPv2 làm phương thức EAP mặc
+định cho VPN "Secured password", nên `rasdial` với username/password vẫn hoạt động bình thường); các
+loại còn lại (L2tp/Sstp/Pptp - nền PPP) và Automatic giữ `MSChapv2` như cũ. Xác nhận lại bằng cách chạy
+THẬT toàn bộ chuỗi Add→Get→Remove-VpnConnection cho **cả 5 loại tunnel** trên máy build (địa chỉ máy chủ
+giả `test.example.invalid`, không gọi `rasdial`/không thử kết nối thật) - tất cả 5 loại đều
+thêm/liệt kê/xóa thành công sau khi sửa.
+
+**Phát hiện thật khác trong lúc xây dựng:** dịch vụ tra IP công khai ban đầu chọn (`ipapi.co`) bị chặn
+429 (Too Many Requests) khi gọi tay nhiều lần liên tiếp - xác nhận độc lập bằng `curl` (không chỉ qua
+app) rằng đây là lỗi thật của dịch vụ. Thử 3 dịch vụ thay thế qua `curl`, chọn `ipwho.is` (trả đúng dữ
+liệu thật khớp `curl`, không giới hạn khi thử lại ngay).
+
+**Tái cấu trúc đi kèm:** tách `isElevated()`/`relaunchElevated()` và hàm chạy PowerShell qua
+`-EncodedCommand` ra khỏi `PartitionManager.cpp` (vốn tự chứa trùng lặp từ trước) thành
+`src/core/WinElevation.*`/`src/core/PowerShellRunner.*` dùng chung cho cả Disk Cleanup và VPN - giảm
+~130 dòng trùng lặp, API công khai của `PartitionManager` không đổi, 176/19 test Disk Cleanup vẫn pass
+nguyên vẹn sau khi tách.
+
+**Đã xong, đã test (41 kiểm tra lõi + 6 kiểm tra UI):**
+- `parseConnectionsJson`: dựng sẵn mẫu mảng/object đơn (PowerShell 5.1 trả object đơn khi chỉ có 1 kết
+  nối, không bọc mảng - lỗi thật từng gặp khi xây `PartitionManager`, chủ động test lại), rỗng, JSON hỏng.
+- Dựng script PowerShell: tên/đường dẫn được thoát dấu nháy đơn đúng, xác nhận KHÔNG có `-AllUserConnection`
+  (per-user, không cần Administrator), và **test hồi quy khóa đúng phương thức xác thực theo từng loại
+  tunnel** (Ikev2 → chứa `-AuthenticationMethod Eap`, không chứa `MSChapv2`; 4 loại còn lại → chứa
+  `MSChapv2`) - test này trước đây KHÔNG tồn tại nên không bắt được lỗi, đã bổ sung sau khi sửa.
+- `vpn_ui_tests`: dựng `VpnControlWindow` không crash, bảng 4 cột, đủ nút/nhãn; gọi `Get-VpnConnection`
+  thật (chỉ đọc, an toàn, giống mẫu `AdbController::listDevices()`/`PartitionManager::listPartitions()`).
+
+**Giới hạn thật, nêu rõ với người dùng:** không có tài khoản VPN thật trong môi trường phát triển này nên
+KHÔNG tự kiểm tra được `rasdial` kết nối/ngắt kết nối thật đầu-cuối với một máy chủ VPN thật (có mã hóa
+đường truyền, nhận IP mới) - cần người dùng tự thêm hồ sơ bằng tài khoản VPN thật của mình và tự kiểm
+tra tay. Việc thêm/liệt kê/xóa hồ sơ (Add/Get/Remove-VpnConnection) đã được xác nhận thật trên Windows.
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
@@ -409,6 +489,7 @@ Mỗi lần sửa code: commit riêng với message mô tả rõ, và cập nh�
 | 2026-10-07 | Disk Cleanup (căn cột + sửa lỗi dọn dẹp 0x2) | Người dùng báo 2 lỗi kèm ảnh: (1) cột "Kích thước" ở Tìm tệp trùng lặp bị dạt giữa, thừa khoảng trắng - do `QTreeWidget` mặc định `stretchLastSection=true` đè lên cấu hình cột, đã tắt + căn phải chữ; (2) Dọn dẹp theo hạng mục báo lỗi "mã lỗi 0x2" (ERROR_FILE_NOT_FOUND) - do tệp tạm tự bị xóa giữa lúc quét và lúc bấm Dọn dẹp (bình thường với `%TEMP%`/cache), khiến `SHFileOperationW` báo thất bại cho CẢ LÔ dù phần lớn tệp vẫn xóa được. Sửa `CleanupExecutor`: lọc trước tệp đã tự mất (coi là đã đạt mục tiêu), kiểm tra lại THẬT sau khi xóa để báo freedBytes/deletedCount chính xác, chỉ thất bại khi không giải phóng được gì; `RecycleBinOps` dịch mã lỗi Win32 phổ biến sang tiếng Việt. 176 test lõi (+9 hồi quy mô phỏng tệp tự mất) (v1.5.3) |
 | 2026-10-07 | Rà soát toàn bộ 5 tính năng (UI + hoạt động) | Theo yêu cầu người dùng: rà kỹ Auto Click/Connect Together/QR Tools/WiFi Connection/Disk Cleanup - build lại + chạy toàn bộ 895 kiểm tra tự động (đều qua), chụp ảnh từng màn hình để soát giao diện. Phát hiện/sửa: (1) **Auto Click toàn bộ panel/nhãn/HUD từng thuần tiếng Anh** ("ACTION CHAINS", "Type:", "Wait Before:", HUD "Auto Click Running"...) trong khi phần còn lại ứng dụng toàn tiếng Việt - dịch hết, đã xác nhận an toàn (combo box đọc/ghi theo chỉ số, `Action::typeName()` độc lập hoàn toàn với khóa JSON của `ActionSerializer`); phát hiện thêm 1 lỗi tự gây ra khi dịch (nút "Nhân bản" bị cắt chữ do panel hẹp) và sửa luôn (xếp dọc thay vì ngang). (2) WiFi: checkbox "Hiện mật khẩu đã lưu" bị cắt chữ do chung hàng với 5 nút - tách hàng riêng. (3) **Xác nhận dứt điểm** nghi vấn hiển thị cũ ở tab Ghép đôi (Connect Together, nêu từ v1.2.0): dựng cửa sổ hiện THẬT trên màn hình (không `WA_DontShowOnScreen`) rồi chụp - chữ hiển thị hoàn toàn bình thường, xác nhận đó chỉ là hiện tượng chụp ảnh widget ẩn, không phải lỗi code. |
 | 2026-10-07 | Android Phone Control (hoàn thiện) | Yêu cầu người dùng: điều khiển thiết bị Android "tính realtime và độ linh hoạt kiểu như remote". Quyết định kiến trúc: dùng lại **scrcpy** (Genymobile, Apache-2.0, mã nguồn mở, kiểm chứng nhiều năm) thay vì tự viết lại mã hóa H.264 + tiêm sự kiện phía Android (rủi ro cao, không tự kiểm thử đủ trong môi trường không có thiết bị thật) - đóng gói bản `scrcpy-win64` chính thức (đã xác minh SHA-256) vào `vendor/scrcpy/` (không commit Git, như `build/`/`OneForAll_Release/`), `build_app.bat` tự đóng gói kèm exe. `AdbController` (liệt kê/ghép đôi/kết nối thiết bị qua `adb.exe`) + `ScrcpyLauncher` (khởi chạy `scrcpy.exe` làm tiến trình nền, không chặn UI) + `DevicesTab` (danh sách thiết bị tự làm mới, tùy chọn độ phân giải/bitrate/fps/tắt màn hình/luôn nổi/ghi hình - cờ thật của scrcpy) + `WirelessPairDialog` (ghép đôi không dây Android 11+). "Chuyển sang không dây" dùng `--tcpip` của scrcpy (tự dò IP, bật TCP/IP, kết nối, gương - một bước). 45 test lõi (phân tích `adb devices -l` mẫu + dựng đối số dòng lệnh, không cần thiết bị thật) + 7 test UI (gọi `adb devices` thật - chỉ đọc, an toàn). **Giới hạn thật:** không có điện thoại Android gắn sẵn trong môi trường này nên KHÔNG tự kiểm tra được gương màn hình/ghép đôi không dây đầu-cuối - cần người dùng tự kiểm tra tay. Cửa sổ gương là cửa sổ riêng của scrcpy (nhúng vào cửa sổ Qt là việc có thể làm sau, "nếu có thể"). |
+| 2026-10-07 | VPN & Location (hoàn thiện) | Yêu cầu người dùng: "VPN và location có thể chuyển đổi IP qua nhiều quốc gia và đổi vị trí GPS trong 1 quốc gia". VPN: `VpnController` dùng module `VpnClient` của Windows qua PowerShell (`Add`/`Get`/`Remove-VpnConnection`, mặc định per-user không cần Administrator) + `VpnConnector` dùng `rasdial.exe` để kết nối/ngắt kết nối kèm username/password hỏi riêng mỗi lần (không lưu mật khẩu). Location: **từ chối có chủ đích** giả lập GPS thật - API `Geolocator` của Windows bị khóa sau quyền "System location" chỉ cấp cho app MSIX đã duyệt, không thể gọi từ Win32 không đóng gói dù có quyền Administrator; cách còn lại là ghi registry không tài liệu, rủi ro hỏng dịch vụ định vị thật, không chấp nhận được - thay bằng `PublicIpChecker` tra vị trí thật theo IP công khai (`ipwho.is`, đổi theo khi đổi VPN). **Lỗi thật phát hiện qua kiểm tra trên Windows thật:** `Add-VpnConnection` gọi cứng `-AuthenticationMethod MSChapv2` cho mọi loại tunnel bị Windows từ chối thật với IKEv2 ("IKEv2 tunnel type only supports Eap and Machine certificate") - IKEv2 lại là lựa chọn mặc định của hộp thoại thêm hồ sơ; sửa bằng `authMethodForTunnelType()` (Ikev2 → Eap, còn lại giữ MSChapv2), xác nhận lại bằng cách chạy thật Add→Get→Remove-VpnConnection cho cả 5 loại tunnel, tất cả thành công. Tách `WinElevation`/`PowerShellRunner` dùng chung từ `PartitionManager` (giảm trùng lặp, 176/19 test Disk Cleanup không đổi). 41 test lõi (+ test hồi quy khóa đúng phương thức xác thực/loại tunnel) + 6 test UI (gọi `Get-VpnConnection` thật). **Giới hạn thật:** không có tài khoản VPN thật trong môi trường này nên KHÔNG tự kiểm tra được `rasdial` kết nối/ngắt kết nối thật đầu-cuối - cần người dùng tự kiểm tra tay với tài khoản VPN thật của họ. |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `

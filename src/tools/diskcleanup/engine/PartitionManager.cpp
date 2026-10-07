@@ -1,92 +1,20 @@
 #include "PartitionManager.h"
 
-#include <QCoreApplication>
+#include "core/PowerShellRunner.h"
+#include "core/WinElevation.h"
+
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
-#include <QProcess>
-
-#ifdef Q_OS_WIN
-#include <windows.h>
-#include <shellapi.h>
-#include <string>
-#endif
 
 namespace
 {
-/// Mã hóa script thành dạng Base64(UTF-16LE) để truyền qua `-EncodedCommand` - cách Microsoft khuyến
-/// nghị để chạy một script PowerShell phức tạp từ tiến trình khác. ĐÃ THỬ và loại bỏ 2 cách khác vì
-/// phát hiện lỗi thật khi kiểm tra tay: (1) truyền script nhiều dòng qua stdin với `-Command -` -
-/// powershell.exe thoát mã 0 nhưng KHÔNG in gì cả (im lặng không chạy script) với script nhiều dòng/
-/// nhiều khối lệnh phức tạp, dù script y hệt chạy đúng khi dán trực tiếp vào PowerShell; (2) ghi ra
-/// tệp .ps1 tạm rồi chạy bằng `-File` - gặp lỗi "tệp đang được tiến trình khác sử dụng" (nhiều khả
-/// năng do phần mềm diệt virus quét tệp .ps1 vừa tạo). `-EncodedCommand` không qua stdin, không tạo
-/// tệp tạm nào - tránh được cả hai vấn đề trên, đã xác nhận chạy đúng qua kiểm tra tay nhiều lần.
-QString encodeCommand(const QString& script)
-{
-    QByteArray utf16le;
-    utf16le.reserve(script.size() * 2);
-    for (const QChar& c : script)
-    {
-        const ushort u = c.unicode();
-        utf16le.append(static_cast<char>(u & 0xFF));
-        utf16le.append(static_cast<char>((u >> 8) & 0xFF));
-    }
-    return QString::fromLatin1(utf16le.toBase64());
-}
-
-/// Chạy một script PowerShell và trả về (exitCode==0) qua *ok; stdout trong giá trị trả về.
-/// -NoProfile/-NonInteractive: không nạp profile người dùng, không chờ nhập liệu.
+/// Dùng chung PowerShellRunner (src/core/) - xem ở đó lý do dùng -EncodedCommand thay vì stdin/-File.
 QByteArray runPowerShell(const QString& script, bool* ok, QString* error, int timeoutMs = 20000)
 {
-    *ok = false;
-    QProcess proc;
-    proc.setProgram("powershell.exe");
-    proc.setArguments({"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodeCommand(script)});
-    proc.start();
-    if (!proc.waitForStarted(5000))
-    {
-        if (error) *error = "Không khởi chạy được powershell.exe";
-        return {};
-    }
-
-    if (!proc.waitForFinished(timeoutMs))
-    {
-        proc.kill();
-        proc.waitForFinished(2000);
-        if (error) *error = "Hết thời gian chờ PowerShell";
-        return {};
-    }
-
-    const QByteArray out = proc.readAllStandardOutput();
-    const QByteArray err = proc.readAllStandardError();
-    if (proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0)
-    {
-        if (error) *error = !err.isEmpty() ? QString::fromLocal8Bit(err) : QString("PowerShell thoát với mã lỗi %1").arg(proc.exitCode());
-        return out; // vẫn trả về output - một số lệnh in JSON rồi mới lỗi ở bước sau
-    }
-
-    *ok = true;
-    return out;
+    return PowerShellRunner::run(script, ok, error, timeoutMs);
 }
-
-#ifdef Q_OS_WIN
-/// Tiến trình hiện tại có token "Administrators" đã kích hoạt (chạy qua UAC "Run as administrator")
-/// hay không - API Win32 thô (OpenProcessToken/GetTokenInformation), không gọi PowerShell.
-bool currentProcessElevated()
-{
-    HANDLE token = nullptr;
-    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
-        return false;
-
-    TOKEN_ELEVATION elevation{};
-    DWORD size = sizeof(elevation);
-    const bool got = GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &size);
-    CloseHandle(token);
-    return got && elevation.TokenIsElevated != 0;
-}
-#endif
 } // namespace
 
 namespace PartitionManager
@@ -94,40 +22,12 @@ namespace PartitionManager
 
 bool isElevated()
 {
-#ifdef Q_OS_WIN
-    return currentProcessElevated();
-#else
-    return false;
-#endif
+    return WinElevation::isElevated();
 }
 
 bool relaunchElevated(QString* error)
 {
-#ifdef Q_OS_WIN
-    const QString exePath = QCoreApplication::applicationFilePath();
-    SHELLEXECUTEINFOW info{};
-    info.cbSize = sizeof(info);
-    info.fMask = SEE_MASK_NOCLOSEPROCESS;
-    info.lpVerb = L"runas"; // yêu cầu UAC - Windows tự hiện hộp thoại xác nhận chuẩn, không qua mặt gì cả
-    const std::wstring exePathW = exePath.toStdWString();
-    info.lpFile = exePathW.c_str();
-    info.nShow = SW_SHOWNORMAL;
-
-    if (!ShellExecuteExW(&info))
-    {
-        const DWORD err = GetLastError();
-        if (error)
-            *error = (err == ERROR_CANCELLED) ? "Người dùng đã từ chối cấp quyền Administrator (hộp thoại UAC)."
-                                               : QString("Không khởi chạy lại được với quyền Administrator (mã lỗi %1).").arg(err);
-        return false;
-    }
-    if (info.hProcess)
-        CloseHandle(info.hProcess);
-    return true;
-#else
-    if (error) *error = "Chỉ hỗ trợ trên Windows";
-    return false;
-#endif
+    return WinElevation::relaunchElevated(error);
 }
 
 QList<PartitionInfo> listPartitions(QString* error)

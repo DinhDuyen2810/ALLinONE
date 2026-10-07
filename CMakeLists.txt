@@ -175,6 +175,10 @@ add_library(diskcleanup_core STATIC
     src/tools/diskcleanup/engine/PartitionManager.cpp
     src/tools/diskcleanup/engine/PartitionResizer.h
     src/tools/diskcleanup/engine/PartitionResizer.cpp
+    src/core/WinElevation.h
+    src/core/WinElevation.cpp
+    src/core/PowerShellRunner.h
+    src/core/PowerShellRunner.cpp
 )
 target_include_directories(diskcleanup_core PUBLIC src)
 target_link_libraries(diskcleanup_core PUBLIC Qt6::Core shell32 advapi32)
@@ -236,6 +240,44 @@ target_link_libraries(android_ui PUBLIC android_core Qt6::Widgets)
 add_executable(android_ui_tests EXCLUDE_FROM_ALL tests/android_ui_tests.cpp src/core/Logger.cpp)
 target_link_libraries(android_ui_tests PRIVATE android_ui)
 
+# ---- Lõi VPN & Location (quản lý kết nối VPN hệ thống Windows qua PowerShell/rasdial) ----
+add_library(vpn_core STATIC
+    src/tools/vpn/model/VpnProfile.h
+    src/tools/vpn/engine/VpnController.h
+    src/tools/vpn/engine/VpnController.cpp
+    src/tools/vpn/engine/VpnConnector.h
+    src/tools/vpn/engine/VpnConnector.cpp
+    src/tools/vpn/engine/PublicIpChecker.h
+    src/tools/vpn/engine/PublicIpChecker.cpp
+    src/core/WinElevation.h
+    src/core/WinElevation.cpp
+    src/core/PowerShellRunner.h
+    src/core/PowerShellRunner.cpp
+)
+target_include_directories(vpn_core PUBLIC src)
+target_link_libraries(vpn_core PUBLIC Qt6::Core Qt6::Network advapi32 shell32)
+
+# ---- Kiểm thử lõi VPN: cmake --build build --target vpn_tests ----
+add_executable(vpn_tests EXCLUDE_FROM_ALL tests/vpn_tests.cpp)
+target_link_libraries(vpn_tests PRIVATE vpn_core)
+
+# ---- Giao diện VPN & Location ----
+add_library(vpn_ui STATIC
+    src/tools/vpn/VpnUiStyle.h
+    src/tools/vpn/AddVpnProfileDialog.h
+    src/tools/vpn/AddVpnProfileDialog.cpp
+    src/tools/vpn/VpnTab.h
+    src/tools/vpn/VpnTab.cpp
+    src/tools/vpn/VpnControlWindow.h
+    src/tools/vpn/VpnControlWindow.cpp
+)
+target_include_directories(vpn_ui PUBLIC src)
+target_link_libraries(vpn_ui PUBLIC vpn_core Qt6::Widgets)
+
+# ---- Kiểm thử "khói" UI VPN: cmake --build build --target vpn_ui_tests ----
+add_executable(vpn_ui_tests EXCLUDE_FROM_ALL tests/vpn_ui_tests.cpp src/core/Logger.cpp)
+target_link_libraries(vpn_ui_tests PRIVATE vpn_ui)
+
 set(SOURCES
     src/main.cpp
     src/core/Tool.h
@@ -256,6 +298,8 @@ set(SOURCES
     src/tools/diskcleanup/DiskCleanupTool.cpp
     src/tools/android/AndroidControlTool.h
     src/tools/android/AndroidControlTool.cpp
+    src/tools/vpn/VpnControlTool.h
+    src/tools/vpn/VpnControlTool.cpp
     src/tools/autoclick/AutoClickTool.h
     src/tools/autoclick/AutoClickTool.cpp
     src/tools/autoclick/AutoClickWindow.h
@@ -300,6 +344,7 @@ target_link_libraries(OneForAll PRIVATE
     connect_ui
     diskcleanup_ui
     android_ui
+    vpn_ui
     user32
     dwmapi
 )

@@ -5,6 +5,7 @@
 #include "../tools/connect/ConnectTool.h"
 #include "../tools/diskcleanup/DiskCleanupTool.h"
 #include "../tools/android/AndroidControlTool.h"
+#include "../tools/vpn/VpnControlTool.h"
 #include "core/IconHelper.h"
 #include <QHBoxLayout>
 #include <QVBoxLayout>
@@ -47,8 +48,7 @@ void MainWindow::registerTools()
     tm.registerTool(std::make_unique<PlaceholderTool>(
         "security", "Security Gateway", "Kiểm tra an toàn kết nối mạng, quét lỗ hổng và tường lửa.", ":/icons/gateway.png"));
 
-    tm.registerTool(std::make_unique<PlaceholderTool>(
-        "vpn", "VPN & Location", "Mạng riêng ảo bảo mật và chuyển vùng vị trí địa lý linh hoạt.", ":/icons/vpn.jpg"));
+    tm.registerTool(std::make_unique<VpnControlTool>());
 
     tm.registerTool(std::make_unique<WifiTool>());
 
