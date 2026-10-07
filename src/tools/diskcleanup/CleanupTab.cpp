@@ -304,6 +304,7 @@ void CleanupTab::updateSelectedSummary()
 void CleanupTab::onCleanClicked()
 {
     QStringList paths;
+    QList<qint64> sizes;
     QStringList categoryNames;
     qint64 total = 0;
     bool includesHighRisk = false;
@@ -325,6 +326,7 @@ void CleanupTab::onCleanClicked()
         for (const CleanupItem& item : items)
         {
             paths << item.path;
+            sizes << item.sizeBytes;
             total += item.sizeBytes;
         }
     }
@@ -355,7 +357,7 @@ void CleanupTab::onCleanClicked()
     m_progressBar->setVisible(true);
     m_statusLabel->setText("⏳ Đang dọn dẹp...");
 
-    m_executor->setItems(paths, total);
+    m_executor->setItems(paths, sizes);
     m_executor->setPermanentDelete(permanent);
     m_executor->start(QThread::LowPriority);
 }
@@ -371,8 +373,12 @@ void CleanupTab::onExecutionFinished(bool success, QString error, qint64 freedBy
         m_statusLabel->setText(QString("✓ Đã dọn dẹp %1 mục, giải phóng %2.")
                                    .arg(deletedCount)
                                    .arg(DiskUi::formatBytes(freedBytes)));
-        QMessageBox::information(this, "Hoàn tất",
-                                 QString("Đã giải phóng %1.").arg(DiskUi::formatBytes(freedBytes)));
+        QString info = QString("Đã giải phóng %1 (%2 mục).").arg(DiskUi::formatBytes(freedBytes)).arg(deletedCount);
+        // 'error' ở đây là GHI CHÚ, không phải lỗi nghiêm trọng - vài tệp tạm tự mất giữa lúc quét và
+        // lúc xóa (hoặc đang được chương trình khác dùng) là chuyện bình thường, không đáng báo đỏ.
+        if (!error.isEmpty())
+            info += "\n\nLưu ý: " + error;
+        QMessageBox::information(this, "Hoàn tất", info);
         // Xóa xong, quét lại để làm mới danh sách (các mục đã xóa không còn nữa)
         onScanClicked();
     }

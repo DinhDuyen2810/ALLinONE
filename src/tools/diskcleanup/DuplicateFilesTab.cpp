@@ -72,6 +72,10 @@ void DuplicateFilesTab::buildUi()
     m_tree->setHeaderLabels({"Nhóm trùng lặp / Đường dẫn", "Kích thước"});
     m_tree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     m_tree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    // QTreeView mặc định "stretchLastSection=true" - tự kéo giãn cột CUỐI (ở đây là "Kích thước") bất
+    // kể resize mode đã đặt, đè lên cột 0 đã Stretch và để lại khoảng trắng lớn bên phải vì chữ căn
+    // trái. Tắt đi để cột 1 chỉ rộng vừa đủ nội dung, nằm sát mép phải thật sự.
+    m_tree->header()->setStretchLastSection(false);
     m_tree->setStyleSheet(
         "QTreeWidget { background-color: #ffffff; color: #1f2328; border: 1px solid #d0d7de; border-radius: 10px; }"
         "QTreeWidget::item { padding: 4px; }"
@@ -192,6 +196,7 @@ void DuplicateFilesTab::addGroupToTree(const DuplicateGroup& group)
         const bool keepThisOne = (i == 0); // mặc định giữ lại bản đầu tiên, tick sẵn các bản còn lại để xóa
         child->setText(0, group.paths[i] + (keepThisOne ? "   (sẽ giữ lại)" : ""));
         child->setText(1, DiskUi::formatBytes(group.sizeEachBytes));
+        child->setTextAlignment(1, Qt::AlignRight | Qt::AlignVCenter);
         child->setData(0, Qt::UserRole, group.paths[i]);         // đường dẫn thật, không lẫn hậu tố hiển thị
         child->setData(1, Qt::UserRole, group.sizeEachBytes);    // kích thước thô (byte), không lẫn chuỗi đã định dạng
         child->setFlags(child->flags() | Qt::ItemIsUserCheckable);

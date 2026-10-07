@@ -72,7 +72,7 @@
 | `src/tools/diskcleanup/DiskCleanupTool.*` | `ITool` của Disk Cleanup (một cửa sổ duy nhất) |
 | `src/tools/wifi/WifiTool.*` | `ITool` của WiFi (một cửa sổ duy nhất) |
 | `src/third_party/` | qrcodegen (MIT), quirc (ISC), xem `THIRD_PARTY.md` |
-| `tests/` | `qr_tests`/`qr_ui_tests`, `wifi_tests`/`wifi_ui_tests`, `connect_tests`/`connect_ui_tests` (506 + 2, ghép đôi 2 chiều thật qua TCP, ổn định qua 40+ lần chạy liên tiếp), `diskcleanup_tests`/`diskcleanup_ui_tests` (167 + 19 kiểm tra, có xóa file thật qua Thùng rác, liệt kê phân vùng thật) |
+| `tests/` | `qr_tests`/`qr_ui_tests`, `wifi_tests`/`wifi_ui_tests`, `connect_tests`/`connect_ui_tests` (506 + 2, ghép đôi 2 chiều thật qua TCP, ổn định qua 40+ lần chạy liên tiếp), `diskcleanup_tests`/`diskcleanup_ui_tests` (176 + 19 kiểm tra, có xóa file thật qua Thùng rác, liệt kê phân vùng thật) |
 | `assets/resources.qrc`, `icon/` | Icon nhúng vào exe |
 | `profiles/default.json` | Profile mặc định (chain mẫu) |
 | `build_app.bat`, `run_app.bat` | Build + đóng gói (`windeployqt`), chạy bản Release |
@@ -187,7 +187,10 @@ cảnh báo không thể hoàn tác).
   quả báo về MỘT LẦN khi quét xong (không phát từng nhóm một - xem phần hiệu năng bên dưới), đã sắp xếp
   theo dung lượng lãng phí giảm dần và giới hạn tối đa 500 nhóm; hiển thị theo cây (nhóm → từng tệp có
   checkbox, các nhóm mặc định thu gọn), mặc định GIỮ LẠI bản đầu mỗi nhóm, tick sẵn các bản còn lại để
-  xóa vào Thùng rác.
+  xóa vào Thùng rác. **Đã sửa lỗi UI thật:** `QTreeWidget` (khác `QTableWidget` dùng ở các tab khác) mặc
+  định `stretchLastSection=true`, tự kéo giãn cột "Kích thước" (cột cuối) đè lên cấu hình `Stretch` của
+  cột 0, để lại khoảng trắng lớn bên phải vì chữ căn trái - đã tắt `stretchLastSection` + căn phải chữ
+  trong cột "Kích thước" để nó nằm sát mép phải như các bảng khác trong ứng dụng.
 - **Quản lý phân vùng** (`PartitionTab`): liệt kê phân vùng thật (`PartitionManager::listPartitions()`,
   chỉ đọc, không cần quyền Administrator) với dung lượng/còn trống/loại/cờ khởi động-hệ thống; banner
   cảnh báo rủi ro mất dữ liệu luôn hiển thị; nếu chưa chạy với quyền Administrator thì hiện banner +
@@ -227,7 +230,7 @@ chục nghìn tệp cần thời gian thật - nhưng không còn làm treo giao
 và hữu ích hơn nên chọn thư mục tài liệu cá nhân (Documents/Downloads/Pictures) thay vì toàn ổ C:/cache
 trình duyệt.)
 
-**Đã xong, đã test (167 kiểm tra lõi + 19 kiểm tra UI):**
+**Đã xong, đã test (176 kiểm tra lõi + 19 kiểm tra UI):**
 - `CategoryRegistry`: dựng danh sách hạng mục + phân giải đường dẫn qua một `CleanupEnvironment` có thể
   thay thế bằng môi trường giả - test không đụng vào Temp/Windows/SoftwareDistribution thật của máy.
   Hạng mục không tồn tại trên máy (chưa cài trình duyệt đó, thư mục chưa từng tạo...) tự động có
@@ -245,7 +248,16 @@ trình duyệt.)
 - `RecycleBinOps`: lớp duy nhất gọi Shell API Thùng rác (SHFileOperationW/SHQueryRecycleBinW). Test
   **xóa file thật** (do chính test tạo ra trong thư mục tạm, an toàn/có thể khôi phục) - xác nhận file
   biến mất khỏi vị trí gốc. Cố ý KHÔNG test `empty()` (sẽ xóa vĩnh viễn toàn bộ Thùng rác thật của máy).
-- `CleanupExecutor`: xóa trên QThread riêng, test xóa file thật thành công qua Thùng rác.
+- `CleanupExecutor`: xóa trên QThread riêng, test xóa file thật thành công qua Thùng rác. **Đã sửa lỗi
+  thật phát hiện khi dùng tay (mã lỗi 0x2 hiển thị cho người dùng):** `%TEMP%`/cache đổi liên tục giữa
+  lúc quét và lúc bấm Dọn dẹp - Windows/ứng dụng khác có thể đã tự xóa một vài tệp trước đó. Trước đây
+  `SHFileOperationW` báo `ERROR_FILE_NOT_FOUND` cho CẢ LÔ chỉ vì 1 tệp không còn đó, khiến toàn bộ thao
+  tác (kể cả các tệp khác xóa được) bị báo "thất bại" kèm mã lỗi hex khó hiểu. Sửa bằng cách lọc trước
+  (tệp đã tự mất coi là đã đạt mục tiêu, không đưa vào yêu cầu xóa) và kiểm tra lại THẬT sau khi xóa
+  (không tin mù quáng mã trả về) để báo cáo freedBytes/deletedCount chính xác - chỉ coi là thất bại
+  thật khi KHÔNG giải phóng được gì. `RecycleBinOps` cũng dịch mã lỗi Win32 phổ biến (0x2, 0x5, 0x20...)
+  sang tiếng Việt thay vì hiện hex thô. Test hồi quy mô phỏng đúng tình huống: 1 tệp "biến mất" giữa
+  danh sách, xác nhận 2 tệp còn lại vẫn xóa được và toàn bộ vẫn báo thành công.
 - `DiskSpaceInfo`: đọc dung lượng ổ đĩa thật (QStorageInfo, chỉ đọc, an toàn) - xác nhận trên máy này.
 - `LargeFileScanner`: tìm tệp lớn theo ngưỡng, sắp xếp giảm dần, giới hạn số kết quả - test bằng tệp giả.
 - `DuplicateFinder`: nhóm theo kích thước thật của writeFile (toàn ký tự giống nhau), xác nhận tệp cùng
@@ -311,6 +323,7 @@ Mỗi lần sửa code: commit riêng với message mô tả rõ, và cập nh�
 | 2026-10-07 | Disk Cleanup (trùng lặp + phân vùng) | Thêm `DuplicateFinder` + tab Tìm tệp trùng lặp (hash SHA-256, cây nhóm/tệp); thêm `PartitionManager`/`PartitionResizer` + tab Quản lý phân vùng (liệt kê thật, đổi kích thước qua Resize-Partition có xác nhận gõ tên ổ đĩa, yêu cầu quyền Administrator); sửa 2 lỗi thật phát hiện khi quét tay (stdin `-Command -` im lặng không chạy script nhiều dòng → đổi `-EncodedCommand`; lỗi PowerShell bị serialize CLIXML không đọc được → đổi `[Console]::Error`); 156 test lõi + 19 test UI (v1.5.0) |
 | 2026-10-07 | Disk Cleanup (phản hồi khi quét ổ lớn) | Người dùng báo quét ổ C: 120GB bị Windows đánh dấu "Không phản hồi". Đo thật: luồng giao diện không hề bị chặn (độ trễ lớn nhất 21ms trong lúc quét thật ~390.000 tệp/20s) - đổi `CleanupScanner`/`CleanupExecutor`/`LargeFileScanner`/`DuplicateFinder` sang `QThread::LowPriority`, tăng tần suất báo tiến độ (mỗi 200 tệp) kèm đường dẫn đang xử lý để người dùng thấy ứng dụng vẫn chạy (v1.5.1) |
 | 2026-10-07 | Disk Cleanup (sửa "Không phản hồi" THẬT ở Tìm tệp trùng lặp) | Người dùng báo lại: Tìm tệp trùng lặp trên ổ C: vẫn bị Task Manager đánh dấu "Không phản hồi" thật (không chỉ cảm giác). Nguyên nhân: `DuplicateFinder` cũ phát `groupFound` cho TỪNG nhóm một, không giới hạn - thư mục cache trình duyệt (nhiều hồ sơ Chrome, cỡ khối cố định) tạo ra hàng trăm/nghìn nhóm, dồn dập đủ để chiếm trọn một lượt xử lý sự kiện của Qt. Sửa: `DuplicateFinder` gom toàn bộ trong bộ nhớ, sắp xếp theo lãng phí giảm dần, cắt `setMaxGroups()` (mặc định 500), CHỈ phát `scanFinished` một lần (đúng mẫu `LargeFileScanner`); UI dựng cả cây 1 lần (`setUpdatesEnabled(false)`), nhóm mặc định thu gọn. Đo lại thật: quét ~20.300 tệp dữ liệu Chrome trong 60s liên tục, độ trễ lớn nhất chỉ 22ms. 167 test lõi (+11 test hồi quy giới hạn/sắp xếp nhóm) (v1.5.2) |
+| 2026-10-07 | Disk Cleanup (căn cột + sửa lỗi dọn dẹp 0x2) | Người dùng báo 2 lỗi kèm ảnh: (1) cột "Kích thước" ở Tìm tệp trùng lặp bị dạt giữa, thừa khoảng trắng - do `QTreeWidget` mặc định `stretchLastSection=true` đè lên cấu hình cột, đã tắt + căn phải chữ; (2) Dọn dẹp theo hạng mục báo lỗi "mã lỗi 0x2" (ERROR_FILE_NOT_FOUND) - do tệp tạm tự bị xóa giữa lúc quét và lúc bấm Dọn dẹp (bình thường với `%TEMP%`/cache), khiến `SHFileOperationW` báo thất bại cho CẢ LÔ dù phần lớn tệp vẫn xóa được. Sửa `CleanupExecutor`: lọc trước tệp đã tự mất (coi là đã đạt mục tiêu), kiểm tra lại THẬT sau khi xóa để báo freedBytes/deletedCount chính xác, chỉ thất bại khi không giải phóng được gì; `RecycleBinOps` dịch mã lỗi Win32 phổ biến sang tiếng Việt. 176 test lõi (+9 hồi quy mô phỏng tệp tự mất) (v1.5.3) |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `

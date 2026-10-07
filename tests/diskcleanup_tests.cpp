@@ -330,7 +330,7 @@ int main(int argc, char** argv)
         writeFile(f2, 456);
 
         CleanupExecutor executor;
-        executor.setItems({f1, f2}, 123 + 456);
+        executor.setItems({f1, f2}, {123, 456});
 
         bool done = false;
         bool success = false;
@@ -351,6 +351,51 @@ int main(int argc, char** argv)
         CHECK(freed == 123 + 456);
         CHECK(count == 2);
         CHECK(!QFile::exists(f1) && !QFile::exists(f2));
+    }
+
+    // ---- CleanupExecutor: hồi quy lỗi THẬT (mã 0x2) - tệp tự biến mất giữa lúc quét và lúc xóa ----
+    // Đây CHÍNH LÀ tình huống người dùng gặp: "Tệp tạm" đổi liên tục, một tệp đã bị Windows/ứng dụng
+    // khác xóa trước khi bấm "Dọn dẹp" - trước đây SHFileOperationW báo lỗi ERROR_FILE_NOT_FOUND cho
+    // CẢ LÔ, khiến toàn bộ thao tác (kể cả các tệp khác vẫn xóa được) bị báo là THẤT BẠI với mã lỗi hex
+    // khó hiểu. Giờ phải lọc trước + kiểm tra lại sau, báo cáo số liệu THẬT, vẫn coi là thành công.
+    {
+        QTemporaryDir tmp;
+        CHECK(tmp.isValid());
+        const QString real1 = tmp.path() + "/race_real_1.tmp";
+        const QString real2 = tmp.path() + "/race_real_2.tmp";
+        const QString vanished = tmp.path() + "/race_vanished.tmp"; // KHÔNG tạo tệp này - mô phỏng đã tự mất
+        writeFile(real1, 100);
+        writeFile(real2, 200);
+        CHECK(QFile::exists(real1) && QFile::exists(real2));
+        CHECK(!QFile::exists(vanished));
+
+        CleanupExecutor executor;
+        // 'vanished' nằm giữa danh sách, kích thước 999 - trước đây sẽ khiến executor báo freed=0 dù
+        // real1/real2 hoàn toàn xóa được.
+        executor.setItems({real1, vanished, real2}, {100, 999, 200});
+
+        bool done = false;
+        bool success = false;
+        QString note;
+        qint64 freed = -1;
+        int count = -1;
+        QObject::connect(&executor, &CleanupExecutor::executionFinished,
+                         [&](bool ok, QString n, qint64 bytes, int cnt) {
+                             done = true;
+                             success = ok;
+                             note = n;
+                             freed = bytes;
+                             count = cnt;
+                         });
+        executor.start();
+        CHECK(waitUntil([&] { return done; }));
+        executor.wait();
+
+        CHECK(success); // KHÔNG được coi là thất bại chỉ vì 1 mục đã tự mất từ trước
+        CHECK(freed == 100 + 999 + 200); // tính cả phần "đã tự mất" (999) vào tổng giải phóng - mục tiêu đã đạt
+        CHECK(count == 3); // cả 3 mục đều coi là đã xử lý xong (2 xóa thật + 1 đã tự mất từ trước)
+        CHECK(!QFile::exists(real1) && !QFile::exists(real2)); // vẫn xóa thật 2 tệp còn lại, không bị bỏ qua
+        CHECK(note.isEmpty()); // tệp tự mất từ trước không cần ghi chú gì - coi là bình thường, không phải lỗi
     }
 
     // ---- DiskSpaceInfo: đọc thông tin ổ đĩa THẬT (chỉ đọc, an toàn) ----

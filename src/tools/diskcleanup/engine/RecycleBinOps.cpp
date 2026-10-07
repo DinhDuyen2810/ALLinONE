@@ -25,6 +25,25 @@ std::vector<wchar_t> buildDoubleNullList(const QStringList& paths)
     return buffer;
 }
 
+/// Dịch mã lỗi trả về từ SHFileOperationW sang tiếng Việt dễ hiểu. Microsoft tài liệu hóa là có thể
+/// trả về mã lỗi Win32 thường (vd ERROR_FILE_NOT_FOUND=2) lẫn với bộ mã riêng của Shell (DE_*, bắt đầu
+/// từ 0x71) - chỉ dịch các mã hay gặp nhất, còn lại hiện nguyên mã hex để không giấu thông tin.
+QString describeFileOperationError(int code)
+{
+    switch (code)
+    {
+        case 0x02: return "Tệp không còn tồn tại (có thể đã bị xóa hoặc di chuyển trước đó).";
+        case 0x03: return "Không tìm thấy đường dẫn.";
+        case 0x05: return "Không có quyền truy cập (thử chạy ứng dụng với quyền Administrator).";
+        case 0x20: return "Tệp đang được một chương trình khác sử dụng.";
+        case 0x7C: return "Danh sách tệp không hợp lệ.";
+        case 0x7E: return "Đích đến là một tệp, không phải thư mục.";
+        case 0x80: return "Đích đến là một thư mục, không phải tệp.";
+        case 0x81: return "Tên tệp quá dài.";
+        default: return QString("mã lỗi 0x%1").arg(code, 0, 16);
+    }
+}
+
 bool runFileOperation(const QStringList& paths, FILEOP_FLAGS extraFlags, QString* error)
 {
     if (paths.isEmpty())
@@ -43,7 +62,7 @@ bool runFileOperation(const QStringList& paths, FILEOP_FLAGS extraFlags, QString
     if (res != 0 || op.fAnyOperationsAborted)
     {
         if (error)
-            *error = QString("Thao tác xóa thất bại (mã lỗi 0x%1).").arg(res, 0, 16);
+            *error = "Thao tác xóa thất bại: " + describeFileOperationError(res);
         return false;
     }
     return true;
