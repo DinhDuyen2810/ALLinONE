@@ -4,7 +4,7 @@
 > Tài liệu kiến trúc chi tiết và changelog tính năng nằm ở [README.md](README.md); đặc tả thiết kế ở [OneForAll_AutoClick_Design.md](OneForAll_AutoClick_Design.md).
 
 ## 1. Dự án là gì
-Ứng dụng desktop Windows (C++20, Qt 6.11 MinGW, CMake + Ninja) dạng launcher gồm 9 công cụ. Hiện **Auto Click**, **QR Tools** và **WiFi Connection** hoàn chỉnh; **Connect Together** đang xây (tham khảo Mouse without Borders); 5 tool còn lại (Disk Cleanup, Android Phone Control, Downloader, Security Gateway, VPN & Location, WiFi Connection) là `PlaceholderTool` (màn hình "đang phát triển").
+Ứng dụng desktop Windows (C++20, Qt 6.11 MinGW, CMake + Ninja) dạng launcher gồm 9 công cụ. Hiện **Auto Click**, **QR Tools**, **WiFi Connection** và **Connect Together** (tham khảo Mouse without Borders) hoàn chỉnh; 5 tool còn lại (Disk Cleanup, Android Phone Control, Downloader, Security Gateway, VPN & Location) là `PlaceholderTool` (màn hình "đang phát triển").
 
 ## 2. Luồng khởi động
 `main.cpp` đặt Per-Monitor DPI v2 → `QApplication` → `Logger` ghi `logs/app.log` → `MainWindow`.
@@ -51,9 +51,11 @@
 | `src/tools/connect/engine/InputHook.*` | Hook bàn phím/chuột toàn cục (WH_MOUSE_LL/WH_KEYBOARD_LL), chỉ "nuốt" input khi đang chủ động chia sẻ |
 | `src/tools/connect/engine/LocalIdentityStore.*` | Định danh ổn định của máy này, `profiles/connect_identity.json` |
 | `src/tools/connect/engine/ConnectSessionController.*` | Điều phối toàn bộ: ghép đôi, kết nối lại, biên màn hình, hook/injector, clipboard |
+| `src/tools/connect/ConnectWindow.*`, `PairingTab.*`, `PeersTab.*` | UI: tab Ghép đôi / Máy đã ghép đôi, banner trạng thái, log |
+| `src/tools/connect/ConnectTool.*` | `ITool` của Connect Together (một cửa sổ duy nhất) |
 | `src/tools/wifi/WifiTool.*` | `ITool` của WiFi (một cửa sổ duy nhất) |
 | `src/third_party/` | qrcodegen (MIT), quirc (ISC), xem `THIRD_PARTY.md` |
-| `tests/` | `qr_tests`/`qr_ui_tests`, `wifi_tests`/`wifi_ui_tests`, `connect_tests` (506 kiểm tra, gồm ghép đôi 2 chiều thật qua TCP qua ConnectSessionController) |
+| `tests/` | `qr_tests`/`qr_ui_tests`, `wifi_tests`/`wifi_ui_tests`, `connect_tests`/`connect_ui_tests` (506 + 2 kiểm tra, gồm ghép đôi 2 chiều thật qua TCP, xác nhận ổn định qua stress test 40+ lần chạy liên tiếp) |
 | `assets/resources.qrc`, `icon/` | Icon nhúng vào exe |
 | `profiles/default.json` | Profile mặc định (chain mẫu) |
 | `build_app.bat`, `run_app.bat` | Build + đóng gói (`windeployqt`), chạy bản Release |
@@ -121,16 +123,29 @@ chỉ hoạt động trong LAN; không có chế độ ẩn/im lặng; kênh tru
 - `InputInjector`: viết xong (SendInput/SetCursorPos), nhưng **cố ý không gọi trong test tự động** vì
   nó thật sự di chuyển chuột/gõ phím trên máy đang chạy - sẽ cần bạn tự thử tay.
 
-**Đã xong `ConnectSessionController`, đã test thật (506 kiểm tra):** nối discovery + ghép đôi +
-phiên mạng + biên màn hình + hook + injector + clipboard lại với nhau thành một luồng hoàn chỉnh. Test
-ghép đôi CẢ HAI CHIỀU qua TCP loopback thật (nhận mã từ "máy giả" kết nối vào, và tự nhập mã để ghép đôi
-vào "máy giả" khác), xác nhận `PeerStore` lưu đúng khóa dài hạn, quản lý vị trí/tự kết nối/quên máy, và
-mã sai định dạng bị từ chối an toàn.
+**Module đã hoàn thiện, đã nối vào `MainWindow`.** `ConnectSessionController` nối discovery + ghép
+đôi + phiên mạng + biên màn hình + hook + injector + clipboard lại với nhau. UI gồm 2 tab (Ghép đôi,
+Máy đã ghép đôi) + banner trạng thái + log, theo đúng Light Theme chung của ứng dụng.
 
-**Chưa làm (còn lại):** giao diện (hiển thị/nhập mã ghép đôi, danh sách máy đã ghép đôi/khám phá được,
-lưới sắp xếp vị trí màn hình, log trạng thái, HUD "đang điều khiển..."), `ConnectTool`, nối vào
-`MainWindow`. Trải nghiệm chuột "đi qua biên sang máy khác" và chia sẻ clipboard thật cần ít nhất 2 máy
-thật nối cùng LAN để xác nhận - bạn sẽ cần tự kiểm tra trên 2 máy thật sau khi có giao diện.
+**Lỗi nghiêm trọng đã tìm và sửa (2026-10-07):** trong lúc hoàn thiện, test tích hợp
+`ConnectSessionController` crash ngẫu nhiên (SIGSEGV) khoảng 70-100% số lần chạy. Điều tra bằng
+checkpoint nhị phân + gdb + build debug + cô lập từng thành phần (tắt thử hook, timer, clipboard,
+discovery - không cái nào là nguyên nhân) cuối cùng tìm ra: `sendPairAccept()`, nhánh `PairAccept` của
+`handleMessage()`, và `forgetPeer()` đều gọi `session->deleteLater()` TƯỜNG MINH *đồng thời* phiên đó đã
+được nối sẵn qua `wireSession()` để tự gọi `deleteLater()` khi nhận tín hiệu `disconnected` - hai sự
+kiện `DeferredDelete` xếp hàng cho CÙNG một đối tượng tranh nhau xử lý, gây use-after-free ngẫu nhiên
+tùy thời điểm bộ nhớ được cấp phát lại. Đã sửa: mỗi `NetworkSession` giờ chỉ bị `deleteLater()` ở ĐÚNG
+MỘT nơi (handler `disconnected` tập trung trong `wireSession()`); mọi chỗ khác chỉ gọi
+`disconnectSession()`. Đã test lại 40+ lần liên tiếp (2 cấu hình binary khác nhau), 0 lỗi. Nhân tiện
+cũng sửa một race lý thuyết khác trong `InputHook::uninstall()` (xóa `g_instance` trước khi gỡ hook,
+không phải sau) và một lỗi UB thật trong test (`QCoreApplication` thay vì `QGuiApplication` dù gọi
+`QGuiApplication::clipboard()`).
+
+**Chưa kiểm thử được (cần 2 máy thật trên cùng LAN):** trải nghiệm chuột "đi qua biên sang máy khác",
+chia sẻ bàn phím thật, đồng bộ clipboard giữa 2 máy, kết nối lại tự động qua khám phá LAN thật giữa 2
+tiến trình trên 2 máy khác nhau (đã test trên 1 máy với "máy giả"). Có 1 lỗi hiển thị nhỏ nghi là riêng
+của ảnh chụp màn hình tự động (ô nhập IP/Cổng/Mã trong tab Ghép đôi) - cần tự nhìn trực tiếp trong app
+thật để xác nhận có thật hay chỉ là hiện tượng chụp ảnh.
 
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`. `run_app.bat` chạy `OneForAll_Release\OneForAll.exe`. Thư mục `build/`, `OneForAll_Release/`, `logs/` không được commit (xem `.gitignore`).
@@ -158,6 +173,7 @@ Mỗi lần sửa code: commit riêng với message mô tả rõ, và cập nh�
 | 2026-10-07 | Connect Together (mạng) | Lưu trữ peer, phiên TCP mã hóa, khám phá LAN qua UDP - test thật (loopback TCP + broadcast UDP thật trên máy), 403 test. Chưa có hook input/UI (v1.1.1) |
 | 2026-10-07 | Connect Together (Win32 input) | Phát hiện biên màn hình, hook bàn phím/chuột toàn cục (cài/gỡ thật trên máy), tiêm input - 465 test. Chưa có điều phối/UI (v1.1.2) |
 | 2026-10-07 | Connect Together (điều phối) | ConnectSessionController nối toàn bộ lại - ghép đôi 2 chiều test thật qua TCP, 506 test. Chưa có UI (v1.1.3) |
+| 2026-10-07 | Connect Together (hoàn thiện) | UI (Ghép đôi/Máy đã ghép đôi), nối vào MainWindow; tìm và sửa lỗi crash ngẫu nhiên nghiêm trọng (double deleteLater) trong luồng ghép đôi (v1.2.0) |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `
