@@ -1,6 +1,6 @@
 // Kiểm thử lõi Connect Together (mã ghép đôi, giao thức, mã hóa AES-GCM). Không cần mạng/phần cứng.
 // Build: cmake --build build --target connect_tests && build\connect_tests.exe
-#include <QCoreApplication>
+#include <QGuiApplication>
 #include <QDateTime>
 #include <QEventLoop>
 #include <QFile>
@@ -58,7 +58,10 @@ static int g_fail = 0, g_pass = 0;
 
 int main(int argc, char** argv)
 {
-    QCoreApplication app(argc, argv);
+    // QGuiApplication (không chỉ QCoreApplication) vì ConnectSessionController gọi
+    // QGuiApplication::clipboard() - gọi API đó khi app thật chỉ là QCoreApplication là hành vi không
+    // xác định (UB).
+    QGuiApplication app(argc, argv);
 
     // ---- PairingCode ----
     {
@@ -602,17 +605,27 @@ int main(int argc, char** argv)
         CHECK(hook.isInstalled());
         CHECK(!hook.isActive()); // mặc định không active - trong suốt với người dùng thật
 
+        // Bơm vòng lặp sự kiện một chút trong lúc hook đang cài: hook toàn cục WH_MOUSE_LL/WH_KEYBOARD_LL
+        // được Windows gọi lại trong lúc bơm message - nếu có hoạt động chuột/phím thật xảy ra đúng lúc
+        // test chạy, để nó được xử lý (và CallNextHookEx bình thường vì active=false) thay vì có thể còn
+        // "treo" lúc uninstall() chạy ngay sau.
+        app.processEvents();
+
         CHECK(hook.install(&err)); // gọi lại install() khi đã cài -> idempotent, vẫn trả true
 
         hook.uninstall();
+        app.processEvents();
         CHECK(!hook.isInstalled());
         hook.uninstall(); // gọi lại uninstall() khi chưa cài -> không crash
 
         // Cài lại được sau khi đã gỡ
         CHECK(hook.install(&err));
         CHECK(hook.isInstalled());
+        app.processEvents();
         hook.uninstall();
+        app.processEvents();
     }
+
 
     // ---- ConnectSessionController: ghép đôi thật qua TCP, cả 2 chiều. KHÔNG kiểm thử chia sẻ chuột/
     // bàn phím thật (cần setActive(true) trên InputHook, sẽ chiếm chuột/bàn phím của người dùng thật) ----
@@ -762,5 +775,6 @@ int main(int argc, char** argv)
     }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);
+    std::fflush(stdout);
     return g_fail == 0 ? 0 : 1;
 }

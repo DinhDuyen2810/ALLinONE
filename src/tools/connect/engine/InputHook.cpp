@@ -118,6 +118,14 @@ bool InputHook::install(QString* error)
 
 void InputHook::uninstall()
 {
+    // Xóa g_instance TRƯỚC khi gỡ hook (không phải sau): Windows có thể đã xếp hàng một lệnh gọi
+    // mouseProc/keyboardProc cho sự kiện chuột/phím thật xảy ra đúng lúc đang gỡ (race có thật - từng
+    // gây crash ngẫu nhiên trong test khi có hoạt động chuột/phím thật trên máy lúc test chạy). Xóa
+    // g_instance trước đảm bảo callback tĩnh thấy g_instance=nullptr ngay và chỉ gọi CallNextHookEx,
+    // không bao giờ dereference một InputHook sắp/đang bị hủy.
+    if (g_instance == this)
+        g_instance = nullptr;
+
     if (m_mouseHook)
     {
         UnhookWindowsHookEx(static_cast<HHOOK>(m_mouseHook));
@@ -128,8 +136,6 @@ void InputHook::uninstall()
         UnhookWindowsHookEx(static_cast<HHOOK>(m_keyboardHook));
         m_keyboardHook = nullptr;
     }
-    if (g_instance == this)
-        g_instance = nullptr;
     m_active = false;
 }
 

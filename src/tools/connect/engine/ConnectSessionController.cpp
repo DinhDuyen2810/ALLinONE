@@ -283,9 +283,12 @@ void ConnectSessionController::sendPairAccept(NetworkSession* session, const QSt
 
     finalizePairing(remoteId, remoteMachineName, session->peerAddress(), session->peerPort(), newLongTermKey);
 
+    // KHÔNG gọi session->deleteLater() ở đây: disconnectSession() sẽ kích hoạt tín hiệu disconnected
+    // (nối sẵn trong wireSession()), nơi DUY NHẤT dọn dẹp + deleteLater() cho phiên này. Gọi deleteLater()
+    // thêm một lần nữa ở đây từng gây crash ngẫu nhiên (double deleteLater() tranh nhau xử lý cùng một
+    // đối tượng khi 2 sự kiện DeferredDelete cùng được xếp hàng).
     m_pendingSessions.removeAll(session);
     session->disconnectSession();
-    session->deleteLater();
 
     cancelPairingSession(); // mã ghép đôi chỉ dùng một lần
 }
@@ -431,9 +434,9 @@ void ConnectSessionController::handleMessage(NetworkSession* session, const QStr
 
         case MessageType::PairAccept:
             finalizePairing(msg.textB, msg.textA, session->peerAddress(), session->peerPort(), msg.longTermKey);
+            // KHÔNG gọi deleteLater() ở đây - xem chú thích trong sendPairAccept().
             m_pendingSessions.removeAll(session);
             session->disconnectSession();
-            session->deleteLater();
             break;
 
         case MessageType::PairReject:
@@ -694,8 +697,7 @@ void ConnectSessionController::forgetPeer(const QString& peerId)
     if (NetworkSession* s = sessionFor(peerId))
     {
         m_sessions.remove(peerId);
-        s->disconnectSession();
-        s->deleteLater();
+        s->disconnectSession(); // disconnected -> wireSession() dọn dẹp + deleteLater() (không gọi lại ở đây)
     }
     PeerStore::instance().remove(peerId);
     emit pairedPeersChanged();
