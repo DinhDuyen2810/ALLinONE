@@ -46,9 +46,12 @@
 | `src/tools/connect/engine/PeerStore.*` | Lưu/nạp danh sách peer đã ghép đôi, `profiles/connect_peers.json` |
 | `src/tools/connect/engine/NetworkSession.*` | Phiên TCP đóng khung + mã hóa đầu-cuối (CryptoSession) |
 | `src/tools/connect/engine/PeerDiscovery.*` | Khám phá máy trong LAN qua UDP broadcast (chỉ thông tin công khai) |
+| `src/tools/connect/engine/EdgeDetector.*` | Toán học thuần phát hiện chuột chạm biên màn hình để chuyển quyền điều khiển |
+| `src/tools/connect/engine/InputInjector.*` | Tiêm chuột/phím nhận được lên máy này (SendInput/SetCursorPos) |
+| `src/tools/connect/engine/InputHook.*` | Hook bàn phím/chuột toàn cục (WH_MOUSE_LL/WH_KEYBOARD_LL), chỉ "nuốt" input khi đang chủ động chia sẻ |
 | `src/tools/wifi/WifiTool.*` | `ITool` của WiFi (một cửa sổ duy nhất) |
 | `src/third_party/` | qrcodegen (MIT), quirc (ISC), xem `THIRD_PARTY.md` |
-| `tests/` | `qr_tests`/`qr_ui_tests`, `wifi_tests`/`wifi_ui_tests`, `connect_tests` (403 kiểm tra: mã hóa, giao thức, lưu trữ peer, TCP loopback thật, UDP broadcast LAN thật) |
+| `tests/` | `qr_tests`/`qr_ui_tests`, `wifi_tests`/`wifi_ui_tests`, `connect_tests` (465 kiểm tra: mã hóa, giao thức, mạng thật, toán học biên màn hình, hook Win32 thật) |
 | `assets/resources.qrc`, `icon/` | Icon nhúng vào exe |
 | `profiles/default.json` | Profile mặc định (chain mẫu) |
 | `build_app.bat`, `run_app.bat` | Build + đóng gói (`windeployqt`), chạy bản Release |
@@ -106,12 +109,21 @@ chỉ hoạt động trong LAN; không có chế độ ẩn/im lặng; kênh tru
 - `PeerDiscovery`: khám phá LAN qua UDP broadcast, test qua **broadcast UDP thật** trên máy này (không
   phải giả lập) - 2 instance thấy nhau đúng, tự lọc bỏ chính mình.
 
-**Chưa làm (còn lại):** hook bàn phím/chuột toàn cục (Win32, chỉ cô lập trong 1 lớp, chỉ bật khi đang
-chia sẻ quyền điều khiển), tiêm input ở máy nhận (SendInput), phát hiện chuột chạm biên màn hình để
-chuyển quyền điều khiển, đồng bộ clipboard, giao diện (hiển thị/nhập mã ghép đôi, danh sách máy, lưới
-sắp xếp màn hình), `ConnectSessionController` điều phối toàn bộ, nối vào `MainWindow`. Phần hook/injection
-toàn cục chỉ kiểm thử được một phần trên 1 máy (hook cài/gỡ không crash, input tiêm ra đúng) - trải nghiệm
-chuột "đi qua biên sang máy khác" cần ít nhất 2 máy thật để xác nhận, tôi sẽ nói rõ khi tới phần đó.
+**Đã xong lớp Win32, đã test thật trên máy này (465 kiểm tra):**
+- `EdgeDetector`: toán học thuần (chạm biên, vị trí chuẩn hóa, điểm vào máy nhận kể cả khi 2 máy độ
+  phân giải khác nhau).
+- `InputHook`: cài/gỡ hook toàn cục **THẬT** (SetWindowsHookExW) trên máy này thành công; logic
+  tính delta chuột, cổng bật/tắt theo `active`, nhận diện tổ hợp phím Ctrl+Alt+Home - test trực tiếp
+  qua gọi các hàm xử lý sự kiện mà không cần cài hook thật (để không chiếm chuột/bàn phím thật của
+  người đang dùng máy chạy test).
+- `InputInjector`: viết xong (SendInput/SetCursorPos), nhưng **cố ý không gọi trong test tự động** vì
+  nó thật sự di chuyển chuột/gõ phím trên máy đang chạy - sẽ cần bạn tự thử tay.
+
+**Chưa làm (còn lại):** đồng bộ clipboard, giao diện (hiển thị/nhập mã ghép đôi, danh sách máy, lưới
+sắp xếp màn hình, HUD trạng thái "đang điều khiển..."), `ConnectSessionController` điều phối toàn bộ
+(nối discovery + pairing + network session + edge detection + hook + injector lại với nhau), nối vào
+`MainWindow`. Trải nghiệm chuột "đi qua biên sang máy khác" cần ít nhất 2 máy thật nối cùng LAN để xác
+nhận - tôi sẽ nói rõ khi tới phần đó, bạn sẽ cần tự kiểm tra trên 2 máy thật.
 
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`. `run_app.bat` chạy `OneForAll_Release\OneForAll.exe`. Thư mục `build/`, `OneForAll_Release/`, `logs/` không được commit (xem `.gitignore`).
@@ -137,6 +149,7 @@ Mỗi lần sửa code: commit riêng với message mô tả rõ, và cập nh�
 | 2026-10-06 | Love WiFi | Nút vui "Love WiFi" trong tab Mạng xung quanh; từ chối 2 lần nữa các biến thể thu nhỏ của yêu cầu dò mật khẩu (v1.0.10) |
 | 2026-10-07 | Connect Together (nền tảng) | Bắt đầu module tham khảo Mouse without Borders: mã hóa AES-256-GCM (Windows CNG), mã ghép đôi, khung giao thức - 256 test. Chưa có mạng/UI (v1.1.0) |
 | 2026-10-07 | Connect Together (mạng) | Lưu trữ peer, phiên TCP mã hóa, khám phá LAN qua UDP - test thật (loopback TCP + broadcast UDP thật trên máy), 403 test. Chưa có hook input/UI (v1.1.1) |
+| 2026-10-07 | Connect Together (Win32 input) | Phát hiện biên màn hình, hook bàn phím/chuột toàn cục (cài/gỡ thật trên máy), tiêm input - 465 test. Chưa có điều phối/UI (v1.1.2) |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `

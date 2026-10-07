@@ -118,6 +118,12 @@ add_library(connect_core STATIC
     src/tools/connect/engine/NetworkSession.cpp
     src/tools/connect/engine/PeerDiscovery.h
     src/tools/connect/engine/PeerDiscovery.cpp
+    src/tools/connect/engine/EdgeDetector.h
+    src/tools/connect/engine/EdgeDetector.cpp
+    src/tools/connect/engine/InputInjector.h
+    src/tools/connect/engine/InputInjector.cpp
+    src/tools/connect/engine/InputHook.h
+    src/tools/connect/engine/InputHook.cpp
 )
 target_include_directories(connect_core PUBLIC src)
 target_link_libraries(connect_core PUBLIC Qt6::Core Qt6::Network bcrypt)

@@ -5,13 +5,20 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QHostAddress>
+#include <QSet>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <cmath>
 #include <cstdio>
 
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
 #include "tools/connect/engine/CryptoSession.h"
+#include "tools/connect/engine/EdgeDetector.h"
+#include "tools/connect/engine/InputHook.h"
 #include "tools/connect/engine/NetworkSession.h"
 #include "tools/connect/engine/PairingCode.h"
 #include "tools/connect/engine/PeerDiscovery.h"
@@ -449,6 +456,160 @@ int main(int argc, char** argv)
         a.stop();
         b.stop();
         CHECK(!a.isRunning() && !b.isRunning());
+    }
+
+    // ---- EdgeDetector: toán học thuần, không cần màn hình thật ----
+    {
+        const QRect bounds(0, 0, 1920, 1080); // vùng gộp màn hình cục bộ (virtual desktop)
+
+        // Không có láng giềng nào -> không bao giờ kích hoạt, dù đứng đúng mép
+        CHECK(EdgeDetector::detectCrossing(QPoint(0, 500), bounds, {}) == ScreenSide::None);
+        CHECK(EdgeDetector::detectCrossing(QPoint(1919, 500), bounds, {}) == ScreenSide::None);
+
+        // Giữa màn hình, có láng giềng mọi phía -> vẫn không kích hoạt
+        const QSet<ScreenSide> allSides = {ScreenSide::Left, ScreenSide::Right, ScreenSide::Top, ScreenSide::Bottom};
+        CHECK(EdgeDetector::detectCrossing(QPoint(960, 540), bounds, allSides) == ScreenSide::None);
+
+        // Chạm đúng từng biên với láng giềng tương ứng
+        CHECK(EdgeDetector::detectCrossing(QPoint(0, 540), bounds, {ScreenSide::Left}) == ScreenSide::Left);
+        CHECK(EdgeDetector::detectCrossing(QPoint(1919, 540), bounds, {ScreenSide::Right}) == ScreenSide::Right);
+        CHECK(EdgeDetector::detectCrossing(QPoint(960, 0), bounds, {ScreenSide::Top}) == ScreenSide::Top);
+        CHECK(EdgeDetector::detectCrossing(QPoint(960, 1079), bounds, {ScreenSide::Bottom}) == ScreenSide::Bottom);
+
+        // Chạm biên nhưng phía đó KHÔNG có láng giềng -> không kích hoạt
+        CHECK(EdgeDetector::detectCrossing(QPoint(0, 540), bounds, {ScreenSide::Right}) == ScreenSide::None);
+
+        // Vượt hẳn ra ngoài vùng (không chỉ chạm đúng mép) vẫn được tính là đã chạm biên
+        CHECK(EdgeDetector::detectCrossing(QPoint(-50, 540), bounds, {ScreenSide::Left}) == ScreenSide::Left);
+        CHECK(EdgeDetector::detectCrossing(QPoint(2000, 540), bounds, {ScreenSide::Right}) == ScreenSide::Right);
+
+        // Vùng rỗng không được crash, trả về None
+        CHECK(EdgeDetector::detectCrossing(QPoint(0, 0), QRect(), allSides) == ScreenSide::None);
+
+        // Vị trí chuẩn hóa dọc biên
+        CHECK(std::abs(EdgeDetector::normalizedPositionAlongEdge(QPoint(0, 0), bounds, ScreenSide::Left) - 0.0) < 0.01);
+        CHECK(std::abs(EdgeDetector::normalizedPositionAlongEdge(QPoint(0, 1080), bounds, ScreenSide::Left) - 1.0) < 0.01);
+        CHECK(std::abs(EdgeDetector::normalizedPositionAlongEdge(QPoint(0, 540), bounds, ScreenSide::Left) - 0.5) < 0.01);
+        CHECK(std::abs(EdgeDetector::normalizedPositionAlongEdge(QPoint(960, 0), bounds, ScreenSide::Top) - 0.5) < 0.01);
+        // Giá trị ngoài vùng vẫn phải kẹp về [0,1], không âm/không vượt quá 1
+        CHECK(EdgeDetector::normalizedPositionAlongEdge(QPoint(0, -500), bounds, ScreenSide::Left) == 0.0);
+        CHECK(EdgeDetector::normalizedPositionAlongEdge(QPoint(0, 5000), bounds, ScreenSide::Left) == 1.0);
+
+        // Điểm vào khi nhận quyền điều khiển: đi vào từ biên nào thì nằm sát biên đó, lùi vài pixel
+        const QPoint enterLeft = EdgeDetector::entryPoint(bounds, ScreenSide::Left, 0.5);
+        CHECK(enterLeft.x() > bounds.left() && enterLeft.x() < bounds.left() + 10);
+        CHECK(std::abs(enterLeft.y() - 540) < 5);
+
+        const QPoint enterRight = EdgeDetector::entryPoint(bounds, ScreenSide::Right, 0.25);
+        CHECK(enterRight.x() < bounds.right() && enterRight.x() > bounds.right() - 10);
+        CHECK(std::abs(enterRight.y() - 270) < 5);
+
+        const QPoint enterTop = EdgeDetector::entryPoint(bounds, ScreenSide::Top, 0.75);
+        CHECK(enterTop.y() > bounds.top() && enterTop.y() < bounds.top() + 10);
+        CHECK(std::abs(enterTop.x() - 1440) < 5);
+
+        const QPoint enterBottom = EdgeDetector::entryPoint(bounds, ScreenSide::Bottom, 0.0);
+        CHECK(enterBottom.y() < bounds.bottom() && enterBottom.y() > bounds.bottom() - 10);
+        CHECK(std::abs(enterBottom.x() - 0) < 5);
+
+        // Toàn bộ quy trình: phát hiện chạm biên bên gửi -> tính vị trí -> đổi hướng -> tính điểm vào bên nhận
+        const QRect senderBounds(0, 0, 1920, 1080);
+        const QPoint crossingPoint(1919, 800); // gần đáy, chạm biên phải
+        const ScreenSide crossedSide = EdgeDetector::detectCrossing(crossingPoint, senderBounds, {ScreenSide::Right});
+        CHECK(crossedSide == ScreenSide::Right);
+        const double frac = EdgeDetector::normalizedPositionAlongEdge(crossingPoint, senderBounds, crossedSide);
+        const ScreenSide receiverEntrySide = oppositeSide(crossedSide);
+        CHECK(receiverEntrySide == ScreenSide::Left);
+        const QRect receiverBounds(0, 0, 2560, 1440); // máy nhận có độ phân giải KHÁC - vẫn phải hoạt động đúng
+        const QPoint entry = EdgeDetector::entryPoint(receiverBounds, receiverEntrySide, frac);
+        CHECK(entry.x() < receiverBounds.left() + 10); // vào từ bên trái của máy nhận
+        CHECK(std::abs(entry.y() - static_cast<int>(frac * 1440)) < 5); // tỉ lệ đúng theo độ phân giải máy nhận
+    }
+
+    // ---- InputHook: chỉ test logic thuần (tính delta, cổng active, nhận diện hotkey) qua gọi thẳng
+    // onRaw*() - KHÔNG gọi install() với active=true và KHÔNG dùng InputInjector thật trong test tự
+    // động, vì làm vậy sẽ thật sự khóa/chiếm chuột và bàn phím của người đang ngồi máy chạy test này.
+    {
+        InputHook hook;
+        CHECK(!hook.isInstalled());
+        CHECK(!hook.isActive());
+
+        // Khi KHÔNG active: sự kiện thô đi qua bình thường (không bị "nuốt"), không phát tín hiệu
+        int moveSignals = 0, buttonSignals = 0, wheelSignals = 0, keySignals = 0, hotkeySignals = 0;
+        QObject::connect(&hook, &InputHook::mouseMoveRelative, [&](int, int) { ++moveSignals; });
+        QObject::connect(&hook, &InputHook::mouseButtonChanged, [&](int, bool) { ++buttonSignals; });
+        QObject::connect(&hook, &InputHook::mouseWheelMoved, [&](int, int) { ++wheelSignals; });
+        QObject::connect(&hook, &InputHook::keyChanged, [&](int, int, bool, bool) { ++keySignals; });
+        QObject::connect(&hook, &InputHook::returnHotkeyPressed, [&]() { ++hotkeySignals; });
+
+        CHECK(hook.onRawMouseMove(100, 100) == false); // không active -> không nuốt sự kiện
+        CHECK(moveSignals == 0);
+        CHECK(hook.onRawMouseButton(0, true) == false);
+        CHECK(buttonSignals == 0);
+
+        // Bật active: sự kiện bị nuốt (trả về true) và phát tín hiệu tương ứng
+        hook.setActive(true);
+        CHECK(hook.isActive());
+
+        CHECK(hook.onRawMouseMove(100, 100) == true); // điểm đầu tiên sau khi active: nuốt, chưa có delta
+        CHECK(moveSignals == 0); // chưa phát vì chưa có "điểm trước" để tính delta
+        CHECK(hook.onRawMouseMove(110, 95) == true);
+        CHECK(moveSignals == 1); // lần thứ 2 trở đi mới có delta hợp lệ
+
+        CHECK(hook.onRawMouseButton(1, true) == true);
+        CHECK(buttonSignals == 1);
+        CHECK(hook.onRawMouseWheel(120, 0) == true);
+        CHECK(wheelSignals == 1);
+        CHECK(hook.onRawKey(0x41, 30, true, false) == true); // phím 'A' thường
+        CHECK(keySignals == 1);
+
+        // Tắt active: quay về trạng thái đi qua bình thường
+        hook.setActive(false);
+        CHECK(hook.onRawMouseMove(200, 200) == false);
+        CHECK(moveSignals == 1); // không tăng thêm
+
+        // Phím nóng Ctrl+Alt+Home: luôn phát returnHotkeyPressed bất kể active hay không, và việc có
+        // "nuốt" tổ hợp phím hay không phụ thuộc trạng thái active tại thời điểm nhấn.
+        CHECK(hotkeySignals == 0);
+        hook.onRawKey(VK_CONTROL, 29, true, true);
+        hook.onRawKey(VK_MENU, 56, true, true);
+        const bool consumedWhenInactive = hook.onRawKey(VK_HOME, 71, true, true);
+        CHECK(hotkeySignals == 1);
+        CHECK(consumedWhenInactive == false); // không active -> không nuốt, để phím Home đi qua bình thường
+
+        hook.setActive(true);
+        const bool consumedWhenActive = hook.onRawKey(VK_HOME, 71, true, true);
+        CHECK(hotkeySignals == 2);
+        CHECK(consumedWhenActive == true); // active -> nuốt tổ hợp phím nóng, không gửi Home sang máy kia
+
+        // Nhả Ctrl thì tổ hợp không còn đủ điều kiện nữa
+        hook.onRawKey(VK_CONTROL, 29, false, true);
+        const int hotkeyCountBefore = hotkeySignals;
+        hook.onRawKey(VK_HOME, 71, true, true);
+        CHECK(hotkeySignals == hotkeyCountBefore); // thiếu Ctrl -> không tính là phím nóng nữa
+    }
+
+    // ---- InputHook: vòng đời cài/gỡ hook THẬT (nhưng không bao giờ setActive(true) lúc đã cài -
+    // hook mặc định active=false nên hoàn toàn trong suốt, không ảnh hưởng chuột/bàn phím thật) ----
+    {
+        InputHook hook;
+        QString err;
+        const bool installed = hook.install(&err);
+        CHECK(installed);
+        CHECK(err.isEmpty());
+        CHECK(hook.isInstalled());
+        CHECK(!hook.isActive()); // mặc định không active - trong suốt với người dùng thật
+
+        CHECK(hook.install(&err)); // gọi lại install() khi đã cài -> idempotent, vẫn trả true
+
+        hook.uninstall();
+        CHECK(!hook.isInstalled());
+        hook.uninstall(); // gọi lại uninstall() khi chưa cài -> không crash
+
+        // Cài lại được sau khi đã gỡ
+        CHECK(hook.install(&err));
+        CHECK(hook.isInstalled());
+        hook.uninstall();
     }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);

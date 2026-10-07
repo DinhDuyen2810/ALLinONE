@@ -33,8 +33,8 @@ struct ProtocolMessage
     QString textB;      // PairRequest/PairAccept: id của máy gửi
     QByteArray longTermKey; // PairAccept: khóa dài hạn mới (32 byte)
 
-    int intA{0};  // MouseMove: dx; MouseButton: mã nút; KeyEvent: virtual-key code; ControlHandoff: side (int ScreenSide)
-    int intB{0};  // MouseMove: dy; MouseWheel: deltaY; KeyEvent: scan code
+    int intA{0};  // MouseMove: dx; MouseButton: mã nút; KeyEvent: virtual-key code; ControlHandoff: side (int ScreenSide) mà máy nhận đi vào
+    int intB{0};  // MouseMove: dy; MouseWheel: deltaY; KeyEvent: scan code; ControlHandoff: vị trí dọc biên, cố định phần nghìn (0..1000)
     bool flagA{false}; // MouseButton/KeyEvent: pressed=true/released=false; KeyEvent: extended key
     bool flagB{false};
 
