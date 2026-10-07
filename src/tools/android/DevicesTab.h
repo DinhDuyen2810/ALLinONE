@@ -26,6 +26,12 @@ public:
     explicit DevicesTab(QWidget* parent = nullptr);
     ~DevicesTab() override;
 
+    /// Dừng phiên gương/điều khiển scrcpy đang chạy (nếu có) - một điểm vào DUY NHẤT dùng chung cho nút
+    /// "Dừng", destructor, VÀ AndroidControlWindow::closeEvent (đóng cửa sổ Android Phone Control chỉ ẨN
+    /// nó đi chứ không hủy đối tượng - không tự gọi hàm này từ closeEvent thì phiên scrcpy treo lại ngầm
+    /// vô thời hạn dù đã "đóng" cửa sổ, xem AndroidControlWindow.cpp).
+    void stopActiveSession();
+
 private slots:
     void onRefreshClicked();
     void onAutoRefreshTick();

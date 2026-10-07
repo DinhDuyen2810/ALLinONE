@@ -65,7 +65,10 @@ void MainWindow::registerTools()
 void MainWindow::setupUi()
 {
     setWindowTitle("ONE FOR ALL - Desktop Suite v1.0");
-    setWindowIcon(IconHelper::makeBadgedIcon(":/icons/autoclicker.jpg", 48, 10, 4));
+    // Icon đại diện CHO CẢ ỨNG DỤNG (cửa sổ chính/taskbar lúc đang chạy) - khác icon riêng từng tool
+    // trong sidebar (mỗi tool vẫn giữ icon riêng, vd autoclicker.jpg cho Auto Click). Icon file .exe
+    // (Explorer/shortcut/khi chưa chạy) nằm ở assets/app_icon.ico, cũng dựng từ icon/App.png.
+    setWindowIcon(IconHelper::makeBadgedIcon(":/icons/App.png", 48, 10, 4));
     resize(960, 580);
     setMinimumSize(850, 520);
     setStyleSheet(

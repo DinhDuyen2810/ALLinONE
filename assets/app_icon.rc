@@ -1,5 +1,5 @@
 // Biểu tượng chính của OneForAll.exe (hiện trong Explorer/Taskbar/shortcut) - khác icon nội bộ từng
 // tool hiển thị trong sidebar (những icon đó nạp qua Qt Resource lúc chạy, không phải icon file .exe).
-// Dựng từ icon/autoclicker.jpg theo đúng thuật toán IconHelper::makeBadgedPixmap (nền trắng bo góc +
-// viền mảnh) để đồng nhất với icon MainWindow dùng khi chạy - xem assets/app_icon.ico.
+// Dựng từ icon/App.png theo đúng thuật toán IconHelper::makeBadgedPixmap (nền trắng bo góc + viền mảnh)
+// để đồng nhất với icon MainWindow dùng khi chạy - xem assets/app_icon.ico.
 IDI_ICON1 ICON "app_icon.ico"

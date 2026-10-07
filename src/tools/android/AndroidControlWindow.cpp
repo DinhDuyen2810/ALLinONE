@@ -4,6 +4,7 @@
 #include "core/IconHelper.h"
 #include "core/Logger.h"
 
+#include <QCloseEvent>
 #include <QVBoxLayout>
 
 AndroidControlWindow::AndroidControlWindow(QWidget* parent)
@@ -29,6 +30,18 @@ AndroidControlWindow::AndroidControlWindow(QWidget* parent)
 }
 
 AndroidControlWindow::~AndroidControlWindow() = default;
+
+void AndroidControlWindow::closeEvent(QCloseEvent* event)
+{
+    // QUAN TRỌNG: cửa sổ này được AndroidControlTool giữ qua QPointer và TÁI DÙNG ở lần mở sau (không
+    // có WA_DeleteOnClose) - đóng cửa sổ (bấm X) mặc định CHỈ ẨN đi, KHÔNG hủy đối tượng. Nếu không tự
+    // dừng phiên scrcpy ở đây, phiên gương/điều khiển đang chạy (nếu có) sẽ tiếp tục chạy ngầm vô thời
+    // hạn dù người dùng tưởng đã "đóng" công cụ này - đúng như thói quen đóng cửa sổ của các tool khác
+    // trong ứng dụng (xem ConnectWindow::closeEvent/VpnControlWindow::closeEvent).
+    if (m_devicesTab)
+        m_devicesTab->stopActiveSession();
+    event->accept();
+}
 
 void AndroidControlWindow::buildUi()
 {

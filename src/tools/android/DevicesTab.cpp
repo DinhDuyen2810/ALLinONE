@@ -4,6 +4,7 @@
 #include "WirelessPairDialog.h"
 #include "engine/AdbController.h"
 
+#include <QApplication>
 #include <QCheckBox>
 #include <QColor>
 #include <QComboBox>
@@ -44,9 +45,20 @@ DevicesTab::DevicesTab(QWidget* parent)
     m_autoRefreshTimer->setInterval(3000);
     connect(m_autoRefreshTimer, &QTimer::timeout, this, &DevicesTab::onAutoRefreshTick);
     m_autoRefreshTimer->start();
+
+    // Lưới an toàn cuối cùng: nếu người dùng thoát HẲN One for ALL theo đường khác (vd menu Thoát gọi
+    // thẳng qApp->quit() - xem MalwareScanTab.cpp/PartitionTab.cpp) MÀ KHÔNG đóng cửa sổ Android Phone
+    // Control trước, closeEvent của cửa sổ đó sẽ không kịp chạy để tự dừng phiên scrcpy. aboutToQuit luôn
+    // phát ra đúng một lần trước khi vòng lặp sự kiện kết thúc, bất kể thoát theo đường nào.
+    connect(qApp, &QApplication::aboutToQuit, this, &DevicesTab::stopActiveSession);
 }
 
 DevicesTab::~DevicesTab()
+{
+    stopActiveSession();
+}
+
+void DevicesTab::stopActiveSession()
 {
     if (m_launcher && m_launcher->isRunning())
         m_launcher->stop();
@@ -358,7 +370,7 @@ void DevicesTab::onControlClicked()
 
 void DevicesTab::onStopClicked()
 {
-    m_launcher->stop();
+    stopActiveSession();
 }
 
 ScrcpyOptions DevicesTab::collectOptions() const

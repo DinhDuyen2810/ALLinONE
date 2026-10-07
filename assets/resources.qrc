@@ -1,5 +1,6 @@
 <RCC>
     <qresource prefix="/icons">
+        <file alias="App.png">../icon/App.png</file>
         <file alias="autoclicker.jpg">../icon/autoclicker.jpg</file>
         <file alias="QR.jpg">../icon/QR.jpg</file>
         <file alias="cleaner.png">../icon/cleaner.png</file>
