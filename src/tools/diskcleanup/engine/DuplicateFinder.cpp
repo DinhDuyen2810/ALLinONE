@@ -8,6 +8,8 @@
 #include <QFileInfo>
 #include <QHash>
 
+#include <algorithm>
+
 namespace
 {
 /// Hash SHA-256 nội dung tệp, đọc theo khối để không nạp cả tệp lớn vào bộ nhớ. Kiểm tra cờ dừng
@@ -91,8 +93,13 @@ void DuplicateFinder::run()
     }
 
     // Bước 2: trong mỗi nhóm kích thước có >= 2 tệp, hash nội dung để xác nhận trùng thật (không
-    // chỉ trùng kích thước ngẫu nhiên).
-    int groupCount = 0;
+    // chỉ trùng kích thước ngẫu nhiên). GOM VÀO BỘ NHỚ, KHÔNG phát tín hiệu từng nhóm một - thư mục
+    // như cache trình duyệt có thể tạo ra hàng nghìn "nhóm trùng lặp" (các khối cache cùng cỡ cố
+    // định), nếu luồng giao diện phải dựng hàng nghìn mục cây liên tiếp theo từng tín hiệu riêng lẻ,
+    // có nguy cơ Windows đánh dấu cửa sổ "Không phản hồi" (đã xác nhận bằng kiểm tra thật). Thay vào
+    // đó, đợi quét xong, sắp xếp theo dung lượng lãng phí giảm dần rồi CHỈ PHÁT MỘT LẦN - đúng mẫu
+    // LargeFileScanner đã được đo thực tế là không gây treo UI dù quét hàng trăm nghìn tệp.
+    QList<DuplicateGroup> allGroups;
     qint64 wastedTotal = 0;
     qint64 filesHashed = 0;
     for (auto sizeIt = bySize.constBegin(); sizeIt != bySize.constEnd(); ++sizeIt)
@@ -132,11 +139,17 @@ void DuplicateFinder::run()
             group.paths = hashIt.value();
             group.sizeEachBytes = sizeIt.key();
             group.hashHex = hashIt.key();
-            emit groupFound(group);
-            ++groupCount;
             wastedTotal += group.wastedBytes();
+            allGroups.push_back(group);
         }
     }
 
-    emit scanFinished(groupCount, wastedTotal);
+    std::sort(allGroups.begin(), allGroups.end(), [](const DuplicateGroup& a, const DuplicateGroup& b) {
+        return a.wastedBytes() > b.wastedBytes();
+    });
+    const int totalGroupsFound = allGroups.size();
+    if (allGroups.size() > m_maxGroups)
+        allGroups.resize(m_maxGroups);
+
+    emit scanFinished(allGroups, wastedTotal, totalGroupsFound);
 }

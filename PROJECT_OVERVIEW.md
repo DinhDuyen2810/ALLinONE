@@ -72,7 +72,7 @@
 | `src/tools/diskcleanup/DiskCleanupTool.*` | `ITool` của Disk Cleanup (một cửa sổ duy nhất) |
 | `src/tools/wifi/WifiTool.*` | `ITool` của WiFi (một cửa sổ duy nhất) |
 | `src/third_party/` | qrcodegen (MIT), quirc (ISC), xem `THIRD_PARTY.md` |
-| `tests/` | `qr_tests`/`qr_ui_tests`, `wifi_tests`/`wifi_ui_tests`, `connect_tests`/`connect_ui_tests` (506 + 2, ghép đôi 2 chiều thật qua TCP, ổn định qua 40+ lần chạy liên tiếp), `diskcleanup_tests`/`diskcleanup_ui_tests` (156 + 19 kiểm tra, có xóa file thật qua Thùng rác, liệt kê phân vùng thật) |
+| `tests/` | `qr_tests`/`qr_ui_tests`, `wifi_tests`/`wifi_ui_tests`, `connect_tests`/`connect_ui_tests` (506 + 2, ghép đôi 2 chiều thật qua TCP, ổn định qua 40+ lần chạy liên tiếp), `diskcleanup_tests`/`diskcleanup_ui_tests` (167 + 19 kiểm tra, có xóa file thật qua Thùng rác, liệt kê phân vùng thật) |
 | `assets/resources.qrc`, `icon/` | Icon nhúng vào exe |
 | `profiles/default.json` | Profile mặc định (chain mẫu) |
 | `build_app.bat`, `run_app.bat` | Build + đóng gói (`windeployqt`), chạy bản Release |
@@ -183,9 +183,11 @@ cảnh báo không thể hoàn tác).
 - **Tìm tệp lớn** (`LargeFilesTab`): chọn ổ đĩa hoặc thư mục bất kỳ (duyệt tay), ngưỡng kích thước tối
   thiểu (MB), quét bằng `LargeFileScanner`; chọn nhiều dòng để mở thư mục chứa hoặc xóa vào Thùng rác.
 - **Tìm tệp trùng lặp** (`DuplicateFilesTab`): chọn 1 thư mục, ngưỡng kích thước tối thiểu (KB), quét
-  bằng `DuplicateFinder` (nhóm theo kích thước rồi hash SHA-256 nội dung để xác nhận trùng thật); hiển
-  thị theo cây (nhóm → từng tệp có checkbox), mặc định GIỮ LẠI bản đầu mỗi nhóm, tick sẵn các bản còn
-  lại để xóa vào Thùng rác.
+  bằng `DuplicateFinder` (nhóm theo kích thước rồi hash SHA-256 nội dung để xác nhận trùng thật); kết
+  quả báo về MỘT LẦN khi quét xong (không phát từng nhóm một - xem phần hiệu năng bên dưới), đã sắp xếp
+  theo dung lượng lãng phí giảm dần và giới hạn tối đa 500 nhóm; hiển thị theo cây (nhóm → từng tệp có
+  checkbox, các nhóm mặc định thu gọn), mặc định GIỮ LẠI bản đầu mỗi nhóm, tick sẵn các bản còn lại để
+  xóa vào Thùng rác.
 - **Quản lý phân vùng** (`PartitionTab`): liệt kê phân vùng thật (`PartitionManager::listPartitions()`,
   chỉ đọc, không cần quyền Administrator) với dung lượng/còn trống/loại/cờ khởi động-hệ thống; banner
   cảnh báo rủi ro mất dữ liệu luôn hiển thị; nếu chưa chạy với quyền Administrator thì hiện banner +
@@ -207,7 +209,25 @@ phút không có gì thay đổi, không phải treo thật. Đã cải thiện:
 - `LargeFileScanner`/`DuplicateFinder` báo tiến độ dày hơn (mỗi 200 tệp thay vì 1024/256) và kèm đường
   dẫn tệp đang xử lý (rút gọn giữa chuỗi) - người dùng THẤY ứng dụng vẫn đang chạy, không chỉ đoán.
 
-**Đã xong, đã test (156 kiểm tra lõi + 19 kiểm tra UI):**
+**Lỗi thật thứ hai (sau cải thiện trên vẫn còn):** người dùng quét Tìm tệp trùng lặp trên ổ C: và Task
+Manager THẬT SỰ đánh dấu "Không phản hồi" (không chỉ cảm giác lần này). Nguyên nhân: `DuplicateFinder`
+cũ phát tín hiệu `groupFound` CHO TỪNG NHÓM MỘT, không giới hạn số lượng - một thư mục kiểu cache trình
+duyệt (nhiều hồ sơ Chrome, nhiều loại cache cùng dùng cỡ khối cố định) có thể tạo ra hàng trăm/nghìn
+"nhóm trùng lặp", mỗi tín hiệu khiến luồng giao diện phải dựng thêm mục cây + tính lại layout - dồn dập
+đủ nhiều sẽ chiếm trọn một lượt xử lý sự kiện của Qt mà không nhường lại cho vòng lặp thông điệp của
+Windows, đủ lâu để bị đánh dấu treo thật. Sửa bằng cách đổi hẳn kiến trúc: `DuplicateFinder` giờ gom
+toàn bộ kết quả trong bộ nhớ, sắp xếp theo dung lượng lãng phí giảm dần, cắt theo `setMaxGroups()` (mặc
+định 500) rồi CHỈ PHÁT scanFinished MỘT LẦN DUY NHẤT - đúng mẫu `LargeFileScanner` đã được đo thực tế
+không gây treo. UI dựng cả cây trong 1 lần (`setUpdatesEnabled(false)` khi dựng hàng loạt) và các nhóm
+mặc định THU GỌN (không mở sẵn) để giảm chi phí dựng giao diện khi có nhiều kết quả. Đo lại thật bằng
+cách quét toàn bộ thư mục dữ liệu Chrome (~20.300 tệp, nhiều hồ sơ) trong 60 giây liên tục: độ trễ lớn
+nhất giữa 2 lần xử lý sự kiện của luồng giao diện chỉ 22ms trong suốt quá trình - xác nhận hết hẳn nguy
+cơ "Không phản hồi". (Lưu ý: quét nội dung cache trình duyệt vẫn CHẬM về bản chất - hash SHA-256 hàng
+chục nghìn tệp cần thời gian thật - nhưng không còn làm treo giao diện; người dùng muốn kết quả nhanh
+và hữu ích hơn nên chọn thư mục tài liệu cá nhân (Documents/Downloads/Pictures) thay vì toàn ổ C:/cache
+trình duyệt.)
+
+**Đã xong, đã test (167 kiểm tra lõi + 19 kiểm tra UI):**
 - `CategoryRegistry`: dựng danh sách hạng mục + phân giải đường dẫn qua một `CleanupEnvironment` có thể
   thay thế bằng môi trường giả - test không đụng vào Temp/Windows/SoftwareDistribution thật của máy.
   Hạng mục không tồn tại trên máy (chưa cài trình duyệt đó, thư mục chưa từng tạo...) tự động có
@@ -231,7 +251,10 @@ phút không có gì thay đổi, không phải treo thật. Đã cải thiện:
 - `DuplicateFinder`: nhóm theo kích thước thật của writeFile (toàn ký tự giống nhau), xác nhận tệp cùng
   kích thước nhưng khác nội dung KHÔNG bị coi là trùng (bước hash hoạt động đúng), ngưỡng tối thiểu lọc
   đúng, `wastedBytes()` tính đúng, dừng giữa chừng/thư mục không tồn tại không crash. Cũng loại symlink
-  khỏi quét (`QDir::NoSymLinks`) - test hồi quy tương tự lỗi `.lnk` của `CleanupScanner` ở trên.
+  khỏi quét (`QDir::NoSymLinks`) - test hồi quy tương tự lỗi `.lnk` của `CleanupScanner` ở trên. Thêm
+  test hồi quy cho lỗi "Không phản hồi" thật: dựng 20 nhóm trùng lặp giả, `setMaxGroups(5)` xác nhận
+  `scanFinished` chỉ trả về đúng 5 nhóm LÃNG PHÍ NHIỀU NHẤT (sắp xếp giảm dần), nhưng tổng lãng phí +
+  tổng số nhóm báo về vẫn phản ánh ĐỦ cả 20 nhóm thật tìm được.
 - `PartitionManager`: lõi JSON thuần (`internal::parsePartitionsJson`/`parseSupportedSizeJson`) test
   bằng dữ liệu mẫu dựng sẵn (không gọi PowerShell) - gồm cả trường hợp PowerShell 5.1 trả về 1 OBJECT
   đơn (không bọc mảng) khi chỉ có đúng 1 phân vùng, JSON rỗng/hỏng. `isElevated()`/`listPartitions()`
@@ -287,6 +310,7 @@ Mỗi lần sửa code: commit riêng với message mô tả rõ, và cập nh�
 | 2026-10-07 | Disk Cleanup (UI + sửa lỗi .lnk) | UI 2 tab (Dọn dẹp theo hạng mục, Tìm tệp lớn), nối vào MainWindow; phát hiện và sửa lỗi thật khi quét tay - Qt tự "đi theo" lối tắt (.lnk) khiến hạng mục Recent Items bị cộng nhầm hàng chục GB; 91 test lõi + 10 test UI (v1.4.0) |
 | 2026-10-07 | Disk Cleanup (trùng lặp + phân vùng) | Thêm `DuplicateFinder` + tab Tìm tệp trùng lặp (hash SHA-256, cây nhóm/tệp); thêm `PartitionManager`/`PartitionResizer` + tab Quản lý phân vùng (liệt kê thật, đổi kích thước qua Resize-Partition có xác nhận gõ tên ổ đĩa, yêu cầu quyền Administrator); sửa 2 lỗi thật phát hiện khi quét tay (stdin `-Command -` im lặng không chạy script nhiều dòng → đổi `-EncodedCommand`; lỗi PowerShell bị serialize CLIXML không đọc được → đổi `[Console]::Error`); 156 test lõi + 19 test UI (v1.5.0) |
 | 2026-10-07 | Disk Cleanup (phản hồi khi quét ổ lớn) | Người dùng báo quét ổ C: 120GB bị Windows đánh dấu "Không phản hồi". Đo thật: luồng giao diện không hề bị chặn (độ trễ lớn nhất 21ms trong lúc quét thật ~390.000 tệp/20s) - đổi `CleanupScanner`/`CleanupExecutor`/`LargeFileScanner`/`DuplicateFinder` sang `QThread::LowPriority`, tăng tần suất báo tiến độ (mỗi 200 tệp) kèm đường dẫn đang xử lý để người dùng thấy ứng dụng vẫn chạy (v1.5.1) |
+| 2026-10-07 | Disk Cleanup (sửa "Không phản hồi" THẬT ở Tìm tệp trùng lặp) | Người dùng báo lại: Tìm tệp trùng lặp trên ổ C: vẫn bị Task Manager đánh dấu "Không phản hồi" thật (không chỉ cảm giác). Nguyên nhân: `DuplicateFinder` cũ phát `groupFound` cho TỪNG nhóm một, không giới hạn - thư mục cache trình duyệt (nhiều hồ sơ Chrome, cỡ khối cố định) tạo ra hàng trăm/nghìn nhóm, dồn dập đủ để chiếm trọn một lượt xử lý sự kiện của Qt. Sửa: `DuplicateFinder` gom toàn bộ trong bộ nhớ, sắp xếp theo lãng phí giảm dần, cắt `setMaxGroups()` (mặc định 500), CHỈ phát `scanFinished` một lần (đúng mẫu `LargeFileScanner`); UI dựng cả cây 1 lần (`setUpdatesEnabled(false)`), nhóm mặc định thu gọn. Đo lại thật: quét ~20.300 tệp dữ liệu Chrome trong 60s liên tục, độ trễ lớn nhất chỉ 22ms. 167 test lõi (+11 test hồi quy giới hạn/sắp xếp nhóm) (v1.5.2) |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `

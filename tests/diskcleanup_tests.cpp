@@ -465,22 +465,26 @@ int main(int argc, char** argv)
         finder.setRootPath(tmp.path());
         finder.setMinSizeBytes(100);
 
+        // scanFinished giờ chỉ phát MỘT LẦN DUY NHẤT với cả danh sách (không còn groupFound từng
+        // nhóm một) - xem lý do trong DuplicateFinder.h: tránh làm luồng giao diện phải dựng hàng
+        // nghìn mục cây liên tiếp theo từng tín hiệu riêng lẻ (nguy cơ Windows báo "Không phản hồi"
+        // với thư mục kiểu cache trình duyệt có nhiều tệp trùng kích thước khối cố định).
         QList<DuplicateGroup> groups;
-        QObject::connect(&finder, &DuplicateFinder::groupFound, [&](DuplicateGroup g) { groups.push_back(g); });
         bool finished = false;
-        int finalGroupCount = -1;
         qint64 finalWasted = -1;
-        QObject::connect(&finder, &DuplicateFinder::scanFinished, [&](int count, qint64 wasted) {
+        int finalTotalGroups = -1;
+        QObject::connect(&finder, &DuplicateFinder::scanFinished, [&](QList<DuplicateGroup> g, qint64 wasted, int total) {
+            groups = g;
             finished = true;
-            finalGroupCount = count;
             finalWasted = wasted;
+            finalTotalGroups = total;
         });
         finder.start();
         CHECK(waitUntil([&] { return finished; }, 15000));
         finder.wait();
 
         CHECK(groups.size() == 1); // đúng 1 nhóm trùng lặp thật
-        CHECK(finalGroupCount == 1);
+        CHECK(finalTotalGroups == 1);
         if (groups.size() == 1)
         {
             CHECK(groups[0].paths.size() == 3);
@@ -504,9 +508,11 @@ int main(int argc, char** argv)
             finder2.setRootPath(tmp.path());
             finder2.setMinSizeBytes(100);
             QList<DuplicateGroup> groups2;
-            QObject::connect(&finder2, &DuplicateFinder::groupFound, [&](DuplicateGroup g) { groups2.push_back(g); });
             bool finished2 = false;
-            QObject::connect(&finder2, &DuplicateFinder::scanFinished, [&](int, qint64) { finished2 = true; });
+            QObject::connect(&finder2, &DuplicateFinder::scanFinished, [&](QList<DuplicateGroup> g, qint64, int) {
+                groups2 = g;
+                finished2 = true;
+            });
             finder2.start();
             CHECK(waitUntil([&] { return finished2; }, 15000));
             finder2.wait();
@@ -532,14 +538,68 @@ int main(int argc, char** argv)
         finder4.setMinSizeBytes(1);
         bool finished4 = false;
         int count4 = -1;
-        QObject::connect(&finder4, &DuplicateFinder::scanFinished, [&](int count, qint64) {
+        QObject::connect(&finder4, &DuplicateFinder::scanFinished, [&](QList<DuplicateGroup>, qint64, int total) {
             finished4 = true;
-            count4 = count;
+            count4 = total;
         });
         finder4.start();
         CHECK(waitUntil([&] { return finished4; }));
         finder4.wait();
         CHECK(count4 == 0);
+    }
+
+    // ---- DuplicateFinder: nhiều nhóm (giống thư mục cache trình duyệt) - giới hạn + sắp xếp đúng ----
+    // Hồi quy cho lỗi thật phát hiện khi dùng tay: quét một thư mục kiểu cache trình duyệt thật (hàng
+    // nghìn tệp trùng kích thước khối cố định) từng khiến cửa sổ bị Windows báo "Không phản hồi" vì
+    // luồng giao diện phải dựng cây giao diện cho TỪNG nhóm một theo từng tín hiệu riêng lẻ, không
+    // giới hạn. Mô phỏng bằng 20 nhóm trùng lặp kích thước khác nhau, xác nhận setMaxGroups() cắt
+    // đúng số lượng VÀ giữ lại đúng các nhóm lãng phí nhiều nhất (sắp xếp giảm dần).
+    {
+        QTemporaryDir tmp;
+        CHECK(tmp.isValid());
+
+        // Tạo 20 nhóm, mỗi nhóm 2 tệp cùng nội dung nhưng kích thước khác nhau (1000, 2000, ..., 20000
+        // byte) - nhóm có kích thước CÀNG LỚN thì wastedBytes() càng lớn (vì chỉ 2 bản/nhóm, lãng phí
+        // = sizeEachBytes * 1).
+        for (int i = 1; i <= 20; ++i)
+        {
+            const qint64 size = i * 1000;
+            writeFile(tmp.path() + QString("/g%1_a.bin").arg(i), size);
+            writeFile(tmp.path() + QString("/g%1_b.bin").arg(i), size);
+        }
+
+        DuplicateFinder finder;
+        finder.setRootPath(tmp.path());
+        finder.setMinSizeBytes(1);
+        finder.setMaxGroups(5); // chỉ giữ 5 nhóm lãng phí nhiều nhất trong số 20 nhóm tìm được
+
+        QList<DuplicateGroup> groups;
+        bool finished = false;
+        qint64 finalWasted = -1;
+        int finalTotalGroups = -1;
+        QObject::connect(&finder, &DuplicateFinder::scanFinished, [&](QList<DuplicateGroup> g, qint64 wasted, int total) {
+            groups = g;
+            finished = true;
+            finalWasted = wasted;
+            finalTotalGroups = total;
+        });
+        finder.start();
+        CHECK(waitUntil([&] { return finished; }, 15000));
+        finder.wait();
+
+        CHECK(finalTotalGroups == 20); // tổng số nhóm THẬT tìm được, không bị giới hạn bởi setMaxGroups
+        CHECK(groups.size() == 5);     // nhưng danh sách trả về chỉ có 5 (đúng setMaxGroups)
+        // finalWasted là tổng lãng phí của TẤT CẢ 20 nhóm (1000+2000+...+20000 = 210000), không chỉ 5
+        // nhóm hiển thị - để người dùng biết tổng tiềm năng, dù danh sách bị cắt bớt.
+        CHECK(finalWasted == 210000);
+
+        // 5 nhóm trả về phải là 5 nhóm LỚN NHẤT (20000,19000,18000,17000,16000 byte mỗi tệp) và phải
+        // được sắp xếp giảm dần theo wastedBytes().
+        CHECK(groups.size() == 5 && groups[0].sizeEachBytes == 20000);
+        for (int i = 1; i < groups.size(); ++i)
+            CHECK(groups[i - 1].wastedBytes() >= groups[i].wastedBytes());
+        if (groups.size() == 5)
+            CHECK(groups[4].sizeEachBytes == 16000); // nhóm nhỏ nhất trong 5 nhóm được giữ
     }
 
     // ---- PartitionManager: parse JSON thuần bằng dữ liệu mẫu (không gọi PowerShell/đổi gì thật) ----

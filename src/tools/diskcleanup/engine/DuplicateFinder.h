@@ -34,12 +34,21 @@ public:
 
     void setRootPath(const QString& path) { m_rootPath = path; }
     void setMinSizeBytes(qint64 bytes) { m_minSizeBytes = bytes; }
+    /// Giới hạn số NHÓM trả về (giống LargeFileScanner::setMaxResults) - thư mục như cache trình
+    /// duyệt có thể tạo ra hàng nghìn tệp trùng kích thước (các khối cache cùng cỡ cố định), nếu báo
+    /// về UI từng nhóm một không giới hạn sẽ làm giao diện phải dựng hàng nghìn mục cây liên tiếp,
+    /// có nguy cơ khiến Windows đánh dấu cửa sổ "Không phản hồi". Kết quả được sắp xếp theo dung
+    /// lượng lãng phí giảm dần trước khi cắt bớt, nên các nhóm đáng chú ý nhất luôn được giữ lại.
+    void setMaxGroups(int max) { m_maxGroups = max; }
     void requestStop();
 
 signals:
     void progressTick(qint64 filesScanned, qint64 filesHashed, QString currentPath);
-    void groupFound(DuplicateGroup group);
-    void scanFinished(int groupCount, qint64 wastedBytes);
+    /// Phát MỘT LẦN DUY NHẤT khi quét xong (không phát từng nhóm một - xem setMaxGroups()), giống
+    /// LargeFileScanner::scanFinished(). 'groups' đã được sắp xếp theo wastedBytes() giảm dần và cắt
+    /// theo setMaxGroups(); 'totalGroupsFound' là tổng số nhóm THẬT tìm thấy (có thể > groups.size()
+    /// nếu bị cắt bớt) để UI báo rõ cho người dùng biết có bị giới hạn hay không.
+    void scanFinished(QList<DuplicateGroup> groups, qint64 wastedBytes, int totalGroupsFound);
     void scanStopped();
 
 protected:
@@ -48,5 +57,6 @@ protected:
 private:
     QString m_rootPath;
     qint64 m_minSizeBytes{4096}; // bỏ qua tệp quá nhỏ theo mặc định (nhiều trùng lặp vô nghĩa, vd tệp rỗng)
+    int m_maxGroups{500};
     std::atomic_bool m_stopRequested{false};
 };

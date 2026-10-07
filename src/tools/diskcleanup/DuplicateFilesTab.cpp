@@ -22,7 +22,6 @@ DuplicateFilesTab::DuplicateFilesTab(QWidget* parent)
 
     m_finder = new DuplicateFinder(this);
     connect(m_finder, &DuplicateFinder::progressTick, this, &DuplicateFilesTab::onProgressTick);
-    connect(m_finder, &DuplicateFinder::groupFound, this, &DuplicateFilesTab::onGroupFound);
     connect(m_finder, &DuplicateFinder::scanFinished, this, &DuplicateFilesTab::onScanFinished);
     connect(m_finder, &DuplicateFinder::scanStopped, this, &DuplicateFilesTab::onScanStopped);
 }
@@ -175,15 +174,8 @@ void DuplicateFilesTab::onProgressTick(qint64 filesScanned, qint64 filesHashed, 
         m_statusLabel->setText(QString("⏳ Đang liệt kê tệp... %1 tệp đã quét - %2").arg(filesScanned).arg(elided));
 }
 
-void DuplicateFilesTab::onGroupFound(DuplicateGroup group)
-{
-    addGroupToTree(group);
-}
-
 void DuplicateFilesTab::addGroupToTree(const DuplicateGroup& group)
 {
-    m_updatingTree = true;
-
     auto* groupItem = new QTreeWidgetItem(m_tree);
     groupItem->setText(0, QString("📁 %1 bản giống hệt nhau - mỗi bản %2 - lãng phí %3")
                              .arg(group.paths.size())
@@ -205,21 +197,39 @@ void DuplicateFilesTab::addGroupToTree(const DuplicateGroup& group)
         child->setFlags(child->flags() | Qt::ItemIsUserCheckable);
         child->setCheckState(0, keepThisOne ? Qt::Unchecked : Qt::Checked);
     }
-    groupItem->setExpanded(true);
-
-    m_updatingTree = false;
+    // Thu gọn mặc định (không setExpanded(true)): kết quả có thể tới hàng trăm nhóm (vd thư mục cache
+    // trình duyệt có nhiều tệp trùng kích thước khối cố định) - mở sẵn hết sẽ làm bảng rất dài và tốn
+    // công dựng giao diện không cần thiết; người dùng tự mở nhóm mình quan tâm.
 }
 
-void DuplicateFilesTab::onScanFinished(int groupCount, qint64 wastedBytes)
+void DuplicateFilesTab::onScanFinished(QList<DuplicateGroup> groups, qint64 wastedBytes, int totalGroupsFound)
 {
     m_scanBtn->setVisible(true);
     m_stopBtn->setVisible(false);
     m_progressBar->setVisible(false);
-    m_statusLabel->setText(groupCount > 0
-                               ? QString("✓ Quét xong: %1 nhóm trùng lặp, có thể giải phóng %2.")
-                                     .arg(groupCount)
-                                     .arg(DiskUi::formatBytes(wastedBytes))
-                               : "✓ Quét xong: không tìm thấy tệp trùng lặp nào.");
+
+    // Dựng cả cây trong MỘT lần, luồng giao diện tắt tạm việc vẽ lại/tính layout cho tới khi xong -
+    // đúng mẫu đã đo thực tế là không gây "Không phản hồi" (xem LargeFileScanner::scanFinished).
+    m_updatingTree = true;
+    m_tree->setUpdatesEnabled(false);
+    for (const auto& group : groups)
+        addGroupToTree(group);
+    m_tree->setUpdatesEnabled(true);
+    m_updatingTree = false;
+
+    if (totalGroupsFound == 0)
+    {
+        m_statusLabel->setText("✓ Quét xong: không tìm thấy tệp trùng lặp nào.");
+    }
+    else
+    {
+        QString text = QString("✓ Quét xong: %1 nhóm trùng lặp, có thể giải phóng %2.")
+                           .arg(totalGroupsFound)
+                           .arg(DiskUi::formatBytes(wastedBytes));
+        if (groups.size() < totalGroupsFound)
+            text += QString(" (chỉ hiển thị %1 nhóm lãng phí nhiều nhất)").arg(groups.size());
+        m_statusLabel->setText(text);
+    }
     updateSelectedSummary();
 }
 

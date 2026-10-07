@@ -27,8 +27,7 @@ private slots:
     void onScanClicked();
     void onStopClicked();
     void onProgressTick(qint64 filesScanned, qint64 filesHashed, QString currentPath);
-    void onGroupFound(DuplicateGroup group);
-    void onScanFinished(int groupCount, qint64 wastedBytes);
+    void onScanFinished(QList<DuplicateGroup> groups, qint64 wastedBytes, int totalGroupsFound);
     void onScanStopped();
     void onDeleteSelectedClicked();
     void onItemChanged(QTreeWidgetItem* item, int column);
