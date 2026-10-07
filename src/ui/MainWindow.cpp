@@ -4,6 +4,7 @@
 #include "../tools/wifi/WifiTool.h"
 #include "../tools/connect/ConnectTool.h"
 #include "../tools/diskcleanup/DiskCleanupTool.h"
+#include "../tools/android/AndroidControlTool.h"
 #include "core/IconHelper.h"
 #include <QHBoxLayout>
 #include <QVBoxLayout>
@@ -38,8 +39,7 @@ void MainWindow::registerTools()
 
     tm.registerTool(std::make_unique<DiskCleanupTool>());
 
-    tm.registerTool(std::make_unique<PlaceholderTool>(
-        "android", "Android Phone Control", "Điều khiển điện thoại Android qua màn hình máy tính và ADB.", ":/icons/pcTOphone.png"));
+    tm.registerTool(std::make_unique<AndroidControlTool>());
 
     tm.registerTool(std::make_unique<PlaceholderTool>(
         "downloader", "Downloader", "Tải video, âm thanh và tệp tin tốc độ cao từ đa nền tảng.", ":/icons/download.png"));

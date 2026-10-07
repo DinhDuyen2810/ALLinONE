@@ -4,7 +4,7 @@
 > Tài liệu kiến trúc chi tiết và changelog tính năng nằm ở [README.md](README.md); đặc tả thiết kế ở [OneForAll_AutoClick_Design.md](OneForAll_AutoClick_Design.md).
 
 ## 1. Dự án là gì
-Ứng dụng desktop Windows (C++20, Qt 6.11 MinGW, CMake + Ninja) dạng launcher gồm 9 công cụ. Hiện **Auto Click**, **QR Tools**, **WiFi Connection**, **Connect Together** (tham khảo Mouse without Borders) và **Disk Cleanup** (tham khảo CCleaner/BleachBit/Windows Disk Cleanup) hoàn chỉnh; 4 tool còn lại (Android Phone Control, Downloader, Security Gateway, VPN & Location) là `PlaceholderTool` (màn hình "đang phát triển").
+Ứng dụng desktop Windows (C++20, Qt 6.11 MinGW, CMake + Ninja) dạng launcher gồm 9 công cụ. Hiện **Auto Click**, **QR Tools**, **WiFi Connection**, **Connect Together** (tham khảo Mouse without Borders), **Disk Cleanup** (tham khảo CCleaner/BleachBit/Windows Disk Cleanup) và **Android Phone Control** (dựa trên scrcpy) hoàn chỉnh; 3 tool còn lại (Downloader, Security Gateway, VPN & Location) là `PlaceholderTool` (màn hình "đang phát triển").
 
 ## 2. Luồng khởi động
 `main.cpp` đặt Per-Monitor DPI v2 → `QApplication` → `Logger` ghi `logs/app.log` → `MainWindow`.
@@ -71,8 +71,17 @@
 | `src/tools/diskcleanup/DiskCleanupWindow.*` | Cửa sổ Disk Cleanup, ghép 4 tab trên |
 | `src/tools/diskcleanup/DiskCleanupTool.*` | `ITool` của Disk Cleanup (một cửa sổ duy nhất) |
 | `src/tools/wifi/WifiTool.*` | `ITool` của WiFi (một cửa sổ duy nhất) |
+| `src/tools/android/model/AndroidDeviceInfo.h` | Một thiết bị adb thấy (serial, trạng thái, model, USB/không dây) - struct thuần |
+| `src/tools/android/engine/AdbController.*` | Lớp duy nhất gọi `adb.exe` đóng gói kèm: liệt kê/ghép đôi/kết nối thiết bị |
+| `src/tools/android/engine/ScrcpyLauncher.*` | Khởi chạy/quản lý tiến trình `scrcpy.exe` (gương + điều khiển màn hình thời gian thực) |
+| `src/tools/android/AndroidUiStyle.h` | Style Light Theme dùng chung cho UI Android (giống các `*UiStyle.h` khác) |
+| `src/tools/android/WirelessPairDialog.*` | Hộp thoại ghép đôi gỡ lỗi không dây (Android 11+): nhập IP:Cổng + mã 6 số |
+| `src/tools/android/DevicesTab.*` | Danh sách thiết bị, tùy chọn điều khiển (độ phân giải/bitrate/fps/ghi hình...), nút Điều khiển |
+| `src/tools/android/AndroidControlWindow.*` | Cửa sổ Android Phone Control |
+| `src/tools/android/AndroidControlTool.*` | `ITool` của Android Phone Control (một cửa sổ duy nhất) |
 | `src/third_party/` | qrcodegen (MIT), quirc (ISC), xem `THIRD_PARTY.md` |
-| `tests/` | `qr_tests`/`qr_ui_tests`, `wifi_tests`/`wifi_ui_tests`, `connect_tests`/`connect_ui_tests` (506 + 2, ghép đôi 2 chiều thật qua TCP, ổn định qua 40+ lần chạy liên tiếp), `diskcleanup_tests`/`diskcleanup_ui_tests` (176 + 19 kiểm tra, có xóa file thật qua Thùng rác, liệt kê phân vùng thật) |
+| `vendor/scrcpy/` | scrcpy + adb đóng gói (Apache-2.0, KHÔNG commit Git) - xem `THIRD_PARTY.md` |
+| `tests/` | `qr_tests`/`qr_ui_tests`, `wifi_tests`/`wifi_ui_tests`, `connect_tests`/`connect_ui_tests` (506 + 2, ghép đôi 2 chiều thật qua TCP, ổn định qua 40+ lần chạy liên tiếp), `diskcleanup_tests`/`diskcleanup_ui_tests` (176 + 19 kiểm tra, có xóa file thật qua Thùng rác, liệt kê phân vùng thật), `android_tests`/`android_ui_tests` (45 + 7 kiểm tra, có gọi `adb devices` thật - chỉ đọc) |
 | `assets/resources.qrc`, `icon/` | Icon nhúng vào exe |
 | `profiles/default.json` | Profile mặc định (chain mẫu) |
 | `build_app.bat`, `run_app.bat` | Build + đóng gói (`windeployqt`), chạy bản Release |
@@ -308,8 +317,65 @@ trình duyệt.)
 cần: gộp phân vùng (merge), tạo/xóa phân vùng mới, hoặc một bước xác nhận bổ sung (ví dụ mã OTP hiển
 thị trên màn hình) trước khi đổi kích thước phân vùng khởi động/hệ thống.
 
+## 4g. Android Phone Control (đã hoàn thiện)
+Yêu cầu của người dùng: điều khiển thiết bị Android, "tính realtime và độ linh hoạt kiểu như remote".
+Gương màn hình thời gian thực thật sự (20-60 fps, độ trễ thấp) đòi hỏi mã hóa H.264 phía Android qua
+`MediaProjection`/`MediaCodec` và tiêm sự kiện chạm/phím qua `InputManager` phản chiếu (không có API
+công khai) - đây là bài toán Android-side phức tạp đã được **scrcpy** (Genymobile, Apache-2.0, mã
+nguồn mở, dùng rộng rãi nhiều năm) giải quyết và kiểm chứng kỹ. Quyết định: dùng lại scrcpy (đóng gói
+bản phát hành Windows chính thức, đã xác minh checksum SHA-256) thay vì tự viết lại từ đầu - rủi ro
+cao, tốn nhiều công sức, và không thể tự kiểm thử đầy đủ trong môi trường này (không có thiết bị
+Android thật gắn sẵn). Tương tự tinh thần đã áp dụng cho Partition resize (dùng `Resize-Partition` của
+Windows thay vì tự viết thao tác đĩa mức thấp).
+
+**Kiến trúc:**
+- `AdbController`: lớp duy nhất gọi `adb.exe` - liệt kê thiết bị (`adb devices -l`), ghép đôi gỡ lỗi
+  không dây Android 11+ (`adb pair`), kết nối/ngắt kết nối không dây (`adb connect`/`disconnect`).
+- `ScrcpyLauncher`: khởi chạy `scrcpy.exe` làm tiến trình nền (không chặn UI - khác các worker QThread
+  dùng ở nơi khác, vì đây là tiến trình tương tác sống lâu, không phải việc "chạy xong rồi báo kết
+  quả"); cửa sổ gương màn hình là cửa sổ RIÊNG của chính scrcpy (chưa nhúng vào cửa sổ Qt ở bản này).
+- **Độ linh hoạt kiểu remote** (theo đúng yêu cầu): độ phân giải tối đa, bitrate, giới hạn khung
+  hình/giây, giữ màn hình sáng, tắt màn hình điện thoại lúc điều khiển (riêng tư + tiết kiệm pin), luôn
+  nổi trên cùng, toàn màn hình, tắt/bật chuyển âm thanh điện thoại sang máy tính, ghi lại phiên điều
+  khiển ra file .mp4 - tất cả là cờ dòng lệnh thật của scrcpy (`scrcpy --help`), không phải mô phỏng.
+- **Không dây thật sự linh hoạt**: "Chuyển thiết bị đã chọn sang không dây" dùng cờ `--tcpip` của
+  scrcpy (tự dò IP thiết bị đang cắm USB, bật chế độ TCP/IP, kết nối, rồi gương - một bước duy nhất).
+  Với thiết bị chưa từng ghép đôi, "Ghép đôi không dây..." mở hộp thoại nhập IP:Cổng ghép đôi + mã 6 số
+  (API ghép đôi không dây chính thức của Android 11+, chỉ cần làm 1 lần/mạng Wi-Fi).
+- Danh sách thiết bị tự làm mới mỗi 3 giây (giống `NetworksTab` của WiFi) - phát hiện cắm/rút USB hoặc
+  đổi trạng thái "unauthorized" → "device" (sau khi bấm Cho phép trên điện thoại) mà không cần bấm Làm mới.
+- `adb.exe`/`scrcpy.exe` được TÌM theo đường dẫn tương đối tới file exe đang chạy
+  (`<thư mục exe>/scrcpy/`) - nếu thiếu, hiện banner cảnh báo rõ ràng thay vì lỗi mơ hồ.
+
+**Đã xong, đã test (45 kiểm tra lõi + 7 kiểm tra UI):**
+- `AdbController::internal::parseDevicesOutput`: phân tích output `adb devices -l` mẫu dựng sẵn (thiết
+  bị sẵn sàng/USB, không dây, unauthorized, offline; bỏ qua dòng tiêu đề và cảnh báo daemon) - không
+  gọi adb thật, test được ở mọi máy.
+- `ScrcpyLauncherInternal::buildArguments`: dựng đối số dòng lệnh thuần cho mọi tổ hợp tùy chọn (độ
+  phân giải/bitrate/fps/stay-awake/turn-screen-off/always-on-top/fullscreen/no-audio/record/tcpip) -
+  xác nhận đúng cờ xuất hiện/không xuất hiện, đúng định dạng giá trị (vd `--video-bit-rate=12M`).
+- `AdbController::listDevices()`/`isBundleAvailable()` gọi THẬT (chỉ đọc, an toàn) khi có sẵn gói
+  scrcpy cạnh file build - xác nhận plumbing adb thật chạy được trên máy build (0 thiết bị vì không có
+  điện thoại gắn sẵn - kết quả hợp lệ, không phải lỗi).
+- `android_ui_tests`: dựng `AndroidControlWindow` không crash, bảng/nút/tùy chọn tồn tại đúng, "Giữ màn
+  hình sáng" mặc định bật. **Cố ý KHÔNG** tự động ghép đôi/kết nối/khởi chạy `scrcpy.exe` thật trong
+  test - cần thiết bị Android thật và phải tự kiểm tra tay.
+
+**Giới hạn đã biết / chưa kiểm chứng được trong môi trường này:** không có thiết bị Android thật gắn
+sẵn, nên KHÔNG tự kiểm tra được: gương màn hình thời gian thực thực tế có mượt/đúng độ trễ như kỳ vọng
+hay không, luồng ghép đôi không dây đầu-cuối, driver USB trên các dòng máy khác nhau (Windows hiện đại
++ điện thoại hiện đại thường tự nhận qua driver MTP/ADB tích hợp sẵn, nhưng một số máy cũ/hiếm có thể
+cần cài driver USB riêng của hãng). Người dùng cần tự cắm điện thoại thật và kiểm tra.
+
+**Cân nhắc thêm (chưa làm, "nếu có thể"):** nhúng cửa sổ gương vào trực tiếp cửa sổ Qt của ứng dụng
+(thay vì cửa sổ riêng của scrcpy) - cần kỹ thuật tái gán cửa sổ gốc Win32 (`SetParent`) khá tinh vi,
+không làm trong bản đầu để giữ độ tin cậy cao (cửa sổ riêng của scrcpy là triển khai đã kiểm chứng).
+
 ## 5. Build và chạy
-`build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`. `run_app.bat` chạy `OneForAll_Release\OneForAll.exe`. Thư mục `build/`, `OneForAll_Release/`, `logs/` không được commit (xem `.gitignore`).
+`build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
+sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
+tải bản scrcpy-win64 chính thức) thì cũng tự đóng gói vào `scrcpy\` cạnh file exe cho tính năng Android
+Phone Control. Thư mục `build/`, `OneForAll_Release/`, `vendor/`, `logs/` không được commit (xem `.gitignore`).
 
 ## 6. Vấn đề đã biết (chưa sửa)
 - Pause/Resume đã an toàn ở tầng runner nhưng chưa có nút trên UI.
@@ -342,6 +408,7 @@ Mỗi lần sửa code: commit riêng với message mô tả rõ, và cập nh�
 | 2026-10-07 | Disk Cleanup (sửa "Không phản hồi" THẬT ở Tìm tệp trùng lặp) | Người dùng báo lại: Tìm tệp trùng lặp trên ổ C: vẫn bị Task Manager đánh dấu "Không phản hồi" thật (không chỉ cảm giác). Nguyên nhân: `DuplicateFinder` cũ phát `groupFound` cho TỪNG nhóm một, không giới hạn - thư mục cache trình duyệt (nhiều hồ sơ Chrome, cỡ khối cố định) tạo ra hàng trăm/nghìn nhóm, dồn dập đủ để chiếm trọn một lượt xử lý sự kiện của Qt. Sửa: `DuplicateFinder` gom toàn bộ trong bộ nhớ, sắp xếp theo lãng phí giảm dần, cắt `setMaxGroups()` (mặc định 500), CHỈ phát `scanFinished` một lần (đúng mẫu `LargeFileScanner`); UI dựng cả cây 1 lần (`setUpdatesEnabled(false)`), nhóm mặc định thu gọn. Đo lại thật: quét ~20.300 tệp dữ liệu Chrome trong 60s liên tục, độ trễ lớn nhất chỉ 22ms. 167 test lõi (+11 test hồi quy giới hạn/sắp xếp nhóm) (v1.5.2) |
 | 2026-10-07 | Disk Cleanup (căn cột + sửa lỗi dọn dẹp 0x2) | Người dùng báo 2 lỗi kèm ảnh: (1) cột "Kích thước" ở Tìm tệp trùng lặp bị dạt giữa, thừa khoảng trắng - do `QTreeWidget` mặc định `stretchLastSection=true` đè lên cấu hình cột, đã tắt + căn phải chữ; (2) Dọn dẹp theo hạng mục báo lỗi "mã lỗi 0x2" (ERROR_FILE_NOT_FOUND) - do tệp tạm tự bị xóa giữa lúc quét và lúc bấm Dọn dẹp (bình thường với `%TEMP%`/cache), khiến `SHFileOperationW` báo thất bại cho CẢ LÔ dù phần lớn tệp vẫn xóa được. Sửa `CleanupExecutor`: lọc trước tệp đã tự mất (coi là đã đạt mục tiêu), kiểm tra lại THẬT sau khi xóa để báo freedBytes/deletedCount chính xác, chỉ thất bại khi không giải phóng được gì; `RecycleBinOps` dịch mã lỗi Win32 phổ biến sang tiếng Việt. 176 test lõi (+9 hồi quy mô phỏng tệp tự mất) (v1.5.3) |
 | 2026-10-07 | Rà soát toàn bộ 5 tính năng (UI + hoạt động) | Theo yêu cầu người dùng: rà kỹ Auto Click/Connect Together/QR Tools/WiFi Connection/Disk Cleanup - build lại + chạy toàn bộ 895 kiểm tra tự động (đều qua), chụp ảnh từng màn hình để soát giao diện. Phát hiện/sửa: (1) **Auto Click toàn bộ panel/nhãn/HUD từng thuần tiếng Anh** ("ACTION CHAINS", "Type:", "Wait Before:", HUD "Auto Click Running"...) trong khi phần còn lại ứng dụng toàn tiếng Việt - dịch hết, đã xác nhận an toàn (combo box đọc/ghi theo chỉ số, `Action::typeName()` độc lập hoàn toàn với khóa JSON của `ActionSerializer`); phát hiện thêm 1 lỗi tự gây ra khi dịch (nút "Nhân bản" bị cắt chữ do panel hẹp) và sửa luôn (xếp dọc thay vì ngang). (2) WiFi: checkbox "Hiện mật khẩu đã lưu" bị cắt chữ do chung hàng với 5 nút - tách hàng riêng. (3) **Xác nhận dứt điểm** nghi vấn hiển thị cũ ở tab Ghép đôi (Connect Together, nêu từ v1.2.0): dựng cửa sổ hiện THẬT trên màn hình (không `WA_DontShowOnScreen`) rồi chụp - chữ hiển thị hoàn toàn bình thường, xác nhận đó chỉ là hiện tượng chụp ảnh widget ẩn, không phải lỗi code. |
+| 2026-10-07 | Android Phone Control (hoàn thiện) | Yêu cầu người dùng: điều khiển thiết bị Android "tính realtime và độ linh hoạt kiểu như remote". Quyết định kiến trúc: dùng lại **scrcpy** (Genymobile, Apache-2.0, mã nguồn mở, kiểm chứng nhiều năm) thay vì tự viết lại mã hóa H.264 + tiêm sự kiện phía Android (rủi ro cao, không tự kiểm thử đủ trong môi trường không có thiết bị thật) - đóng gói bản `scrcpy-win64` chính thức (đã xác minh SHA-256) vào `vendor/scrcpy/` (không commit Git, như `build/`/`OneForAll_Release/`), `build_app.bat` tự đóng gói kèm exe. `AdbController` (liệt kê/ghép đôi/kết nối thiết bị qua `adb.exe`) + `ScrcpyLauncher` (khởi chạy `scrcpy.exe` làm tiến trình nền, không chặn UI) + `DevicesTab` (danh sách thiết bị tự làm mới, tùy chọn độ phân giải/bitrate/fps/tắt màn hình/luôn nổi/ghi hình - cờ thật của scrcpy) + `WirelessPairDialog` (ghép đôi không dây Android 11+). "Chuyển sang không dây" dùng `--tcpip` của scrcpy (tự dò IP, bật TCP/IP, kết nối, gương - một bước). 45 test lõi (phân tích `adb devices -l` mẫu + dựng đối số dòng lệnh, không cần thiết bị thật) + 7 test UI (gọi `adb devices` thật - chỉ đọc, an toàn). **Giới hạn thật:** không có điện thoại Android gắn sẵn trong môi trường này nên KHÔNG tự kiểm tra được gương màn hình/ghép đôi không dây đầu-cuối - cần người dùng tự kiểm tra tay. Cửa sổ gương là cửa sổ riêng của scrcpy (nhúng vào cửa sổ Qt là việc có thể làm sau, "nếu có thể"). |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `

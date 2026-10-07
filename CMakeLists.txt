@@ -204,6 +204,38 @@ target_link_libraries(diskcleanup_ui PUBLIC diskcleanup_core Qt6::Widgets)
 add_executable(diskcleanup_ui_tests EXCLUDE_FROM_ALL tests/diskcleanup_ui_tests.cpp src/core/Logger.cpp)
 target_link_libraries(diskcleanup_ui_tests PRIVATE diskcleanup_ui)
 
+# ---- Lõi Android Phone Control (gọi adb.exe/scrcpy.exe đóng gói kèm - xem vendor/scrcpy, THIRD_PARTY.md) ----
+add_library(android_core STATIC
+    src/tools/android/model/AndroidDeviceInfo.h
+    src/tools/android/engine/AdbController.h
+    src/tools/android/engine/AdbController.cpp
+    src/tools/android/engine/ScrcpyLauncher.h
+    src/tools/android/engine/ScrcpyLauncher.cpp
+)
+target_include_directories(android_core PUBLIC src)
+target_link_libraries(android_core PUBLIC Qt6::Core)
+
+# ---- Kiểm thử lõi Android: cmake --build build --target android_tests ----
+add_executable(android_tests EXCLUDE_FROM_ALL tests/android_tests.cpp)
+target_link_libraries(android_tests PRIVATE android_core)
+
+# ---- Giao diện Android Phone Control ----
+add_library(android_ui STATIC
+    src/tools/android/AndroidUiStyle.h
+    src/tools/android/WirelessPairDialog.h
+    src/tools/android/WirelessPairDialog.cpp
+    src/tools/android/DevicesTab.h
+    src/tools/android/DevicesTab.cpp
+    src/tools/android/AndroidControlWindow.h
+    src/tools/android/AndroidControlWindow.cpp
+)
+target_include_directories(android_ui PUBLIC src)
+target_link_libraries(android_ui PUBLIC android_core Qt6::Widgets)
+
+# ---- Kiểm thử "khói" UI Android: cmake --build build --target android_ui_tests ----
+add_executable(android_ui_tests EXCLUDE_FROM_ALL tests/android_ui_tests.cpp src/core/Logger.cpp)
+target_link_libraries(android_ui_tests PRIVATE android_ui)
+
 set(SOURCES
     src/main.cpp
     src/core/Tool.h
@@ -222,6 +254,8 @@ set(SOURCES
     src/tools/connect/ConnectTool.cpp
     src/tools/diskcleanup/DiskCleanupTool.h
     src/tools/diskcleanup/DiskCleanupTool.cpp
+    src/tools/android/AndroidControlTool.h
+    src/tools/android/AndroidControlTool.cpp
     src/tools/autoclick/AutoClickTool.h
     src/tools/autoclick/AutoClickTool.cpp
     src/tools/autoclick/AutoClickWindow.h
@@ -265,6 +299,7 @@ target_link_libraries(OneForAll PRIVATE
     wifi_ui
     connect_ui
     diskcleanup_ui
+    android_ui
     user32
     dwmapi
 )

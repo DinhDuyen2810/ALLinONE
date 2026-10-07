@@ -2,3 +2,4 @@ build/
 OneForAll_Release/
 logs/
 *.lnk
+vendor/
