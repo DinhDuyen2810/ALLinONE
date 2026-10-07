@@ -32,7 +32,7 @@ public:
     void requestStop();
 
 signals:
-    void progressTick(qint64 filesScanned);
+    void progressTick(qint64 filesScanned, QString currentPath);
     void scanFinished(QList<LargeFileEntry> results);
     void scanStopped();
 

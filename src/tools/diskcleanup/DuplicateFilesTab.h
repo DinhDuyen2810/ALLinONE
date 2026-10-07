@@ -26,7 +26,7 @@ private slots:
     void onBrowseClicked();
     void onScanClicked();
     void onStopClicked();
-    void onProgressTick(qint64 filesScanned, qint64 filesHashed);
+    void onProgressTick(qint64 filesScanned, qint64 filesHashed, QString currentPath);
     void onGroupFound(DuplicateGroup group);
     void onScanFinished(int groupCount, qint64 wastedBytes);
     void onScanStopped();

@@ -184,7 +184,9 @@ void LargeFilesTab::onScanClicked()
     m_scanner->setRootPath(root);
     m_scanner->setMinSizeBytes(static_cast<qint64>(m_minSizeSpin->value()) * 1024 * 1024);
     m_scanner->setMaxResults(300);
-    m_scanner->start();
+    // Ưu tiên thấp: quét cả ổ đĩa (hàng trăm nghìn tệp) là CPU/I-O nặng - nhường CPU cho luồng giao
+    // diện để cửa sổ không bao giờ bị Windows báo "Không phản hồi" dù quét lâu.
+    m_scanner->start(QThread::LowPriority);
 }
 
 void LargeFilesTab::onStopClicked()
@@ -193,9 +195,12 @@ void LargeFilesTab::onStopClicked()
     m_statusLabel->setText("Đang dừng...");
 }
 
-void LargeFilesTab::onProgressTick(qint64 filesScanned)
+void LargeFilesTab::onProgressTick(qint64 filesScanned, QString currentPath)
 {
-    m_statusLabel->setText(QString("⏳ Đang quét... đã kiểm tra %1 tệp").arg(filesScanned));
+    // Rút gọn đường dẫn (giữ đầu + cuối) để không tràn dòng - mục đích chính là CHO THẤY ứng dụng vẫn
+    // đang chạy (không bị treo), không cần hiển thị đường dẫn đầy đủ.
+    const QString elided = m_statusLabel->fontMetrics().elidedText(currentPath, Qt::ElideMiddle, 480);
+    m_statusLabel->setText(QString("⏳ Đang quét... %1 tệp đã kiểm tra - %2").arg(filesScanned).arg(elided));
 }
 
 void LargeFilesTab::onScanFinished(QList<LargeFileEntry> results)

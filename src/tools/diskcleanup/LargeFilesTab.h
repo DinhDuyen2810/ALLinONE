@@ -26,7 +26,7 @@ private slots:
     void onBrowseClicked();
     void onScanClicked();
     void onStopClicked();
-    void onProgressTick(qint64 filesScanned);
+    void onProgressTick(qint64 filesScanned, QString currentPath);
     void onScanFinished(QList<LargeFileEntry> results);
     void onScanStopped();
     void onDeleteSelectedClicked();

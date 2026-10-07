@@ -65,21 +65,23 @@ void DuplicateFinder::run()
                     QDirIterator::Subdirectories);
     while (it.hasNext())
     {
-        if ((++filesScanned & 0xFF) == 0)
+        it.next();
+        const QFileInfo info = it.fileInfo();
+        const qint64 size = info.size();
+        if (size >= m_minSizeBytes)
+            bySize[size] << info.absoluteFilePath();
+
+        // Cứ mỗi 200 tệp thì kiểm tra dừng + báo tiến độ (kèm đường dẫn hiện tại) - quét cả ổ đĩa hệ
+        // thống có thể gặp hàng trăm nghìn tệp, cần phản hồi đủ dày để không bị tưởng nhầm là treo.
+        if ((++filesScanned % 200) == 0)
         {
             if (m_stopRequested)
             {
                 emit scanStopped();
                 return;
             }
-            emit progressTick(filesScanned, 0);
+            emit progressTick(filesScanned, 0, info.absoluteFilePath());
         }
-        it.next();
-        const QFileInfo info = it.fileInfo();
-        const qint64 size = info.size();
-        if (size < m_minSizeBytes)
-            continue;
-        bySize[size] << info.absoluteFilePath();
     }
 
     if (m_stopRequested)
@@ -119,7 +121,7 @@ void DuplicateFinder::run()
 
             byHash[hash] << path;
             if ((++filesHashed & 0x1F) == 0)
-                emit progressTick(filesScanned, filesHashed);
+                emit progressTick(filesScanned, filesHashed, path);
         }
 
         for (auto hashIt = byHash.constBegin(); hashIt != byHash.constEnd(); ++hashIt)

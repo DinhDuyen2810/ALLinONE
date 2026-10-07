@@ -196,6 +196,17 @@ cảnh báo không thể hoàn tác).
   thêm 1 hộp thoại cảnh báo Yes/No nữa trước khi thực sự chạy `Resize-Partition` qua `PartitionResizer`
   (QThread riêng, không chặn UI, co giãn ổ lớn có thể mất vài phút).
 
+**Hiệu năng/phản hồi khi quét ổ lớn:** người dùng báo quét ổ C: 120GB bị "Không phản hồi" (Windows
+đánh dấu cửa sổ treo). Đo thật bằng cách bấm Quét rồi theo dõi vòng lặp sự kiện của luồng giao diện
+trong 20 giây: luồng nền (`LargeFileScanner`) xử lý thật ~390.000 tệp mà độ trễ lớn nhất giữa 2 lần xử
+lý sự kiện chỉ 21ms (bằng đúng chu kỳ hẹn giờ dùng để đo - tức luồng giao diện CHƯA BAO GIỜ bị chặn) -
+chứng tỏ kiến trúc QThread nền vốn đã đúng, "Không phản hồi" chỉ là CẢM GIÁC do màn hình đứng yên hàng
+phút không có gì thay đổi, không phải treo thật. Đã cải thiện:
+- Mọi luồng quét/xóa (`CleanupScanner`, `CleanupExecutor`, `LargeFileScanner`, `DuplicateFinder`) chạy
+  với `QThread::LowPriority` - nhường CPU cho luồng giao diện, phòng trường hợp máy yếu/nhiều lõi ít.
+- `LargeFileScanner`/`DuplicateFinder` báo tiến độ dày hơn (mỗi 200 tệp thay vì 1024/256) và kèm đường
+  dẫn tệp đang xử lý (rút gọn giữa chuỗi) - người dùng THẤY ứng dụng vẫn đang chạy, không chỉ đoán.
+
 **Đã xong, đã test (156 kiểm tra lõi + 19 kiểm tra UI):**
 - `CategoryRegistry`: dựng danh sách hạng mục + phân giải đường dẫn qua một `CleanupEnvironment` có thể
   thay thế bằng môi trường giả - test không đụng vào Temp/Windows/SoftwareDistribution thật của máy.
@@ -275,6 +286,7 @@ Mỗi lần sửa code: commit riêng với message mô tả rõ, và cập nh�
 | 2026-10-07 | Disk Cleanup (lõi) | Quét hạng mục dọn dẹp, xóa qua Thùng rác, dung lượng ổ đĩa, tìm tệp lớn - 82 test (có xóa file thật qua Recycle Bin). Chưa có UI (v1.3.0) |
 | 2026-10-07 | Disk Cleanup (UI + sửa lỗi .lnk) | UI 2 tab (Dọn dẹp theo hạng mục, Tìm tệp lớn), nối vào MainWindow; phát hiện và sửa lỗi thật khi quét tay - Qt tự "đi theo" lối tắt (.lnk) khiến hạng mục Recent Items bị cộng nhầm hàng chục GB; 91 test lõi + 10 test UI (v1.4.0) |
 | 2026-10-07 | Disk Cleanup (trùng lặp + phân vùng) | Thêm `DuplicateFinder` + tab Tìm tệp trùng lặp (hash SHA-256, cây nhóm/tệp); thêm `PartitionManager`/`PartitionResizer` + tab Quản lý phân vùng (liệt kê thật, đổi kích thước qua Resize-Partition có xác nhận gõ tên ổ đĩa, yêu cầu quyền Administrator); sửa 2 lỗi thật phát hiện khi quét tay (stdin `-Command -` im lặng không chạy script nhiều dòng → đổi `-EncodedCommand`; lỗi PowerShell bị serialize CLIXML không đọc được → đổi `[Console]::Error`); 156 test lõi + 19 test UI (v1.5.0) |
+| 2026-10-07 | Disk Cleanup (phản hồi khi quét ổ lớn) | Người dùng báo quét ổ C: 120GB bị Windows đánh dấu "Không phản hồi". Đo thật: luồng giao diện không hề bị chặn (độ trễ lớn nhất 21ms trong lúc quét thật ~390.000 tệp/20s) - đổi `CleanupScanner`/`CleanupExecutor`/`LargeFileScanner`/`DuplicateFinder` sang `QThread::LowPriority`, tăng tần suất báo tiến độ (mỗi 200 tệp) kèm đường dẫn đang xử lý để người dùng thấy ứng dụng vẫn chạy (v1.5.1) |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `

@@ -223,7 +223,9 @@ void CleanupTab::onScanClicked()
     m_statusLabel->setText("⏳ Đang quét...");
 
     m_scanner->setCategories(m_categories);
-    m_scanner->start();
+    // Ưu tiên thấp: nhường CPU cho luồng giao diện, tránh bị Windows báo "Không phản hồi" khi gặp
+    // hạng mục lớn (vd Windows.old hàng chục GB).
+    m_scanner->start(QThread::LowPriority);
 }
 
 void CleanupTab::onCategoryStarted(QString name)
@@ -355,7 +357,7 @@ void CleanupTab::onCleanClicked()
 
     m_executor->setItems(paths, total);
     m_executor->setPermanentDelete(permanent);
-    m_executor->start();
+    m_executor->start(QThread::LowPriority);
 }
 
 void CleanupTab::onExecutionFinished(bool success, QString error, qint64 freedBytes, int deletedCount)

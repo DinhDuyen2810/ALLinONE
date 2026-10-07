@@ -154,7 +154,9 @@ void DuplicateFilesTab::onScanClicked()
 
     m_finder->setRootPath(m_rootPath);
     m_finder->setMinSizeBytes(static_cast<qint64>(m_minSizeSpin->value()) * 1024);
-    m_finder->start();
+    // Ưu tiên thấp: hash SHA-256 nội dung tệp trên cả thư mục lớn là CPU/I-O nặng - nhường CPU cho
+    // luồng giao diện để cửa sổ không bao giờ bị Windows báo "Không phản hồi" dù quét lâu.
+    m_finder->start(QThread::LowPriority);
 }
 
 void DuplicateFilesTab::onStopClicked()
@@ -163,12 +165,14 @@ void DuplicateFilesTab::onStopClicked()
     m_statusLabel->setText("Đang dừng...");
 }
 
-void DuplicateFilesTab::onProgressTick(qint64 filesScanned, qint64 filesHashed)
+void DuplicateFilesTab::onProgressTick(qint64 filesScanned, qint64 filesHashed, QString currentPath)
 {
+    // Rút gọn đường dẫn (giữ đầu + cuối) - mục đích chính là CHO THẤY ứng dụng vẫn đang chạy.
+    const QString elided = m_statusLabel->fontMetrics().elidedText(currentPath, Qt::ElideMiddle, 480);
     if (filesHashed > 0)
-        m_statusLabel->setText(QString("⏳ Đang so sánh nội dung... %1 tệp đã kiểm tra").arg(filesHashed));
+        m_statusLabel->setText(QString("⏳ Đang so sánh nội dung... %1 tệp đã kiểm tra - %2").arg(filesHashed).arg(elided));
     else
-        m_statusLabel->setText(QString("⏳ Đang liệt kê tệp... %1 tệp đã quét").arg(filesScanned));
+        m_statusLabel->setText(QString("⏳ Đang liệt kê tệp... %1 tệp đã quét - %2").arg(filesScanned).arg(elided));
 }
 
 void DuplicateFilesTab::onGroupFound(DuplicateGroup group)

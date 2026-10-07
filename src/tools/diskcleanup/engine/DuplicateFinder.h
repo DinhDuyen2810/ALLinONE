@@ -37,7 +37,7 @@ public:
     void requestStop();
 
 signals:
-    void progressTick(qint64 filesScanned, qint64 filesHashed);
+    void progressTick(qint64 filesScanned, qint64 filesHashed, QString currentPath);
     void groupFound(DuplicateGroup group);
     void scanFinished(int groupCount, qint64 wastedBytes);
     void scanStopped();
