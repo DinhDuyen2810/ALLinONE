@@ -49,9 +49,11 @@
 | `src/tools/connect/engine/EdgeDetector.*` | Toán học thuần phát hiện chuột chạm biên màn hình để chuyển quyền điều khiển |
 | `src/tools/connect/engine/InputInjector.*` | Tiêm chuột/phím nhận được lên máy này (SendInput/SetCursorPos) |
 | `src/tools/connect/engine/InputHook.*` | Hook bàn phím/chuột toàn cục (WH_MOUSE_LL/WH_KEYBOARD_LL), chỉ "nuốt" input khi đang chủ động chia sẻ |
+| `src/tools/connect/engine/LocalIdentityStore.*` | Định danh ổn định của máy này, `profiles/connect_identity.json` |
+| `src/tools/connect/engine/ConnectSessionController.*` | Điều phối toàn bộ: ghép đôi, kết nối lại, biên màn hình, hook/injector, clipboard |
 | `src/tools/wifi/WifiTool.*` | `ITool` của WiFi (một cửa sổ duy nhất) |
 | `src/third_party/` | qrcodegen (MIT), quirc (ISC), xem `THIRD_PARTY.md` |
-| `tests/` | `qr_tests`/`qr_ui_tests`, `wifi_tests`/`wifi_ui_tests`, `connect_tests` (465 kiểm tra: mã hóa, giao thức, mạng thật, toán học biên màn hình, hook Win32 thật) |
+| `tests/` | `qr_tests`/`qr_ui_tests`, `wifi_tests`/`wifi_ui_tests`, `connect_tests` (506 kiểm tra, gồm ghép đôi 2 chiều thật qua TCP qua ConnectSessionController) |
 | `assets/resources.qrc`, `icon/` | Icon nhúng vào exe |
 | `profiles/default.json` | Profile mặc định (chain mẫu) |
 | `build_app.bat`, `run_app.bat` | Build + đóng gói (`windeployqt`), chạy bản Release |
@@ -119,11 +121,16 @@ chỉ hoạt động trong LAN; không có chế độ ẩn/im lặng; kênh tru
 - `InputInjector`: viết xong (SendInput/SetCursorPos), nhưng **cố ý không gọi trong test tự động** vì
   nó thật sự di chuyển chuột/gõ phím trên máy đang chạy - sẽ cần bạn tự thử tay.
 
-**Chưa làm (còn lại):** đồng bộ clipboard, giao diện (hiển thị/nhập mã ghép đôi, danh sách máy, lưới
-sắp xếp màn hình, HUD trạng thái "đang điều khiển..."), `ConnectSessionController` điều phối toàn bộ
-(nối discovery + pairing + network session + edge detection + hook + injector lại với nhau), nối vào
-`MainWindow`. Trải nghiệm chuột "đi qua biên sang máy khác" cần ít nhất 2 máy thật nối cùng LAN để xác
-nhận - tôi sẽ nói rõ khi tới phần đó, bạn sẽ cần tự kiểm tra trên 2 máy thật.
+**Đã xong `ConnectSessionController`, đã test thật (506 kiểm tra):** nối discovery + ghép đôi +
+phiên mạng + biên màn hình + hook + injector + clipboard lại với nhau thành một luồng hoàn chỉnh. Test
+ghép đôi CẢ HAI CHIỀU qua TCP loopback thật (nhận mã từ "máy giả" kết nối vào, và tự nhập mã để ghép đôi
+vào "máy giả" khác), xác nhận `PeerStore` lưu đúng khóa dài hạn, quản lý vị trí/tự kết nối/quên máy, và
+mã sai định dạng bị từ chối an toàn.
+
+**Chưa làm (còn lại):** giao diện (hiển thị/nhập mã ghép đôi, danh sách máy đã ghép đôi/khám phá được,
+lưới sắp xếp vị trí màn hình, log trạng thái, HUD "đang điều khiển..."), `ConnectTool`, nối vào
+`MainWindow`. Trải nghiệm chuột "đi qua biên sang máy khác" và chia sẻ clipboard thật cần ít nhất 2 máy
+thật nối cùng LAN để xác nhận - bạn sẽ cần tự kiểm tra trên 2 máy thật sau khi có giao diện.
 
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`. `run_app.bat` chạy `OneForAll_Release\OneForAll.exe`. Thư mục `build/`, `OneForAll_Release/`, `logs/` không được commit (xem `.gitignore`).
@@ -150,6 +157,7 @@ Mỗi lần sửa code: commit riêng với message mô tả rõ, và cập nh�
 | 2026-10-07 | Connect Together (nền tảng) | Bắt đầu module tham khảo Mouse without Borders: mã hóa AES-256-GCM (Windows CNG), mã ghép đôi, khung giao thức - 256 test. Chưa có mạng/UI (v1.1.0) |
 | 2026-10-07 | Connect Together (mạng) | Lưu trữ peer, phiên TCP mã hóa, khám phá LAN qua UDP - test thật (loopback TCP + broadcast UDP thật trên máy), 403 test. Chưa có hook input/UI (v1.1.1) |
 | 2026-10-07 | Connect Together (Win32 input) | Phát hiện biên màn hình, hook bàn phím/chuột toàn cục (cài/gỡ thật trên máy), tiêm input - 465 test. Chưa có điều phối/UI (v1.1.2) |
+| 2026-10-07 | Connect Together (điều phối) | ConnectSessionController nối toàn bộ lại - ghép đôi 2 chiều test thật qua TCP, 506 test. Chưa có UI (v1.1.3) |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `

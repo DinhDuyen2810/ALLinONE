@@ -124,9 +124,13 @@ add_library(connect_core STATIC
     src/tools/connect/engine/InputInjector.cpp
     src/tools/connect/engine/InputHook.h
     src/tools/connect/engine/InputHook.cpp
+    src/tools/connect/engine/LocalIdentityStore.h
+    src/tools/connect/engine/LocalIdentityStore.cpp
+    src/tools/connect/engine/ConnectSessionController.h
+    src/tools/connect/engine/ConnectSessionController.cpp
 )
 target_include_directories(connect_core PUBLIC src)
-target_link_libraries(connect_core PUBLIC Qt6::Core Qt6::Network bcrypt)
+target_link_libraries(connect_core PUBLIC Qt6::Core Qt6::Gui Qt6::Network bcrypt)
 
 # ---- Kiểm thử lõi Connect Together: cmake --build build --target connect_tests ----
 add_executable(connect_tests EXCLUDE_FROM_ALL tests/connect_tests.cpp)

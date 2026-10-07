@@ -20,6 +20,13 @@ void InputInjector::moveAbsolute(int x, int y)
     SetCursorPos(x, y);
 }
 
+QPoint InputInjector::currentCursorPos()
+{
+    POINT pt{0, 0};
+    GetCursorPos(&pt);
+    return QPoint(pt.x, pt.y);
+}
+
 void InputInjector::mouseButton(int button, bool pressed)
 {
     INPUT input = {0};

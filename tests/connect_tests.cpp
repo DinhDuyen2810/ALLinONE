@@ -16,9 +16,11 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+#include "tools/connect/engine/ConnectSessionController.h"
 #include "tools/connect/engine/CryptoSession.h"
 #include "tools/connect/engine/EdgeDetector.h"
 #include "tools/connect/engine/InputHook.h"
+#include "tools/connect/engine/LocalIdentityStore.h"
 #include "tools/connect/engine/NetworkSession.h"
 #include "tools/connect/engine/PairingCode.h"
 #include "tools/connect/engine/PeerDiscovery.h"
@@ -610,6 +612,153 @@ int main(int argc, char** argv)
         CHECK(hook.install(&err));
         CHECK(hook.isInstalled());
         hook.uninstall();
+    }
+
+    // ---- ConnectSessionController: ghép đôi thật qua TCP, cả 2 chiều. KHÔNG kiểm thử chia sẻ chuột/
+    // bàn phím thật (cần setActive(true) trên InputHook, sẽ chiếm chuột/bàn phím của người dùng thật) ----
+    {
+        QTemporaryDir tmp;
+        CHECK(tmp.isValid());
+        PeerStore::instance().setFilePath(tmp.filePath("peers.json"));
+        PeerStore::instance().clear();
+        LocalIdentityStore::instance().setFilePath(tmp.filePath("identity.json"));
+        const LocalIdentity myIdentity = LocalIdentityStore::instance().identity();
+        CHECK(!myIdentity.id.isEmpty());
+
+        ConnectSessionController controller;
+        QString startErr;
+        CHECK(controller.start(&startErr));
+        CHECK(startErr.isEmpty());
+        CHECK(controller.listenPort() != 0);
+        CHECK(controller.localIdentity().id == myIdentity.id);
+
+        // ---- A. Nhận ghép đôi: controller sinh mã, "máy giả" kết nối vào và nhập đúng mã đó ----
+        QList<QPair<QString, QString>> pairingSucceededEvents; // (peerId, machineName)
+        QObject::connect(&controller, &ConnectSessionController::pairingSucceeded,
+                         [&](QString id, QString name) { pairingSucceededEvents.push_back({id, name}); });
+
+        const QString rawCode = controller.beginPairingSession();
+        CHECK(PairingCode::isValidFormat(rawCode));
+        CHECK(controller.isPairingSessionOpen());
+
+        NetworkSession fakePeerA;
+        fakePeerA.setCryptoKey(CryptoSession::deriveKeyFromPairingCode(rawCode));
+        QList<ProtocolMessage> fakePeerAReceived;
+        QObject::connect(&fakePeerA, &NetworkSession::messageReceived,
+                         [&](ProtocolMessage m) { fakePeerAReceived.push_back(m); });
+        QObject::connect(&fakePeerA, &NetworkSession::connected, [&] {
+            ProtocolMessage req;
+            req.type = MessageType::PairRequest;
+            req.textA = "May Gia A";
+            req.textB = "fake-peer-id-aaa";
+            QString e;
+            fakePeerA.sendMessage(req, &e);
+        });
+        fakePeerA.connectToHost(QHostAddress::LocalHost, controller.listenPort());
+
+        CHECK(waitUntil([&] { return !fakePeerAReceived.isEmpty(); }));
+        CHECK(fakePeerAReceived.first().type == MessageType::PairAccept);
+        CHECK(fakePeerAReceived.first().textA == myIdentity.machineName);
+        CHECK(fakePeerAReceived.first().textB == myIdentity.id);
+        CHECK(fakePeerAReceived.first().longTermKey.size() == 32);
+
+        CHECK(waitUntil([&] { return !pairingSucceededEvents.isEmpty(); }));
+        CHECK(pairingSucceededEvents.first().first == "fake-peer-id-aaa");
+        CHECK(pairingSucceededEvents.first().second == "May Gia A");
+        CHECK(!controller.isPairingSessionOpen()); // mã ghép đôi tự đóng ngay sau khi dùng
+
+        {
+            const QList<PairedPeer> peers = controller.pairedPeers();
+            const auto it = std::find_if(peers.begin(), peers.end(),
+                                         [](const PairedPeer& p) { return p.id == "fake-peer-id-aaa"; });
+            CHECK(it != peers.end());
+            CHECK(it->machineName == "May Gia A");
+            CHECK(it->longTermKey == fakePeerAReceived.first().longTermKey);
+            CHECK(it->autoConnect == true);
+        }
+
+        // ---- B. Chủ động ghép đôi: controller tự nhập mã do "máy giả B" tạo ra ----
+        QTcpServer fakeAcceptorServer;
+        CHECK(fakeAcceptorServer.listen(QHostAddress::LocalHost));
+        const QString fixedCode = "135792468";
+        CHECK(PairingCode::isValidFormat(fixedCode));
+
+        NetworkSession fakePeerB;
+        bool fakePeerBAdopted = false;
+        QObject::connect(&fakeAcceptorServer, &QTcpServer::newConnection, [&] {
+            if (!fakePeerBAdopted && fakeAcceptorServer.hasPendingConnections())
+            {
+                fakePeerB.adoptSocket(fakeAcceptorServer.nextPendingConnection());
+                fakePeerB.setCryptoKey(CryptoSession::deriveKeyFromPairingCode(fixedCode));
+                fakePeerBAdopted = true;
+            }
+        });
+
+        QList<ProtocolMessage> fakePeerBReceived;
+        QObject::connect(&fakePeerB, &NetworkSession::messageReceived, [&](ProtocolMessage m) {
+            fakePeerBReceived.push_back(m);
+            if (m.type == MessageType::PairRequest)
+            {
+                ProtocolMessage accept;
+                accept.type = MessageType::PairAccept;
+                accept.textA = "May Gia B";
+                accept.textB = "fake-peer-id-bbb";
+                accept.longTermKey = CryptoSession::generateRandomKey();
+                QString e;
+                fakePeerB.sendMessage(accept, &e);
+            }
+        });
+
+        controller.connectWithCode(QHostAddress::LocalHost, fakeAcceptorServer.serverPort(), fixedCode);
+        CHECK(waitUntil([&] { return fakePeerBAdopted; }));
+        CHECK(waitUntil([&] { return !fakePeerBReceived.isEmpty(); }));
+        CHECK(fakePeerBReceived.first().type == MessageType::PairRequest);
+        CHECK(fakePeerBReceived.first().textA == myIdentity.machineName);
+        CHECK(fakePeerBReceived.first().textB == myIdentity.id);
+
+        CHECK(waitUntil([&] { return pairingSucceededEvents.size() >= 2; }));
+        const auto& secondEvent = pairingSucceededEvents.last();
+        CHECK(secondEvent.first == "fake-peer-id-bbb");
+        CHECK(secondEvent.second == "May Gia B");
+        CHECK(controller.pairedPeers().size() == 2);
+
+        // ---- C. Sai mã ghép đôi: controller phải báo pairingFailed, không crash, không thêm peer ----
+        QTcpServer fakeAcceptorServer2;
+        CHECK(fakeAcceptorServer2.listen(QHostAddress::LocalHost));
+        QList<QString> pairingFailedReasons;
+        QObject::connect(&controller, &ConnectSessionController::pairingFailed,
+                         [&](QString reason) { pairingFailedReasons.push_back(reason); });
+        controller.connectWithCode(QHostAddress::LocalHost, fakeAcceptorServer2.serverPort(), "abc"); // sai định dạng
+        CHECK(waitUntil([&] { return !pairingFailedReasons.isEmpty(); }));
+        CHECK(controller.pairedPeers().size() == 2); // không tăng thêm
+
+        // ---- Quản lý peer: đổi vị trí, tắt tự kết nối, quên máy ----
+        controller.setPeerSide("fake-peer-id-aaa", ScreenSide::Right);
+        CHECK(controller.pairedPeers().size() == 2);
+        {
+            const auto peers = controller.pairedPeers();
+            const auto it = std::find_if(peers.begin(), peers.end(),
+                                         [](const PairedPeer& p) { return p.id == "fake-peer-id-aaa"; });
+            CHECK(it != peers.end() && it->side == ScreenSide::Right);
+        }
+
+        controller.setPeerAutoConnect("fake-peer-id-bbb", false);
+        {
+            const auto peers = controller.pairedPeers();
+            const auto it = std::find_if(peers.begin(), peers.end(),
+                                         [](const PairedPeer& p) { return p.id == "fake-peer-id-bbb"; });
+            CHECK(it != peers.end() && it->autoConnect == false);
+        }
+
+        controller.forgetPeer("fake-peer-id-aaa");
+        CHECK(controller.pairedPeers().size() == 1);
+        CHECK(controller.currentRole() == ControlRole::Idle); // chưa từng active -> vẫn Idle, không crash
+
+        controller.stop();
+        CHECK(!controller.isRunning());
+        controller.stop(); // gọi lại khi đã dừng -> không crash
+
+        PeerStore::instance().clear();
     }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);
