@@ -177,6 +177,23 @@ target_link_libraries(diskcleanup_core PUBLIC Qt6::Core shell32)
 add_executable(diskcleanup_tests EXCLUDE_FROM_ALL tests/diskcleanup_tests.cpp)
 target_link_libraries(diskcleanup_tests PRIVATE diskcleanup_core)
 
+# ---- Giao diện Disk Cleanup ----
+add_library(diskcleanup_ui STATIC
+    src/tools/diskcleanup/DiskUiStyle.h
+    src/tools/diskcleanup/CleanupTab.h
+    src/tools/diskcleanup/CleanupTab.cpp
+    src/tools/diskcleanup/LargeFilesTab.h
+    src/tools/diskcleanup/LargeFilesTab.cpp
+    src/tools/diskcleanup/DiskCleanupWindow.h
+    src/tools/diskcleanup/DiskCleanupWindow.cpp
+)
+target_include_directories(diskcleanup_ui PUBLIC src)
+target_link_libraries(diskcleanup_ui PUBLIC diskcleanup_core Qt6::Widgets)
+
+# ---- Kiểm thử "khói" UI Disk Cleanup: cmake --build build --target diskcleanup_ui_tests ----
+add_executable(diskcleanup_ui_tests EXCLUDE_FROM_ALL tests/diskcleanup_ui_tests.cpp src/core/Logger.cpp)
+target_link_libraries(diskcleanup_ui_tests PRIVATE diskcleanup_ui)
+
 set(SOURCES
     src/main.cpp
     src/core/Tool.h
@@ -193,6 +210,8 @@ set(SOURCES
     src/tools/wifi/WifiTool.cpp
     src/tools/connect/ConnectTool.h
     src/tools/connect/ConnectTool.cpp
+    src/tools/diskcleanup/DiskCleanupTool.h
+    src/tools/diskcleanup/DiskCleanupTool.cpp
     src/tools/autoclick/AutoClickTool.h
     src/tools/autoclick/AutoClickTool.cpp
     src/tools/autoclick/AutoClickWindow.h
@@ -235,6 +254,7 @@ target_link_libraries(OneForAll PRIVATE
     qr_ui
     wifi_ui
     connect_ui
+    diskcleanup_ui
     user32
     dwmapi
 )

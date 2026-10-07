@@ -4,7 +4,7 @@
 > Tài liệu kiến trúc chi tiết và changelog tính năng nằm ở [README.md](README.md); đặc tả thiết kế ở [OneForAll_AutoClick_Design.md](OneForAll_AutoClick_Design.md).
 
 ## 1. Dự án là gì
-Ứng dụng desktop Windows (C++20, Qt 6.11 MinGW, CMake + Ninja) dạng launcher gồm 9 công cụ. Hiện **Auto Click**, **QR Tools**, **WiFi Connection**, **Connect Together** (tham khảo Mouse without Borders) và **Disk Cleanup** (đang xây) hoàn chỉnh/đang hoàn thiện; 4 tool còn lại (Android Phone Control, Downloader, Security Gateway, VPN & Location) là `PlaceholderTool` (màn hình "đang phát triển").
+Ứng dụng desktop Windows (C++20, Qt 6.11 MinGW, CMake + Ninja) dạng launcher gồm 9 công cụ. Hiện **Auto Click**, **QR Tools**, **WiFi Connection**, **Connect Together** (tham khảo Mouse without Borders) và **Disk Cleanup** (tham khảo CCleaner/BleachBit/Windows Disk Cleanup) hoàn chỉnh; 4 tool còn lại (Android Phone Control, Downloader, Security Gateway, VPN & Location) là `PlaceholderTool` (màn hình "đang phát triển").
 
 ## 2. Luồng khởi động
 `main.cpp` đặt Per-Monitor DPI v2 → `QApplication` → `Logger` ghi `logs/app.log` → `MainWindow`.
@@ -60,9 +60,14 @@
 | `src/tools/diskcleanup/engine/CleanupExecutor.*` | Thực hiện xóa (qua Thùng rác mặc định) trên QThread riêng |
 | `src/tools/diskcleanup/engine/DiskSpaceInfo.*` | Dung lượng từng ổ đĩa (thuần Qt, QStorageInfo) |
 | `src/tools/diskcleanup/engine/LargeFileScanner.*` | Tìm tệp lớn trong một thư mục gốc tùy chọn, QThread riêng |
+| `src/tools/diskcleanup/DiskUiStyle.h` | Style Light Theme dùng chung cho UI Disk Cleanup (giống `ConnectUiStyle.h`/`WifiUiStyle.h`) |
+| `src/tools/diskcleanup/CleanupTab.*` | Tab "Dọn dẹp theo hạng mục": tổng quan dung lượng ổ đĩa, bảng hạng mục có thể tick, quét/dọn dẹp |
+| `src/tools/diskcleanup/LargeFilesTab.*` | Tab "Tìm tệp lớn": chọn thư mục/ổ, ngưỡng kích thước, quét và xóa/mở thư mục chứa |
+| `src/tools/diskcleanup/DiskCleanupWindow.*` | Cửa sổ Disk Cleanup, ghép 2 tab trên |
+| `src/tools/diskcleanup/DiskCleanupTool.*` | `ITool` của Disk Cleanup (một cửa sổ duy nhất) |
 | `src/tools/wifi/WifiTool.*` | `ITool` của WiFi (một cửa sổ duy nhất) |
 | `src/third_party/` | qrcodegen (MIT), quirc (ISC), xem `THIRD_PARTY.md` |
-| `tests/` | `qr_tests`/`qr_ui_tests`, `wifi_tests`/`wifi_ui_tests`, `connect_tests`/`connect_ui_tests` (506 + 2, ghép đôi 2 chiều thật qua TCP, ổn định qua 40+ lần chạy liên tiếp), `diskcleanup_tests` (82 kiểm tra, có xóa file thật qua Thùng rác) |
+| `tests/` | `qr_tests`/`qr_ui_tests`, `wifi_tests`/`wifi_ui_tests`, `connect_tests`/`connect_ui_tests` (506 + 2, ghép đôi 2 chiều thật qua TCP, ổn định qua 40+ lần chạy liên tiếp), `diskcleanup_tests`/`diskcleanup_ui_tests` (91 + 10 kiểm tra, có xóa file thật qua Thùng rác) |
 | `assets/resources.qrc`, `icon/` | Icon nhúng vào exe |
 | `profiles/default.json` | Profile mặc định (chain mẫu) |
 | `build_app.bat`, `run_app.bat` | Build + đóng gói (`windeployqt`), chạy bản Release |
@@ -154,7 +159,7 @@ tiến trình trên 2 máy khác nhau (đã test trên 1 máy với "máy giả"
 của ảnh chụp màn hình tự động (ô nhập IP/Cổng/Mã trong tab Ghép đôi) - cần tự nhìn trực tiếp trong app
 thật để xác nhận có thật hay chỉ là hiện tượng chụp ảnh.
 
-## 4f. Disk Cleanup (đang xây dựng - lõi xong, đang làm UI)
+## 4f. Disk Cleanup (đã hoàn thiện)
 Tham khảo CCleaner/BleachBit/Windows Disk Cleanup: quét và dọn các hạng mục tệp rác đã biết theo mức
 độ rủi ro, xem dung lượng từng ổ đĩa, tìm tệp lớn. **Mặc định xóa qua Thùng rác** (có thể khôi phục),
 không xóa vĩnh viễn trừ khi người dùng chủ động bật tùy chọn đó.
@@ -165,25 +170,45 @@ báo cáo lỗi Windows (WER), memory dump, Prefetch, danh sách tệp gần đ�
 duyệt (Chrome/Edge/Firefox - tự dò từng profile Firefox), và Windows.old (rủi ro cao, không tick sẵn,
 cảnh báo không thể hoàn tác).
 
-**Đã xong, đã test (82 kiểm tra):**
+**Giao diện:** 2 tab trong `DiskCleanupWindow`.
+- **Dọn dẹp theo hạng mục** (`CleanupTab`): thẻ tổng quan dung lượng từng ổ đĩa ở trên (màu thanh theo
+  % đã dùng); bảng hạng mục có checkbox/tên/mức rủi ro (màu)/số mục/dung lượng, tick sẵn theo rủi ro;
+  nút Quét chạy `CleanupScanner` và đổ bảng dần theo tín hiệu; nút Dọn dẹp xác nhận rồi chạy
+  `CleanupExecutor`, có checkbox "Xóa vĩnh viễn" mặc định TẮT; quét lại tự động sau khi dọn xong.
+- **Tìm tệp lớn** (`LargeFilesTab`): chọn ổ đĩa hoặc thư mục bất kỳ (duyệt tay), ngưỡng kích thước tối
+  thiểu (MB), quét bằng `LargeFileScanner`; chọn nhiều dòng để mở thư mục chứa hoặc xóa vào Thùng rác.
+
+**Đã xong, đã test (91 kiểm tra lõi + 10 kiểm tra UI):**
 - `CategoryRegistry`: dựng danh sách hạng mục + phân giải đường dẫn qua một `CleanupEnvironment` có thể
   thay thế bằng môi trường giả - test không đụng vào Temp/Windows/SoftwareDistribution thật của máy.
   Hạng mục không tồn tại trên máy (chưa cài trình duyệt đó, thư mục chưa từng tạo...) tự động có
   `rootPaths` rỗng thay vì lỗi.
 - `CleanupScanner`: quét trên QThread riêng (giống `ActionRunner`), test bằng tệp giả trong thư mục
-  tạm - xác nhận đúng kích thước, đúng số mục, dừng giữa chừng không crash.
+  tạm - xác nhận đúng kích thước, đúng số mục, dừng giữa chừng không crash. **Đã sửa lỗi thật phát
+  hiện khi quét tay trên máy thật:** Qt trên Windows coi tệp lối tắt (`.lnk`) như symlink và tự động
+  "đi theo" nó khi hỏi `isDir()`/liệt kê thư mục - hạng mục "Danh sách tệp gần đây" toàn lối tắt, nên
+  một lối tắt trỏ tới thư mục Downloads hay cả ổ D: từng bị cộng nhầm **hàng chục GB** vào kích thước
+  hạng mục (quét tay đo được 12.76 GB trong khi thư mục thật chỉ ~4.3 MB). Sửa bằng cách đọc thuộc
+  tính thật của chính đường dẫn qua `GetFileAttributesExW` (API Win32 thô, không biết định dạng Shell
+  Link) khi gặp symlink, và loại symlink khỏi đệ quy tính kích thước thư mục (`QDir::NoSymLinks`). Có
+  test hồi quy dựng lối tắt thật bằng `QFile::link()` trỏ vào một thư mục tạm cố tình lớn hơn nhiều
+  chính tệp `.lnk`, xác nhận kích thước không còn bị cộng nhầm.
 - `RecycleBinOps`: lớp duy nhất gọi Shell API Thùng rác (SHFileOperationW/SHQueryRecycleBinW). Test
   **xóa file thật** (do chính test tạo ra trong thư mục tạm, an toàn/có thể khôi phục) - xác nhận file
   biến mất khỏi vị trí gốc. Cố ý KHÔNG test `empty()` (sẽ xóa vĩnh viễn toàn bộ Thùng rác thật của máy).
 - `CleanupExecutor`: xóa trên QThread riêng, test xóa file thật thành công qua Thùng rác.
 - `DiskSpaceInfo`: đọc dung lượng ổ đĩa thật (QStorageInfo, chỉ đọc, an toàn) - xác nhận trên máy này.
 - `LargeFileScanner`: tìm tệp lớn theo ngưỡng, sắp xếp giảm dần, giới hạn số kết quả - test bằng tệp giả.
+- `diskcleanup_ui_tests`: dựng `DiskCleanupWindow` và cả 2 tab không crash, widget chính tồn tại đúng
+  trạng thái ban đầu (bảng rỗng, chưa hiện progress bar, "Xóa vĩnh viễn" mặc định tắt). **Cố ý KHÔNG**
+  bấm nút Quét thật trong test tự động (hạng mục trỏ vào `%TEMP%`/`%WINDIR%` thật, tìm tệp lớn có thể
+  quét cả ổ đĩa) - đã tự kiểm tra tay bằng quét thật trên máy build (ảnh chụp UI + log từng hạng mục)
+  trước khi phát hiện và sửa lỗi `.lnk` nói trên.
 
-**Chưa làm:** giao diện (danh sách hạng mục có thể tick/bỏ, tổng dung lượng sẽ giải phóng, xác nhận
-trước khi xóa, biểu đồ dung lượng ổ đĩa, tab tìm tệp lớn), `DiskCleanupTool`, nối vào `MainWindow`. Cân
-nhắc thêm: bộ tìm tệp trùng lặp (duplicate finder), và quản lý/đổi kích thước phân vùng ổ đĩa (dùng
-PowerShell `Resize-Partition`/`Get-PartitionSupportedSize` - cùng cơ chế an toàn mà Disk Management của
-Windows dùng, không tự viết thao tác đĩa mức thấp vì rủi ro mất dữ liệu rất thật nếu làm sai).
+**Cân nhắc thêm (chưa làm):** bộ tìm tệp trùng lặp (duplicate finder), và quản lý/đổi kích thước phân
+vùng ổ đĩa (dùng PowerShell `Resize-Partition`/`Get-PartitionSupportedSize` - cùng cơ chế an toàn mà
+Disk Management của Windows dùng, không tự viết thao tác đĩa mức thấp vì rủi ro mất dữ liệu rất thật
+nếu làm sai).
 
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`. `run_app.bat` chạy `OneForAll_Release\OneForAll.exe`. Thư mục `build/`, `OneForAll_Release/`, `logs/` không được commit (xem `.gitignore`).
@@ -213,6 +238,7 @@ Mỗi lần sửa code: commit riêng với message mô tả rõ, và cập nh�
 | 2026-10-07 | Connect Together (điều phối) | ConnectSessionController nối toàn bộ lại - ghép đôi 2 chiều test thật qua TCP, 506 test. Chưa có UI (v1.1.3) |
 | 2026-10-07 | Connect Together (hoàn thiện) | UI (Ghép đôi/Máy đã ghép đôi), nối vào MainWindow; tìm và sửa lỗi crash ngẫu nhiên nghiêm trọng (double deleteLater) trong luồng ghép đôi (v1.2.0) |
 | 2026-10-07 | Disk Cleanup (lõi) | Quét hạng mục dọn dẹp, xóa qua Thùng rác, dung lượng ổ đĩa, tìm tệp lớn - 82 test (có xóa file thật qua Recycle Bin). Chưa có UI (v1.3.0) |
+| 2026-10-07 | Disk Cleanup (UI + sửa lỗi .lnk) | UI 2 tab (Dọn dẹp theo hạng mục, Tìm tệp lớn), nối vào MainWindow; phát hiện và sửa lỗi thật khi quét tay - Qt tự "đi theo" lối tắt (.lnk) khiến hạng mục Recent Items bị cộng nhầm hàng chục GB; 91 test lõi + 10 test UI (v1.4.0) |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `

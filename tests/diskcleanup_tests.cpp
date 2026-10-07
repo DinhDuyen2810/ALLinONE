@@ -7,6 +7,7 @@
 #include <QDir>
 #include <QEventLoop>
 #include <QFile>
+#include <QFileInfo>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <cstdio>
@@ -217,6 +218,72 @@ int main(int argc, char** argv)
         scanner2.requestStop();
         CHECK(waitUntil([&] { return stopped || !scanner2.isRunning(); }));
         scanner2.wait();
+    }
+
+    // ---- CleanupScanner: lối tắt (.lnk) KHÔNG được tính theo kích thước thư mục đích ----
+    // Hồi quy cho lỗi thật phát hiện khi quét tay trên máy thật: Qt coi .lnk như symlink và TỰ ĐỘNG
+    // đi theo nó (isDir()/entryList() phản ánh thư mục ĐÍCH) - hạng mục "Recent Items" toàn lối tắt,
+    // nên một lối tắt trỏ tới thư mục Tải xuống/cả ổ đĩa từng bị cộng nhầm hàng chục GB vào kích thước.
+    {
+        QTemporaryDir tmp;
+        CHECK(tmp.isValid());
+        QDir root(tmp.path());
+        root.mkpath("target");
+        // "Thư mục đích" của lối tắt cố tình để LỚN HƠN NHIỀU chính tệp .lnk, để lỗi (nếu tái xuất hiện)
+        // chắc chắn làm lệch tổng kích thước một cách rõ ràng, không thể nhầm lẫn với sai số nhỏ.
+        writeFile(tmp.path() + "/target/big.bin", 50000);
+        writeFile(tmp.path() + "/plain.tmp", 777); // tệp thường, không phải lối tắt, để đối chứng
+
+        const QString linkPath = tmp.path() + "/shortcut.lnk";
+        const bool linked = QFile::link(tmp.path() + "/target", linkPath);
+        CHECK(linked);
+
+        if (linked)
+        {
+            CleanupCategory catLink;
+            catLink.id = CleanupCategoryId::RecentItems;
+            catLink.name = "Link test";
+            catLink.risk = CleanupRisk::Caution;
+            catLink.rootPaths = {tmp.path()};
+            catLink.keepRootFolder = true;
+
+            CleanupScanner scanner;
+            scanner.setCategories({catLink});
+
+            QList<CleanupItem> items;
+            QObject::connect(&scanner, &CleanupScanner::itemFound, [&](CleanupItem i) { items.push_back(i); });
+            bool finished = false;
+            qint64 finalBytes = 0;
+            QObject::connect(&scanner, &CleanupScanner::scanFinished, [&](qint64 bytes, int) {
+                finished = true;
+                finalBytes = bytes;
+            });
+            scanner.start();
+            CHECK(waitUntil([&] { return finished; }));
+            scanner.wait();
+
+            // 3 mục ở cấp gốc: shortcut.lnk, plain.tmp, target/ (thư mục thật) - KHÔNG được cộng dồn
+            // kích thước của target/ hai lần (một lần qua chính nó, một lần qua lối tắt trỏ tới nó -
+            // lỗi gốc từng khiến finalBytes xấp xỉ 50000+777+50000, gần gấp đôi giá trị đúng bên dưới).
+            // Chính tệp .lnk chỉ nặng vài trăm-vài nghìn byte nên tổng đúng xấp xỉ, không chính xác
+            // tuyệt đối, 50000 (target) + 777 (plain.tmp).
+            CHECK(items.size() == 3);
+            CHECK(finalBytes >= 50000 + 777);
+            CHECK(finalBytes < 50000 + 777 + 10000); // không bị cộng nhầm thêm ~50000 của lối tắt
+
+            bool foundLink = false;
+            for (const auto& it : items)
+            {
+                if (it.path == QDir(linkPath).absolutePath() || QFileInfo(it.path).fileName() == "shortcut.lnk")
+                {
+                    foundLink = true;
+                    // Lỗi gốc: sizeBytes từng = 50000 (kích thước target/) thay vì kích thước thật của .lnk
+                    CHECK(it.sizeBytes < 10000); // lối tắt Windows chỉ vài trăm-vài nghìn byte, không bao giờ tới 50000
+                    CHECK(it.isDirectory == false); // chính .lnk luôn là một TỆP, không phải thư mục
+                }
+            }
+            CHECK(foundLink);
+        }
     }
 
     // ---- RecycleBinOps: chuyển tệp THẬT (do test tự tạo) vào Thùng rác - an toàn, có thể khôi phục ----

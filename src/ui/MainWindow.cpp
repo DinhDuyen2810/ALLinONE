@@ -3,6 +3,7 @@
 #include "../tools/qr/QRTool.h"
 #include "../tools/wifi/WifiTool.h"
 #include "../tools/connect/ConnectTool.h"
+#include "../tools/diskcleanup/DiskCleanupTool.h"
 #include "core/IconHelper.h"
 #include <QHBoxLayout>
 #include <QVBoxLayout>
@@ -35,8 +36,7 @@ void MainWindow::registerTools()
 
     tm.registerTool(std::make_unique<QRTool>());
 
-    tm.registerTool(std::make_unique<PlaceholderTool>(
-        "disk", "Disk Cleanup", "Dọn dẹp rác hệ thống, file tạm và tối ưu hóa dung lượng ổ cứng.", ":/icons/cleaner.png"));
+    tm.registerTool(std::make_unique<DiskCleanupTool>());
 
     tm.registerTool(std::make_unique<PlaceholderTool>(
         "android", "Android Phone Control", "Điều khiển điện thoại Android qua màn hình máy tính và ADB.", ":/icons/pcTOphone.png"));

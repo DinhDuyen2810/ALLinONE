@@ -4,14 +4,63 @@
 #include <QDirIterator>
 #include <QFileInfo>
 
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
+
 namespace
 {
+/// Trên Windows, QFileInfo coi tệp lối tắt (.lnk/.pif) như một "symlink" và TỰ ĐỘNG đi theo nó:
+/// isDir()/entryList() phản ánh THƯ MỤC ĐÍCH chứ không phải chính tệp .lnk (vài trăm byte). Hạng mục
+/// "Danh sách tệp gần đây" (%APPDATA%/.../Recent) toàn là lối tắt - nếu không chặn việc này, một lối
+/// tắt trỏ tới "Downloads" hay cả ổ D: sẽ bị cộng nhầm HÀNG CHỤC GB vào kích thước hạng mục, dù xóa
+/// lối tắt chỉ giải phóng đúng kích thước của chính nó. Dùng GetFileAttributesExW (API Win32 thô, đọc
+/// thẳng thuộc tính NTFS của chính tệp .lnk - không hề biết/đi theo định dạng Shell Link) để lấy đúng
+/// loại + kích thước thật của chính đường dẫn đó, bỏ qua việc Qt "giải mã hộ" lối tắt.
+bool rawFileInfo(const QString& path, bool* isDirOut, qint64* sizeOut)
+{
+#ifdef Q_OS_WIN
+    WIN32_FILE_ATTRIBUTE_DATA data;
+    if (!GetFileAttributesExW(reinterpret_cast<const wchar_t*>(path.utf16()), GetFileExInfoStandard, &data))
+        return false;
+    *isDirOut = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    *sizeOut = (static_cast<qint64>(data.nFileSizeHigh) << 32) | static_cast<qint64>(data.nFileSizeLow);
+    return true;
+#else
+    Q_UNUSED(path);
+    Q_UNUSED(isDirOut);
+    Q_UNUSED(sizeOut);
+    return false;
+#endif
+}
+
+/// Loại + kích thước thật của một mục, không bị Qt đi theo lối tắt (xem rawFileInfo). Dùng cho MỌI
+/// mục được liệt kê, không chỉ riêng hạng mục Recent Items - an toàn vì luôn trả về dữ liệu đúng hơn
+/// hoặc bằng QFileInfo (rawFileInfo chỉ thay thế khi entry thực sự là symlink/lối tắt).
+void realEntryInfo(const QFileInfo& entry, bool* isDirOut, qint64* sizeOut)
+{
+    if (entry.isSymLink())
+    {
+        bool rawIsDir = false;
+        qint64 rawSize = 0;
+        if (rawFileInfo(entry.absoluteFilePath(), &rawIsDir, &rawSize))
+        {
+            *isDirOut = rawIsDir;
+            *sizeOut = rawSize;
+            return;
+        }
+    }
+    *isDirOut = entry.isDir();
+    *sizeOut = entry.isDir() ? 0 : entry.size(); // thư mục: gọi directorySize() riêng, không dùng size() ở đây
+}
+
 /// Tính tổng kích thước một thư mục (đệ quy). Kiểm tra cờ dừng định kỳ vì thư mục có thể rất lớn
-/// (Windows.old có thể hàng chục GB).
+/// (Windows.old có thể hàng chục GB). Bỏ qua lối tắt/symlink (QDir::NoSymLinks) để không vô tình đệ
+/// quy lạc sang một thư mục đích hoàn toàn khác với thư mục gốc đang quét - xem rawFileInfo() ở trên.
 qint64 directorySize(const QString& path, const std::atomic_bool& stopFlag)
 {
     qint64 total = 0;
-    QDirIterator it(path, QDir::Files | QDir::System | QDir::Hidden, QDirIterator::Subdirectories);
+    QDirIterator it(path, QDir::Files | QDir::System | QDir::Hidden | QDir::NoSymLinks, QDirIterator::Subdirectories);
     int counter = 0;
     while (it.hasNext())
     {
@@ -90,14 +139,18 @@ void CleanupScanner::scanCategory(const CleanupCategory& category, qint64* outBy
             const QFileInfo info(rootPath);
             if (!info.exists())
                 continue;
-            const qint64 size = info.isDir() ? directorySize(rootPath, m_stopRequested) : info.size();
+            bool isDir = false;
+            qint64 size = 0;
+            realEntryInfo(info, &isDir, &size);
+            if (isDir)
+                size = directorySize(rootPath, m_stopRequested);
             if (m_stopRequested)
                 return;
 
             CleanupItem item;
             item.path = rootPath;
             item.sizeBytes = size;
-            item.isDirectory = info.isDir();
+            item.isDirectory = isDir;
             item.categoryId = category.id;
             item.selected = (category.risk == CleanupRisk::Safe);
             emit itemFound(item);
@@ -121,15 +174,18 @@ void CleanupScanner::scanCategory(const CleanupCategory& category, qint64* outBy
             if (m_stopRequested)
                 return;
 
-            const qint64 size = entry.isDir() ? directorySize(entry.absoluteFilePath(), m_stopRequested)
-                                              : entry.size();
+            bool isDir = false;
+            qint64 size = 0;
+            realEntryInfo(entry, &isDir, &size);
+            if (isDir)
+                size = directorySize(entry.absoluteFilePath(), m_stopRequested);
             if (m_stopRequested)
                 return;
 
             CleanupItem item;
             item.path = entry.absoluteFilePath();
             item.sizeBytes = size;
-            item.isDirectory = entry.isDir();
+            item.isDirectory = isDir;
             item.categoryId = category.id;
             item.selected = (category.risk == CleanupRisk::Safe);
             emit itemFound(item);
