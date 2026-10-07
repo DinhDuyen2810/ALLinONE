@@ -2,6 +2,7 @@
 #include "../tools/autoclick/AutoClickTool.h"
 #include "../tools/qr/QRTool.h"
 #include "../tools/wifi/WifiTool.h"
+#include "../tools/connect/ConnectTool.h"
 #include "core/IconHelper.h"
 #include <QHBoxLayout>
 #include <QVBoxLayout>
@@ -30,9 +31,7 @@ void MainWindow::registerTools()
     // 1. Auto Click (Main tool implemented)
     tm.registerTool(std::make_unique<AutoClickTool>());
 
-    // 2-9. Placeholder tools as designed
-    tm.registerTool(std::make_unique<PlaceholderTool>(
-        "connect", "Connect Together", "Kết nối và đồng bộ thiết bị qua mạng nội bộ.", ":/icons/con_device.png"));
+    tm.registerTool(std::make_unique<ConnectTool>());
 
     tm.registerTool(std::make_unique<QRTool>());
 

@@ -136,6 +136,23 @@ target_link_libraries(connect_core PUBLIC Qt6::Core Qt6::Gui Qt6::Network bcrypt
 add_executable(connect_tests EXCLUDE_FROM_ALL tests/connect_tests.cpp)
 target_link_libraries(connect_tests PRIVATE connect_core)
 
+# ---- Giao diện Connect Together ----
+add_library(connect_ui STATIC
+    src/tools/connect/ConnectUiStyle.h
+    src/tools/connect/PairingTab.h
+    src/tools/connect/PairingTab.cpp
+    src/tools/connect/PeersTab.h
+    src/tools/connect/PeersTab.cpp
+    src/tools/connect/ConnectWindow.h
+    src/tools/connect/ConnectWindow.cpp
+)
+target_include_directories(connect_ui PUBLIC src)
+target_link_libraries(connect_ui PUBLIC connect_core Qt6::Widgets)
+
+# ---- Kiểm thử "khói" UI Connect Together: cmake --build build --target connect_ui_tests ----
+add_executable(connect_ui_tests EXCLUDE_FROM_ALL tests/connect_ui_tests.cpp src/core/Logger.cpp)
+target_link_libraries(connect_ui_tests PRIVATE connect_ui)
+
 set(SOURCES
     src/main.cpp
     src/core/Tool.h
@@ -150,6 +167,8 @@ set(SOURCES
     src/tools/qr/QRTool.cpp
     src/tools/wifi/WifiTool.h
     src/tools/wifi/WifiTool.cpp
+    src/tools/connect/ConnectTool.h
+    src/tools/connect/ConnectTool.cpp
     src/tools/autoclick/AutoClickTool.h
     src/tools/autoclick/AutoClickTool.cpp
     src/tools/autoclick/AutoClickWindow.h
@@ -191,6 +210,7 @@ target_link_libraries(OneForAll PRIVATE
     Qt6::Widgets
     qr_ui
     wifi_ui
+    connect_ui
     user32
     dwmapi
 )
