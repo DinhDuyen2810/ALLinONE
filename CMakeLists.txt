@@ -278,6 +278,55 @@ target_link_libraries(vpn_ui PUBLIC vpn_core Qt6::Widgets)
 add_executable(vpn_ui_tests EXCLUDE_FROM_ALL tests/vpn_ui_tests.cpp src/core/Logger.cpp)
 target_link_libraries(vpn_ui_tests PRIVATE vpn_ui)
 
+# ---- Lõi Security Gateway (cổng lệnh PowerShell + bảo vệ web + quét mã độc qua Windows Defender) ----
+# InputController.h/.cpp được liệt kê lại ở đây (giống WinElevation/PowerShellRunner đã dùng chung cho
+# diskcleanup_core/vpn_core) vì CommandLauncher cần gửi Ctrl+V thật - tránh phụ thuộc vòng vào các
+# nguồn trực tiếp của OneForAll (AutoClick không đóng gói thành thư viện riêng).
+add_library(security_core STATIC
+    src/tools/security/model/ThreatRecord.h
+    src/tools/security/engine/CommandAnalyzer.h
+    src/tools/security/engine/CommandAnalyzer.cpp
+    src/tools/security/engine/CommandLauncher.h
+    src/tools/security/engine/CommandLauncher.cpp
+    src/tools/security/engine/DefenderController.h
+    src/tools/security/engine/DefenderController.cpp
+    src/tools/security/engine/DefenderScanWorker.h
+    src/tools/security/engine/DefenderScanWorker.cpp
+    src/tools/security/engine/HostsBlocklist.h
+    src/tools/security/engine/HostsBlocklist.cpp
+    src/tools/autoclick/engine/InputController.h
+    src/tools/autoclick/engine/InputController.cpp
+    src/core/WinElevation.h
+    src/core/WinElevation.cpp
+    src/core/PowerShellRunner.h
+    src/core/PowerShellRunner.cpp
+)
+target_include_directories(security_core PUBLIC src)
+target_link_libraries(security_core PUBLIC Qt6::Core Qt6::Gui advapi32 shell32 user32)
+
+# ---- Kiểm thử lõi Security Gateway: cmake --build build --target security_tests ----
+add_executable(security_tests EXCLUDE_FROM_ALL tests/security_tests.cpp)
+target_link_libraries(security_tests PRIVATE security_core)
+
+# ---- Giao diện Security Gateway ----
+add_library(security_ui STATIC
+    src/tools/security/SecurityUiStyle.h
+    src/tools/security/CommandGatewayTab.h
+    src/tools/security/CommandGatewayTab.cpp
+    src/tools/security/WebProtectionTab.h
+    src/tools/security/WebProtectionTab.cpp
+    src/tools/security/MalwareScanTab.h
+    src/tools/security/MalwareScanTab.cpp
+    src/tools/security/SecurityGatewayWindow.h
+    src/tools/security/SecurityGatewayWindow.cpp
+)
+target_include_directories(security_ui PUBLIC src)
+target_link_libraries(security_ui PUBLIC security_core Qt6::Widgets)
+
+# ---- Kiểm thử "khói" UI Security Gateway: cmake --build build --target security_ui_tests ----
+add_executable(security_ui_tests EXCLUDE_FROM_ALL tests/security_ui_tests.cpp src/core/Logger.cpp)
+target_link_libraries(security_ui_tests PRIVATE security_ui)
+
 set(SOURCES
     src/main.cpp
     src/core/Tool.h
@@ -300,6 +349,8 @@ set(SOURCES
     src/tools/android/AndroidControlTool.cpp
     src/tools/vpn/VpnControlTool.h
     src/tools/vpn/VpnControlTool.cpp
+    src/tools/security/SecurityGatewayTool.h
+    src/tools/security/SecurityGatewayTool.cpp
     src/tools/autoclick/AutoClickTool.h
     src/tools/autoclick/AutoClickTool.cpp
     src/tools/autoclick/AutoClickWindow.h
@@ -344,6 +395,7 @@ target_link_libraries(OneForAll PRIVATE
     connect_ui
     diskcleanup_ui
     android_ui
+    security_ui
     vpn_ui
     user32
     dwmapi

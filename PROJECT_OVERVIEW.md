@@ -4,7 +4,7 @@
 > Tài liệu kiến trúc chi tiết và changelog tính năng nằm ở [README.md](README.md); đặc tả thiết kế ở [OneForAll_AutoClick_Design.md](OneForAll_AutoClick_Design.md).
 
 ## 1. Dự án là gì
-Ứng dụng desktop Windows (C++20, Qt 6.11 MinGW, CMake + Ninja) dạng launcher gồm 9 công cụ. Hiện **Auto Click**, **QR Tools**, **WiFi Connection**, **Connect Together** (tham khảo Mouse without Borders), **Disk Cleanup** (tham khảo CCleaner/BleachBit/Windows Disk Cleanup), **Android Phone Control** (dựa trên scrcpy) và **VPN & Location** (VPN gốc Windows + vị trí theo IP) hoàn chỉnh; 2 tool còn lại (Downloader, Security Gateway) là `PlaceholderTool` (màn hình "đang phát triển").
+Ứng dụng desktop Windows (C++20, Qt 6.11 MinGW, CMake + Ninja) dạng launcher gồm 9 công cụ. Hiện **Auto Click**, **QR Tools**, **WiFi Connection**, **Connect Together** (tham khảo Mouse without Borders), **Disk Cleanup** (tham khảo CCleaner/BleachBit/Windows Disk Cleanup), **Android Phone Control** (dựa trên scrcpy), **VPN & Location** (VPN gốc Windows + vị trí theo IP) và **Security Gateway** (tham khảo Kaspersky, xây trên Windows Defender có sẵn) hoàn chỉnh; 1 tool còn lại (Downloader) là `PlaceholderTool` (màn hình "đang phát triển").
 
 ## 2. Luồng khởi động
 `main.cpp` đặt Per-Monitor DPI v2 → `QApplication` → `Logger` ghi `logs/app.log` → `MainWindow`.
@@ -89,9 +89,17 @@
 | `src/tools/vpn/VpnTab.*` | Tab chính: vị trí hiện tại theo IP, bảng hồ sơ VPN, Kết nối/Ngắt kết nối |
 | `src/tools/vpn/VpnControlWindow.*` | Cửa sổ VPN & Location |
 | `src/tools/vpn/VpnControlTool.*` | `ITool` của VPN & Location (một cửa sổ duy nhất) |
+| `src/tools/security/model/ThreatRecord.h` | Một mối đe dọa Defender đã phát hiện (struct thuần) |
+| `src/tools/security/engine/CommandAnalyzer.*` | Phân tích TĨNH lệnh PowerShell - tìm dấu hiệu tải+thực thi/mã hóa/công cụ tấn công đã biết, không chạy lệnh |
+| `src/tools/security/engine/CommandLauncher.*` | Mở cửa sổ PowerShell THẬT riêng biệt + dán (không tự chạy) lệnh vào đó |
+| `src/tools/security/engine/DefenderController.*` | Bọc PowerShell module `Defender` có sẵn của Windows: trạng thái/bật-tắt bảo vệ/Network Protection/quét/liệt kê & xóa mối đe dọa |
+| `src/tools/security/engine/DefenderScanWorker.*` | Chạy `Start-MpScan` (đồng bộ/chặn) trên QThread riêng |
+| `src/tools/security/engine/HostsBlocklist.*` | Chặn tên miền tùy chỉnh qua hosts file (khối được đánh dấu riêng, không động vào phần còn lại) |
+| `src/tools/security/{CommandGatewayTab,WebProtectionTab,MalwareScanTab,SecurityGatewayWindow}.*` | UI 3 tab Security Gateway |
+| `src/tools/security/SecurityGatewayTool.*` | `ITool` của Security Gateway (một cửa sổ duy nhất) |
 | `src/third_party/` | qrcodegen (MIT), quirc (ISC), xem `THIRD_PARTY.md` |
 | `vendor/scrcpy/` | scrcpy + adb đóng gói (Apache-2.0, KHÔNG commit Git) - xem `THIRD_PARTY.md` |
-| `tests/` | `qr_tests`/`qr_ui_tests`, `wifi_tests`/`wifi_ui_tests`, `connect_tests`/`connect_ui_tests` (506 + 2, ghép đôi 2 chiều thật qua TCP, ổn định qua 40+ lần chạy liên tiếp), `diskcleanup_tests`/`diskcleanup_ui_tests` (176 + 19 kiểm tra, có xóa file thật qua Thùng rác, liệt kê phân vùng thật), `android_tests`/`android_ui_tests` (45 + 7 kiểm tra, có gọi `adb devices` thật - chỉ đọc), `vpn_tests`/`vpn_ui_tests` (41 + 6 kiểm tra, có gọi `Get-VpnConnection` thật - chỉ đọc) |
+| `tests/` | `qr_tests`/`qr_ui_tests`, `wifi_tests`/`wifi_ui_tests`, `connect_tests`/`connect_ui_tests` (506 + 2, ghép đôi 2 chiều thật qua TCP, ổn định qua 40+ lần chạy liên tiếp), `diskcleanup_tests`/`diskcleanup_ui_tests` (176 + 19 kiểm tra, có xóa file thật qua Thùng rác, liệt kê phân vùng thật), `android_tests`/`android_ui_tests` (45 + 7 kiểm tra, có gọi `adb devices` thật - chỉ đọc), `vpn_tests`/`vpn_ui_tests` (41 + 6 kiểm tra, có gọi `Get-VpnConnection` thật - chỉ đọc), `security_tests`/`security_ui_tests` (76 + 6 kiểm tra, có gọi `Get-MpComputerStatus`/đọc hosts file thật - chỉ đọc) |
 | `assets/resources.qrc`, `icon/` | Icon nhúng vào exe |
 | `profiles/default.json` | Profile mặc định (chain mẫu) |
 | `build_app.bat`, `run_app.bat` | Build + đóng gói (`windeployqt`), chạy bản Release |
@@ -451,6 +459,94 @@ KHÔNG tự kiểm tra được `rasdial` kết nối/ngắt kết nối thật 
 đường truyền, nhận IP mới) - cần người dùng tự thêm hồ sơ bằng tài khoản VPN thật của mình và tự kiểm
 tra tay. Việc thêm/liệt kê/xóa hồ sơ (Add/Get/Remove-VpnConnection) đã được xác nhận thật trên Windows.
 
+## 4i. Security Gateway (đã hoàn thiện)
+Yêu cầu người dùng: tham khảo Kaspersky, gồm (1) một "tab PowerShell" để kiểm tra lệnh có mã độc/bất
+thường không trước khi tự mở PowerShell thật và dán lệnh đã kiểm tra vào, (2) chặn ngay truy vấn tới
+link độc hại trên web, (3) quét máy tìm mã độc, xóa/cách ly khi đang bật.
+
+**Quyết định kiến trúc:** KHÔNG tự viết lại một bộ quét mã độc/chặn web (cần cơ sở dữ liệu chữ ký và máy
+học được cập nhật liên tục - không thể tự làm tốt hơn một AV thật) - xây trên nền **Windows Defender**
+đã có sẵn, miễn phí, cập nhật chữ ký tự động trên mọi máy Windows, điều khiển được qua PowerShell module
+`Defender` có sẵn trong Windows (`Get/Set-MpPreference`, `Get-MpComputerStatus`, `Start-MpScan`,
+`Get-MpThreat`, `Remove-MpThreat`). Đã dùng một agent nghiên cứu để xác nhận TỪNG cmdlet/tham số qua tài
+liệu Microsoft Learn chính thức TRƯỚC khi viết code (giống cách đã làm cho VPN & Location) - xem các lưu
+ý "đã xác nhận" trong code. Toàn bộ kiến trúc 3 tab:
+
+**1. Cổng lệnh PowerShell (`CommandGatewayTab`):** `CommandAnalyzer` phân tích TĨNH (không chạy thử) nội
+dung lệnh dán vào, tìm các mẫu dấu hiệu tấn công/mã độc phổ biến (tham khảo MITRE ATT&CK/Living-off-the-
+Land): tải+thực thi (`DownloadString`/`IEX`/`certutil -urlcache`), lệnh mã hóa Base64, công cụ tấn công
+đã biết (Mimikatz, vô hiệu hóa AMSI...), né tránh phòng thủ (tự tắt Defender/Tường lửa), thiết lập duy
+trì (schtasks/registry Run/WMI event), reverse shell. Phân loại An toàn/Đáng chú ý/Nguy hiểm kèm lý do cụ
+thể. **Nguyên tắc an toàn cốt lõi: ứng dụng KHÔNG BAO GIỜ tự chạy lệnh người dùng nhập** - `CommandLauncher`
+chỉ đặt lên Clipboard, mở MỘT cửa sổ `powershell.exe` thật riêng biệt, dò cửa sổ đó qua `EnumWindows` +
+`GetWindowThreadProcessId`, `SetForegroundWindow` rồi gửi Ctrl+V thật (tái dùng `InputController` đã có
+sẵn từ Auto Click) - người dùng luôn là người tự bấm Enter cuối cùng trên cửa sổ PowerShell thật đó. Lệnh
+"Nguy hiểm" vẫn cho mở (đây là công cụ TƯ VẤN cho người dùng tự xem lại lệnh của chính họ, không phải cơ
+chế ngăn họ chạy lệnh trên máy họ), nhưng bắt xác nhận rõ ràng qua checkbox trước khi bật nút.
+
+**2. Bảo vệ Web (`WebProtectionTab`):** Bật/tắt **Network Protection** của Windows Defender
+(`Set-MpPreference -EnableNetworkProtection Enabled/Disabled`) - chặn kết nối tới trang/máy chủ được
+Microsoft đánh giá có hại (lừa đảo, mã độc, C2) ngay ở tầng hệ điều hành, trước khi BẤT KỲ trình duyệt/
+ứng dụng nào kịp tải nội dung - đúng cơ chế THẬT đứng sau yêu cầu "chặn link độc hại ngay lúc truy vấn",
+và áp dụng cho mọi trình duyệt chứ không chỉ một trình duyệt cụ thể. Bổ sung thêm `HostsBlocklist`: danh
+sách chặn tên miền TÙY CHỈNH do người dùng tự khai báo, quản lý một khối riêng được đánh dấu rõ trong
+hosts file (`# OneForAll-SecurityGateway-BLOCKLIST-START/END`) - không bao giờ động vào các dòng khác
+người dùng/chương trình khác đã có sẵn trong hosts file.
+
+**3. Quét mã độc (`MalwareScanTab`):** Bật/tắt bảo vệ thời gian thực
+(`Set-MpPreference -DisableRealtimeMonitoring`), quét nhanh/toàn bộ/một thư mục (`Start-MpScan`, chạy
+trên `DefenderScanWorker` - QThread riêng vì cmdlet này ĐỒNG BỘ/CHẶN tới khi quét xong, đã xác nhận qua
+tài liệu API Win32 `MpScanStart`), xem danh sách mối đe dọa (`Get-MpThreat`) và xóa
+(`Remove-MpThreat`).
+
+**Lỗi/giới hạn THẬT phát hiện qua kiểm tra trực tiếp trên Windows Defender thật đang chạy (không chỉ
+test nội dung script):**
+- **Lỗi thật đã sửa:** `Get-MpPreference`'s `EnableNetworkProtection` trả về kiểu `System.Byte` THÔ (0/1/2)
+  trên máy thật, KHÔNG tự thành chữ "Disabled"/"Enabled"/"AuditMode" khi ép `[string]` như tưởng (đó là
+  kiểu tham số ĐẦU VÀO của `Set-MpPreference`, không phải kiểu dữ liệu ĐỌC RA của `Get-MpPreference`) -
+  khiến `networkProtectionEnabled()` LUÔN sai (so "0" với "Enabled" không bao giờ khớp). Sửa bằng cách tự
+  `switch`/map số sang chữ ngay trong script PowerShell, có test hồi quy khóa lại.
+- **Phát hiện thật khác:** `SeverityID` của Defender có thể là `5` (EICAR test) - ngoài phạm vi tài liệu
+  Microsoft (0-4) - đã sửa `severityLabel()` để không hiển thị nhầm "Không rõ" cho trường hợp này.
+- **Xác nhận THẬT qua tệp test EICAR chuẩn công nghiệp** (chuỗi test antivirus tiêu chuẩn, KHÔNG phải mã
+  độc thật, lấy nguyên văn từ tài liệu Microsoft Learn): tạo tệp trong thư mục tạm, Windows Defender thật
+  phát hiện ngay (`Get-MpThreat` trả về `Virus:DOS/EICAR_Test_File`), `Remove-MpThreat` xử lý thành công.
+  Nhận thấy `IsActive` đôi khi KHÔNG cập nhật ngay lập tức sau khi `Remove-MpThreat` báo thành công (cần
+  vài giây để Defender đồng bộ nội bộ) - không phải lỗi ứng dụng, đã ghi chú và nhắc người dùng bấm "Làm
+  mới" lại nếu thấy vậy, thay vì cố gắng che giấu độ trễ thật bằng cách giả vờ đã xong ngay.
+- **Lưu ý quan trọng đã xác nhận, sửa luôn thông tin hiển thị sai trước đó:** `Remove-MpThreat` KHÔNG có
+  tham số chọn từng mục - luôn xóa TẤT CẢ mối đe dọa đang hoạt động cùng lúc (đã xác nhận qua tài liệu
+  Microsoft Learn TRƯỚC khi viết UI, nên `ThreatRecord`/UI không có nút xóa riêng từng dòng).
+- **Yêu cầu quyền Administrator KHÔNG đồng đều giữa các cmdlet** (xác nhận thật bằng cách thử trực tiếp,
+  không đoán): `Set-MpPreference` (bật/tắt bảo vệ thời gian thực, Network Protection) và ghi hosts file
+  THẬT SỰ cần quyền Administrator (thử không có quyền → lỗi quyền thật); nhưng `Start-MpScan` và
+  `Remove-MpThreat` chạy được BÌNH THƯỜNG không cần Administrator trên máy thử - đã sửa lại banner cảnh
+  báo trong `MalwareScanTab` cho đúng thực tế thay vì nói chung chung "cần quyền Administrator cho mọi
+  thao tác" khi điều đó không đúng.
+
+**Giới hạn thật của môi trường phát triển này (không có desktop tương tác):** không chụp được ảnh màn
+hình (GDI `CopyFromScreen` báo "handle is invalid") và không bấm được hộp thoại UAC (chạy nâng quyền qua
+`-Verb RunAs` treo vô thời hạn chờ xác nhận) - do môi trường build không có phiên desktop tương tác thật,
+không phải lỗi của ứng dụng. Vì vậy: (a) giao diện 3 tab chưa được xác nhận bằng mắt qua ảnh chụp (chỉ
+qua test tự động kiểm tra cấu trúc widget + rà code theo đúng mẫu các tab khác đã được xác nhận bằng ảnh
+trước đó), (b) luồng `CommandLauncher` (mở PowerShell thật + dán) chưa tự kiểm tra được trực tiếp trong
+môi trường này (cần desktop thật) - về mặt kỹ thuật dùng lại nguyên vẹn `InputController`/`SendInput` đã
+được xác nhận hoạt động thật trong Auto Click, chỉ cần người dùng tự thử trên máy thật của họ (có desktop
+thật) để xác nhận lần cuối. Riêng Network Protection/bảo vệ thời gian thực/Remove-MpThreat/quét/EICAR đã
+xác nhận THẬT thành công (không cần desktop tương tác, chỉ cần PowerShell chạy được).
+
+**Đã xong, đã test (76 kiểm tra lõi + 6 kiểm tra UI):**
+- `CommandAnalyzer`: lệnh an toàn/đáng chú ý/nguy hiểm với hơn chục mẫu tấn công/mã độc thật phổ biến,
+  xác nhận "Nguy hiểm" luôn thắng "Đáng chú ý" khi cùng khớp nhiều mẫu.
+- `DefenderController`/`HostsBlocklist`: dựng script PowerShell (kiểm tra nội dung chuỗi), phân tích JSON
+  mẫu dựng sẵn (gồm hồi quy PowerShell 5.1 trả object đơn không bọc mảng, hồi quy byte-vs-chữ của
+  Network Protection, hồi quy SeverityID ngoài phạm vi tài liệu), dựng lại nội dung hosts file (giữ
+  nguyên dòng khác, vòng lặp phân tích-dựng lại cho đúng danh sách).
+- `security_ui_tests`: dựng `SecurityGatewayWindow` không crash, đủ 3 tab; gọi `Get-MpComputerStatus`/
+  đọc hosts file THẬT (chỉ đọc, an toàn). **Cố ý KHÔNG** tự động bật/tắt bảo vệ thật, quét máy thật, xóa
+  mối đe dọa thật, sửa hosts file thật, hay mở PowerShell/dán lệnh thật trong test tự động - những thao
+  tác đó đổi trạng thái hệ thống thật và/hoặc cần quyền Administrator.
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
@@ -490,6 +586,7 @@ Mỗi lần sửa code: commit riêng với message mô tả rõ, và cập nh�
 | 2026-10-07 | Rà soát toàn bộ 5 tính năng (UI + hoạt động) | Theo yêu cầu người dùng: rà kỹ Auto Click/Connect Together/QR Tools/WiFi Connection/Disk Cleanup - build lại + chạy toàn bộ 895 kiểm tra tự động (đều qua), chụp ảnh từng màn hình để soát giao diện. Phát hiện/sửa: (1) **Auto Click toàn bộ panel/nhãn/HUD từng thuần tiếng Anh** ("ACTION CHAINS", "Type:", "Wait Before:", HUD "Auto Click Running"...) trong khi phần còn lại ứng dụng toàn tiếng Việt - dịch hết, đã xác nhận an toàn (combo box đọc/ghi theo chỉ số, `Action::typeName()` độc lập hoàn toàn với khóa JSON của `ActionSerializer`); phát hiện thêm 1 lỗi tự gây ra khi dịch (nút "Nhân bản" bị cắt chữ do panel hẹp) và sửa luôn (xếp dọc thay vì ngang). (2) WiFi: checkbox "Hiện mật khẩu đã lưu" bị cắt chữ do chung hàng với 5 nút - tách hàng riêng. (3) **Xác nhận dứt điểm** nghi vấn hiển thị cũ ở tab Ghép đôi (Connect Together, nêu từ v1.2.0): dựng cửa sổ hiện THẬT trên màn hình (không `WA_DontShowOnScreen`) rồi chụp - chữ hiển thị hoàn toàn bình thường, xác nhận đó chỉ là hiện tượng chụp ảnh widget ẩn, không phải lỗi code. |
 | 2026-10-07 | Android Phone Control (hoàn thiện) | Yêu cầu người dùng: điều khiển thiết bị Android "tính realtime và độ linh hoạt kiểu như remote". Quyết định kiến trúc: dùng lại **scrcpy** (Genymobile, Apache-2.0, mã nguồn mở, kiểm chứng nhiều năm) thay vì tự viết lại mã hóa H.264 + tiêm sự kiện phía Android (rủi ro cao, không tự kiểm thử đủ trong môi trường không có thiết bị thật) - đóng gói bản `scrcpy-win64` chính thức (đã xác minh SHA-256) vào `vendor/scrcpy/` (không commit Git, như `build/`/`OneForAll_Release/`), `build_app.bat` tự đóng gói kèm exe. `AdbController` (liệt kê/ghép đôi/kết nối thiết bị qua `adb.exe`) + `ScrcpyLauncher` (khởi chạy `scrcpy.exe` làm tiến trình nền, không chặn UI) + `DevicesTab` (danh sách thiết bị tự làm mới, tùy chọn độ phân giải/bitrate/fps/tắt màn hình/luôn nổi/ghi hình - cờ thật của scrcpy) + `WirelessPairDialog` (ghép đôi không dây Android 11+). "Chuyển sang không dây" dùng `--tcpip` của scrcpy (tự dò IP, bật TCP/IP, kết nối, gương - một bước). 45 test lõi (phân tích `adb devices -l` mẫu + dựng đối số dòng lệnh, không cần thiết bị thật) + 7 test UI (gọi `adb devices` thật - chỉ đọc, an toàn). **Giới hạn thật:** không có điện thoại Android gắn sẵn trong môi trường này nên KHÔNG tự kiểm tra được gương màn hình/ghép đôi không dây đầu-cuối - cần người dùng tự kiểm tra tay. Cửa sổ gương là cửa sổ riêng của scrcpy (nhúng vào cửa sổ Qt là việc có thể làm sau, "nếu có thể"). |
 | 2026-10-07 | VPN & Location (hoàn thiện) | Yêu cầu người dùng: "VPN và location có thể chuyển đổi IP qua nhiều quốc gia và đổi vị trí GPS trong 1 quốc gia". VPN: `VpnController` dùng module `VpnClient` của Windows qua PowerShell (`Add`/`Get`/`Remove-VpnConnection`, mặc định per-user không cần Administrator) + `VpnConnector` dùng `rasdial.exe` để kết nối/ngắt kết nối kèm username/password hỏi riêng mỗi lần (không lưu mật khẩu). Location: **từ chối có chủ đích** giả lập GPS thật - API `Geolocator` của Windows bị khóa sau quyền "System location" chỉ cấp cho app MSIX đã duyệt, không thể gọi từ Win32 không đóng gói dù có quyền Administrator; cách còn lại là ghi registry không tài liệu, rủi ro hỏng dịch vụ định vị thật, không chấp nhận được - thay bằng `PublicIpChecker` tra vị trí thật theo IP công khai (`ipwho.is`, đổi theo khi đổi VPN). **Lỗi thật phát hiện qua kiểm tra trên Windows thật:** `Add-VpnConnection` gọi cứng `-AuthenticationMethod MSChapv2` cho mọi loại tunnel bị Windows từ chối thật với IKEv2 ("IKEv2 tunnel type only supports Eap and Machine certificate") - IKEv2 lại là lựa chọn mặc định của hộp thoại thêm hồ sơ; sửa bằng `authMethodForTunnelType()` (Ikev2 → Eap, còn lại giữ MSChapv2), xác nhận lại bằng cách chạy thật Add→Get→Remove-VpnConnection cho cả 5 loại tunnel, tất cả thành công. Tách `WinElevation`/`PowerShellRunner` dùng chung từ `PartitionManager` (giảm trùng lặp, 176/19 test Disk Cleanup không đổi). 41 test lõi (+ test hồi quy khóa đúng phương thức xác thực/loại tunnel) + 6 test UI (gọi `Get-VpnConnection` thật). **Giới hạn thật:** không có tài khoản VPN thật trong môi trường này nên KHÔNG tự kiểm tra được `rasdial` kết nối/ngắt kết nối thật đầu-cuối - cần người dùng tự kiểm tra tay với tài khoản VPN thật của họ. |
+| 2026-10-07 | Security Gateway (hoàn thiện) | Yêu cầu người dùng: tham khảo Kaspersky - (1) tab PowerShell kiểm tra lệnh trước khi mở thật và dán vào, (2) chặn link độc hại ngay lúc truy vấn web, (3) quét/xóa/cách ly mã độc khi đang bật. Quyết định kiến trúc: xây trên **Windows Defender** có sẵn (không tự viết lại AV) qua PowerShell module `Defender`, đã dùng agent nghiên cứu xác nhận từng cmdlet qua Microsoft Learn trước khi viết code. `CommandAnalyzer` phân tích TĨNH lệnh PowerShell tìm dấu hiệu tấn công (download cradle/mã hóa/công cụ tấn công đã biết/né tránh phòng thủ/duy trì) - **không bao giờ tự chạy lệnh**, chỉ mở cửa sổ `powershell.exe` thật riêng biệt rồi dán (`CommandLauncher`, tái dùng `InputController` của Auto Click), người dùng tự bấm Enter. `WebProtectionTab` bật/tắt Network Protection (chặn kết nối tới trang độc hại ở tầng hệ điều hành, trước khi trình duyệt tải nội dung) + `HostsBlocklist` (danh sách chặn tên miền tùy chỉnh qua hosts file, khối riêng được đánh dấu). `MalwareScanTab` bật/tắt bảo vệ thời gian thực, quét nhanh/toàn bộ/thư mục (`DefenderScanWorker` - QThread vì `Start-MpScan` đồng bộ/chặn), liệt kê/xóa mối đe dọa. **3 phát hiện/sửa lỗi THẬT qua kiểm tra trực tiếp trên Defender thật**: (1) `Get-MpPreference`'s `EnableNetworkProtection` trả `System.Byte` thô (0/1/2) chứ không tự thành chữ khi ép `[string]` - khiến so khớp "Enabled" luôn sai, sửa bằng switch/map tường minh trong script; (2) `SeverityID` thật có thể là 5 (ngoài tài liệu 0-4, thấy ở mối đe dọa EICAR) - sửa `severityLabel()`; (3) yêu cầu quyền Administrator KHÔNG đồng đều - `Set-MpPreference`/ghi hosts file cần thật, nhưng `Start-MpScan`/`Remove-MpThreat` KHÔNG cần - sửa lại banner cho đúng thay vì nói chung chung. Xác nhận thật bằng tệp test EICAR chuẩn công nghiệp: Defender phát hiện ngay, `Remove-MpThreat` xử lý thành công (ghi nhận `IsActive` có độ trễ đồng bộ vài giây - không phải lỗi app). Xác nhận `Remove-MpThreat` KHÔNG có tham số chọn từng mục (luôn xóa tất cả mối đe dọa đang hoạt động) TRƯỚC khi thiết kế UI, nên không có nút xóa riêng từng dòng. 76 test lõi + 6 test UI (gọi `Get-MpComputerStatus`/đọc hosts file thật - chỉ đọc). **Giới hạn môi trường phát triển này**: không có desktop tương tác thật nên không chụp được ảnh màn hình và không bấm được UAC - giao diện chưa xác nhận bằng mắt (chỉ qua test cấu trúc widget + rà theo đúng mẫu các tab khác đã xác nhận trước đó), luồng mở PowerShell+dán chưa tự kiểm tra trực tiếp được (cần người dùng tự thử trên máy thật có desktop). Tổng 1076 kiểm tra toàn dự án đều pass. |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `
