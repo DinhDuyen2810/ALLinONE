@@ -153,6 +153,30 @@ target_link_libraries(connect_ui PUBLIC connect_core Qt6::Widgets)
 add_executable(connect_ui_tests EXCLUDE_FROM_ALL tests/connect_ui_tests.cpp src/core/Logger.cpp)
 target_link_libraries(connect_ui_tests PRIVATE connect_ui)
 
+# ---- Lõi Disk Cleanup (quét/xóa/dung lượng ổ đĩa) ----
+add_library(diskcleanup_core STATIC
+    src/tools/diskcleanup/model/CleanupCategory.h
+    src/tools/diskcleanup/model/CleanupItem.h
+    src/tools/diskcleanup/engine/CategoryRegistry.h
+    src/tools/diskcleanup/engine/CategoryRegistry.cpp
+    src/tools/diskcleanup/engine/CleanupScanner.h
+    src/tools/diskcleanup/engine/CleanupScanner.cpp
+    src/tools/diskcleanup/engine/RecycleBinOps.h
+    src/tools/diskcleanup/engine/RecycleBinOps.cpp
+    src/tools/diskcleanup/engine/CleanupExecutor.h
+    src/tools/diskcleanup/engine/CleanupExecutor.cpp
+    src/tools/diskcleanup/engine/DiskSpaceInfo.h
+    src/tools/diskcleanup/engine/DiskSpaceInfo.cpp
+    src/tools/diskcleanup/engine/LargeFileScanner.h
+    src/tools/diskcleanup/engine/LargeFileScanner.cpp
+)
+target_include_directories(diskcleanup_core PUBLIC src)
+target_link_libraries(diskcleanup_core PUBLIC Qt6::Core shell32)
+
+# ---- Kiểm thử lõi Disk Cleanup: cmake --build build --target diskcleanup_tests ----
+add_executable(diskcleanup_tests EXCLUDE_FROM_ALL tests/diskcleanup_tests.cpp)
+target_link_libraries(diskcleanup_tests PRIVATE diskcleanup_core)
+
 set(SOURCES
     src/main.cpp
     src/core/Tool.h
