@@ -7,6 +7,7 @@
 #include "../tools/android/AndroidControlTool.h"
 #include "../tools/vpn/VpnControlTool.h"
 #include "../tools/security/SecurityGatewayTool.h"
+#include "../tools/downloader/DownloaderTool.h"
 #include "core/IconHelper.h"
 #include <QHBoxLayout>
 #include <QVBoxLayout>
@@ -43,8 +44,7 @@ void MainWindow::registerTools()
 
     tm.registerTool(std::make_unique<AndroidControlTool>());
 
-    tm.registerTool(std::make_unique<PlaceholderTool>(
-        "downloader", "Downloader", "Tải video, âm thanh và tệp tin tốc độ cao từ đa nền tảng.", ":/icons/download.png"));
+    tm.registerTool(std::make_unique<DownloaderTool>());
 
     tm.registerTool(std::make_unique<SecurityGatewayTool>());
 

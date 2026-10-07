@@ -21,6 +21,18 @@ Ghi chú tích hợp:
 - **Không commit** `vendor/` vào Git (xem `.gitignore`) - tương tự `build/`/`OneForAll_Release/`, đây là tài nguyên triển khai (deployment), không phải mã nguồn. `build_app.bat` tự sao chép `vendor/scrcpy/*` vào `OneForAll_Release/scrcpy/` khi đóng gói.
 - Vì sao dùng scrcpy có sẵn thay vì tự viết: mã hóa màn hình Android thành H.264 thời gian thực (qua `MediaProjection`+`MediaCodec` phía Android) và tiêm sự kiện chạm/phím độ trễ thấp (qua `InputManager` phản chiếu - không có API công khai) là bài toán Android-side phức tạp, đã được scrcpy giải quyết và kiểm chứng qua nhiều năm sử dụng thực tế rộng rãi - tự viết lại sẽ tốn công sức lớn, rủi ro cao, và không thể kiểm thử đầy đủ trong môi trường phát triển này (không có thiết bị Android thật gắn sẵn).
 
+## Công cụ nhị phân được đóng gói (vendored) trong `vendor/yt-dlp/` (KHÔNG commit vào Git - xem dưới)
+| Công cụ | Dùng để | Giấy phép | Nguồn |
+|---|---|---|---|
+| **yt-dlp** | Tải video/âm thanh từ YouTube/Facebook/TikTok và hơn 1000 nền tảng khác - dùng cho tab "Video nền tảng" của Downloader | Mã nguồn: Unlicense (public domain). **Bản thực thi `yt-dlp.exe` đã biên dịch (PyInstaller) là GPLv3+ dạng kết hợp** (chứa mã khởi động PyInstaller thuộc GPLv3+) - đã xác nhận qua README chính thức của dự án, không phải Unlicense thuần như mã nguồn | https://github.com/yt-dlp/yt-dlp |
+| **FFmpeg** (`ffmpeg.exe`/`ffprobe.exe`, bản dựng tĩnh BtbN/FFmpeg-Builds) | Ghép luồng video+âm thanh tải riêng thành 1 tệp hoàn chỉnh - YouTube chất lượng cao hiện đại hầu hết không còn định dạng ghép sẵn, **bắt buộc cần ffmpeg** (đã xác nhận thật: thử `-f best` không có ffmpeg báo lỗi "Requested format is not available" trên video thật) | GPL (bản dựng "gpl", gồm codec GPL) | https://github.com/BtbN/FFmpeg-Builds |
+
+Ghi chú tích hợp:
+- Tải `yt-dlp.exe` từ GitHub Releases của yt-dlp (đã xác minh SHA-256 theo `SHA2-256SUMS` đính kèm bản phát hành) và `ffmpeg.exe`/`ffprobe.exe` từ bản dựng `ffmpeg-n*-win64-gpl-*.zip` của BtbN/FFmpeg-Builds (đã xác minh SHA-256 theo `checksums.sha256` đính kèm) vào `vendor/yt-dlp/` ở gốc dự án (file `YtDlpController::ytDlpExecutablePath()`/`ffmpegDirectoryPath()` tìm `<thư mục chạy exe>/yt-dlp/yt-dlp.exe` và truyền `--ffmpeg-location <thư mục đó>` cho yt-dlp).
+- **Không commit** `vendor/` vào Git (xem `.gitignore`) - cùng lý do như `vendor/scrcpy/`. `build_app.bat` tự sao chép `vendor/yt-dlp/*` vào `OneForAll_Release/yt-dlp/` khi đóng gói.
+- Vì sao dùng yt-dlp có sẵn thay vì tự viết: trích xuất video từ hàng nghìn trang web khác nhau (mỗi trang một cách mã hóa/phân phối luồng riêng, thay đổi liên tục để chống tải) là bài toán cực lớn đã được yt-dlp (fork tích cực bảo trì của youtube-dl, cập nhật gần như hàng tuần) giải quyết - tự viết lại không khả thi và sẽ lỗi thời rất nhanh.
+- Đã xác nhận thật (không chỉ tin theo tài liệu): chạy `yt-dlp --dump-json`/tải thật một video ngắn công khai ("Me at the zoo", video YouTube đầu tiên) qua chính các lớp C++ của ứng dụng (`YtDlpInfoWorker`/`YtDlpDownloadWorker`) - lấy đúng thông tin định dạng, tải và ghép video+âm thanh thành công bằng ffmpeg bundled, tiến độ `--progress-template` đọc được chính xác.
+
 ## Đã cân nhắc nhưng không dùng
 - **ZXing-cpp** (Apache-2.0, https://github.com/zxing-cpp/zxing-cpp): bộ đọc mạnh hơn, hỗ trợ nhiều loại mã vạch, nhưng lớn và cần thêm cấu hình build; có thể thay thế quirc sau nếu cần quét mã vạch 1D.
 - **libqrencode** (LGPL): giấy phép ràng buộc hơn.

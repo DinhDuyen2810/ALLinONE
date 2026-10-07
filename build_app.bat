@@ -23,7 +23,7 @@ echo [3/5] Dong goi Qt DLLs bang windeployqt...
 if errorlevel 1 goto error
 
 echo.
-echo [4/5] Dong goi adb/scrcpy (tinh nang Android Phone Control) neu co san trong vendor\scrcpy...
+echo [4/6] Dong goi adb/scrcpy (tinh nang Android Phone Control) neu co san trong vendor\scrcpy...
 if exist "vendor\scrcpy\scrcpy.exe" (
     if not exist "build\scrcpy" mkdir "build\scrcpy"
     xcopy /y /q "vendor\scrcpy\*" "build\scrcpy\" >nul
@@ -34,11 +34,23 @@ if exist "vendor\scrcpy\scrcpy.exe" (
 )
 
 echo.
-echo [5/5] Dong bo sang OneForAll_Release (ban ma run_app.bat chay)...
+echo [5/6] Dong goi yt-dlp/ffmpeg (tinh nang Downloader - video nen tang) neu co san trong vendor\yt-dlp...
+if exist "vendor\yt-dlp\yt-dlp.exe" (
+    if not exist "build\yt-dlp" mkdir "build\yt-dlp"
+    xcopy /y /q "vendor\yt-dlp\*" "build\yt-dlp\" >nul
+    echo   Da dong goi vendor\yt-dlp vao build\yt-dlp.
+) else (
+    echo   [CANH BAO] Khong thay vendor\yt-dlp\yt-dlp.exe - tinh nang tai video nen tang se thieu yt-dlp/ffmpeg.
+    echo   Xem THIRD_PARTY.md de biet cach tai ban yt-dlp/ffmpeg chinh thuc va dat vao vendor\yt-dlp\.
+)
+
+echo.
+echo [6/6] Dong bo sang OneForAll_Release (ban ma run_app.bat chay)...
 if not exist "OneForAll_Release" mkdir "OneForAll_Release"
 copy /y "build\OneForAll.exe" "OneForAll_Release\" >nul
 if exist "build\*.dll" xcopy /y /q "build\*.dll" "OneForAll_Release\" >nul
 if exist "build\scrcpy" xcopy /y /q /s /i "build\scrcpy" "OneForAll_Release\scrcpy\" >nul
+if exist "build\yt-dlp" xcopy /y /q /s /i "build\yt-dlp" "OneForAll_Release\yt-dlp\" >nul
 for %%D in (generic iconengines imageformats multimedia networkinformation platforms styles tls) do (
     if exist "build\%%D" xcopy /y /q /s /i "build\%%D" "OneForAll_Release\%%D\" >nul
 )

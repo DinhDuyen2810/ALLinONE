@@ -327,6 +327,49 @@ target_link_libraries(security_ui PUBLIC security_core Qt6::Widgets)
 add_executable(security_ui_tests EXCLUDE_FROM_ALL tests/security_ui_tests.cpp src/core/Logger.cpp)
 target_link_libraries(security_ui_tests PRIVATE security_ui)
 
+# ---- Lõi Downloader (tải trực tiếp HTTP + quét media trang web + yt-dlp cho video nền tảng) ----
+add_library(downloader_core STATIC
+    src/tools/downloader/model/DownloadItem.h
+    src/tools/downloader/model/MediaLink.h
+    src/tools/downloader/model/VideoFormatInfo.h
+    src/tools/downloader/model/VideoInfo.h
+    src/tools/downloader/engine/FileDownloader.h
+    src/tools/downloader/engine/FileDownloader.cpp
+    src/tools/downloader/engine/PageMediaScanner.h
+    src/tools/downloader/engine/PageMediaScanner.cpp
+    src/tools/downloader/engine/YtDlpController.h
+    src/tools/downloader/engine/YtDlpController.cpp
+    src/tools/downloader/engine/YtDlpInfoWorker.h
+    src/tools/downloader/engine/YtDlpInfoWorker.cpp
+    src/tools/downloader/engine/YtDlpDownloadWorker.h
+    src/tools/downloader/engine/YtDlpDownloadWorker.cpp
+)
+target_include_directories(downloader_core PUBLIC src)
+target_link_libraries(downloader_core PUBLIC Qt6::Core Qt6::Network)
+
+# ---- Kiểm thử lõi Downloader: cmake --build build --target downloader_tests ----
+add_executable(downloader_tests EXCLUDE_FROM_ALL tests/downloader_tests.cpp)
+target_link_libraries(downloader_tests PRIVATE downloader_core)
+
+# ---- Giao diện Downloader ----
+add_library(downloader_ui STATIC
+    src/tools/downloader/DownloaderUiStyle.h
+    src/tools/downloader/DirectDownloadTab.h
+    src/tools/downloader/DirectDownloadTab.cpp
+    src/tools/downloader/PageScanTab.h
+    src/tools/downloader/PageScanTab.cpp
+    src/tools/downloader/PlatformVideoTab.h
+    src/tools/downloader/PlatformVideoTab.cpp
+    src/tools/downloader/DownloaderWindow.h
+    src/tools/downloader/DownloaderWindow.cpp
+)
+target_include_directories(downloader_ui PUBLIC src)
+target_link_libraries(downloader_ui PUBLIC downloader_core Qt6::Widgets)
+
+# ---- Kiểm thử "khói" UI Downloader: cmake --build build --target downloader_ui_tests ----
+add_executable(downloader_ui_tests EXCLUDE_FROM_ALL tests/downloader_ui_tests.cpp src/core/Logger.cpp)
+target_link_libraries(downloader_ui_tests PRIVATE downloader_ui)
+
 set(SOURCES
     src/main.cpp
     src/core/Tool.h
@@ -351,6 +394,8 @@ set(SOURCES
     src/tools/vpn/VpnControlTool.cpp
     src/tools/security/SecurityGatewayTool.h
     src/tools/security/SecurityGatewayTool.cpp
+    src/tools/downloader/DownloaderTool.h
+    src/tools/downloader/DownloaderTool.cpp
     src/tools/autoclick/AutoClickTool.h
     src/tools/autoclick/AutoClickTool.cpp
     src/tools/autoclick/AutoClickWindow.h
@@ -396,6 +441,7 @@ target_link_libraries(OneForAll PRIVATE
     diskcleanup_ui
     android_ui
     security_ui
+    downloader_ui
     vpn_ui
     user32
     dwmapi

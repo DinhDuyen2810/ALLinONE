@@ -4,7 +4,7 @@
 > Tài liệu kiến trúc chi tiết và changelog tính năng nằm ở [README.md](README.md); đặc tả thiết kế ở [OneForAll_AutoClick_Design.md](OneForAll_AutoClick_Design.md).
 
 ## 1. Dự án là gì
-Ứng dụng desktop Windows (C++20, Qt 6.11 MinGW, CMake + Ninja) dạng launcher gồm 9 công cụ. Hiện **Auto Click**, **QR Tools**, **WiFi Connection**, **Connect Together** (tham khảo Mouse without Borders), **Disk Cleanup** (tham khảo CCleaner/BleachBit/Windows Disk Cleanup), **Android Phone Control** (dựa trên scrcpy), **VPN & Location** (VPN gốc Windows + vị trí theo IP) và **Security Gateway** (tham khảo Kaspersky, xây trên Windows Defender có sẵn) hoàn chỉnh; 1 tool còn lại (Downloader) là `PlaceholderTool` (màn hình "đang phát triển").
+Ứng dụng desktop Windows (C++20, Qt 6.11 MinGW, CMake + Ninja) dạng launcher gồm 9 công cụ - **toàn bộ 9/9 công cụ nay đã hoàn chỉnh**: **Auto Click**, **QR Tools**, **WiFi Connection**, **Connect Together** (tham khảo Mouse without Borders), **Disk Cleanup** (tham khảo CCleaner/BleachBit/Windows Disk Cleanup), **Android Phone Control** (dựa trên scrcpy), **VPN & Location** (VPN gốc Windows + vị trí theo IP), **Security Gateway** (tham khảo Kaspersky, xây trên Windows Defender có sẵn) và **Downloader** (tải trực tiếp/quét trang web/video nền tảng qua yt-dlp).
 
 ## 2. Luồng khởi động
 `main.cpp` đặt Per-Monitor DPI v2 → `QApplication` → `Logger` ghi `logs/app.log` → `MainWindow`.
@@ -97,9 +97,18 @@
 | `src/tools/security/engine/HostsBlocklist.*` | Chặn tên miền tùy chỉnh qua hosts file (khối được đánh dấu riêng, không động vào phần còn lại) |
 | `src/tools/security/{CommandGatewayTab,WebProtectionTab,MalwareScanTab,SecurityGatewayWindow}.*` | UI 3 tab Security Gateway |
 | `src/tools/security/SecurityGatewayTool.*` | `ITool` của Security Gateway (một cửa sổ duy nhất) |
+| `src/tools/downloader/model/{DownloadItem,MediaLink,VideoFormatInfo,VideoInfo}.h` | Struct thuần: mục hàng đợi tải, liên kết media tìm thấy khi quét trang, định dạng/thông tin video nền tảng |
+| `src/tools/downloader/engine/FileDownloader.*` | Tải trực tiếp HTTP(S) nhiều tệp đồng thời (QNetworkAccessManager), hỗ trợ tiếp tục tải dở (HTTP Range) |
+| `src/tools/downloader/engine/PageMediaScanner.*` | Quét HTML tĩnh một trang web tìm liên kết ảnh/video/âm thanh/tài liệu |
+| `src/tools/downloader/engine/YtDlpController.*` | Đường dẫn/khả dụng của `yt-dlp.exe`/`ffmpeg.exe` đóng gói kèm theo (thư mục `yt-dlp/`) |
+| `src/tools/downloader/engine/YtDlpInfoWorker.*` | Lấy thông tin/định dạng video (`yt-dlp --dump-json`) trên QThread riêng |
+| `src/tools/downloader/engine/YtDlpDownloadWorker.*` | Tải video qua `yt-dlp.exe`, đọc tiến độ qua `--progress-template` |
+| `src/tools/downloader/{DirectDownloadTab,PageScanTab,PlatformVideoTab,DownloaderWindow}.*` | UI 3 tab Downloader |
+| `src/tools/downloader/DownloaderTool.*` | `ITool` của Downloader (một cửa sổ duy nhất) |
 | `src/third_party/` | qrcodegen (MIT), quirc (ISC), xem `THIRD_PARTY.md` |
 | `vendor/scrcpy/` | scrcpy + adb đóng gói (Apache-2.0, KHÔNG commit Git) - xem `THIRD_PARTY.md` |
-| `tests/` | `qr_tests`/`qr_ui_tests`, `wifi_tests`/`wifi_ui_tests`, `connect_tests`/`connect_ui_tests` (506 + 2, ghép đôi 2 chiều thật qua TCP, ổn định qua 40+ lần chạy liên tiếp), `diskcleanup_tests`/`diskcleanup_ui_tests` (176 + 19 kiểm tra, có xóa file thật qua Thùng rác, liệt kê phân vùng thật), `android_tests`/`android_ui_tests` (45 + 7 kiểm tra, có gọi `adb devices` thật - chỉ đọc), `vpn_tests`/`vpn_ui_tests` (41 + 6 kiểm tra, có gọi `Get-VpnConnection` thật - chỉ đọc), `security_tests`/`security_ui_tests` (76 + 6 kiểm tra, có gọi `Get-MpComputerStatus`/đọc hosts file thật - chỉ đọc) |
+| `vendor/yt-dlp/` | yt-dlp + ffmpeg/ffprobe đóng gói (Unlicense/GPLv3+ kết hợp + GPL, KHÔNG commit Git) - xem `THIRD_PARTY.md` |
+| `tests/` | `qr_tests`/`qr_ui_tests`, `wifi_tests`/`wifi_ui_tests`, `connect_tests`/`connect_ui_tests` (506 + 2, ghép đôi 2 chiều thật qua TCP, ổn định qua 40+ lần chạy liên tiếp), `diskcleanup_tests`/`diskcleanup_ui_tests` (176 + 19 kiểm tra, có xóa file thật qua Thùng rác, liệt kê phân vùng thật), `android_tests`/`android_ui_tests` (45 + 7 kiểm tra, có gọi `adb devices` thật - chỉ đọc), `vpn_tests`/`vpn_ui_tests` (41 + 6 kiểm tra, có gọi `Get-VpnConnection` thật - chỉ đọc), `security_tests`/`security_ui_tests` (76 + 6 kiểm tra, có gọi `Get-MpComputerStatus`/đọc hosts file thật - chỉ đọc), `downloader_tests`/`downloader_ui_tests` (63 + 8 kiểm tra, có tải thật một tệp công khai nhỏ qua HTTP thật) |
 | `assets/resources.qrc`, `icon/` | Icon nhúng vào exe |
 | `profiles/default.json` | Profile mặc định (chain mẫu) |
 | `build_app.bat`, `run_app.bat` | Build + đóng gói (`windeployqt`), chạy bản Release |
@@ -547,11 +556,82 @@ xác nhận THẬT thành công (không cần desktop tương tác, chỉ cần 
   mối đe dọa thật, sửa hosts file thật, hay mở PowerShell/dán lệnh thật trong test tự động - những thao
   tác đó đổi trạng thái hệ thống thật và/hoặc cần quyền Administrator.
 
+## 4j. Downloader (đã hoàn thiện)
+Yêu cầu người dùng: tải ảnh/video/tài liệu từ các trang trình duyệt - hỏi nên dán link trực tiếp hay
+cách nào khác, yêu cầu đưa vào TOÀN BỘ các cách có thể tải về. Đã thiết kế 3 cơ chế bổ sung lẫn nhau,
+mỗi cơ chế phù hợp một tình huống khác nhau thay vì chỉ một cách duy nhất:
+
+**1. Tải trực tiếp (`DirectDownloadTab` + `FileDownloader`):** dán URL TRỰC TIẾP tới một tệp (đuôi
+.jpg/.mp4/.pdf... hoặc bất kỳ URL nào server trả thẳng nội dung) - đây là cách áp dụng được cho MỌI
+trường hợp, kể cả khi copy link ảnh/video từ trình duyệt (chuột phải > "Sao chép địa chỉ liên kết/hình
+ảnh"). `FileDownloader` thuần Qt Network (QNetworkAccessManager/QNetworkReply, KHÔNG dùng QThread - bất
+đồng bộ sẵn qua tín hiệu Qt, cùng mẫu PublicIpChecker/SpeedTestRunner), hỗ trợ tải nhiều tệp đồng thời
+(mặc định tối đa 3), tạm dừng/tiếp tục qua HTTP Range (tự phát hiện nếu server bỏ qua Range thì tải lại
+từ đầu thay vì lỗi), tốc độ/tiến độ thời gian thực, hàng đợi hiển thị dùng CHUNG với tab Quét trang web.
+
+**2. Quét trang web (`PageScanTab` + `PageMediaScanner`):** dán URL một TRANG (không phải link tệp) -
+tải HTML tĩnh rồi dò các thẻ `<img>`/`<video>`/`<audio>`/`<source>` và `<a href>` có đuôi tài liệu/lưu
+trữ đã biết, phân giải liên kết tương đối thành tuyệt đối, hiện danh sách tick chọn để tải hàng loạt.
+**Giới hạn thật đã nêu rõ với người dùng**: đây là phân tích HTML TĨNH, KHÔNG chạy JavaScript - trang
+hiện đại tải ảnh/video động (lazy-load, SPA) có thể bị bỏ sót. Đã xác nhận dự án KHÔNG có QtWebEngine khả
+dụng trong bản Qt MinGW đang dùng (kiểm tra trực tiếp thư mục cài đặt Qt: Qt chỉ phát hành WebEngine cho
+MSVC trên Windows, không có cho MinGW) nên không thể nhúng trình duyệt thật để render JS - khi gặp giới
+hạn này, UI hướng dẫn người dùng dùng cách 1 (sao chép link thủ công từ trình duyệt thật).
+
+**3. Video nền tảng (`PlatformVideoTab` + `yt-dlp`):** tải từ YouTube/Facebook/TikTok và hơn 1000 trang
+khác - KHÔNG tự viết lại trình trích xuất (bài toán cực lớn, mỗi trang một cơ chế riêng, thay đổi liên
+tục) mà đóng gói **yt-dlp** (Unlicense, cập nhật rất thường xuyên) + **ffmpeg/ffprobe** (GPL, bản dựng
+tĩnh BtbN/FFmpeg-Builds) vào `vendor/yt-dlp/` - cùng tinh thần "dùng công cụ đã kiểm chứng" như scrcpy
+cho Android Phone Control. `YtDlpInfoWorker` (QThread - gọi mạng thật, có thể mất vài giây) lấy danh sách
+chất lượng qua `--dump-json`; `YtDlpDownloadWorker` (QObject + QProcess, không cần QThread vì QProcess đã
+bất đồng bộ) tải và đọc tiến độ qua `--progress-template` - **cách yt-dlp CHÍNH THỨC khuyến nghị** cho
+chương trình khác đọc máy (README: "nên dùng `--progress-template`... tránh tự phân tích thanh tiến độ
+dạng người đọc vì có thể đổi định dạng giữa các phiên bản"), kết hợp `--newline` để mỗi cập nhật là một
+dòng riêng dễ phân tích. Có banner cảnh báo người dùng tự chịu trách nhiệm tuân thủ ToS/bản quyền của
+trang nguồn (yt-dlp không có tuyên bố chính thức về tính hợp pháp, đã xác nhận qua nghiên cứu README/wiki
+- không tự bịa ra một tuyên bố không có thật).
+
+**Phát hiện/xác nhận THẬT quan trọng trước khi code** (nghiên cứu qua agent + tự kiểm tra tay):
+- **ffmpeg THỰC SỰ bắt buộc**, không phải tùy chọn: thử `-f best` (ép chọn định dạng ghép sẵn, không cần
+  ffmpeg) trên một video YouTube thật bị lỗi thật "Requested format is not available" - xác nhận YouTube
+  hiện đại hầu như không còn định dạng ghép sẵn ở chất lượng tốt, trả về luồng video/âm thanh tách riêng
+  cần ffmpeg ghép lại. Đã bundle ffmpeg để tính năng hoạt động đầy đủ, xác nhận lại bằng tải+ghép thật
+  thành công một video thật.
+- **`Remove-MpThreat`-kiểu bất ngờ khác đã tránh được nhờ nghiên cứu trước**: ban đầu định thiết kế UI
+  chọn chất lượng kiểu dropdown đơn giản; nghiên cứu xác nhận field chính xác (`format_id`/`vcodec`/
+  `acodec`/`filesize`/`filesize_approx`...) từ mã nguồn `yt_dlp/extractor/common.py` TRƯỚC khi code, tránh
+  phải sửa lại sau khi phát hiện field sai tên như đã từng xảy ra với VPN/Security Gateway.
+- **Giấy phép `yt-dlp.exe` KHÁC mã nguồn**: mã nguồn là Unlicense, nhưng bản `.exe` đã biên dịch
+  (PyInstaller) là GPLv3+ dạng kết hợp (xác nhận qua README chính thức) - đã ghi đúng trong `THIRD_PARTY.md`,
+  không ghi nhầm thành "Unlicense" cho cả bản nhị phân.
+
+**Đã xác nhận THẬT bằng cách chạy qua chính các lớp C++ của ứng dụng** (không chỉ gọi tay yt-dlp.exe từ
+dòng lệnh): `YtDlpInfoWorker`/`YtDlpDownloadWorker` lấy thông tin và tải thành công một video YouTube
+thật ngắn ("Me at the zoo"), tiến độ `--progress-template` đọc đúng qua suốt quá trình tải; `FileDownloader`
+tải thật một tệp ảnh công khai nhỏ qua HTTP; `PageMediaScanner::scan()` tải+phân tích thật một trang HTML
+cục bộ (qua `file://`) tìm đúng ảnh/video/tài liệu.
+
+**Đã xong, đã test (63 kiểm tra lõi + 8 kiểm tra UI):**
+- `PageMediaScannerInternal::extractMediaLinks`: HTML mẫu dựng sẵn (ảnh/video/audio/source/link tài
+  liệu, link tương đối cần phân giải, trùng lặp cần loại bỏ, ảnh nhúng base64 (`data:`) cần bỏ qua, link
+  điều hướng thường (`.html`) không được tính là media).
+- `YtDlpDownloadWorkerInternal::buildArguments`/`parseProgressLine`: dựng đối số dòng lệnh đúng, phân
+  tích dòng tiến độ thật dạng `DLPROG|...|...` (gồm trường "NA" khi chưa rõ, rơi về `total_bytes_estimate`
+  khi `total_bytes` chưa biết, dòng không phải tiến độ bị bỏ qua an toàn không crash).
+- `YtDlpInfoWorkerInternal::parseInfoJson`: JSON mẫu đúng cấu trúc thật đã xác nhận (kể cả hồi quy đúng
+  kịch bản "lấy dòng cuối" khi có cảnh báo lạc vào trước dòng JSON thật - đã thấy hiện tượng này khi gọi
+  yt-dlp thật).
+- `downloader_ui_tests`: dựng `DownloaderWindow` không crash, đủ 3 tab; tải THẬT một tệp ảnh công khai
+  nhỏ qua `FileDownloader` (an toàn, giống mẫu `PublicIpChecker`). **Cố ý KHÔNG** tự động chạy yt-dlp.exe
+  thật (quét trang/tải video nền tảng) trong test tự động - cần tự kiểm tra tay qua giao diện.
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
 tải bản scrcpy-win64 chính thức) thì cũng tự đóng gói vào `scrcpy\` cạnh file exe cho tính năng Android
-Phone Control. Thư mục `build/`, `OneForAll_Release/`, `vendor/`, `logs/` không được commit (xem `.gitignore`).
+Phone Control. Tương tự, nếu có `vendor\yt-dlp\` (xem `THIRD_PARTY.md` để tải yt-dlp.exe + ffmpeg/ffprobe
+chính thức) thì tự đóng gói vào `yt-dlp\` cạnh file exe cho tính năng Downloader (tab Video nền tảng).
+Thư mục `build/`, `OneForAll_Release/`, `vendor/`, `logs/` không được commit (xem `.gitignore`).
 
 ## 6. Vấn đề đã biết (chưa sửa)
 - Pause/Resume đã an toàn ở tầng runner nhưng chưa có nút trên UI.
@@ -587,6 +667,7 @@ Mỗi lần sửa code: commit riêng với message mô tả rõ, và cập nh�
 | 2026-10-07 | Android Phone Control (hoàn thiện) | Yêu cầu người dùng: điều khiển thiết bị Android "tính realtime và độ linh hoạt kiểu như remote". Quyết định kiến trúc: dùng lại **scrcpy** (Genymobile, Apache-2.0, mã nguồn mở, kiểm chứng nhiều năm) thay vì tự viết lại mã hóa H.264 + tiêm sự kiện phía Android (rủi ro cao, không tự kiểm thử đủ trong môi trường không có thiết bị thật) - đóng gói bản `scrcpy-win64` chính thức (đã xác minh SHA-256) vào `vendor/scrcpy/` (không commit Git, như `build/`/`OneForAll_Release/`), `build_app.bat` tự đóng gói kèm exe. `AdbController` (liệt kê/ghép đôi/kết nối thiết bị qua `adb.exe`) + `ScrcpyLauncher` (khởi chạy `scrcpy.exe` làm tiến trình nền, không chặn UI) + `DevicesTab` (danh sách thiết bị tự làm mới, tùy chọn độ phân giải/bitrate/fps/tắt màn hình/luôn nổi/ghi hình - cờ thật của scrcpy) + `WirelessPairDialog` (ghép đôi không dây Android 11+). "Chuyển sang không dây" dùng `--tcpip` của scrcpy (tự dò IP, bật TCP/IP, kết nối, gương - một bước). 45 test lõi (phân tích `adb devices -l` mẫu + dựng đối số dòng lệnh, không cần thiết bị thật) + 7 test UI (gọi `adb devices` thật - chỉ đọc, an toàn). **Giới hạn thật:** không có điện thoại Android gắn sẵn trong môi trường này nên KHÔNG tự kiểm tra được gương màn hình/ghép đôi không dây đầu-cuối - cần người dùng tự kiểm tra tay. Cửa sổ gương là cửa sổ riêng của scrcpy (nhúng vào cửa sổ Qt là việc có thể làm sau, "nếu có thể"). |
 | 2026-10-07 | VPN & Location (hoàn thiện) | Yêu cầu người dùng: "VPN và location có thể chuyển đổi IP qua nhiều quốc gia và đổi vị trí GPS trong 1 quốc gia". VPN: `VpnController` dùng module `VpnClient` của Windows qua PowerShell (`Add`/`Get`/`Remove-VpnConnection`, mặc định per-user không cần Administrator) + `VpnConnector` dùng `rasdial.exe` để kết nối/ngắt kết nối kèm username/password hỏi riêng mỗi lần (không lưu mật khẩu). Location: **từ chối có chủ đích** giả lập GPS thật - API `Geolocator` của Windows bị khóa sau quyền "System location" chỉ cấp cho app MSIX đã duyệt, không thể gọi từ Win32 không đóng gói dù có quyền Administrator; cách còn lại là ghi registry không tài liệu, rủi ro hỏng dịch vụ định vị thật, không chấp nhận được - thay bằng `PublicIpChecker` tra vị trí thật theo IP công khai (`ipwho.is`, đổi theo khi đổi VPN). **Lỗi thật phát hiện qua kiểm tra trên Windows thật:** `Add-VpnConnection` gọi cứng `-AuthenticationMethod MSChapv2` cho mọi loại tunnel bị Windows từ chối thật với IKEv2 ("IKEv2 tunnel type only supports Eap and Machine certificate") - IKEv2 lại là lựa chọn mặc định của hộp thoại thêm hồ sơ; sửa bằng `authMethodForTunnelType()` (Ikev2 → Eap, còn lại giữ MSChapv2), xác nhận lại bằng cách chạy thật Add→Get→Remove-VpnConnection cho cả 5 loại tunnel, tất cả thành công. Tách `WinElevation`/`PowerShellRunner` dùng chung từ `PartitionManager` (giảm trùng lặp, 176/19 test Disk Cleanup không đổi). 41 test lõi (+ test hồi quy khóa đúng phương thức xác thực/loại tunnel) + 6 test UI (gọi `Get-VpnConnection` thật). **Giới hạn thật:** không có tài khoản VPN thật trong môi trường này nên KHÔNG tự kiểm tra được `rasdial` kết nối/ngắt kết nối thật đầu-cuối - cần người dùng tự kiểm tra tay với tài khoản VPN thật của họ. |
 | 2026-10-07 | Security Gateway (hoàn thiện) | Yêu cầu người dùng: tham khảo Kaspersky - (1) tab PowerShell kiểm tra lệnh trước khi mở thật và dán vào, (2) chặn link độc hại ngay lúc truy vấn web, (3) quét/xóa/cách ly mã độc khi đang bật. Quyết định kiến trúc: xây trên **Windows Defender** có sẵn (không tự viết lại AV) qua PowerShell module `Defender`, đã dùng agent nghiên cứu xác nhận từng cmdlet qua Microsoft Learn trước khi viết code. `CommandAnalyzer` phân tích TĨNH lệnh PowerShell tìm dấu hiệu tấn công (download cradle/mã hóa/công cụ tấn công đã biết/né tránh phòng thủ/duy trì) - **không bao giờ tự chạy lệnh**, chỉ mở cửa sổ `powershell.exe` thật riêng biệt rồi dán (`CommandLauncher`, tái dùng `InputController` của Auto Click), người dùng tự bấm Enter. `WebProtectionTab` bật/tắt Network Protection (chặn kết nối tới trang độc hại ở tầng hệ điều hành, trước khi trình duyệt tải nội dung) + `HostsBlocklist` (danh sách chặn tên miền tùy chỉnh qua hosts file, khối riêng được đánh dấu). `MalwareScanTab` bật/tắt bảo vệ thời gian thực, quét nhanh/toàn bộ/thư mục (`DefenderScanWorker` - QThread vì `Start-MpScan` đồng bộ/chặn), liệt kê/xóa mối đe dọa. **3 phát hiện/sửa lỗi THẬT qua kiểm tra trực tiếp trên Defender thật**: (1) `Get-MpPreference`'s `EnableNetworkProtection` trả `System.Byte` thô (0/1/2) chứ không tự thành chữ khi ép `[string]` - khiến so khớp "Enabled" luôn sai, sửa bằng switch/map tường minh trong script; (2) `SeverityID` thật có thể là 5 (ngoài tài liệu 0-4, thấy ở mối đe dọa EICAR) - sửa `severityLabel()`; (3) yêu cầu quyền Administrator KHÔNG đồng đều - `Set-MpPreference`/ghi hosts file cần thật, nhưng `Start-MpScan`/`Remove-MpThreat` KHÔNG cần - sửa lại banner cho đúng thay vì nói chung chung. Xác nhận thật bằng tệp test EICAR chuẩn công nghiệp: Defender phát hiện ngay, `Remove-MpThreat` xử lý thành công (ghi nhận `IsActive` có độ trễ đồng bộ vài giây - không phải lỗi app). Xác nhận `Remove-MpThreat` KHÔNG có tham số chọn từng mục (luôn xóa tất cả mối đe dọa đang hoạt động) TRƯỚC khi thiết kế UI, nên không có nút xóa riêng từng dòng. 76 test lõi + 6 test UI (gọi `Get-MpComputerStatus`/đọc hosts file thật - chỉ đọc). **Giới hạn môi trường phát triển này**: không có desktop tương tác thật nên không chụp được ảnh màn hình và không bấm được UAC - giao diện chưa xác nhận bằng mắt (chỉ qua test cấu trúc widget + rà theo đúng mẫu các tab khác đã xác nhận trước đó), luồng mở PowerShell+dán chưa tự kiểm tra trực tiếp được (cần người dùng tự thử trên máy thật có desktop). Tổng 1076 kiểm tra toàn dự án đều pass. |
+| 2026-10-07 | Downloader (hoàn thiện - đủ 9/9 công cụ) | Yêu cầu người dùng: tải ảnh/video/tài liệu từ trang trình duyệt, hỏi nên dán link trực tiếp hay cách khác, yêu cầu đưa vào TOÀN BỘ cách có thể tải. Xây 3 cơ chế bổ sung nhau: (1) **Tải trực tiếp** (`FileDownloader`, thuần QNetworkAccessManager không cần QThread) - dán URL trực tiếp tới tệp, nhiều tệp đồng thời, tạm dừng/tiếp tục qua HTTP Range; (2) **Quét trang web** (`PageMediaScanner`) - dán URL một trang, dò `<img>/<video>/<audio>/<source>/<a href>` trong HTML TĨNH (đã xác nhận KHÔNG có QtWebEngine khả dụng cho bản Qt MinGW đang dùng - Qt chỉ phát hành WebEngine cho MSVC trên Windows - nên không chạy được JavaScript, có nêu rõ giới hạn này với người dùng); (3) **Video nền tảng** (`yt-dlp` + `ffmpeg` đóng gói `vendor/yt-dlp/`, cùng tinh thần dùng công cụ đã kiểm chứng như scrcpy) - `YtDlpInfoWorker` lấy định dạng qua `--dump-json`, `YtDlpDownloadWorker` tải và đọc tiến độ qua `--progress-template` (cách yt-dlp CHÍNH THỨC khuyến nghị cho chương trình khác đọc máy, thay vì tự phân tích thanh tiến độ dạng người đọc). **Xác nhận thật trước khi code**: ffmpeg THỰC SỰ bắt buộc (thử `-f best` không cần ffmpeg bị lỗi thật "Requested format is not available" trên video YouTube thật - chất lượng cao hiện đại hầu như không còn định dạng ghép sẵn); giấy phép `yt-dlp.exe` đã biên dịch là GPLv3+ kết hợp (khác mã nguồn Unlicense) - ghi đúng trong THIRD_PARTY.md. **Xác nhận thật qua chính các lớp C++ của ứng dụng** (không chỉ gọi tay yt-dlp.exe): tải+ghép thành công một video YouTube thật ngắn, `FileDownloader` tải thật một ảnh công khai qua HTTP, `PageMediaScanner::scan()` tải+phân tích thật một trang HTML cục bộ. 63 test lõi + 8 test UI (có tải thật 1 tệp công khai nhỏ). Tổng **1147 kiểm tra toàn dự án đều pass**. |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `
