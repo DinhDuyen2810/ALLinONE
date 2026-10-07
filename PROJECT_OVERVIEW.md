@@ -633,6 +633,54 @@ Phone Control. Tương tự, nếu có `vendor\yt-dlp\` (xem `THIRD_PARTY.md` đ
 chính thức) thì tự đóng gói vào `yt-dlp\` cạnh file exe cho tính năng Downloader (tab Video nền tảng).
 Thư mục `build/`, `OneForAll_Release/`, `vendor/`, `logs/` không được commit (xem `.gitignore`).
 
+## 5b. Bộ cài đặt setup.exe (đã hoàn thiện)
+Yêu cầu người dùng: chỉ MỘT file `setup.exe` duy nhất, bung thư viện/exe thật khi chạy, cho chọn đường
+dẫn cài đặt, cho chọn tạo shortcut - như một ứng dụng Windows bình thường (đăng ký gỡ cài đặt trong
+Control Panel/"Apps & features", không phải chỉ giải nén zip).
+
+**Công cụ dùng: Inno Setup** (jrsoftware.org, miễn phí, phổ biến nhất cho đúng nhu cầu này trên Windows -
+không dùng CPack/NSIS/WiX vì Inno Setup đơn giản hơn để viết/bảo trì và cho ra đúng một file `setup.exe`
+gọn nhẹ). Đã tải bản 7.1.0 chính thức từ GitHub Releases của dự án (`jrsoftware/issrc`), xác minh đúng
+SHA-256 theo `digest` API GitHub cung cấp trước khi cài. Compiler (`ISCC.exe`) cài vào thư mục riêng của
+người dùng (`%LOCALAPPDATA%`), KHÔNG cần quyền Administrator.
+
+**Không cần quyền Administrator để CÀI ĐẶT** (`PrivilegesRequired=lowest` trong `installer/OneForAll.iss`)
+- cài vào `{autopf}` (tự chọn vị trí phù hợp theo quyền hiện có, giống cách VS Code/Discord làm), người
+dùng vẫn có thể bấm "Show details" để chọn cài cho mọi người dùng (cần quyền Administrator) nếu muốn qua
+`PrivilegesRequiredOverridesAllowed=dialog`. Giao diện cài đặt THUẦN TIẾNG VIỆT - dùng bản dịch cộng đồng
+chính thức của dự án Inno Setup (`installer/Vietnamese.isl`, lấy từ `Files/Languages/Unofficial/` trong
+chính kho mã nguồn `jrsoftware/issrc`, không phải nguồn thứ ba không rõ gốc).
+
+**Icon riêng cho exe/shortcut/trình cài đặt** (`assets/app_icon.ico`): trước đây `OneForAll.exe` KHÔNG có
+icon file .exe riêng (chỉ có icon Qt Resource hiển thị TRONG ứng dụng lúc chạy, Explorer/Taskbar/shortcut
+vẫn hiện icon exe mặc định của Windows) - đã tạo icon đa độ phân giải (16-256px) từ `icon/autoclicker.jpg`
+theo ĐÚNG thuật toán `IconHelper::makeBadgedPixmap` (nền trắng bo góc + viền mảnh) để đồng nhất với icon
+hiển thị trong `MainWindow` lúc chạy, nhúng vào exe qua tài nguyên Win32 (`assets/app_icon.rc` +
+`windres`, thêm vào `CMakeLists.txt`'s SOURCES).
+
+**[Files] loại trừ dữ liệu thử nghiệm của người phát triển**: `logs\*` (tự tạo lại khi chạy) và
+`profiles\qr_history.json` (lịch sử quét QR cá nhân thật, không phải mẫu) - vẫn giữ
+`profiles\default.json` (chuỗi Auto Click MẪU có chủ đích, hữu ích cho người dùng mới).
+
+**Đã xác nhận THẬT toàn bộ vòng đời cài đặt/gỡ cài đặt** (không chỉ biên dịch thành công):
+- Cài đặt im lặng (`/VERYSILENT`) vào thư mục test → xác nhận đúng tệp (`OneForAll.exe` có icon, DLL, có
+  `profiles\default.json`, KHÔNG có `profiles\qr_history.json`), shortcut Desktop trỏ đúng
+  `{app}\OneForAll.exe` với `WorkingDir` đúng `{app}`, khóa registry gỡ cài đặt đúng
+  (`DisplayName`/`DisplayVersion`/`UninstallString` chính xác) dưới `HKEY_CURRENT_USER` (xác nhận đúng
+  không cần quyền Administrator).
+- Khởi chạy THẬT `OneForAll.exe` từ thư mục vừa cài - tiến trình chạy được.
+- Gỡ cài đặt im lặng (`unins000.exe /VERYSILENT`) → xác nhận xóa sạch: thư mục cài đặt, shortcut Desktop,
+  khóa registry - không còn gì sót lại.
+
+**Build:** `build_installer.bat` (tự gọi `build_app.bat /nopause` để dựng `OneForAll_Release\` mới nhất
+rồi biên dịch `installer/OneForAll.iss` bằng `ISCC.exe`) → `dist\OneForAll_Setup.exe` (một file duy
+nhất, ~140MB do có ffmpeg/yt-dlp đóng gói sẵn, nén LZMA2 ultra). Thư mục `dist/` không được commit (xem
+`.gitignore`), giống `build/`/`OneForAll_Release/`/`vendor/`.
+
+**Giới hạn thật:** `AppId` cố định (GUID) để các bản cập nhật sau nhận diện đúng là CÙNG một ứng dụng
+(cho phép cài đè/gỡ đúng phiên bản cũ) - `AppVersion` trong `installer/OneForAll.iss` cần tự cập nhật
+bằng tay mỗi khi đổi phiên bản (hiện khớp `README.md`), không tự động đồng bộ từ CMake.
+
 ## 6. Vấn đề đã biết (chưa sửa)
 - Pause/Resume đã an toàn ở tầng runner nhưng chưa có nút trên UI.
 - Chưa có hotkey dừng toàn cục (chỉ nút Stop trên cửa sổ và HUD).

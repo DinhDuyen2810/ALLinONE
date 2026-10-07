@@ -3,3 +3,4 @@ OneForAll_Release/
 logs/
 *.lnk
 vendor/
+dist/

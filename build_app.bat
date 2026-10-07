@@ -1,8 +1,15 @@
 @echo off
 setlocal
+cd /d "%~dp0"
 echo ===================================================
 echo   BIEN DICH VA DONG GOI ONE FOR ALL (Qt 6.11.1)
 echo ===================================================
+
+rem /nopause: cho phep goi script nay tu script khac (vd build_installer.bat) ma khong bi treo o
+rem pause cuoi cung cho nguoi dung bam phim - chi dung khi TU goi tu dong hoa, khong anh huong gi khi
+rem nguoi dung tu bam dup chuot chay binh thuong (van pause nhu cu).
+set "SKIP_PAUSE="
+if /i "%~1"=="/nopause" set "SKIP_PAUSE=1"
 
 set "PATH=D:\Qt\Tools\mingw1310_64\bin;D:\Qt\Tools\CMake_64\bin;D:\Qt\Tools\Ninja;%PATH%"
 set "QTFRAMEWORK_BYPASS_LICENSE_CHECK=1"
@@ -61,11 +68,11 @@ echo   BUILD THANH CONG!
 echo   File chay thu (build):      build\OneForAll.exe
 echo   Ban dong goi (run_app.bat): OneForAll_Release\OneForAll.exe
 echo ===================================================
-pause
+if not defined SKIP_PAUSE pause
 exit /b 0
 
 :error
 echo.
 echo [LOI] Qua trinh bien dich gap su co. Vui long kiem tra log.
-pause
+if not defined SKIP_PAUSE pause
 exit /b 1

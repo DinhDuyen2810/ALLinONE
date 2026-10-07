@@ -423,6 +423,7 @@ set(SOURCES
     src/tools/autoclick/widgets/ActionEditorWidget.h
     src/tools/autoclick/widgets/ActionEditorWidget.cpp
     assets/resources.qrc
+    assets/app_icon.rc
 )
 
 add_executable(OneForAll WIN32 ${SOURCES})

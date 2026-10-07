@@ -1,5 +1,17 @@
 # Thư viện và nguồn tham khảo
 
+## Công cụ BUILD-TIME (không đóng gói/phân phối cùng ứng dụng, chỉ cần khi tự dựng bộ cài đặt)
+| Công cụ | Dùng để | Giấy phép | Nguồn |
+|---|---|---|---|
+| **Inno Setup** (Jordan Russell/Martijn Laan) | Biên dịch `installer/OneForAll.iss` thành `dist\OneForAll_Setup.exe` (một file cài đặt duy nhất) qua `build_installer.bat` | Tùy chỉnh (miễn phí cho mọi mục đích, kể cả thương mại) | https://jrsoftware.org/isinfo.php |
+| **Vietnamese.isl** (memecoder, bản dịch cộng đồng) | Giao diện bộ cài đặt thuần tiếng Việt | Cùng giấy phép Inno Setup | https://github.com/jrsoftware/issrc/blob/main/Files/Languages/Unofficial/Vietnamese.isl (vendor một bản tại `installer/Vietnamese.isl`) |
+
+Ghi chú: Inno Setup CHỈ là công cụ phát triển (giống Qt SDK/CMake/Ninja) - không đóng gói/phân phối cùng
+`OneForAll.exe`, người dùng cuối không cần cài. Tải bản 7.1.0 trực tiếp từ GitHub Releases của dự án
+(`jrsoftware/issrc`), đã xác minh đúng SHA-256 theo `digest` mà GitHub Releases API trả về trước khi cài.
+`Vietnamese.isl` lấy từ chính kho mã nguồn chính thức của Inno Setup (thư mục dành cho bản dịch cộng
+đồng chưa đóng gói sẵn), không phải nguồn thứ ba không rõ gốc.
+
 ## Thư viện được nhúng (vendored) trong `src/third_party/` (mã nguồn, đi kèm trong Git)
 | Thư viện | Dùng để | Giấy phép | Nguồn |
 |---|---|---|---|
