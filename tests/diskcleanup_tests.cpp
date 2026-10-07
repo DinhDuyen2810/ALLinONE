@@ -16,7 +16,9 @@
 #include "tools/diskcleanup/engine/CleanupExecutor.h"
 #include "tools/diskcleanup/engine/CleanupScanner.h"
 #include "tools/diskcleanup/engine/DiskSpaceInfo.h"
+#include "tools/diskcleanup/engine/DuplicateFinder.h"
 #include "tools/diskcleanup/engine/LargeFileScanner.h"
+#include "tools/diskcleanup/engine/PartitionManager.h"
 #include "tools/diskcleanup/engine/RecycleBinOps.h"
 
 static int g_fail = 0, g_pass = 0;
@@ -432,6 +434,210 @@ int main(int argc, char** argv)
         CHECK(waitUntil([&] { return finished3; }));
         scanner3.wait();
         CHECK(results3.isEmpty());
+    }
+
+    // ---- DuplicateFinder: tìm tệp trùng lặp nội dung trong thư mục giả ----
+    {
+        QTemporaryDir tmp;
+        CHECK(tmp.isValid());
+        QDir(tmp.path()).mkpath("sub");
+
+        // Nhóm trùng lặp THẬT: 3 tệp cùng nội dung (writeFile() ghi toàn ký tự 'x') ở thư mục khác nhau
+        writeFile(tmp.path() + "/dup_a.bin", 5000);
+        writeFile(tmp.path() + "/dup_b.bin", 5000);
+        writeFile(tmp.path() + "/sub/dup_c.bin", 5000);
+
+        // Cùng KÍCH THƯỚC (5000) nhưng nội dung khác - phải KHÔNG bị coi là trùng lặp (xác nhận
+        // bước 2 hash nội dung hoạt động, không chỉ dựa vào bước 1 nhóm theo kích thước)
+        {
+            QFile f(tmp.path() + "/sub/different.bin");
+            f.open(QIODevice::WriteOnly);
+            f.write(QByteArray(5000, 'y'));
+        }
+
+        writeFile(tmp.path() + "/alone.bin", 7000); // không trùng ai
+
+        // Nhỏ hơn ngưỡng tối thiểu - trùng nội dung với nhau nhưng vẫn phải bị loại
+        writeFile(tmp.path() + "/tiny_a.bin", 10);
+        writeFile(tmp.path() + "/tiny_b.bin", 10);
+
+        DuplicateFinder finder;
+        finder.setRootPath(tmp.path());
+        finder.setMinSizeBytes(100);
+
+        QList<DuplicateGroup> groups;
+        QObject::connect(&finder, &DuplicateFinder::groupFound, [&](DuplicateGroup g) { groups.push_back(g); });
+        bool finished = false;
+        int finalGroupCount = -1;
+        qint64 finalWasted = -1;
+        QObject::connect(&finder, &DuplicateFinder::scanFinished, [&](int count, qint64 wasted) {
+            finished = true;
+            finalGroupCount = count;
+            finalWasted = wasted;
+        });
+        finder.start();
+        CHECK(waitUntil([&] { return finished; }, 15000));
+        finder.wait();
+
+        CHECK(groups.size() == 1); // đúng 1 nhóm trùng lặp thật
+        CHECK(finalGroupCount == 1);
+        if (groups.size() == 1)
+        {
+            CHECK(groups[0].paths.size() == 3);
+            CHECK(groups[0].sizeEachBytes == 5000);
+            CHECK(groups[0].wastedBytes() == 5000 * 2); // giữ 1 bản, 2 bản còn lại là lãng phí
+            CHECK(!groups[0].hashHex.isEmpty());
+            int matchCount = 0;
+            for (const auto& p : groups[0].paths)
+                if (p.endsWith("dup_a.bin") || p.endsWith("dup_b.bin") || p.endsWith("dup_c.bin"))
+                    ++matchCount;
+            CHECK(matchCount == 3); // không lẫn different.bin/alone.bin
+        }
+        CHECK(finalWasted == 5000 * 2);
+
+        // Lối tắt (.lnk) KHÔNG được đi theo (QDir::NoSymLinks) - nếu không sẽ có nguy cơ hash nhầm
+        // một tệp đích hoàn toàn khác với đường dẫn gốc đang quét (giống lỗi đã sửa ở CleanupScanner).
+        const bool linked = QFile::link(tmp.path() + "/dup_a.bin", tmp.path() + "/shortcut_to_dup.lnk");
+        if (linked)
+        {
+            DuplicateFinder finder2;
+            finder2.setRootPath(tmp.path());
+            finder2.setMinSizeBytes(100);
+            QList<DuplicateGroup> groups2;
+            QObject::connect(&finder2, &DuplicateFinder::groupFound, [&](DuplicateGroup g) { groups2.push_back(g); });
+            bool finished2 = false;
+            QObject::connect(&finder2, &DuplicateFinder::scanFinished, [&](int, qint64) { finished2 = true; });
+            finder2.start();
+            CHECK(waitUntil([&] { return finished2; }, 15000));
+            finder2.wait();
+            for (const auto& g : groups2)
+                for (const auto& p : g.paths)
+                    CHECK(!p.endsWith(".lnk")); // lối tắt không bao giờ là ứng viên trùng lặp
+        }
+
+        // Dừng giữa chừng không crash
+        DuplicateFinder finder3;
+        finder3.setRootPath(tmp.path());
+        finder3.setMinSizeBytes(1);
+        bool stopped = false;
+        QObject::connect(&finder3, &DuplicateFinder::scanStopped, [&] { stopped = true; });
+        finder3.start();
+        finder3.requestStop();
+        CHECK(waitUntil([&] { return stopped || !finder3.isRunning(); }));
+        finder3.wait();
+
+        // Thư mục không tồn tại -> không crash, 0 nhóm
+        DuplicateFinder finder4;
+        finder4.setRootPath(tmp.path() + "/khong_ton_tai");
+        finder4.setMinSizeBytes(1);
+        bool finished4 = false;
+        int count4 = -1;
+        QObject::connect(&finder4, &DuplicateFinder::scanFinished, [&](int count, qint64) {
+            finished4 = true;
+            count4 = count;
+        });
+        finder4.start();
+        CHECK(waitUntil([&] { return finished4; }));
+        finder4.wait();
+        CHECK(count4 == 0);
+    }
+
+    // ---- PartitionManager: parse JSON thuần bằng dữ liệu mẫu (không gọi PowerShell/đổi gì thật) ----
+    {
+        using namespace PartitionManager;
+
+        // Mảng JSON bình thường (>= 2 phân vùng)
+        const QByteArray arrayJson = R"([
+            {"DiskNumber":0,"PartitionNumber":2,"DriveLetter":"C","Type":"Basic","Size":500105753600,
+             "IsBoot":true,"IsSystem":false,"IsActive":true,"FileSystem":"NTFS","Label":"Windows","SizeRemaining":123456789},
+            {"DiskNumber":0,"PartitionNumber":1,"DriveLetter":"","Type":"System","Size":104857600,
+             "IsBoot":false,"IsSystem":true,"IsActive":false,"FileSystem":"FAT32","Label":"","SizeRemaining":50000000}
+        ])";
+        QString err;
+        const auto list = internal::parsePartitionsJson(arrayJson, &err);
+        CHECK(err.isEmpty());
+        CHECK(list.size() == 2);
+        if (list.size() == 2)
+        {
+            CHECK(list[0].diskNumber == 0 && list[0].partitionNumber == 2);
+            CHECK(list[0].driveLetter == "C");
+            CHECK(list[0].sizeBytes == 500105753600LL);
+            CHECK(list[0].isBoot == true);
+            CHECK(list[0].fileSystem == "NTFS");
+            CHECK(list[1].driveLetter.isEmpty()); // phân vùng EFI/System không có ổ đĩa logic
+            CHECK(list[1].isSystem == true);
+        }
+
+        // PowerShell 5.1: CHỈ 1 phân vùng -> ConvertTo-Json trả về 1 OBJECT đơn, KHÔNG bọc mảng -
+        // đây chính là lỗi thật dễ gặp nếu chỉ giả định luôn luôn là mảng.
+        const QByteArray singleObjectJson = R"({"DiskNumber":1,"PartitionNumber":1,"DriveLetter":"D","Type":"Basic",
+            "Size":1000000000000,"IsBoot":false,"IsSystem":false,"IsActive":false,"FileSystem":"NTFS","Label":"Data","SizeRemaining":999999999})";
+        QString err2;
+        const auto list2 = internal::parsePartitionsJson(singleObjectJson, &err2);
+        CHECK(err2.isEmpty());
+        CHECK(list2.size() == 1);
+        if (list2.size() == 1)
+            CHECK(list2[0].driveLetter == "D");
+
+        // Rỗng -> không có phân vùng nào, không phải lỗi
+        QString err3;
+        CHECK(internal::parsePartitionsJson("", &err3).isEmpty());
+        CHECK(err3.isEmpty());
+
+        // JSON hỏng -> báo lỗi rõ ràng, không crash, trả về danh sách rỗng
+        QString err4;
+        CHECK(internal::parsePartitionsJson("{khong phai json hop le", &err4).isEmpty());
+        CHECK(!err4.isEmpty());
+
+        // SupportedSizeRange
+        QString err5;
+        const auto range = internal::parseSupportedSizeJson(R"({"SizeMin":100000000,"SizeMax":500000000000})", &err5);
+        CHECK(err5.isEmpty());
+        CHECK(range.ok);
+        CHECK(range.minBytes == 100000000LL);
+        CHECK(range.maxBytes == 500000000000LL);
+
+        QString err6;
+        const auto badRange = internal::parseSupportedSizeJson("khong phai json", &err6);
+        CHECK(!badRange.ok);
+        CHECK(!err6.isEmpty());
+
+        // Dựng script PowerShell: chỉ kiểm tra NỘI DUNG CHUỖI (thuần, không gọi powershell.exe, không
+        // đổi gì thật trên máy) - xác nhận đúng cmdlet + đúng tham số được truyền vào.
+        CHECK(internal::buildListPartitionsScript().contains("Get-Partition"));
+        CHECK(internal::buildListPartitionsScript().contains("Get-Volume"));
+
+        const QString sizeScript = internal::buildSupportedSizeScript(2, 3);
+        CHECK(sizeScript.contains("Get-PartitionSupportedSize"));
+        CHECK(sizeScript.contains("-DiskNumber 2"));
+        CHECK(sizeScript.contains("-PartitionNumber 3"));
+
+        const QString resizeScript = internal::buildResizeScript(2, 3, 123456789LL);
+        CHECK(resizeScript.contains("Resize-Partition"));
+        CHECK(resizeScript.contains("-DiskNumber 2"));
+        CHECK(resizeScript.contains("-PartitionNumber 3"));
+        CHECK(resizeScript.contains("-Size 123456789"));
+    }
+
+    // ---- PartitionManager: truy vấn THẬT nhưng CHỈ ĐỌC (liệt kê phân vùng, kiểm tra quyền) ----
+    // CHỦ Ý KHÔNG gọi resizePartition() ở đây dưới bất kỳ hình thức nào - đó là thao tác đĩa thật,
+    // không có "hoàn tác" an toàn, không phù hợp để chạy trong bộ test tự động.
+    {
+        const bool elevated = PartitionManager::isElevated();
+        std::printf("PartitionManager: tien trinh hien tai %s quyen Administrator\n", elevated ? "CO" : "KHONG CO");
+        CHECK(true); // tới được đây tức là isElevated() không crash
+
+        QString error;
+        const auto partitions = PartitionManager::listPartitions(&error);
+        std::printf("PartitionManager: tim thay %lld phan vung%s%s\n", static_cast<long long>(partitions.size()),
+                   error.isEmpty() ? "" : " (loi: ", error.isEmpty() ? "" : qPrintable(error + ")"));
+        CHECK(!partitions.isEmpty()); // máy Windows nào cũng có ít nhất phân vùng chứa Windows
+        for (const auto& p : partitions)
+        {
+            CHECK(p.diskNumber >= 0);
+            CHECK(p.partitionNumber >= 0);
+            CHECK(p.sizeBytes > 0);
+        }
     }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);

@@ -1,7 +1,9 @@
 #include "DiskCleanupWindow.h"
 
 #include "CleanupTab.h"
+#include "DuplicateFilesTab.h"
 #include "LargeFilesTab.h"
+#include "PartitionTab.h"
 #include "core/IconHelper.h"
 #include "core/Logger.h"
 
@@ -45,7 +47,11 @@ void DiskCleanupWindow::buildUi()
     m_tabs = new QTabWidget(this);
     m_cleanupTab = new CleanupTab(this);
     m_largeFilesTab = new LargeFilesTab(this);
+    m_duplicateFilesTab = new DuplicateFilesTab(this);
+    m_partitionTab = new PartitionTab(this);
     m_tabs->addTab(m_cleanupTab, "🧹  Dọn dẹp theo hạng mục");
     m_tabs->addTab(m_largeFilesTab, "📦  Tìm tệp lớn");
+    m_tabs->addTab(m_duplicateFilesTab, "👯  Tìm tệp trùng lặp");
+    m_tabs->addTab(m_partitionTab, "💽  Quản lý phân vùng");
     root->addWidget(m_tabs, 1);
 }

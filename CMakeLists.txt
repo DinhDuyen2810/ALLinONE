@@ -169,9 +169,15 @@ add_library(diskcleanup_core STATIC
     src/tools/diskcleanup/engine/DiskSpaceInfo.cpp
     src/tools/diskcleanup/engine/LargeFileScanner.h
     src/tools/diskcleanup/engine/LargeFileScanner.cpp
+    src/tools/diskcleanup/engine/DuplicateFinder.h
+    src/tools/diskcleanup/engine/DuplicateFinder.cpp
+    src/tools/diskcleanup/engine/PartitionManager.h
+    src/tools/diskcleanup/engine/PartitionManager.cpp
+    src/tools/diskcleanup/engine/PartitionResizer.h
+    src/tools/diskcleanup/engine/PartitionResizer.cpp
 )
 target_include_directories(diskcleanup_core PUBLIC src)
-target_link_libraries(diskcleanup_core PUBLIC Qt6::Core shell32)
+target_link_libraries(diskcleanup_core PUBLIC Qt6::Core shell32 advapi32)
 
 # ---- Kiểm thử lõi Disk Cleanup: cmake --build build --target diskcleanup_tests ----
 add_executable(diskcleanup_tests EXCLUDE_FROM_ALL tests/diskcleanup_tests.cpp)
@@ -184,6 +190,10 @@ add_library(diskcleanup_ui STATIC
     src/tools/diskcleanup/CleanupTab.cpp
     src/tools/diskcleanup/LargeFilesTab.h
     src/tools/diskcleanup/LargeFilesTab.cpp
+    src/tools/diskcleanup/DuplicateFilesTab.h
+    src/tools/diskcleanup/DuplicateFilesTab.cpp
+    src/tools/diskcleanup/PartitionTab.h
+    src/tools/diskcleanup/PartitionTab.cpp
     src/tools/diskcleanup/DiskCleanupWindow.h
     src/tools/diskcleanup/DiskCleanupWindow.cpp
 )
