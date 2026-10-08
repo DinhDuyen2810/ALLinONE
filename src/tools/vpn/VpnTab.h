@@ -34,8 +34,17 @@ public:
 
     bool isBusy() const;
     /// Hủy giữa chừng (an toàn - kill() rasdial.exe, VPN chỉ có 2 trạng thái "đã nối"/"chưa nối", không
-    /// có trạng thái dở dang nguy hiểm) rồi CHỜ tới khi luồng thoát hẳn - gọi trước khi đóng cửa sổ.
+    /// có trạng thái dở dang nguy hiểm) rồi CHỜ tới khi luồng thoát hẳn - gọi trước khi đóng cửa sổ (sắp
+    /// HỦY đối tượng VpnConnector - bắt buộc phải chờ, hủy QThread đang chạy là hành vi KHÔNG XÁC ĐỊNH).
     void cancelAndWait(int waitMs = 3000);
+
+    /// Yêu cầu hủy, KHÔNG CHỜ (không chặn luồng giao diện) - gọi từ VpnControlWindow::forceStopNow() khi
+    /// ứng dụng thoát qua qApp->quit() ở NƠI KHÁC (xem ToolManager::stopAllBackgroundWorkForQuit()).
+    /// KHÁC cancelAndWait(): ở đây KHÔNG có rủi ro "hủy QThread đang chạy" vì không hủy đối tượng gì cả -
+    /// tiến trình chỉ sắp thoát hẳn (hệ điều hành thu hồi an toàn MỌI thứ, kể cả thread đang chạy, cùng
+    /// lúc khi tiến trình kết thúc) - gọi cancelAndWait() ở đây sẽ SAI: có thể chặn cả ứng dụng (đang cố
+    /// thoát NGAY cho một hành động khác, vd chạy lại với quyền Admin) tới 45 giây chờ rasdial.exe vô ích.
+    void requestCancelNoWait();
 
 private slots:
     void onRefreshClicked();

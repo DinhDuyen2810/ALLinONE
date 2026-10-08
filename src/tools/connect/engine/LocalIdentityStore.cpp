@@ -1,5 +1,6 @@
 #include "LocalIdentityStore.h"
 
+#include <QDebug>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -57,9 +58,16 @@ void LocalIdentityStore::loadOrCreate()
     // (m_identity.id) được dùng trong bắt tay ghép đôi với mọi peer đã lưu; mất tệp này do crash giữa
     // chừng đồng nghĩa phải ghép đôi lại TỪ ĐẦU với tất cả (khác QFile::open(Truncate) cũ).
     QSaveFile out(m_path);
-    if (out.open(QIODevice::WriteOnly))
+    bool ok = out.open(QIODevice::WriteOnly);
+    if (ok)
     {
         out.write(QJsonDocument(o).toJson(QJsonDocument::Indented));
-        out.commit();
+        ok = out.commit();
     }
+    // connect_core (nơi lớp này thuộc về) không kéo theo Logger để giữ gọn như các *_core thuần khác
+    // (xem CMakeLists.txt) - dùng qWarning() nhẹ sẵn có của Qt thay vì im lặng bỏ qua lỗi ghi (khác
+    // PeerStore::save()/QRHistoryStore::save() có thể trả bool cho nơi gọi tự quyết định, hàm này được
+    // gọi từ constructor nên không có nơi nào để propagate thất bại lên).
+    if (!ok)
+        qWarning("LocalIdentityStore: không ghi được danh tính máy vào %s", qUtf8Printable(m_path));
 }

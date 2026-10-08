@@ -23,6 +23,21 @@ set(CMAKE_AUTOUIC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Multimedia Svg Network)
 
+# ---- Quét/dừng cây tiến trình Windows (dùng chung cho ScrcpyLauncher + YtDlpDownloadWorker - cả hai
+# đều khởi chạy một tiến trình ngoài tự sinh thêm tiến trình con riêng, xem WinProcessTree.h) - lib RIÊNG
+# thay vì liệt kê trùng file nguồn trong cả android_core lẫn downloader_core: hai static lib đó đều được
+# link vào cùng OneForAll.exe, trùng một bản dịch độc lập của cùng symbol trong 2 archive hiện ĐANG build
+# được nhờ GNU ld trích file .o từ archive theo kiểu "lười" (chỉ lấy bản ĐẦU TIÊN thỏa symbol còn thiếu,
+# bản trùng ở archive sau không bao giờ được trích) - nhưng đây là hành vi phụ thuộc THỨ TỰ link, dễ vỡ
+# nếu đổi thứ tự target_link_libraries(OneForAll ...) hoặc đổi toolchain/bật LTO. Tách lib riêng để không
+# phụ thuộc may rủi đó.
+add_library(winprocess_core STATIC
+    src/core/WinProcessTree.h
+    src/core/WinProcessTree.cpp
+)
+target_include_directories(winprocess_core PUBLIC src)
+target_link_libraries(winprocess_core PUBLIC Qt6::Core)
+
 # ---- Lõi QR (không phụ thuộc widget) + thư viện bên thứ ba ----
 add_library(qr_core STATIC
     src/tools/qr/QRCodec.h
@@ -231,11 +246,9 @@ add_library(android_core STATIC
     src/tools/android/engine/AdbController.cpp
     src/tools/android/engine/ScrcpyLauncher.h
     src/tools/android/engine/ScrcpyLauncher.cpp
-    src/core/WinProcessTree.h
-    src/core/WinProcessTree.cpp
 )
 target_include_directories(android_core PUBLIC src)
-target_link_libraries(android_core PUBLIC Qt6::Core)
+target_link_libraries(android_core PUBLIC Qt6::Core winprocess_core)
 
 # ---- Kiểm thử lõi Android: cmake --build build --target android_tests ----
 add_executable(android_tests EXCLUDE_FROM_ALL tests/android_tests.cpp)
@@ -363,11 +376,9 @@ add_library(downloader_core STATIC
     src/tools/downloader/engine/YtDlpInfoWorker.cpp
     src/tools/downloader/engine/YtDlpDownloadWorker.h
     src/tools/downloader/engine/YtDlpDownloadWorker.cpp
-    src/core/WinProcessTree.h
-    src/core/WinProcessTree.cpp
 )
 target_include_directories(downloader_core PUBLIC src)
-target_link_libraries(downloader_core PUBLIC Qt6::Core Qt6::Network)
+target_link_libraries(downloader_core PUBLIC Qt6::Core Qt6::Network winprocess_core)
 
 # ---- Kiểm thử lõi Downloader: cmake --build build --target downloader_tests ----
 add_executable(downloader_tests EXCLUDE_FROM_ALL tests/downloader_tests.cpp)

@@ -34,8 +34,11 @@ VpnControlWindow::~VpnControlWindow() = default;
 
 void VpnControlWindow::forceStopNow()
 {
-    if (m_vpnTab && m_vpnTab->isBusy())
-        m_vpnTab->cancelAndWait();
+    // requestCancelNoWait() - KHÔNG dùng cancelAndWait(): ở đây không hủy đối tượng gì (chỉ báo
+    // rasdial.exe dừng sớm), cancelAndWait() có thể chặn tới 45 giây nếu may rủi trúng lúc rasdial.exe
+    // đang chờ mạng - vô nghĩa và phản tác dụng khi gọi từ một luồng thoát ứng dụng đang cố NHANH.
+    if (m_vpnTab)
+        m_vpnTab->requestCancelNoWait();
 }
 
 void VpnControlWindow::closeEvent(QCloseEvent* event)

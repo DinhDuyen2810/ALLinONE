@@ -55,6 +55,12 @@ void VpnTab::cancelAndWait(int waitMs)
         m_connector->wait(); // vẫn chưa thoát - đợi thêm, không bao giờ để nơi gọi hủy đối tượng lúc còn chạy
 }
 
+void VpnTab::requestCancelNoWait()
+{
+    if (isBusy())
+        m_connector->requestCancel();
+}
+
 void VpnTab::buildUi()
 {
     auto* root = new QVBoxLayout(this);

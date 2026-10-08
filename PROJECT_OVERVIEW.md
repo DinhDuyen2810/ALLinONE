@@ -849,6 +849,35 @@ còn sót (server daemon tự khởi động lúc chạy test `android_ui_tests`
 khiến bước đóng gói `build_app.bat` báo "Sharing violation" - không phải lỗi mới, hành vi daemon adb đã
 biết từ trước, dọn tay để xác nhận build sạch).
 
+**Tự rà soát lại lần nữa (code review độc lập trên chính commit vừa làm) theo yêu cầu người dùng "đảm bảo
+không phát sinh dị biến" - tìm được 3 lỗi THẬT do chính đợt sửa trên gây ra:**
+1. **Lỗi logic nghiêm trọng nhất**: `VpnControlWindow::forceStopNow()` (gọi từ lưới an toàn
+   `aboutToQuit` mới thêm) tái dùng `VpnTab::cancelAndWait()` - hàm này có bước "nếu chờ 3s không xong
+   thì CHỜ TIẾP không giới hạn" (an toàn cho mục đích GỐC: tránh hủy đối tượng `QThread` đang chạy, hành
+   vi KHÔNG XÁC ĐỊNH theo Qt) - nhưng ở ngữ cảnh MỚI (lúc `aboutToQuit`, KHÔNG hủy đối tượng gì, tiến
+   trình chỉ sắp thoát hẳn) bước chờ không giới hạn đó là THỪA và PHẢN TÁC DỤNG: có thể treo CẢ ỨNG DỤNG
+   tới 45 giây nếu đúng lúc `rasdial.exe` đang chờ mạng chậm - đúng lúc người dùng vừa bấm "Chạy lại với
+   quyền Admin" mong muốn thoát NHANH. Sửa: thêm `VpnTab::requestCancelNoWait()` (chỉ đặt cờ hủy, không
+   chờ gì) dùng riêng cho đường quit-time, giữ nguyên `cancelAndWait()` cho đường đóng cửa sổ trực tiếp
+   (closeEvent/destructor - vẫn cần chờ vì ĐÓ mới là lúc thật sự hủy đối tượng).
+2. **Rủi ro tiềm ẩn khi build**: `src/core/WinProcessTree.cpp` bị liệt kê TRÙNG trong cả `android_core`
+   VÀ `downloader_core` (cả hai đều link vào chung `OneForAll.exe`) - build HIỆN ĐANG qua được chỉ nhờ
+   cách GNU ld trích file từ archive tĩnh theo kiểu "lười" (chỉ lấy bản ĐẦU gặp, bỏ qua bản trùng ở
+   archive sau) - phụ thuộc may rủi vào THỨ TỰ link, dễ vỡ nếu đổi thứ tự `target_link_libraries` hay
+   đổi trình biên dịch/bật LTO. Sửa triệt để: tách thành thư viện tĩnh riêng `winprocess_core`, cả hai
+   lib kia `target_link_libraries(... PUBLIC winprocess_core)` thay vì liệt kê trùng file nguồn.
+3. **Thiếu nhất quán nhỏ**: `LocalIdentityStore::loadOrCreate()` đổi sang `QSaveFile` nhưng bỏ qua giá
+   trị trả về của `commit()` - khác `PeerStore::save()`/`QRHistoryStore::save()` (cùng đợt sửa) đều kiểm
+   tra đúng. Sửa: kiểm tra `commit()`, ghi `qWarning()` nếu thất bại (hàm trả `void`, gọi từ constructor
+   nên không có nơi để trả lỗi lên - `connect_core` cố tình không kéo theo `Logger` đầy đủ như các `_core`
+   thuần khác, dùng `qWarning()` nhẹ sẵn có của Qt thay thế).
+
+Rà bằng tay thêm đường "quit-time" của Downloader/WiFi/Disk Cleanup (dùng cùng cơ chế
+`stopBackgroundWorkForQuit()`) - xác nhận cả 3 đều KHÔNG CHỜ gì (chỉ đặt cờ/gọi `kill()`+quét cây tiến
+trình, không có vòng `wait()` nào) - chỉ VPN mắc lỗi này. Build lại sạch (thêm `winprocess_core`), chạy
+lại toàn bộ 7 bộ test liên quan (`android_tests`/`downloader_tests`/`update_tests`/`vpn_ui_tests`/
+`connect_tests`/`connect_ui_tests`/`qr_ui_tests`) đều pass, khởi chạy thử không crash.
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
