@@ -1,5 +1,9 @@
 # Thư viện và nguồn tham khảo
 
+Mã nguồn CỦA DỰ ÁN NÀY (thư mục `src/` trừ `src/third_party/`, cùng các file cấu hình/build ở gốc dự án)
+phát hành theo giấy phép MIT - xem file `LICENSE` ở gốc dự án. Các thư viện/công cụ bên thứ ba dùng/đóng
+gói kèm theo liệt kê dưới đây giữ nguyên giấy phép GỐC của chính chúng.
+
 ## Công cụ BUILD-TIME (không đóng gói/phân phối cùng ứng dụng, chỉ cần khi tự dựng bộ cài đặt)
 | Công cụ | Dùng để | Giấy phép | Nguồn |
 |---|---|---|---|

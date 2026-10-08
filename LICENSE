@@ -19,11 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-Giấy phép này áp dụng cho mã nguồn CỦA DỰ ÁN NÀY (thư mục src/ trừ src/third_party/, cùng các file cấu
-hình/build ở gốc dự án). Các thư viện/công cụ bên thứ ba được dùng/đóng gói kèm theo (thư viện vendored
-trong src/third_party/, và các công cụ nhị phân đóng gói trong vendor/ lúc build) giữ nguyên giấy phép
-GỐC của chính chúng - xem THIRD_PARTY.md để biết đầy đủ danh sách, giấy phép, và nguồn gốc từng thành
-phần.
