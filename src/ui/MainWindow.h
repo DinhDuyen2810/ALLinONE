@@ -6,6 +6,9 @@
 #include <QPushButton>
 #include <QStackedWidget>
 #include "../core/ToolManager.h"
+#include "../core/update/UpdateChecker.h"
+
+class UpdateInstaller;
 
 class MainWindow : public QMainWindow
 {
@@ -19,6 +22,7 @@ private slots:
     void onToolSelected(int row);
     void onToolDoubleClicked(QListWidgetItem* item);
     void onOpenToolClicked();
+    void onUpdateAvailable(UpdateInfo info);
 
 private:
     void setupUi();
@@ -32,4 +36,9 @@ private:
     QPushButton* m_openToolButton;
 
     ITool* m_selectedTool{nullptr};
+
+    // Tự kiểm tra cập nhật một lần mỗi khi mở ứng dụng (không lặp định kỳ - theo đúng yêu cầu người
+    // dùng) - xem core/update/UpdateChecker.h/UpdateInstaller.h.
+    UpdateChecker* m_updateChecker{nullptr};
+    UpdateInstaller* m_updateInstaller{nullptr};
 };

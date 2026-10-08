@@ -9,7 +9,12 @@
 ; cài cho mọi người dùng (cần quyền Administrator) nếu muốn, qua PrivilegesRequiredOverridesAllowed.
 
 #define MyAppName "One for ALL"
-#define MyAppVersion "1.11.0"
+; Ghi đè được qua dòng lệnh: ISCC.exe "/DMyAppVersion=1.15.0" OneForAll.iss - build_installer.bat tự đọc
+; file VERSION ở gốc dự án rồi truyền vào, đồng bộ với CMakeLists.txt/UpdateChecker (xem VERSION,
+; src/core/update/Version.h.in). Giá trị dưới đây chỉ là mặc định khi build tay không truyền cờ này.
+#ifndef MyAppVersion
+  #define MyAppVersion "1.11.0"
+#endif
 #define MyAppExeName "OneForAll.exe"
 #define MyAppURL "https://github.com/DinhDuyen2810/ALLinONE"
 
@@ -26,6 +31,11 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
+; Tên Mutex PHẢI khớp CHÍNH XÁC với CreateMutexW() trong src/main.cpp - cho phép Setup/Windows Restart
+; Manager tự phát hiện OneForAll.exe đang chạy. Dùng cho tính năng tự cập nhật (UpdateInstaller chạy lại
+; Setup này với /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS - tự đóng app đang chạy rồi tự mở lại sau khi cài
+; xong, không cần người dùng bấm gì) - KHÔNG dùng để chặn chạy nhiều bản sao cùng lúc.
+AppMutex=OneForAllRunningMutex
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=..\dist

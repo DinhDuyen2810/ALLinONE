@@ -9,11 +9,17 @@
 #include "../tools/security/SecurityGatewayTool.h"
 #include "../tools/downloader/DownloaderTool.h"
 #include "core/IconHelper.h"
+#include "core/Version.h"
+#include "core/update/UpdateInstaller.h"
+#include <QApplication>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QSplitter>
 #include <QFrame>
 #include <QIcon>
+#include <QMessageBox>
+#include <QProgressDialog>
+#include <QPushButton>
 #include <QStatusBar>
 
 MainWindow::MainWindow(QWidget* parent)
@@ -27,6 +33,13 @@ MainWindow::MainWindow(QWidget* parent)
     {
         m_toolListWidget->setCurrentRow(0);
     }
+
+    // Tự kiểm tra cập nhật MỘT LẦN ngay lúc mở ứng dụng (UpdateChecker tự trễ vài giây rồi hỏi GitHub
+    // Releases, không lặp định kỳ - theo đúng yêu cầu người dùng, xem UpdateChecker.h). Thất bại (mất
+    // mạng, GitHub lỗi...) chỉ ghi log (xem UpdateChecker.cpp), không làm phiền bằng hộp thoại lỗi - đây
+    // là việc chạy ngầm, không phải thao tác người dùng tự yêu cầu.
+    m_updateChecker = new UpdateChecker(this);
+    connect(m_updateChecker, &UpdateChecker::updateAvailable, this, &MainWindow::onUpdateAvailable);
 }
 
 void MainWindow::registerTools()
@@ -272,4 +285,65 @@ void MainWindow::onOpenToolClicked()
             win->activateWindow();
         }
     }
+}
+
+void MainWindow::onUpdateAvailable(UpdateInfo info)
+{
+    const double mb = info.downloadSize > 0 ? info.downloadSize / 1024.0 / 1024.0 : 0.0;
+    const QString sizeText = mb > 0 ? QString(" (%1 MB)").arg(mb, 0, 'f', 1) : QString();
+
+    QMessageBox box(this);
+    box.setWindowTitle("Có bản cập nhật mới");
+    box.setIcon(QMessageBox::Information);
+    box.setText(QString("Đã có bản mới One for ALL v%1%2 (đang dùng v%3).")
+                    .arg(info.version, sizeText, APP_VERSION));
+    if (!info.releaseNotes.trimmed().isEmpty())
+        box.setDetailedText(info.releaseNotes);
+    QPushButton* updateBtn = box.addButton("Cập nhật ngay", QMessageBox::AcceptRole);
+    box.addButton("Để sau", QMessageBox::RejectRole);
+    box.setDefaultButton(updateBtn);
+    box.exec();
+
+    if (box.clickedButton() != updateBtn)
+        return; // "Để sau" - lần mở ứng dụng kế tiếp sẽ tự hỏi lại, không cần nhớ trạng thái "đã từ chối"
+
+    auto* progress = new QProgressDialog("Đang tải bản cập nhật...", "Ẩn", 0, 100, this);
+    progress->setWindowTitle("Đang cập nhật");
+    progress->setWindowModality(Qt::WindowModal);
+    progress->setMinimumDuration(0);
+    progress->setAutoClose(false);
+    progress->setAutoReset(false);
+
+    m_updateInstaller = new UpdateInstaller(this);
+
+    connect(m_updateInstaller, &UpdateInstaller::progress, progress, [progress](qint64 received, qint64 total) {
+        if (total > 0)
+        {
+            progress->setMaximum(static_cast<int>(total / 1024));
+            progress->setValue(static_cast<int>(received / 1024));
+        }
+        else
+        {
+            progress->setMaximum(0); // GitHub không trả tổng dung lượng - hiện dạng "đang chạy" không xác định
+        }
+    });
+    // Nút trên hộp thoại chỉ ẨN đi (tải vẫn tiếp tục ngầm) - UpdateInstaller/FileDownloader chưa có cách
+    // hủy giữa chừng an toàn ở bản này; nếu thất bại/mất mạng, downloadFailed vẫn tự báo như bình thường.
+    connect(progress, &QProgressDialog::canceled, progress, &QProgressDialog::hide);
+
+    connect(m_updateInstaller, &UpdateInstaller::downloadFailed, this, [this, progress](QString error) {
+        progress->close();
+        progress->deleteLater();
+        QMessageBox::warning(this, "Cập nhật thất bại", error);
+    });
+    connect(m_updateInstaller, &UpdateInstaller::aboutToRestart, this, [progress]() {
+        progress->close();
+        progress->deleteLater();
+        // Trình cài đặt đã khởi chạy (âm thầm) và tự lo việc đóng + mở lại OneForAll.exe sau khi cài
+        // xong (/CLOSEAPPLICATIONS /RESTARTAPPLICATIONS, xem UpdateInstaller.cpp) - tự đóng ngay ở đây
+        // để không bị Restart Manager phải "ép" đóng giữa chừng.
+        qApp->quit();
+    });
+
+    m_updateInstaller->downloadAndInstall(info.downloadUrl);
 }

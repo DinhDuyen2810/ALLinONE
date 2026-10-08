@@ -20,7 +20,16 @@ if errorlevel 1 goto error
 
 echo.
 echo [2/2] Bien dich bo cai dat bang Inno Setup...
-"%ISCC%" "%~dp0installer\OneForAll.iss"
+rem Doc so phien ban tu file VERSION o goc du an (nguon DUY NHAT - xem CMakeLists.txt) roi truyen vao
+rem Inno Setup qua /D, de AppVersion trong trinh cai dat luon khop voi APP_VERSION ben trong exe.
+set "APPVER="
+set /p APPVER=<"%~dp0VERSION"
+if "%APPVER%"=="" (
+    echo [LOI] Khong doc duoc file VERSION.
+    goto error
+)
+echo   Phien ban: %APPVER%
+"%ISCC%" "/DMyAppVersion=%APPVER%" "%~dp0installer\OneForAll.iss"
 if errorlevel 1 goto error
 
 echo.

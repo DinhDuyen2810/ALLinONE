@@ -1,5 +1,18 @@
 cmake_minimum_required(VERSION 3.20)
-project(OneForAll VERSION 1.0.0 LANGUAGES C CXX)
+
+# Đọc số phiên bản từ file VERSION ở gốc dự án - nguồn DUY NHẤT cho version (trước đây CMakeLists/
+# installer/README mỗi nơi tự ghi một con số khác nhau, dễ lệch - xem src/core/update/Version.h.in).
+# UpdateChecker so sánh giá trị sinh ra từ đây với tag bản phát hành mới nhất trên GitHub Releases.
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" APP_VERSION_STRING LIMIT_COUNT 1)
+string(STRIP "${APP_VERSION_STRING}" APP_VERSION_STRING)
+
+project(OneForAll VERSION ${APP_VERSION_STRING} LANGUAGES C CXX)
+
+configure_file(
+    src/core/update/Version.h.in
+    ${CMAKE_BINARY_DIR}/generated/core/Version.h
+    @ONLY
+)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -351,6 +364,24 @@ target_link_libraries(downloader_core PUBLIC Qt6::Core Qt6::Network)
 add_executable(downloader_tests EXCLUDE_FROM_ALL tests/downloader_tests.cpp)
 target_link_libraries(downloader_tests PRIVATE downloader_core)
 
+# ---- Lõi tự cập nhật (hỏi GitHub Releases API + tải/cài bản mới) - dùng lại FileDownloader của
+# downloader_core thay vì viết lại logic tải HTTP, xem UpdateInstaller.h ----
+add_library(update_core STATIC
+    src/core/update/UpdateChecker.h
+    src/core/update/UpdateChecker.cpp
+    src/core/update/UpdateInstaller.h
+    src/core/update/UpdateInstaller.cpp
+)
+target_include_directories(update_core PUBLIC src ${CMAKE_BINARY_DIR}/generated)
+target_link_libraries(update_core PUBLIC downloader_core Qt6::Core Qt6::Network)
+
+# ---- Kiểm thử lõi tự cập nhật: cmake --build build --target update_tests ----
+# update_core (khác các *_core thuần khác) có gọi Logger::instance() để ghi log kiểm tra cập nhật - thêm
+# thẳng Logger.cpp làm nguồn phụ, đúng mẫu đã dùng cho mọi *_ui_tests (Logger.cpp chỉ nằm trong SOURCES
+# chính của OneForAll, không phải một static lib riêng để link vào).
+add_executable(update_tests EXCLUDE_FROM_ALL tests/update_tests.cpp src/core/Logger.cpp)
+target_link_libraries(update_tests PRIVATE update_core)
+
 # ---- Giao diện Downloader ----
 add_library(downloader_ui STATIC
     src/tools/downloader/DownloaderUiStyle.h
@@ -434,12 +465,14 @@ add_executable(OneForAll WIN32 ${SOURCES})
 
 target_include_directories(OneForAll PRIVATE
     src
+    ${CMAKE_BINARY_DIR}/generated
 )
 
 target_link_libraries(OneForAll PRIVATE
     Qt6::Core
     Qt6::Gui
     Qt6::Widgets
+    Qt6::Network
     qr_ui
     wifi_ui
     connect_ui
@@ -448,6 +481,7 @@ target_link_libraries(OneForAll PRIVATE
     security_ui
     downloader_ui
     vpn_ui
+    update_core
     user32
     dwmapi
 )

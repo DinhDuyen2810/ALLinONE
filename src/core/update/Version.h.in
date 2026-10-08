@@ -1,0 +1,13 @@
+#pragma once
+
+// Tự sinh lúc cmake cấu hình (configure_file trong CMakeLists.txt) từ file VERSION ở gốc dự án - KHÔNG
+// sửa tay file .h đã sinh ra, sửa VERSION rồi chạy lại cmake. Đây là nguồn DUY NHẤT cho số phiên bản
+// (trước đây CMakeLists/installer/README mỗi nơi tự ghi một số khác nhau, dễ lệch) - dùng để hiển thị
+// trong ứng dụng VÀ để UpdateChecker so sánh với tag bản phát hành mới nhất trên GitHub Releases.
+#define APP_VERSION "@APP_VERSION_STRING@"
+#define APP_VERSION_MAJOR @PROJECT_VERSION_MAJOR@
+#define APP_VERSION_MINOR @PROJECT_VERSION_MINOR@
+#define APP_VERSION_PATCH @PROJECT_VERSION_PATCH@
+
+// "owner/repo" trên GitHub - nơi UpdateChecker hỏi API Releases công khai (không cần token).
+#define APP_GITHUB_REPO "DinhDuyen2810/ALLinONE"

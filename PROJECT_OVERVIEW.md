@@ -713,6 +713,63 @@ cục bộ (qua `file://`) tìm đúng ảnh/video/tài liệu.
   nhỏ qua `FileDownloader` (an toàn, giống mẫu `PublicIpChecker`). **Cố ý KHÔNG** tự động chạy yt-dlp.exe
   thật (quét trang/tải video nền tảng) trong test tự động - cần tự kiểm tra tay qua giao diện.
 
+## 4k. Tự cập nhật (Auto-update, 2026-10-08)
+Yêu cầu người dùng: mã nguồn chính trên GitHub, ứng dụng cài trên các máy khác tự hỏi xem có bản mới
+không rồi tự cập nhật như một sản phẩm bình thường. Thảo luận trực tiếp với người dùng và chốt theo đúng
+điều chỉnh của họ: **chỉ hỏi MỘT LẦN mỗi lần mở ứng dụng** (không lặp định kỳ 1 giờ/lần như đề xuất ban
+đầu - đơn giản hơn, đủ dùng vì ứng dụng không phải chạy nền 24/7).
+
+**Kiến trúc:**
+- Nguồn "có bản mới hay không": **GitHub Releases** của chính repo mã nguồn (endpoint công khai
+  `GET /repos/{owner}/{repo}/releases/latest`, không cần token - giới hạn 60 lượt/giờ/IP của GitHub dư
+  sức cho tần suất một lần mỗi lúc mở app). Mỗi bản phát hành phải có tag dạng `vX.Y.Z` + đính kèm file
+  `OneForAll_Setup.exe` làm asset - đây là bước **người dùng (chủ dự án) phải tự làm thủ công trên
+  GitHub** mỗi lần phát hành, ứng dụng không tự tạo release.
+- **Nguồn DUY NHẤT cho số phiên bản**: file `VERSION` ở gốc dự án (trước đây CMakeLists ghi "1.0.0",
+  installer ghi "1.11.0", README ghi version khác nữa - 3 nơi lệch nhau). `CMakeLists.txt` đọc file này
+  lúc cấu hình, `configure_file()` sinh `src/core/update/Version.h.in` → `generated/core/Version.h`
+  (`APP_VERSION`); `build_installer.bat` cũng đọc CÙNG file này rồi truyền `/DMyAppVersion=...` cho Inno
+  Setup - cả app lúc chạy lẫn trình cài đặt lúc ghi `AppVersion` luôn khớp nhau.
+- `UpdateChecker` (QNetworkAccessManager + `QTimer::singleShot` trễ 4 giây sau khi khởi tạo, KHÔNG lặp
+  lại): gọi API, phân tích JSON (`UpdateCheckerInternal::parseLatestRelease` - tách `tag_name`, tìm asset
+  tên kết thúc bằng "Setup.exe", lấy `body` làm ghi chú phát hành), so `tag_name` với `APP_VERSION` qua
+  `UpdateCheckerInternal::compareVersions` (so từng phần X.Y.Z dạng số, không so chuỗi - "1.15.0" >
+  "1.9.0" đúng nghĩa, khác so chuỗi sẽ sai).
+- Có bản mới → `MainWindow` hiện `QMessageBox` ("Cập nhật ngay" / "Để sau", có nút xem chi tiết ghi chú
+  phát hành). Bấm "Để sau" không lưu trạng thái gì - lần mở ứng dụng kế tiếp tự hỏi lại (đúng tinh thần
+  "mỗi lần mở mới hỏi" người dùng chọn).
+- Bấm "Cập nhật ngay" → `UpdateInstaller` **dùng lại `FileDownloader`** đã có sẵn của Downloader (hỗ trợ
+  tiếp tục tải dở, đã test kỹ) để tải `OneForAll_Setup.exe` về thư mục tạm, hiện `QProgressDialog`. Tải
+  xong → chạy trình cài đặt với `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS
+  /RESTARTAPPLICATIONS` (không wizard, không hỏi gì) rồi tự `qApp->quit()`. `/CLOSEAPPLICATIONS` +
+  `/RESTARTAPPLICATIONS` dựa trên **Windows Restart Manager**, nhận diện ứng dụng đang chạy qua
+  `AppMutex=OneForAllRunningMutex` khai báo trong `installer/OneForAll.iss` (phải khớp CHÍNH XÁC với
+  `CreateMutexW(..., L"OneForAllRunningMutex")` thêm vào `main.cpp` - chỉ để NHẬN DIỆN, không chặn chạy
+  nhiều bản sao) - tự đóng ứng dụng đang chạy, cài đè, rồi TỰ MỞ LẠI, không cần người dùng bấm Next/Finish
+  hay tự mở lại tay.
+- **Vì sao chạy ngầm không cần quyền Administrator**: `installer/OneForAll.iss` đã có sẵn
+  `PrivilegesRequired=lowest` từ trước (cài theo-người-dùng, không bắt buộc elevate) - nghĩa là chạy lại
+  `OneForAll_Setup.exe /VERYSILENT` từ chính ứng dụng (không có quyền Admin) vẫn cài được bình thường với
+  phần lớn người dùng, không bị UAC chặn giữa chừng làm hỏng luồng "âm thầm". Người dùng từng chọn "cài
+  cho mọi người dùng" (cần Admin) lúc cài lần đầu sẽ gặp UAC khi tự cập nhật - chấp nhận được, không phải
+  trường hợp phổ biến.
+
+**Đã xong, đã test (18 kiểm tra lõi):**
+- `UpdateCheckerInternal::compareVersions`: bằng nhau, lớn hơn/nhỏ hơn ở từng phần major/minor/patch, bỏ
+  tiền tố "v"/"V", phần thiếu coi là 0 ("1.2" = "1.2.0"), so SỐ không so CHUỖI ("1.15.0" > "1.9.0").
+- `UpdateCheckerInternal::parseLatestRelease`: JSON mẫu đúng cấu trúc thật GitHub trả về (tag + nhiều
+  asset, chỉ lấy đúng asset tên kết thúc "Setup.exe"); thiếu `tag_name`; có tag nhưng KHÔNG đính kèm
+  installer (chỉ có source.zip - coi như không hợp lệ để tự cập nhật); JSON rỗng/hỏng/là mảng thay vì
+  object - tất cả trả về rỗng an toàn, không crash.
+- Build lại toàn bộ ứng dụng sạch (thêm thư viện tĩnh `update_core`), khởi chạy thử `OneForAll.exe`
+  không crash qua giai đoạn gọi API thật (môi trường build này CÓ kết nối Internet thật).
+
+**Giới hạn/việc người dùng (chủ dự án) phải tự làm mỗi lần phát hành bản mới** (xem mục 5 "Quy trình phát
+hành" bên dưới) - tính năng chỉ TỰ ĐỘNG được từ phía người DÙNG cài ứng dụng, còn phía NGƯỜI PHÁT HÀNH vẫn
+cần vài bước thủ công trên GitHub (tag + tạo Release + đính kèm file cài đặt). Tính năng này cũng chỉ có
+tác dụng kể từ bản đầu tiên ĐÃ CÓ sẵn bộ tự cập nhật (v1.15.0 trở đi) - người dùng đang ở bản cũ hơn vẫn
+phải tự tải/cài thủ công một lần để có được bộ tự cập nhật.
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
@@ -764,6 +821,30 @@ hiển thị trong `MainWindow` lúc chạy, nhúng vào exe qua tài nguyên Wi
 rồi biên dịch `installer/OneForAll.iss` bằng `ISCC.exe`) → `dist\OneForAll_Setup.exe` (một file duy
 nhất, ~140MB do có ffmpeg/yt-dlp đóng gói sẵn, nén LZMA2 ultra). Thư mục `dist/` không được commit (xem
 `.gitignore`), giống `build/`/`OneForAll_Release/`/`vendor/`.
+
+### 5c. Quy trình phát hành bản mới (để `UpdateChecker` - mục 4k - nhận ra)
+Các bước **thủ công trên GitHub** người phát hành (chủ dự án) phải tự làm mỗi lần muốn người dùng đã cài
+đặt tự nhận được bản mới - không có bước nào trong số này tự động được từ phía ứng dụng:
+1. Sửa file `VERSION` ở gốc dự án thành số phiên bản mới (vd `1.16.0`) - đây là nguồn DUY NHẤT, không sửa
+   version ở nơi khác.
+2. Cập nhật changelog `PROJECT_OVERVIEW.md`/`README.md` như thường lệ, commit.
+3. Chạy `build_installer.bat` → ra `dist\OneForAll_Setup.exe` (đã tự mang đúng version mới nhờ bước 1).
+4. Gắn tag Git ĐÚNG KHỚP version (bắt buộc có tiền tố "v", `UpdateChecker` tự bỏ tiền tố này khi so sánh):
+   ```
+   git tag v1.16.0
+   git push origin v1.16.0
+   ```
+5. Tạo GitHub Release cho tag vừa đẩy (trang GitHub của repo → Releases → "Draft a new release" → chọn
+   tag `v1.16.0` → đính kèm file `dist\OneForAll_Setup.exe` làm asset → Publish). Có thể làm qua
+   `gh release create v1.16.0 dist/OneForAll_Setup.exe --notes "..."` nếu đã cài GitHub CLI, nhưng web UI
+   không cần cài gì thêm.
+6. Xong - lần mở ứng dụng tiếp theo trên MỌI máy đã cài bản có bộ tự cập nhật (v1.15.0 trở đi), app sẽ tự
+   hỏi thấy v1.16.0 mới hơn, hiện hộp thoại mời cập nhật.
+
+**Lưu ý:** asset đính kèm Release PHẢI có tên kết thúc bằng "Setup.exe" (khớp đúng tên
+`OutputBaseFilename=OneForAll_Setup` trong `installer/OneForAll.iss`) - `UpdateChecker` tìm asset theo
+quy tắc này, đặt tên khác sẽ không được nhận ra. Một Release không đính kèm asset nào khớp bị coi như
+"không có gì để tự cập nhật" (an toàn, không báo lỗi gây hoang mang, chỉ im lặng bỏ qua).
 
 **Giới hạn thật:** `AppId` cố định (GUID) để các bản cập nhật sau nhận diện đúng là CÙNG một ứng dụng
 (cho phép cài đè/gỡ đúng phiên bản cũ) - `AppVersion` trong `installer/OneForAll.iss` cần tự cập nhật
