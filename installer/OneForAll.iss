@@ -9,11 +9,16 @@
 ; cài cho mọi người dùng (cần quyền Administrator) nếu muốn, qua PrivilegesRequiredOverridesAllowed.
 
 #define MyAppName "One for ALL"
-; Ghi đè được qua dòng lệnh: ISCC.exe "/DMyAppVersion=1.15.0" OneForAll.iss - build_installer.bat tự đọc
+; Ghi đè được qua dòng lệnh: ISCC.exe "/DMyAppVersion=1.16.1" OneForAll.iss - build_installer.bat tự đọc
 ; file VERSION ở gốc dự án rồi truyền vào, đồng bộ với CMakeLists.txt/UpdateChecker (xem VERSION,
-; src/core/update/Version.h.in). Giá trị dưới đây chỉ là mặc định khi build tay không truyền cờ này.
+; src/core/update/Version.h.in). Giá trị dưới đây CỐ Ý là "0.0.0-dev" (không phải một số bản phát hành
+; thật) - dùng khi ai đó biên dịch TRỰC TIẾP file .iss này (vd mở bằng Inno Setup IDE rồi bấm Compile)
+; thay vì chạy build_installer.bat: nếu để một con số thật (vd "1.15.0") làm mặc định, nó sẽ ngày càng
+; CŨ ĐI và LÀM NHƯ THẬT mỗi khi dự án tăng version mà quên sửa chỗ này (đã từng xảy ra thật - xem
+; PROJECT_OVERVIEW.md mục 4l) - "0.0.0-dev" không thể bị nhầm là một bản phát hành thật, báo ngay cho
+; người build biết họ đã bỏ qua build_installer.bat.
 #ifndef MyAppVersion
-  #define MyAppVersion "1.15.0"
+  #define MyAppVersion "0.0.0-dev"
 #endif
 #define MyAppExeName "OneForAll.exe"
 #define MyAppURL "https://github.com/DinhDuyen2810/ALLinONE"

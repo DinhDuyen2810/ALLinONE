@@ -5,6 +5,8 @@
 
 #include <QProcess>
 
+#include <vector>
+
 ScrcpyLauncher::ScrcpyLauncher(QObject* parent)
     : QObject(parent)
 {
@@ -71,16 +73,22 @@ void ScrcpyLauncher::stop()
 {
     if (!m_process || m_process->state() == QProcess::NotRunning)
         return;
+
+    // Liệt kê hậu duệ TRƯỚC khi buộc dừng - lúc này m_lastPid CHẮC CHẮN vẫn là chính scrcpy.exe của ta
+    // (chưa ai kịp tái sử dụng PID), tránh rủi ro quét SAU khi nó đã thoát có thể khớp nhầm hậu duệ của
+    // một tiến trình không liên quan lỡ được Windows cấp trùng đúng PID đó (xem core/WinProcessTree.h).
+    const std::vector<qint64> descendants =
+        m_lastPid > 0 ? WinProcessTree::findDescendants(m_lastPid) : std::vector<qint64>{};
+
     m_process->terminate();
     if (!m_process->waitForFinished(3000))
         m_process->kill();
 
     // Ta vừa CHỦ ĐỘNG buộc dừng scrcpy.exe (terminate()/kill() ở trên) thay vì để nó tự thoát theo luồng
-    // chuẩn của chính nó - scrcpy không có cơ hội tự dọn tiến trình adb.exe con, nên LUÔN quét dọn ở đây
-    // (xem core/WinProcessTree.h vì sao Windows không tự làm việc này thay ta - dùng chung với
-    // YtDlpDownloadWorker, cùng một lớp lỗi: yt-dlp.exe cũng tự sinh ffmpeg.exe làm con lúc ghép video).
-    if (m_lastPid > 0)
-        WinProcessTree::terminateDescendants(m_lastPid);
+    // chuẩn của chính nó - scrcpy không có cơ hội tự dọn tiến trình adb.exe con, nên LUÔN dừng tiếp danh
+    // sách đã chụp sẵn ở trên (dùng chung lớp lỗi với YtDlpDownloadWorker: yt-dlp.exe cũng tự sinh
+    // ffmpeg.exe làm con lúc ghép video).
+    WinProcessTree::terminateProcessList(descendants);
 }
 
 bool ScrcpyLauncher::isRunning() const

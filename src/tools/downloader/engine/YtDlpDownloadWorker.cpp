@@ -3,6 +3,8 @@
 #include "YtDlpController.h"
 #include "core/WinProcessTree.h"
 
+#include <vector>
+
 YtDlpDownloadWorker::YtDlpDownloadWorker(QObject* parent)
     : QObject(parent)
 {
@@ -12,6 +14,13 @@ YtDlpDownloadWorker::~YtDlpDownloadWorker()
 {
     if (m_process && m_process->state() != QProcess::NotRunning)
     {
+        // Liệt kê hậu duệ TRƯỚC khi buộc dừng - lúc này m_lastPid CHẮC CHẮN vẫn là chính yt-dlp.exe của
+        // ta (chưa ai kịp tái sử dụng PID), tránh rủi ro quét SAU khi nó đã thoát có thể khớp nhầm hậu
+        // duệ của một tiến trình không liên quan lỡ được Windows cấp trùng đúng PID đó (xem
+        // core/WinProcessTree.h).
+        const std::vector<qint64> descendants =
+            m_lastPid > 0 ? WinProcessTree::findDescendants(m_lastPid) : std::vector<qint64>{};
+
         m_process->kill();
         m_process->waitForFinished(2000);
 
@@ -19,8 +28,7 @@ YtDlpDownloadWorker::~YtDlpDownloadWorker()
         // - kill() ở trên chỉ đóng đúng một handle của chính yt-dlp.exe, Windows không đệ quy dừng luôn
         // ffmpeg.exe con của nó (cùng lỗi đã gặp với scrcpy.exe/adb.exe, xem core/WinProcessTree.h). Nếu
         // người dùng hủy/đóng đúng lúc đang ghép, ffmpeg.exe sẽ mồ côi và treo lại ngầm vô thời hạn.
-        if (m_lastPid > 0)
-            WinProcessTree::terminateDescendants(m_lastPid);
+        WinProcessTree::terminateProcessList(descendants);
     }
 }
 
@@ -55,6 +63,13 @@ void YtDlpDownloadWorker::start(const QString& url, const QString& formatId, con
         m_stderrAccum += m_process->readAllStandardError();
     });
     connect(m_process, &QProcess::finished, this, [this](int exitCode, QProcess::ExitStatus status) {
+        // yt-dlp.exe thoát KHÔNG bình thường trên chính nó (crash, bị Task Manager kill, mất mạng giữa
+        // chừng...) - KHÁC đường cancel()/destructor ở trên (ta chủ động dừng) - có thể để sót ffmpeg.exe
+        // con nếu đang giữa lúc ghép. Quét dọn phòng hờ, cùng lý do với ScrcpyLauncher (không tránh được
+        // rủi ro tái sử dụng PID ở core/WinProcessTree.h vì chỉ biết SAU khi yt-dlp.exe đã thoát).
+        if (status != QProcess::NormalExit && m_lastPid > 0)
+            WinProcessTree::terminateDescendants(m_lastPid);
+
         if (status != QProcess::NormalExit || exitCode != 0)
         {
             QString msg = QString::fromUtf8(m_stderrAccum).trimmed();
@@ -77,13 +92,17 @@ void YtDlpDownloadWorker::cancel()
     if (!m_process || m_process->state() == QProcess::NotRunning)
         return;
 
+    // Liệt kê hậu duệ TRƯỚC khi buộc dừng - cùng lý do với destructor ở trên (tránh rủi ro tái sử dụng
+    // PID nếu quét sau khi yt-dlp.exe đã thoát, xem core/WinProcessTree.h).
+    const std::vector<qint64> descendants =
+        m_lastPid > 0 ? WinProcessTree::findDescendants(m_lastPid) : std::vector<qint64>{};
+
     m_process->kill(); // yt-dlp không xử lý gọn terminate() trên Windows - kill() trực tiếp an toàn vì chưa ghi tệp đích cuối cùng cho tới khi ghép xong
 
     // Cũng dọn ffmpeg.exe con nếu đang hủy ngay lúc yt-dlp đang ghép video+âm thanh - xem destructor ở
     // trên/core/WinProcessTree.h. KHÔNG chờ waitForFinished() ở đây (cancel() gọi từ luồng giao diện,
     // không được chặn) - tiến trình chính sẽ tự báo xong qua tín hiệu finished() như bình thường.
-    if (m_lastPid > 0)
-        WinProcessTree::terminateDescendants(m_lastPid);
+    WinProcessTree::terminateProcessList(descendants);
 }
 
 namespace YtDlpDownloadWorkerInternal

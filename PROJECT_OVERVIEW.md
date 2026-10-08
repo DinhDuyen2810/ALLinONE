@@ -732,7 +732,7 @@ không rồi tự cập nhật như một sản phẩm bình thường. Thảo l
   Setup - cả app lúc chạy lẫn trình cài đặt lúc ghi `AppVersion` luôn khớp nhau.
 - `UpdateChecker` (QNetworkAccessManager + `QTimer::singleShot` trễ 4 giây sau khi khởi tạo, KHÔNG lặp
   lại): gọi API, phân tích JSON (`UpdateCheckerInternal::parseLatestRelease` - tách `tag_name`, tìm asset
-  tên kết thúc bằng "Setup.exe", lấy `body` làm ghi chú phát hành), so `tag_name` với `APP_VERSION` qua
+  tên KHỚP ĐÚNG TUYỆT ĐỐI "OneForAll_Setup.exe", lấy `body` làm ghi chú phát hành), so `tag_name` với `APP_VERSION` qua
   `UpdateCheckerInternal::compareVersions` (so từng phần X.Y.Z dạng số, không so chuỗi - "1.15.0" >
   "1.9.0" đúng nghĩa, khác so chuỗi sẽ sai).
 - Có bản mới → `MainWindow` hiện `QMessageBox` ("Cập nhật ngay" / "Để sau", có nút xem chi tiết ghi chú
@@ -758,7 +758,8 @@ không rồi tự cập nhật như một sản phẩm bình thường. Thảo l
 - `UpdateCheckerInternal::compareVersions`: bằng nhau, lớn hơn/nhỏ hơn ở từng phần major/minor/patch, bỏ
   tiền tố "v"/"V", phần thiếu coi là 0 ("1.2" = "1.2.0"), so SỐ không so CHUỖI ("1.15.0" > "1.9.0").
 - `UpdateCheckerInternal::parseLatestRelease`: JSON mẫu đúng cấu trúc thật GitHub trả về (tag + nhiều
-  asset, chỉ lấy đúng asset tên kết thúc "Setup.exe"); thiếu `tag_name`; có tag nhưng KHÔNG đính kèm
+  asset, chỉ lấy đúng asset tên KHỚP TUYỆT ĐỐI "OneForAll_Setup.exe", bỏ qua asset tên gần giống); thiếu
+  `tag_name`; có tag nhưng KHÔNG đính kèm
   installer (chỉ có source.zip - coi như không hợp lệ để tự cập nhật); JSON rỗng/hỏng/là mảng thay vì
   object - tất cả trả về rỗng an toàn, không crash.
 - Build lại toàn bộ ứng dụng sạch (thêm thư viện tĩnh `update_core`), khởi chạy thử `OneForAll.exe`
@@ -878,6 +879,45 @@ trình, không có vòng `wait()` nào) - chỉ VPN mắc lỗi này. Build lạ
 lại toàn bộ 7 bộ test liên quan (`android_tests`/`downloader_tests`/`update_tests`/`vpn_ui_tests`/
 `connect_tests`/`connect_ui_tests`/`qr_ui_tests`) đều pass, khởi chạy thử không crash.
 
+**Rà vòng 3 (2026-10-08, v1.16.2) - yêu cầu người dùng "rà từng đầu vào đầu ra của các hàm chương trình,
+đảm bảo sạch nhất":** chạy công cụ rà soát code độc lập ở mức sâu nhất trên TOÀN BỘ các commit của phiên
+làm việc này (không chỉ commit gần nhất) - xác nhận bằng tay từng phát hiện trước khi sửa, bỏ qua phát
+hiện không thật sự áp dụng cho quy trình thật của dự án:
+1. **`WinProcessTree`: rủi ro Windows tái sử dụng PID.** Hàm cũ luôn quét hậu duệ SAU KHI tiến trình cha
+   đã thoát - nếu Windows lỡ cấp lại đúng PID đó cho một tiến trình hoàn toàn không liên quan trước khi
+   kịp quét, có thể quét/dừng NHẦM hậu duệ của tiến trình lạ đó. Tách API thành `findDescendants()` (chỉ
+   liệt kê, không dừng gì) + `terminateProcessList()` (dừng danh sách có sẵn) - `ScrcpyLauncher::stop()`
+   và `YtDlpDownloadWorker::cancel()`/destructor giờ gọi `findDescendants()` TRƯỚC khi buộc dừng tiến
+   trình cha (lúc PID chắc chắn vẫn là của chính mình), chỉ còn đường "thoát bất thường tự phát" (crash,
+   bị Task Manager kill - không kiểm soát được thời điểm) vẫn dùng `terminateDescendants()` gộp (quét
+   sau) như lưới an toàn cuối, chấp nhận rủi ro nhỏ còn lại vì không có cách nào tránh được khi không chủ
+   động khởi xướng việc dừng. Tiện thể vá luôn một lỗ hổng khác phát hiện cùng lúc: `YtDlpDownloadWorker`
+   trước đó CHỈ dọn hậu duệ ở đường `cancel()`/destructor (người dùng chủ động hủy), KHÔNG dọn khi
+   yt-dlp.exe tự crash/bị kill ngoài ý muốn - thêm vào `finished` lambda, đúng mẫu `ScrcpyLauncher` đã có.
+2. **`UpdateChecker::parseLatestRelease`: so khớp tên asset quá lỏng lẻo.** Trước đây chỉ kiểm tra tên
+   asset KẾT THÚC bằng "Setup.exe" - nếu một bản phát hành lỡ đính kèm nhiều file cùng kiểu tên (vd file
+   checksum `.sha256`, hoặc một asset không liên quan tên tương tự), kết quả phụ thuộc thứ tự ngẫu nhiên
+   trong JSON mà không có gì đảm bảo đúng. Sửa: so khớp ĐÚNG TUYỆT ĐỐI "OneForAll_Setup.exe" (tên output
+   cố định, biết trước chính xác từ `OutputBaseFilename` trong `.iss`).
+3. **`toIntOrZero` (so sánh phiên bản): từ chối cả đoạn hợp lệ nếu dính hậu tố.** `QString::toInt()` yêu
+   cầu CẢ chuỗi phải là số - một tag kiểu `v1.16.5-hotfix` khiến đoạn patch "5-hotfix" bị coi là "không
+   parse được" rồi rơi về 0 một cách sai lệch (lẽ ra phải đọc ra 5). Sửa: lấy dãy chữ số Ở ĐẦU chuỗi, bỏ
+   qua phần còn lại - khớp đúng quy ước semver (hậu tố `-xxx`/`+xxx` sau số). Thêm 3 test hồi quy.
+4. **`installer/OneForAll.iss`: giá trị mặc định (fallback) của `MyAppVersion` tự nó đã CŨ.** Phát hiện
+   chính dòng dự phòng (dùng khi ai đó mở file `.iss` biên dịch trực tiếp bằng Inno Setup IDE thay vì
+   chạy `build_installer.bat`) vẫn ghi "1.15.0" dù `VERSION` đã lên "1.16.1" - ĐÚNG kiểu lỗi "giá trị tĩnh
+   trôi dần" đã gặp ở README trước đó (mục 4l), chỉ là ở một nơi khác. Sửa triệt để gốc rễ thay vì chỉ cập
+   nhật lại con số (sẽ lại cũ đi lần sau): đổi thành `"0.0.0-dev"` - một giá trị KHÔNG THỂ bị nhầm là bản
+   phát hành thật, tự báo ngay cho người build biết họ đã bỏ qua quy trình đúng.
+5. **`build_installer.bat`: đọc `VERSION` không cắt khoảng trắng thừa ở cuối.** Khác `CMakeLists.txt`
+   (dùng `string(STRIP ...)`), đoạn đọc file trong batch không tự cắt - nếu ai đó lỡ gõ thêm dấu cách khi
+   sửa tay file `VERSION`, chuỗi thừa sẽ lọt qua kiểm tra rỗng rồi bị nhúng thẳng vào `AppVersion` của
+   trình cài đặt. Thêm vòng lặp tự cắt khoảng trắng cuối (batch không có sẵn hàm trim).
+
+**Xác nhận THẬT**: build lại sạch, 22 kiểm tra `update_tests` (18 cũ + 4 mới) đều pass, build cả trình
+cài đặt và xác nhận trực tiếp qua `VersionInfo.FileVersion` của `OneForAll_Setup.exe` thật ra đúng
+"1.16.2" không còn khoảng trắng thừa, khởi chạy thử ứng dụng chính không crash.
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
@@ -949,10 +989,12 @@ Các bước **thủ công trên GitHub** người phát hành (chủ dự án) 
 6. Xong - lần mở ứng dụng tiếp theo trên MỌI máy đã cài bản có bộ tự cập nhật (v1.15.0 trở đi), app sẽ tự
    hỏi thấy v1.16.0 mới hơn, hiện hộp thoại mời cập nhật.
 
-**Lưu ý:** asset đính kèm Release PHẢI có tên kết thúc bằng "Setup.exe" (khớp đúng tên
-`OutputBaseFilename=OneForAll_Setup` trong `installer/OneForAll.iss`) - `UpdateChecker` tìm asset theo
-quy tắc này, đặt tên khác sẽ không được nhận ra. Một Release không đính kèm asset nào khớp bị coi như
-"không có gì để tự cập nhật" (an toàn, không báo lỗi gây hoang mang, chỉ im lặng bỏ qua).
+**Lưu ý:** asset đính kèm Release PHẢI tên ĐÚNG TUYỆT ĐỐI `OneForAll_Setup.exe` (khớp đúng tên
+`OutputBaseFilename=OneForAll_Setup` trong `installer/OneForAll.iss` - `build_installer.bat`/GitHub
+Release UI đều giữ nguyên tên này mặc định, không cần đổi tay) - `UpdateChecker` so khớp TUYỆT ĐỐI, không
+phải chỉ "kết thúc bằng" (tránh khớp nhầm asset khác tên tương tự nếu một Release lỡ đính kèm nhiều file,
+vd checksum `.sha256` hay bản cho kiến trúc khác). Một Release không đính kèm đúng tên asset này bị coi
+như "không có gì để tự cập nhật" (an toàn, không báo lỗi gây hoang mang, chỉ im lặng bỏ qua).
 
 **Giới hạn thật:** `AppId` cố định (GUID) để các bản cập nhật sau nhận diện đúng là CÙNG một ứng dụng
 (cho phép cài đè/gỡ đúng phiên bản cũ) - `AppVersion` trong `installer/OneForAll.iss` cần tự cập nhật

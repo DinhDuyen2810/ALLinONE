@@ -30,6 +30,15 @@ rem Doc so phien ban tu file VERSION o goc du an (nguon DUY NHAT - xem CMakeList
 rem Inno Setup qua /D, de AppVersion trong trinh cai dat luon khop voi APP_VERSION ben trong exe.
 set "APPVER="
 set /p APPVER=<"%~dp0VERSION"
+rem Xoa khoang trang thua o CUOI (set /p da tu bo ky tu xuong dong, chi con lo neu ai do lo go them
+rem dau cach khi sua file VERSION bang tay) - khac CMakeLists.txt dung string(STRIP ...), batch khong co
+rem san ham trim nen phai tu xoa tung ky tu mot. Phat hien khi tu ra soat lai: thieu buoc nay co the
+rem nhung dau cach thua lot qua kiem tra rong roi nhung vao dung AppVersion cua trinh cai dat.
+:TrimAppVer
+if "%APPVER:~-1%"==" " (
+    set "APPVER=%APPVER:~0,-1%"
+    goto TrimAppVer
+)
 if "%APPVER%"=="" (
     echo [LOI] Khong doc duoc file VERSION.
     goto error

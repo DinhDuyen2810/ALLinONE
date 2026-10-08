@@ -77,10 +77,21 @@ namespace UpdateCheckerInternal
 
 namespace
 {
+// Lấy dãy CHỮ SỐ Ở ĐẦU chuỗi, bỏ qua phần còn lại - khác QString::toInt() (yêu cầu CẢ chuỗi phải là số,
+// trả về 0 nếu không) - để xử lý đúng tag có hậu tố kiểu semver (vd "v1.16.5-hotfix" -> phần patch
+// "5-hotfix" vẫn đọc ra đúng 5, không bị coi là "không parse được" rồi rơi về 0 một cách sai lệch, có
+// thể khiến so sánh phiên bản sai và bỏ lỡ bản cập nhật thật). Quy trình phát hành của dự án (mục 5c
+// PROJECT_OVERVIEW.md) chỉ tạo tag "vX.Y.Z" thuần, nhưng hàm này được gọi trên dữ liệu từ GitHub API -
+// không coi là đáng tin cậy tuyệt đối, xử lý khoan dung hơn cho chắc.
 int toIntOrZero(const QString& s)
 {
+    int i = 0;
+    while (i < s.size() && s[i].isDigit())
+        ++i;
+    if (i == 0)
+        return 0;
     bool ok = false;
-    const int v = s.toInt(&ok);
+    const int v = s.left(i).toInt(&ok);
     return ok ? v : 0;
 }
 
@@ -127,7 +138,12 @@ UpdateInfo parseLatestRelease(const QByteArray& json)
     {
         const QJsonObject asset = v.toObject();
         const QString name = asset.value("name").toString();
-        if (name.endsWith("Setup.exe", Qt::CaseInsensitive))
+        // So KHỚP ĐÚNG TUYỆT ĐỐI tên file (biết trước chính xác - OutputBaseFilename=OneForAll_Setup
+        // trong installer/OneForAll.iss luôn sinh ra đúng tên này) - KHÔNG dùng endsWith("Setup.exe")
+        // lỏng lẻo như trước (có thể khớp nhầm "MyApp_Setup.exe" của một asset khác lỡ đính kèm cùng
+        // release, hoặc một bản tải lên lỗi/trùng tên gây chọn asset sai mà không rõ ràng cái nào thắng
+        // nếu khớp nhiều hơn một - phát hiện khi tự rà soát lại).
+        if (name.compare(QStringLiteral("OneForAll_Setup.exe"), Qt::CaseInsensitive) == 0)
         {
             downloadUrl = asset.value("browser_download_url").toString();
             size = static_cast<qint64>(asset.value("size").toDouble());

@@ -5,19 +5,19 @@
 #include <tlhelp32.h>
 
 #include <utility>
-#include <vector>
 
 namespace WinProcessTree
 {
 
-void terminateDescendants(qint64 rootPid)
+std::vector<qint64> findDescendants(qint64 rootPid)
 {
+    std::vector<qint64> result;
     if (rootPid <= 0)
-        return;
+        return result;
 
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (snapshot == INVALID_HANDLE_VALUE)
-        return;
+        return result;
 
     PROCESSENTRY32W entry{};
     entry.dwSize = sizeof(entry);
@@ -55,15 +55,30 @@ void terminateDescendants(qint64 rootPid)
         }
     }
 
+    result.reserve(toKill.size());
     for (DWORD pid : toKill)
+        result.push_back(static_cast<qint64>(pid));
+    return result;
+}
+
+void terminateProcessList(const std::vector<qint64>& pids)
+{
+    for (qint64 pid64 : pids)
     {
-        HANDLE h = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
+        if (pid64 <= 0)
+            continue;
+        HANDLE h = OpenProcess(PROCESS_TERMINATE, FALSE, static_cast<DWORD>(pid64));
         if (h)
         {
             TerminateProcess(h, 1);
             CloseHandle(h);
         }
     }
+}
+
+void terminateDescendants(qint64 rootPid)
+{
+    terminateProcessList(findDescendants(rootPid));
 }
 
 } // namespace WinProcessTree

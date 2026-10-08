@@ -50,8 +50,10 @@ namespace UpdateCheckerInternal
 int compareVersions(const QString& a, const QString& b);
 
 /// Phân tích JSON trả về từ GET /repos/{owner}/{repo}/releases/latest của GitHub - tách tag_name, tìm
-/// asset đầu tiên có tên kết thúc bằng "Setup.exe" (khớp OutputBaseFilename trong installer/OneForAll.iss),
-/// và nội dung mô tả. Trả về UpdateInfo rỗng (version.isEmpty()) nếu JSON không đúng cấu trúc mong đợi
-/// hoặc bản phát hành không đính kèm trình cài đặt - coi như không có gì để tự cập nhật.
+/// asset có tên KHỚP ĐÚNG TUYỆT ĐỐI "OneForAll_Setup.exe" (không phải chỉ kết thúc bằng "Setup.exe" -
+/// tránh khớp nhầm asset khác nếu một bản phát hành lỡ đính kèm nhiều file; "OneForAll_Setup.exe" là tên
+/// output CỐ ĐỊNH, biết trước chính xác - xem OutputBaseFilename trong installer/OneForAll.iss), và nội
+/// dung mô tả. Trả về UpdateInfo rỗng (version.isEmpty()) nếu JSON không đúng cấu trúc mong đợi hoặc bản
+/// phát hành không đính kèm đúng tên asset này - coi như không có gì để tự cập nhật.
 UpdateInfo parseLatestRelease(const QByteArray& json);
 }
