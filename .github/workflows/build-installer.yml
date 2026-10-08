@@ -68,7 +68,7 @@ jobs:
 
       - name: Cấu hình CMake
         shell: pwsh
-        run: cmake -B build -G Ninja -DCMAKE_PREFIX_PATH="$env:Qt6_DIR" -DCMAKE_BUILD_TYPE=Release
+        run: cmake -B build -G Ninja -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR" -DCMAKE_BUILD_TYPE=Release
 
       - name: Biên dịch
         run: cmake --build build
@@ -76,7 +76,7 @@ jobs:
       - name: Đóng gói Qt DLLs (windeployqt)
         shell: pwsh
         run: |
-          & "$env:Qt6_DIR\bin\windeployqt.exe" "build\OneForAll.exe" --no-translations --compiler-runtime
+          & "$env:QT_ROOT_DIR\bin\windeployqt.exe" "build\OneForAll.exe" --no-translations --compiler-runtime
 
       - name: Dựng OneForAll_Release (đúng mẫu build_app.bat bước [4/6]-[6/6])
         shell: pwsh
