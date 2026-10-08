@@ -47,11 +47,13 @@ jobs:
           version: ${{ env.QT_VERSION }}
           arch: "win64_mingw"
           tools: "tools_mingw1310,qt.tools.win64_mingw1310"
-          # Qt6Multimedia + Qt6Svg là module RIÊNG (không nằm trong gói Qt6 cơ bản) - CMakeLists.txt dòng
-          # 24 (find_package(Qt6 REQUIRED COMPONENTS ... Multimedia Svg ...)) cần cả hai - thiếu dòng này
-          # khiến cấu hình CMake thất bại ngay (xác nhận THẬT qua log chạy lần đầu: "Could NOT find
-          # Qt6Multimedia").
-          modules: "qtmultimedia qtsvg"
+          # Qt6Multimedia là module RIÊNG (không nằm trong gói Qt6 cơ bản) - CMakeLists.txt dòng 24
+          # (find_package(Qt6 REQUIRED COMPONENTS ... Multimedia Svg ...)) cần nó - thiếu dòng này khiến
+          # cấu hình CMake thất bại ngay (xác nhận THẬT qua log chạy lần đầu: "Could NOT find
+          # Qt6Multimedia"). Qt6Svg KHÔNG phải module riêng ở bản Qt này (xác nhận qua
+          # `aqt list-qt --modules 6.10.3 win64_mingw` - không có "qtsvg" trong danh sách) - đã nằm sẵn
+          # trong gói cơ bản, thêm "qtsvg" vào đây gây lỗi "packages ['qtsvg'] were not found".
+          modules: "qtmultimedia"
           cache: true
 
       - name: Cài Ninja
