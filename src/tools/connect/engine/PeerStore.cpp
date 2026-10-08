@@ -7,6 +7,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSaveFile>
 
 PeerStore& PeerStore::instance()
 {
@@ -111,9 +112,12 @@ bool PeerStore::save() const
     root["version"] = "1.0";
     root["peers"] = arr;
 
-    QFile f(m_path);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+    // QSaveFile: ghi ra tệp tạm rồi ĐỔI TÊN ĐÈ nguyên tử lên đích khi commit() thành công - nếu tiến
+    // trình bị crash/kill giữa chừng lúc đang ghi, danh sách thiết bị đã ghép đôi (kèm khóa dài hạn) thật
+    // không bao giờ bị mất sạch (khác QFile::open(Truncate) cũ, xóa nội dung đích NGAY khi mở).
+    QSaveFile f(m_path);
+    if (!f.open(QIODevice::WriteOnly))
         return false;
     f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
-    return true;
+    return f.commit();
 }

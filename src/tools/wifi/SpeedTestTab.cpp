@@ -143,6 +143,12 @@ void SpeedTestTab::setAdapter(const QString& guid)
     updateLinkRateLabel();
 }
 
+void SpeedTestTab::stopIfRunning()
+{
+    if (m_runner && m_runner->isRunning())
+        m_runner->stop();
+}
+
 void SpeedTestTab::updateLinkRateLabel()
 {
     if (m_adapterGuid.isEmpty())

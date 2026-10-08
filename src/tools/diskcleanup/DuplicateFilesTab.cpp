@@ -1,5 +1,6 @@
 #include "DuplicateFilesTab.h"
 
+#include "DiskCleanupWindow.h"
 #include "DiskUiStyle.h"
 #include "engine/RecycleBinOps.h"
 
@@ -139,10 +140,34 @@ void DuplicateFilesTab::onBrowseClicked()
     m_scanBtn->setEnabled(true);
 }
 
+bool DuplicateFilesTab::isScanningNow() const
+{
+    return m_finder && m_finder->isRunning();
+}
+
+void DuplicateFilesTab::stopScanIfRunning()
+{
+    if (m_finder && m_finder->isRunning())
+        m_finder->requestStop();
+}
+
 void DuplicateFilesTab::onScanClicked()
 {
     if (m_rootPath.isEmpty())
         return;
+
+    // Tránh quét chồng chéo trên cùng ổ đĩa với một tab khác đang đổi kích thước/dọn dẹp/quét - xem
+    // DiskCleanupWindow::isAnyOtherTabBusy().
+    if (auto* win = qobject_cast<DiskCleanupWindow*>(window()))
+    {
+        if (win->isAnyOtherTabBusy(this))
+        {
+            QMessageBox::warning(this, "Đang có thao tác khác",
+                "Một tab khác trong Disk Cleanup đang quét/dọn dẹp/đổi kích thước phân vùng - vui lòng "
+                "đợi xong để tránh xung đột trên cùng ổ đĩa, rồi thử lại.");
+            return;
+        }
+    }
 
     m_updatingTree = true;
     m_tree->clear();

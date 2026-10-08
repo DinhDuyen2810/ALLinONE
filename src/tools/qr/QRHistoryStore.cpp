@@ -6,6 +6,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSaveFile>
 
 QRHistoryStore& QRHistoryStore::instance()
 {
@@ -98,9 +99,13 @@ bool QRHistoryStore::save() const
     root["version"] = "1.0";
     root["entries"] = arr;
 
-    QFile f(m_path);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+    // QSaveFile: ghi ra tệp tạm rồi ĐỔI TÊN ĐÈ nguyên tử lên đích khi commit() thành công - nếu tiến
+    // trình bị crash/kill giữa chừng lúc đang ghi (QFile::open(Truncate) cũ sẽ xóa sạch nội dung đích
+    // NGAY khi mở, trước khi ghi lại), tệp đích THẬT (profiles/qr_history.json) không bao giờ bị để lại
+    // ở trạng thái rỗng/dở dang - vẫn giữ nguyên bản cũ cho tới khi bản mới ghi xong hoàn toàn.
+    QSaveFile f(m_path);
+    if (!f.open(QIODevice::WriteOnly))
         return false;
     f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
-    return true;
+    return f.commit();
 }

@@ -40,6 +40,33 @@ DiskCleanupWindow::DiskCleanupWindow(QWidget* parent)
 
 DiskCleanupWindow::~DiskCleanupWindow() = default;
 
+bool DiskCleanupWindow::hasUnsafeOperationInProgress() const
+{
+    return (m_partitionTab && m_partitionTab->isResizingNow()) ||
+           (m_cleanupTab && m_cleanupTab->isCleaningNow());
+}
+
+void DiskCleanupWindow::stopSafelyCancellableWorkForQuit()
+{
+    if (m_largeFilesTab)
+        m_largeFilesTab->stopScanIfRunning();
+    if (m_duplicateFilesTab)
+        m_duplicateFilesTab->stopScanIfRunning();
+}
+
+bool DiskCleanupWindow::isAnyOtherTabBusy(const QWidget* exceptTab) const
+{
+    if (m_cleanupTab && m_cleanupTab != exceptTab && m_cleanupTab->isBusy())
+        return true;
+    if (m_largeFilesTab && m_largeFilesTab != exceptTab && m_largeFilesTab->isScanningNow())
+        return true;
+    if (m_duplicateFilesTab && m_duplicateFilesTab != exceptTab && m_duplicateFilesTab->isScanningNow())
+        return true;
+    if (m_partitionTab && m_partitionTab != exceptTab && m_partitionTab->isResizingNow())
+        return true;
+    return false;
+}
+
 void DiskCleanupWindow::closeEvent(QCloseEvent* event)
 {
     if (m_partitionTab && m_partitionTab->isResizingNow())
@@ -60,6 +87,15 @@ void DiskCleanupWindow::closeEvent(QCloseEvent* event)
         event->ignore();
         return;
     }
+    // Quét tệp lớn/tệp trùng lặp AN TOÀN để hủy giữa chừng (khác resize/xóa thật ở trên) - không cần
+    // chặn đóng cửa sổ, nhưng vẫn phải tự dừng ở đây: cửa sổ này được DiskCleanupTool giữ qua QPointer và
+    // TÁI DÙNG ở lần mở sau (không WA_DeleteOnClose) - đóng chỉ ẨN đi, các tab con không bị hủy nên
+    // destructor của chúng (vốn đã requestStop()+wait() đúng) không bao giờ chạy, QThread quét tiếp tục
+    // chạy ngầm vô ích nếu không chủ động dừng ở đây.
+    if (m_largeFilesTab)
+        m_largeFilesTab->stopScanIfRunning();
+    if (m_duplicateFilesTab)
+        m_duplicateFilesTab->stopScanIfRunning();
     event->accept();
 }
 

@@ -770,6 +770,85 @@ cần vài bước thủ công trên GitHub (tag + tạo Release + đính kèm f
 tác dụng kể từ bản đầu tiên ĐÃ CÓ sẵn bộ tự cập nhật (v1.15.0 trở đi) - người dùng đang ở bản cũ hơn vẫn
 phải tự tải/cài thủ công một lần để có được bộ tự cập nhật.
 
+## 4l. Rà soát xung đột khi đóng ứng dụng/chạy nhiều tiện ích cùng lúc (2026-10-08)
+Yêu cầu người dùng: kiểm tra toàn bộ phần mềm - tắt bằng X khi đang có thao tác nền có chạy ngầm/xung đột
+không, chạy nhiều tiện ích cùng lúc có xung đột không (vd 2 tiện ích cùng quét thư mục). Xuất phát từ lỗi
+`adb.exe` mồ côi đã sửa ở Android (mục 4g) - nghi ngờ đúng: đó không phải lỗi riêng của Android mà là MỘT
+KIỂU KIẾN TRÚC lặp lại khả năng ở cả 9 tool. Dùng 3 agent dò song song (sở hữu cửa sổ/closeEvent của cả 9
+tool; mọi nơi gọi QProcess tìm nguy cơ mồ côi tiến trình con; xung đột khi chạy nhiều tool cùng lúc - hook
+bàn phím/chuột, các tab Disk Cleanup, trạng thái dùng chung) rồi chỉ sửa những gì CÓ BẰNG CHỨNG cụ thể
+(file:line), không đoán.
+
+**Phát hiện #1 - xác nhận: cả 9/9 tool cùng một kiểu kiến trúc như Android.** Mỗi `*Tool.h` giữ cửa sổ
+qua `QPointer<QWidget> m_window` KHÔNG CÓ CHỦ (`new XxxWindow()` không gắn parent, không
+`WA_DeleteOnClose`), tái dùng ở lần mở sau - đóng cửa sổ (bấm X) mặc định CHỈ ẨN, không hủy đối tượng.
+Chỉ Android (đã sửa trước đó) có lưới an toàn `aboutToQuit`; 8 tool còn lại không có. Trong số đó,
+**Downloader hoàn toàn chưa có `closeEvent`** - một phiên tải video nền tảng (`yt-dlp.exe`, có thể tự
+sinh `ffmpeg.exe` lúc ghép) sẽ treo lại NGẦM vô thời hạn nếu đóng cửa sổ giữa chừng, ĐÚNG lỗi đã gặp với
+Android. **WiFi cũng chưa có `closeEvent`** (polling + đo tốc độ tiếp tục chạy ngầm, mức độ nhẹ hơn vì
+không có tiến trình ngoài). Đã sửa: thêm `DownloaderWindow::closeEvent`/`WifiWindow::closeEvent`.
+
+**Phát hiện #2 - nghiêm trọng hơn: `qApp->quit()` gọi trực tiếp (4 chỗ: "Chạy lại với quyền Admin" ở
+Security Gateway x2 + Disk Cleanup Partition, và nút "Cập nhật ngay" của bộ tự cập nhật mới thêm) KHÔNG
+TỰ GỌI `closeEvent()` của các cửa sổ tool KHÁC đang mở** (đã xác nhận qua tài liệu hành vi
+`QCoreApplication::exit()`/`quit()` của Qt - chỉ dừng vòng lặp sự kiện, không duyệt qua
+`topLevelWidgets()`). Nếu Disk Cleanup đang đổi kích thước phân vùng THẬT (thao tác chính dự án đã tự xác
+định là KHÔNG an toàn để hủy giữa chừng - mục 5b) trong lúc một cửa sổ KHÁC gọi `qApp->quit()`, tiến
+trình `powershell.exe Resize-Partition` bị buộc dừng (`TerminateProcess` khi tiến trình thoát) giữa lúc
+nguy hiểm nhất - hoàn toàn bỏ qua rào chắn `DiskCleanupWindow::closeEvent` vốn đã CHẶN HẲN việc tự đóng
+trong tình huống này. Sửa bằng 2 lớp:
+- `ITool::isWindowBusy()` (ảo, mặc định `false`) + `ToolManager::anyToolWindowBusy()` - CHỈ
+  `DiskCleanupTool` ghi đè (ủy quyền `DiskCleanupWindow::hasUnsafeOperationInProgress()` - đang
+  resize/đang dọn dẹp thật). Gọi kiểm tra này TRƯỚC khi quyết định gọi `qApp->quit()` ở cả 4 điểm - nếu
+  bận, báo lỗi rõ ràng và HOÃN LẠI thay vì cứ chạy rồi buộc dừng giữa chừng (nút "Cập nhật ngay" của auto-
+  update kiểm tra ngay trước khi chạy trình cài đặt, không chỉ lúc người dùng bấm, để bắt cả trường hợp
+  "bắt đầu bận giữa lúc đang tải bản cập nhật").
+- `ITool::stopBackgroundWorkForQuit()` (ảo, mặc định không làm gì) + `ToolManager::
+  stopAllBackgroundWorkForQuit()`, nối vào `QApplication::aboutToQuit` trong `MainWindow` (lưới an toàn
+  CHUNG cho cả 9 tool, thay vì mỗi tool tự nối `aboutToQuit` riêng như Android trước đây) - dọn các thao
+  tác AN TOÀN để hủy (Downloader: hủy tải yt-dlp; VPN: hủy rasdial.exe; WiFi: dừng polling/đo tốc độ; Disk
+  Cleanup: dừng quét tệp lớn/trùng lặp NẾU đang chạy - không đụng resize/dọn dẹp, đã được chặn ở lớp
+  trên). Cố ý KHÔNG gọi `close()` (sẽ chạy lại `closeEvent()` với hộp thoại xác nhận - vô nghĩa giữa một
+  luồng thoát không thể hủy) mà gọi thẳng hàm dừng không hỏi (`forceStopNow()`/`cancelActiveDownload()`...).
+
+**Phát hiện #3 - đúng ví dụ người dùng nêu: Disk Cleanup có 4 tab (Dọn dẹp/Tìm tệp lớn/Tìm tệp trùng
+lặp/Quản lý phân vùng) sống đồng thời (đổi tab chỉ ẩn/hiện, không hủy), KHÔNG CÓ cơ chế phối hợp nào -
+có thể bấm "Quét" ở một tab rồi chuyển sang tab khác bấm "Đổi kích thước"/"Dọn dẹp" nhắm vào CÙNG ổ đĩa,
+chạy song song. Nghiêm trọng nhất: đổi kích thước phân vùng (cần di chuyển dữ liệu hệ thống tệp) đồng
+thời với I/O từ chính ứng dụng (quét/dọn dẹp) trên cùng đĩa có thể làm resize chậm/thất bại giữa chừng.
+Sửa: thêm `DiskCleanupWindow::isAnyOtherTabBusy(QWidget* exceptTab)` (kiểm tra `isScanningNow()` mới thêm
+ở `LargeFilesTab`/`DuplicateFilesTab`, `isBusy()` mới thêm ở `CleanupTab`, `isResizingNow()` đã có ở
+`PartitionTab`) - mỗi tab tự gọi kiểm tra này NGAY ĐẦU handler bắt đầu thao tác (`onScanClicked`/
+`onCleanClicked`/`onResizeClicked`), báo lỗi rõ ràng và từ chối bắt đầu nếu tab khác đang bận.
+
+**Phát hiện #4 - mức trung bình: `HotkeyCapture` (nút "Bắt tổ hợp phím" của Auto Click) không có giới hạn
+thời gian - hook `WH_KEYBOARD_LL` nuốt MỌI phím thật trong lúc "đang chờ bắt" vô thời hạn nếu người dùng
+bấm nút rồi bỏ đó không gõ gì. Windows gọi hook MỚI CÀI trước hook CŨ trong cùng tiến trình - nếu
+`InputHook` của Connect Together đã cài trước (chỉ cần MỞ cửa sổ Connect Together, không cần đang điều
+khiển ai), `HotkeyCapture` có thể chặn hoàn toàn tổ hợp "Ctrl+Alt+Home" (phím thoát điều khiển từ xa) và
+mọi phím thật khác, không giới hạn thời gian. Sửa: thêm `QTimer` tự hủy bắt sau 20 giây không gõ gì.
+
+**Phát hiện #5 - xác nhận AN TOÀN, không sửa**: lo ngại Auto Click (`SendInput` tự động hóa) có thể bị
+`InputHook` của Connect Together nhầm thành input thật của người dùng rồi relay sang máy ở xa, gây vòng
+lặp phản hồi - ĐÃ XÁC NHẬN KHÔNG xảy ra: Windows tự gắn cờ `LLKHF_INJECTED`/`LLMHF_INJECTED` cho MỌI lệnh
+`SendInput` (của bất kỳ tiến trình nào, không riêng cùng tiến trình), và `InputHook.cpp` đã lọc bỏ cờ này
+từ trước (có chủ đích, đúng lý do nêu trên) - xác nhận bằng cách đọc code, không chỉ suy luận.
+
+**Phát hiện #6 - mức thấp, đã sửa cho chắc**: `QRHistoryStore`/`PeerStore`/`LocalIdentityStore` (3
+singleton lưu JSON, không phải `Logger` - đã có mutex đúng) ghi tệp kiểu `QFile::open(Truncate)` rồi
+`write()` thẳng - nếu tiến trình crash/bị kill ĐÚNG lúc giữa truncate và write xong, tệp thật bị xóa sạch
+nội dung cũ. Không phải race điều kiện thật (toàn bộ truy cập đều trên luồng giao diện, xác nhận qua
+code), nhưng cùng HỌ lỗi "bị buộc dừng giữa chừng gây mất dữ liệu" nên sửa luôn cho nhất quán: đổi sang
+`QSaveFile` (ghi tệp tạm rồi đổi tên đè NGUYÊN TỬ khi `commit()` thành công - tệp thật không bao giờ ở
+trạng thái dở dang).
+
+**Đã xác nhận THẬT**: toàn bộ 9 `_ui_tests`/`_tests` liên quan (qr/wifi/connect/diskcleanup/android/vpn/
+security/downloader/update, tổng hơn 600 kiểm tra) đều pass sau khi sửa, build lại sạch toàn bộ ứng dụng
+nhiều lần trong quá trình sửa, khởi chạy thử không crash. Phát hiện và dọn một tiến trình `adb.exe` THẬT
+còn sót (server daemon tự khởi động lúc chạy test `android_ui_tests` gọi `adb devices` thật, khóa tệp
+khiến bước đóng gói `build_app.bat` báo "Sharing violation" - không phải lỗi mới, hành vi daemon adb đã
+biết từ trước, dọn tay để xác nhận build sạch).
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để

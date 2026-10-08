@@ -218,7 +218,10 @@ target_include_directories(diskcleanup_ui PUBLIC src)
 target_link_libraries(diskcleanup_ui PUBLIC diskcleanup_core Qt6::Widgets)
 
 # ---- Kiểm thử "khói" UI Disk Cleanup: cmake --build build --target diskcleanup_ui_tests ----
-add_executable(diskcleanup_ui_tests EXCLUDE_FROM_ALL tests/diskcleanup_ui_tests.cpp src/core/Logger.cpp)
+# PartitionTab.cpp gọi ToolManager::instance() (chặn "chạy lại với quyền Admin" nếu tool khác đang bận
+# không an toàn để hủy) - thêm ToolManager.cpp làm nguồn phụ, cùng lý do với Logger.cpp (không phải static
+# lib riêng để link vào).
+add_executable(diskcleanup_ui_tests EXCLUDE_FROM_ALL tests/diskcleanup_ui_tests.cpp src/core/Logger.cpp src/core/ToolManager.cpp)
 target_link_libraries(diskcleanup_ui_tests PRIVATE diskcleanup_ui)
 
 # ---- Lõi Android Phone Control (gọi adb.exe/scrcpy.exe đóng gói kèm - xem vendor/scrcpy, THIRD_PARTY.md) ----
@@ -228,6 +231,8 @@ add_library(android_core STATIC
     src/tools/android/engine/AdbController.cpp
     src/tools/android/engine/ScrcpyLauncher.h
     src/tools/android/engine/ScrcpyLauncher.cpp
+    src/core/WinProcessTree.h
+    src/core/WinProcessTree.cpp
 )
 target_include_directories(android_core PUBLIC src)
 target_link_libraries(android_core PUBLIC Qt6::Core)
@@ -337,7 +342,9 @@ target_include_directories(security_ui PUBLIC src)
 target_link_libraries(security_ui PUBLIC security_core Qt6::Widgets)
 
 # ---- Kiểm thử "khói" UI Security Gateway: cmake --build build --target security_ui_tests ----
-add_executable(security_ui_tests EXCLUDE_FROM_ALL tests/security_ui_tests.cpp src/core/Logger.cpp)
+# WebProtectionTab.cpp/MalwareScanTab.cpp gọi ToolManager::instance() (chặn "chạy lại với quyền Admin"
+# nếu tool khác đang bận không an toàn để hủy) - thêm ToolManager.cpp làm nguồn phụ, cùng lý do Logger.cpp.
+add_executable(security_ui_tests EXCLUDE_FROM_ALL tests/security_ui_tests.cpp src/core/Logger.cpp src/core/ToolManager.cpp)
 target_link_libraries(security_ui_tests PRIVATE security_ui)
 
 # ---- Lõi Downloader (tải trực tiếp HTTP + quét media trang web + yt-dlp cho video nền tảng) ----
@@ -356,6 +363,8 @@ add_library(downloader_core STATIC
     src/tools/downloader/engine/YtDlpInfoWorker.cpp
     src/tools/downloader/engine/YtDlpDownloadWorker.h
     src/tools/downloader/engine/YtDlpDownloadWorker.cpp
+    src/core/WinProcessTree.h
+    src/core/WinProcessTree.cpp
 )
 target_include_directories(downloader_core PUBLIC src)
 target_link_libraries(downloader_core PUBLIC Qt6::Core Qt6::Network)
@@ -373,13 +382,14 @@ add_library(update_core STATIC
     src/core/update/UpdateInstaller.cpp
 )
 target_include_directories(update_core PUBLIC src ${CMAKE_BINARY_DIR}/generated)
-target_link_libraries(update_core PUBLIC downloader_core Qt6::Core Qt6::Network)
+target_link_libraries(update_core PUBLIC downloader_core Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network)
 
 # ---- Kiểm thử lõi tự cập nhật: cmake --build build --target update_tests ----
-# update_core (khác các *_core thuần khác) có gọi Logger::instance() để ghi log kiểm tra cập nhật - thêm
-# thẳng Logger.cpp làm nguồn phụ, đúng mẫu đã dùng cho mọi *_ui_tests (Logger.cpp chỉ nằm trong SOURCES
-# chính của OneForAll, không phải một static lib riêng để link vào).
-add_executable(update_tests EXCLUDE_FROM_ALL tests/update_tests.cpp src/core/Logger.cpp)
+# update_core (khác các *_core thuần khác) có gọi Logger::instance() (ghi log kiểm tra cập nhật) VÀ
+# ToolManager::instance() (UpdateInstaller tự kiểm tra "có tool nào đang bận không an toàn để hủy" trước
+# khi âm thầm chạy trình cài đặt) - thêm thẳng cả 2 làm nguồn phụ, đúng mẫu đã dùng cho mọi *_ui_tests
+# (Logger.cpp/ToolManager.cpp chỉ nằm trong SOURCES chính của OneForAll, không phải static lib riêng).
+add_executable(update_tests EXCLUDE_FROM_ALL tests/update_tests.cpp src/core/Logger.cpp src/core/ToolManager.cpp)
 target_link_libraries(update_tests PRIVATE update_core)
 
 # ---- Giao diện Downloader ----

@@ -20,3 +20,9 @@ QWidget* VpnControlTool::createWindow()
         m_window = new VpnControlWindow();
     return m_window;
 }
+
+void VpnControlTool::stopBackgroundWorkForQuit()
+{
+    if (m_window)
+        static_cast<VpnControlWindow*>(m_window.data())->forceStopNow();
+}

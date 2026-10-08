@@ -1,7 +1,9 @@
 #include "PartitionTab.h"
 
+#include "DiskCleanupWindow.h"
 #include "DiskUiStyle.h"
 #include "engine/PartitionResizer.h"
+#include "core/ToolManager.h"
 
 #include <QApplication>
 #include <QDoubleSpinBox>
@@ -193,6 +195,19 @@ void PartitionTab::updateElevationBanner()
 
 void PartitionTab::onRelaunchElevatedClicked()
 {
+    // qApp->quit() ở cuối hàm này KHÔNG tự gọi closeEvent() của các cửa sổ tool KHÁC đang mở (xem
+    // MainWindow.cpp) - nếu CHÍNH tab này (hoặc một cửa sổ Disk Cleanup khác, dù hiện tại chỉ có một
+    // cửa sổ duy nhất mỗi loại) đang đổi kích thước phân vùng thật, buộc thoát ngay bây giờ sẽ
+    // TerminateProcess giữa chừng một thao tác không an toàn để hủy - CHẶN hẳn trước khi relaunch.
+    QString busyReason;
+    if (ToolManager::instance().anyToolWindowBusy(&busyReason))
+    {
+        QMessageBox::warning(this, "Không thể chạy lại lúc này",
+            "Đang có một thao tác không an toàn để hủy giữa chừng (" + busyReason + ") - chạy lại ứng "
+            "dụng lúc này có thể làm hỏng dữ liệu. Vui lòng đợi thao tác đó hoàn tất rồi thử lại.");
+        return;
+    }
+
     QString error;
     if (!PartitionManager::relaunchElevated(&error))
     {
@@ -338,6 +353,21 @@ void PartitionTab::onResizeClicked()
     const auto* p = selectedPartition();
     if (!p || !m_supportedRange.ok)
         return;
+
+    // Tránh đổi kích thước trong lúc một tab KHÁC (Tìm tệp lớn/Tìm tệp trùng lặp/Dọn dẹp) đang đọc/ghi
+    // trên cùng ổ đĩa - Resize-Partition cần di chuyển dữ liệu hệ thống tệp, I/O đồng thời từ chính ứng
+    // dụng này có thể làm chậm hoặc khiến lệnh resize thất bại giữa chừng (xem DiskCleanupWindow::
+    // isAnyOtherTabBusy()).
+    if (auto* win = qobject_cast<DiskCleanupWindow*>(window()))
+    {
+        if (win->isAnyOtherTabBusy(this))
+        {
+            QMessageBox::warning(this, "Đang có thao tác khác",
+                "Một tab khác trong Disk Cleanup đang quét/dọn dẹp - vui lòng đợi xong để tránh xung đột "
+                "trên cùng ổ đĩa trong lúc đổi kích thước, rồi thử lại.");
+            return;
+        }
+    }
 
     const qint64 newSizeBytes = static_cast<qint64>(m_newSizeSpin->value() * GB);
     const QString name = p->driveLetter.isEmpty() ? confirmToken(*p) : (p->driveLetter + ":");

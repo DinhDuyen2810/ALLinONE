@@ -2,6 +2,7 @@
 
 #include "SecurityUiStyle.h"
 #include "engine/HostsBlocklist.h"
+#include "core/ToolManager.h"
 #include "core/WinElevation.h"
 
 #include <QApplication>
@@ -120,6 +121,18 @@ void WebProtectionTab::updateElevationBanner()
 
 void WebProtectionTab::onRelaunchElevatedClicked()
 {
+    // qApp->quit() ở cuối hàm này KHÔNG tự gọi closeEvent() của các cửa sổ tool KHÁC đang mở (xem
+    // MainWindow.cpp) - nếu một cửa sổ khác (vd Disk Cleanup) đang đổi kích thước phân vùng thật, buộc
+    // thoát ngay bây giờ sẽ TerminateProcess giữa chừng một thao tác không an toàn để hủy - CHẶN trước.
+    QString busyReason;
+    if (ToolManager::instance().anyToolWindowBusy(&busyReason))
+    {
+        QMessageBox::warning(this, "Không thể chạy lại lúc này",
+            "Đang có một thao tác không an toàn để hủy giữa chừng (" + busyReason + ") - chạy lại ứng "
+            "dụng lúc này có thể làm hỏng dữ liệu. Vui lòng đợi thao tác đó hoàn tất rồi thử lại.");
+        return;
+    }
+
     QString error;
     if (!WinElevation::relaunchElevated(&error))
     {

@@ -1,5 +1,6 @@
 #include "LargeFilesTab.h"
 
+#include "DiskCleanupWindow.h"
 #include "DiskUiStyle.h"
 #include "engine/DiskSpaceInfo.h"
 #include "engine/RecycleBinOps.h"
@@ -162,6 +163,17 @@ void LargeFilesTab::onBrowseClicked()
     m_pathLabel->setText("Sẽ quét: " + m_customRoot);
 }
 
+bool LargeFilesTab::isScanningNow() const
+{
+    return m_scanner && m_scanner->isRunning();
+}
+
+void LargeFilesTab::stopScanIfRunning()
+{
+    if (m_scanner && m_scanner->isRunning())
+        m_scanner->requestStop();
+}
+
 void LargeFilesTab::onScanClicked()
 {
     const QString root = selectedPath();
@@ -169,6 +181,19 @@ void LargeFilesTab::onScanClicked()
     {
         QMessageBox::warning(this, "Tìm tệp lớn", "Không có thư mục nào để quét.");
         return;
+    }
+
+    // Tránh quét chồng chéo trên cùng ổ đĩa với một tab khác đang đổi kích thước/dọn dẹp/quét (vd tab
+    // Quản lý phân vùng đang shrink chính ổ đang quét đây) - xem DiskCleanupWindow::isAnyOtherTabBusy().
+    if (auto* win = qobject_cast<DiskCleanupWindow*>(window()))
+    {
+        if (win->isAnyOtherTabBusy(this))
+        {
+            QMessageBox::warning(this, "Đang có thao tác khác",
+                "Một tab khác trong Disk Cleanup đang quét/dọn dẹp/đổi kích thước phân vùng - vui lòng "
+                "đợi xong để tránh xung đột trên cùng ổ đĩa, rồi thử lại.");
+            return;
+        }
     }
 
     m_table->setRowCount(0);

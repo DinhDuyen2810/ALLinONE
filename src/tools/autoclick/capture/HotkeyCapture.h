@@ -3,6 +3,8 @@
 #include <QObject>
 #include <QString>
 
+class QTimer;
+
 /**
  * @brief Bắt một tổ hợp phím THẬT (vd Ctrl+Shift+S) qua hook bàn phím toàn cục tạm thời
  * (WH_KEYBOARD_LL) - cùng kiểu cơ chế đã dùng cho InputHook (Connect Together), chỉ cài đặt trong lúc
@@ -43,4 +45,11 @@ private:
     bool m_altDown{false};
     bool m_shiftDown{false};
     bool m_winDown{false};
+
+    // Tự hủy bắt sau một khoảng thời gian nếu người dùng không gõ gì - hook bàn phím toàn cục này NUỐT
+    // MỌI phím thật (kể cả của ứng dụng khác) trong lúc đang bắt, và có thể chặn luôn hook khác đã cài
+    // trước đó trong cùng tiến trình (vd InputHook của Connect Together - Windows gọi hook mới cài sau
+    // TRƯỚC hook cũ) nếu người dùng bấm "Bắt tổ hợp phím" rồi bỏ đó không gõ gì - không có cơ chế này
+    // trước đây, hook có thể treo VÔ THỜI HẠN.
+    QTimer* m_timeoutTimer{nullptr};
 };

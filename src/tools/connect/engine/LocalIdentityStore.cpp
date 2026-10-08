@@ -6,6 +6,7 @@
 #include <QHostInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSaveFile>
 #include <QUuid>
 
 LocalIdentityStore& LocalIdentityStore::instance()
@@ -51,7 +52,14 @@ void LocalIdentityStore::loadOrCreate()
     QJsonObject o;
     o["id"] = m_identity.id;
     o["machineName"] = m_identity.machineName;
-    QFile out(m_path);
-    if (out.open(QIODevice::WriteOnly | QIODevice::Truncate))
+
+    // QSaveFile: ghi ra tệp tạm rồi ĐỔI TÊN ĐÈ nguyên tử lên đích khi commit() thành công - danh tính
+    // (m_identity.id) được dùng trong bắt tay ghép đôi với mọi peer đã lưu; mất tệp này do crash giữa
+    // chừng đồng nghĩa phải ghép đôi lại TỪ ĐẦU với tất cả (khác QFile::open(Truncate) cũ).
+    QSaveFile out(m_path);
+    if (out.open(QIODevice::WriteOnly))
+    {
         out.write(QJsonDocument(o).toJson(QJsonDocument::Indented));
+        out.commit();
+    }
 }

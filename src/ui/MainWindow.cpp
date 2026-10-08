@@ -40,6 +40,16 @@ MainWindow::MainWindow(QWidget* parent)
     // là việc chạy ngầm, không phải thao tác người dùng tự yêu cầu.
     m_updateChecker = new UpdateChecker(this);
     connect(m_updateChecker, &UpdateChecker::updateAvailable, this, &MainWindow::onUpdateAvailable);
+
+    // Lưới an toàn CHUNG cho toàn bộ 9 tool: mỗi cửa sổ tool (AndroidControlWindow, DownloaderWindow...)
+    // là một đối tượng KHÔNG cha (new Xxx() không gắn parent, giữ qua QPointer trong từng *Tool, tái
+    // dùng ở lần mở sau) - khi ứng dụng thoát qua qApp->quit() GỌI TRỰC TIẾP (relaunch elevated ở Security/
+    // Disk Cleanup, hoặc bản thân nút "Cập nhật ngay" của UpdateInstaller phía dưới), Qt KHÔNG tự gọi
+    // closeEvent() của các cửa sổ tool KHÁC đang mở - việc dọn dẹp trong closeEvent() của chúng (nếu có)
+    // sẽ không bao giờ chạy, để lại tiến trình ngoài (adb.exe/yt-dlp.exe...) mồ côi NGẦM vô thời hạn,
+    // đúng lớp lỗi đã gặp với Android (xem ScrcpyLauncher.cpp). aboutToQuit() LUÔN phát ra đúng một lần
+    // trước khi vòng lặp sự kiện kết thúc, bất kể thoát theo đường nào.
+    connect(qApp, &QApplication::aboutToQuit, this, [] { ToolManager::instance().stopAllBackgroundWorkForQuit(); });
 }
 
 void MainWindow::registerTools()

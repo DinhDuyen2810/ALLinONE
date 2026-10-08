@@ -18,6 +18,9 @@ public:
     explicit DownloaderWindow(QWidget* parent = nullptr);
     ~DownloaderWindow() override;
 
+protected:
+    void closeEvent(QCloseEvent* event) override;
+
 private:
     void buildUi();
 

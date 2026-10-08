@@ -20,3 +20,11 @@ QWidget* WifiTool::createWindow()
         m_window = new WifiWindow();
     return m_window;
 }
+
+void WifiTool::stopBackgroundWorkForQuit()
+{
+    // close() gọi WifiWindow::closeEvent() - không hỏi xác nhận gì (chỉ dừng polling/đo tốc độ rồi
+    // accept()), an toàn gọi từ lưới an toàn aboutToQuit().
+    if (m_window)
+        m_window->close();
+}

@@ -3,6 +3,7 @@
 #include "tools/downloader/engine/FileDownloader.h"
 #include "tools/downloader/model/DownloadItem.h"
 #include "core/Logger.h"
+#include "core/ToolManager.h"
 
 #include <QDir>
 #include <QFile>
@@ -29,6 +30,21 @@ UpdateInstaller::UpdateInstaller(QObject* parent)
         }
 
         Logger::instance().info("Update", "Đã tải xong trình cài đặt bản mới: " + m_installerPath);
+
+        // Sắp chạy trình cài đặt rồi tự qApp->quit() (xem MainWindow.cpp, nối tín hiệu aboutToRestart
+        // bên dưới) - việc này KHÔNG tự gọi closeEvent() của các cửa sổ tool KHÁC đang mở. Nếu một cửa sổ
+        // khác (vd Disk Cleanup) đang đổi kích thước phân vùng thật, tự cập nhật ngay bây giờ sẽ
+        // TerminateProcess giữa chừng một thao tác không an toàn để hủy - hoãn lại, KHÔNG chạy installer.
+        QString busyReason;
+        if (ToolManager::instance().anyToolWindowBusy(&busyReason))
+        {
+            Logger::instance().info("Update", "Hoãn cài đặt bản mới - đang bận: " + busyReason);
+            emit downloadFailed(
+                "Đang có một thao tác không an toàn để hủy giữa chừng (" + busyReason +
+                ") - đã hoãn cài đặt bản mới. Vui lòng đợi thao tác đó xong rồi mở lại ứng dụng để tự "
+                "cập nhật.");
+            return;
+        }
 
         // /VERYSILENT: không hiện wizard. /SUPPRESSMSGBOXES: không hỏi gì giữa chừng. /NORESTART: không
         // tự khởi động lại MÁY (chỉ ứng dụng). /CLOSEAPPLICATIONS + /RESTARTAPPLICATIONS: nhờ Windows

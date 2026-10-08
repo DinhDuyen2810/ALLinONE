@@ -18,6 +18,15 @@ public:
     ITool* getTool(const QString& id) const;
     const std::vector<std::unique_ptr<ITool>>& getAllTools() const;
 
+    /// Gọi ITool::stopBackgroundWorkForQuit() trên TOÀN BỘ tool - lưới an toàn chung, nối vào
+    /// QApplication::aboutToQuit (xem MainWindow.cpp) để dọn công việc nền có nguy cơ mồ côi tiến trình
+    /// ngoài kể cả khi ứng dụng thoát qua qApp->quit() trực tiếp (không đi qua closeEvent() cửa sổ nào).
+    void stopAllBackgroundWorkForQuit();
+
+    /// Có tool nào (cửa sổ đang mở) đang thực hiện thao tác KHÔNG AN TOÀN để buộc dừng giữa chừng không -
+    /// xem ITool::isWindowBusy(). `reason` (nếu khác nullptr) được gán tên tool đầu tiên đang bận.
+    bool anyToolWindowBusy(QString* reason = nullptr) const;
+
 private:
     ToolManager() = default;
     ~ToolManager() = default;

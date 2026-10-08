@@ -31,6 +31,9 @@ private:
     QProcess* m_process{nullptr};
     QByteArray m_stdoutBuffer;
     QByteArray m_stderrAccum;
+    qint64 m_lastPid{0}; // PID của yt-dlp.exe đã khởi chạy gần nhất - cần lưu riêng để dọn tiến trình
+                         // ffmpeg.exe con còn sót sau khi buộc dừng (xem cancel()/destructor trong .cpp,
+                         // cùng lý do với ScrcpyLauncher::m_lastPid).
 };
 
 namespace YtDlpDownloadWorkerInternal

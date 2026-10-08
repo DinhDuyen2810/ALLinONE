@@ -26,6 +26,11 @@ public:
     /// SHFileOperationW xử lý cả lô), nên KHÔNG an toàn để đóng cửa sổ lúc này.
     bool isCleaningNow() const;
 
+    /// Đang quét HOẶC đang dọn dẹp - dùng để DiskCleanupWindow::isAnyOtherTabBusy() chặn tab khác bắt
+    /// đầu thao tác chồng chéo trên cùng ổ đĩa (rộng hơn isCleaningNow(): quét cũng tính "bận" dù an toàn
+    /// hủy giữa chừng, vì vẫn đang đọc đĩa).
+    bool isBusy() const;
+
 private slots:
     void onScanClicked();
     void onCleanClicked();

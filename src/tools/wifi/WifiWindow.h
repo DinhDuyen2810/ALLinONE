@@ -2,6 +2,7 @@
 
 #include <QWidget>
 
+class QCloseEvent;
 class QComboBox;
 class QLabel;
 class QTabWidget;
@@ -18,6 +19,9 @@ class WifiWindow : public QWidget
 public:
     explicit WifiWindow(QWidget* parent = nullptr);
     ~WifiWindow() override;
+
+protected:
+    void closeEvent(QCloseEvent* event) override;
 
 private slots:
     void onAdapterChanged(int index);

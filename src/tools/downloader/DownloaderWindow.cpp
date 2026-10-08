@@ -7,6 +7,7 @@
 #include "core/IconHelper.h"
 #include "core/Logger.h"
 
+#include <QCloseEvent>
 #include <QTabWidget>
 #include <QVBoxLayout>
 
@@ -37,6 +38,20 @@ DownloaderWindow::DownloaderWindow(QWidget* parent)
 }
 
 DownloaderWindow::~DownloaderWindow() = default;
+
+void DownloaderWindow::closeEvent(QCloseEvent* event)
+{
+    // QUAN TRỌNG: cửa sổ này được DownloaderTool giữ qua QPointer và TÁI DÙNG ở lần mở sau (không có
+    // WA_DeleteOnClose) - đóng cửa sổ (bấm X) mặc định CHỈ ẨN đi, KHÔNG hủy đối tượng. Nếu không tự dừng
+    // ở đây, một phiên tải video nền tảng đang chạy (yt-dlp.exe, có thể tự sinh ffmpeg.exe lúc ghép) sẽ
+    // tiếp tục chạy ngầm vô thời hạn dù người dùng tưởng đã "đóng" công cụ này - đúng lớp lỗi đã gặp với
+    // Android (xem AndroidControlWindow::closeEvent/ScrcpyLauncher.cpp). Tải trực tiếp/quét trang
+    // (FileDownloader, thuần QNetworkAccessManager) không cần xử lý ở đây - không có tiến trình ngoài nào
+    // có thể mồ côi, tự dừng sạch khi tiến trình ứng dụng thoát.
+    if (m_platformTab)
+        m_platformTab->cancelActiveDownload();
+    event->accept();
+}
 
 void DownloaderWindow::buildUi()
 {

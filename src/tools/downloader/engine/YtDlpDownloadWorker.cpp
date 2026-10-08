@@ -1,6 +1,7 @@
 #include "YtDlpDownloadWorker.h"
 
 #include "YtDlpController.h"
+#include "core/WinProcessTree.h"
 
 YtDlpDownloadWorker::YtDlpDownloadWorker(QObject* parent)
     : QObject(parent)
@@ -13,6 +14,13 @@ YtDlpDownloadWorker::~YtDlpDownloadWorker()
     {
         m_process->kill();
         m_process->waitForFinished(2000);
+
+        // yt-dlp.exe tự sinh ffmpeg.exe làm tiến trình CON lúc ghép video+âm thanh (xem buildArguments())
+        // - kill() ở trên chỉ đóng đúng một handle của chính yt-dlp.exe, Windows không đệ quy dừng luôn
+        // ffmpeg.exe con của nó (cùng lỗi đã gặp với scrcpy.exe/adb.exe, xem core/WinProcessTree.h). Nếu
+        // người dùng hủy/đóng đúng lúc đang ghép, ffmpeg.exe sẽ mồ côi và treo lại ngầm vô thời hạn.
+        if (m_lastPid > 0)
+            WinProcessTree::terminateDescendants(m_lastPid);
     }
 }
 
@@ -61,12 +69,21 @@ void YtDlpDownloadWorker::start(const QString& url, const QString& formatId, con
     });
 
     m_process->start();
+    m_lastPid = m_process->processId();
 }
 
 void YtDlpDownloadWorker::cancel()
 {
-    if (m_process && m_process->state() != QProcess::NotRunning)
-        m_process->kill(); // yt-dlp không xử lý gọn terminate() trên Windows - kill() trực tiếp an toàn vì chưa ghi tệp đích cuối cùng cho tới khi ghép xong
+    if (!m_process || m_process->state() == QProcess::NotRunning)
+        return;
+
+    m_process->kill(); // yt-dlp không xử lý gọn terminate() trên Windows - kill() trực tiếp an toàn vì chưa ghi tệp đích cuối cùng cho tới khi ghép xong
+
+    // Cũng dọn ffmpeg.exe con nếu đang hủy ngay lúc yt-dlp đang ghép video+âm thanh - xem destructor ở
+    // trên/core/WinProcessTree.h. KHÔNG chờ waitForFinished() ở đây (cancel() gọi từ luồng giao diện,
+    // không được chặn) - tiến trình chính sẽ tự báo xong qua tín hiệu finished() như bình thường.
+    if (m_lastPid > 0)
+        WinProcessTree::terminateDescendants(m_lastPid);
 }
 
 namespace YtDlpDownloadWorkerInternal

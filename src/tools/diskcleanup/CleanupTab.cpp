@@ -1,5 +1,6 @@
 #include "CleanupTab.h"
 
+#include "DiskCleanupWindow.h"
 #include "DiskUiStyle.h"
 #include "engine/CategoryRegistry.h"
 #include "engine/CleanupExecutor.h"
@@ -53,6 +54,11 @@ CleanupTab::~CleanupTab()
 bool CleanupTab::isCleaningNow() const
 {
     return m_executor && m_executor->isRunning();
+}
+
+bool CleanupTab::isBusy() const
+{
+    return m_scanning || isCleaningNow();
 }
 
 void CleanupTab::buildUi()
@@ -177,6 +183,19 @@ void CleanupTab::onScanClicked()
 {
     if (m_scanning)
         return;
+
+    // Tránh quét chồng chéo trên cùng ổ đĩa với một tab khác đang đổi kích thước/dọn dẹp/quét - xem
+    // DiskCleanupWindow::isAnyOtherTabBusy().
+    if (auto* win = qobject_cast<DiskCleanupWindow*>(window()))
+    {
+        if (win->isAnyOtherTabBusy(this))
+        {
+            QMessageBox::warning(this, "Đang có thao tác khác",
+                "Một tab khác trong Disk Cleanup đang quét/dọn dẹp/đổi kích thước phân vùng - vui lòng "
+                "đợi xong để tránh xung đột trên cùng ổ đĩa, rồi thử lại.");
+            return;
+        }
+    }
 
     const QList<CleanupCategory> all = CategoryRegistry::buildCategories(CleanupEnvironment::current());
     m_categories.clear();
@@ -313,6 +332,19 @@ void CleanupTab::updateSelectedSummary()
 
 void CleanupTab::onCleanClicked()
 {
+    // Tránh xóa chồng chéo trên cùng ổ đĩa với một tab khác đang đổi kích thước/dọn dẹp/quét - xem
+    // DiskCleanupWindow::isAnyOtherTabBusy().
+    if (auto* win = qobject_cast<DiskCleanupWindow*>(window()))
+    {
+        if (win->isAnyOtherTabBusy(this))
+        {
+            QMessageBox::warning(this, "Đang có thao tác khác",
+                "Một tab khác trong Disk Cleanup đang quét/dọn dẹp/đổi kích thước phân vùng - vui lòng "
+                "đợi xong để tránh xung đột trên cùng ổ đĩa, rồi thử lại.");
+            return;
+        }
+    }
+
     QStringList paths;
     QList<qint64> sizes;
     QStringList categoryNames;

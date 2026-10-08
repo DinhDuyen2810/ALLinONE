@@ -14,6 +14,12 @@ public:
     explicit VpnControlWindow(QWidget* parent = nullptr);
     ~VpnControlWindow() override;
 
+    /// Dừng NGAY phiên rasdial.exe đang kết nối/ngắt kết nối (nếu có), KHÔNG hỏi xác nhận - khác
+    /// closeEvent() bên dưới (có hộp thoại hỏi, dành cho người dùng chủ động bấm X). Gọi từ
+    /// VpnControlTool::stopBackgroundWorkForQuit() khi ứng dụng thoát qua qApp->quit() ở nơi khác -
+    /// hỏi xác nhận giữa một luồng thoát không thể hủy là vô nghĩa, chỉ cần dừng êm tiến trình ngoài.
+    void forceStopNow();
+
 protected:
     /// Chặn đóng cửa sổ (hỏi xác nhận) nếu đang kết nối/ngắt kết nối VPN - tránh hủy QThread đang thực
     /// sự chạy (hành vi KHÔNG XÁC ĐỊNH theo tài liệu Qt), vì bắt tay VPN có thể mất tới 45 giây.

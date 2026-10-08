@@ -22,6 +22,13 @@ public:
     explicit PlatformVideoTab(QWidget* parent = nullptr);
     ~PlatformVideoTab() override;
 
+    /// Dừng NGAY phiên tải yt-dlp.exe đang chạy (nếu có), không hỏi xác nhận - gọi từ
+    /// DownloaderWindow::closeEvent() (đóng cửa sổ) và DownloaderTool::stopBackgroundWorkForQuit() (ứng
+    /// dụng thoát qua qApp->quit() ở nơi khác) - nếu không tự dừng, yt-dlp.exe (và ffmpeg.exe nó tự sinh
+    /// lúc ghép video+âm thanh) sẽ mồ côi và chạy ngầm vô thời hạn, đúng lớp lỗi đã gặp với scrcpy.exe/
+    /// adb.exe (xem core/WinProcessTree.h).
+    void cancelActiveDownload();
+
 private slots:
     void onFetchInfoClicked();
     void onInfoFetched(bool ok, VideoInfo info, QString error);

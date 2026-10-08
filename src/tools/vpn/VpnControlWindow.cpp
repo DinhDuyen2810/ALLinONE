@@ -32,6 +32,12 @@ VpnControlWindow::VpnControlWindow(QWidget* parent)
 
 VpnControlWindow::~VpnControlWindow() = default;
 
+void VpnControlWindow::forceStopNow()
+{
+    if (m_vpnTab && m_vpnTab->isBusy())
+        m_vpnTab->cancelAndWait();
+}
+
 void VpnControlWindow::closeEvent(QCloseEvent* event)
 {
     if (m_vpnTab && m_vpnTab->isBusy())

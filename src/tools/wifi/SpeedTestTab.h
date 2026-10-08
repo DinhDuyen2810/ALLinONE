@@ -18,6 +18,11 @@ public:
 
     void setAdapter(const QString& guid);
 
+    /// Dừng NGAY phép đo đang chạy (nếu có), không hỏi xác nhận - gọi từ WifiWindow::closeEvent()/lưới
+    /// an toàn lúc ứng dụng thoát. Không có tiến trình ngoài nào để mồ côi (SpeedTestRunner thuần
+    /// QNetworkAccessManager), nhưng vẫn nên dừng hẳn thay vì để chạy ngầm vô ích khi cửa sổ bị ẩn.
+    void stopIfRunning();
+
 private slots:
     void onStartStopClicked();
 

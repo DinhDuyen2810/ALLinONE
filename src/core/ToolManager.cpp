@@ -35,6 +35,28 @@ const std::vector<std::unique_ptr<ITool>>& ToolManager::getAllTools() const
     return m_tools;
 }
 
+void ToolManager::stopAllBackgroundWorkForQuit()
+{
+    for (const auto& tool : m_tools)
+    {
+        if (tool)
+            tool->stopBackgroundWorkForQuit();
+    }
+}
+
+bool ToolManager::anyToolWindowBusy(QString* reason) const
+{
+    for (const auto& tool : m_tools)
+    {
+        if (tool && tool->isWindowBusy())
+        {
+            if (reason) *reason = tool->name();
+            return true;
+        }
+    }
+    return false;
+}
+
 PlaceholderTool::PlaceholderTool(QString id, QString name, QString description, QString iconPath)
     : m_id(std::move(id))
     , m_name(std::move(name))

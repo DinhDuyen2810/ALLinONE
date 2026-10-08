@@ -22,6 +22,14 @@ public:
     explicit DuplicateFilesTab(QWidget* parent = nullptr);
     ~DuplicateFilesTab() override;
 
+    /// Đang quét (QThread DuplicateFinder) - dùng để DiskCleanupWindow::isAnyOtherTabBusy() chặn tab
+    /// khác bắt đầu thao tác chồng chéo trên cùng ổ đĩa (an toàn hủy giữa chừng, khác resize/xóa thật).
+    bool isScanningNow() const;
+
+    /// Yêu cầu dừng quét đang chạy (nếu có), KHÔNG chờ (không chặn luồng giao diện) - gọi từ
+    /// DiskCleanupWindow::closeEvent() khi đóng cửa sổ (chỉ ẨN, không hủy tab - xem closeEvent()).
+    void stopScanIfRunning();
+
 private slots:
     void onBrowseClicked();
     void onScanClicked();

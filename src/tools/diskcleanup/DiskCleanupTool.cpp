@@ -20,3 +20,16 @@ QWidget* DiskCleanupTool::createWindow()
         m_window = new DiskCleanupWindow();
     return m_window;
 }
+
+void DiskCleanupTool::stopBackgroundWorkForQuit()
+{
+    if (m_window)
+        static_cast<DiskCleanupWindow*>(m_window.data())->stopSafelyCancellableWorkForQuit();
+}
+
+bool DiskCleanupTool::isWindowBusy() const
+{
+    if (!m_window)
+        return false;
+    return static_cast<DiskCleanupWindow*>(m_window.data())->hasUnsafeOperationInProgress();
+}

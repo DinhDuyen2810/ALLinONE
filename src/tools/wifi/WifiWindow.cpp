@@ -8,6 +8,7 @@
 #include "core/Logger.h"
 #include "engine/WlanController.h"
 
+#include <QCloseEvent>
 #include <QComboBox>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -57,6 +58,19 @@ WifiWindow::WifiWindow(QWidget* parent)
 }
 
 WifiWindow::~WifiWindow() = default;
+
+void WifiWindow::closeEvent(QCloseEvent* event)
+{
+    // QUAN TRỌNG: cửa sổ này được WifiTool giữ qua QPointer và TÁI DÙNG ở lần mở sau (không có
+    // WA_DeleteOnClose) - đóng cửa sổ (bấm X) mặc định CHỈ ẨN đi, KHÔNG hủy đối tượng. Không có tiến
+    // trình ngoài nào để mồ côi ở đây (quét WiFi/đo tốc độ đều thuần API Windows/QNetworkAccessManager
+    // trong tiến trình), nhưng polling + đo tốc độ vẫn tiếp tục chạy ngầm vô ích nếu không tự dừng.
+    if (m_networksTab)
+        m_networksTab->stopActivePolling();
+    if (m_speedTestTab)
+        m_speedTestTab->stopIfRunning();
+    event->accept();
+}
 
 void WifiWindow::buildUi()
 {

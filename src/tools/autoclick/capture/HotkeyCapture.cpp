@@ -3,12 +3,18 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+#include <QTimer>
+
 namespace
 {
 // SetWindowsHookEx yêu cầu con trỏ hàm thường (không phải con trỏ hàm thành viên) - chỉ chuyển tiếp sự
 // kiện tới MỘT instance đang bắt tại một thời điểm, đúng với cách dùng thực tế (chỉ một nút "Bắt tổ hợp
 // phím" có thể đang chờ tại một thời điểm trong ActionEditorWidget).
 HotkeyCapture* g_instance = nullptr;
+
+// 20 giây - đủ thời gian để người dùng bình tĩnh gõ tổ hợp mong muốn, đủ ngắn để không chặn hook bàn
+// phím khác (vd InputHook của Connect Together) quá lâu nếu người dùng bấm "Bắt tổ hợp phím" rồi quên.
+constexpr int kCaptureTimeoutMs = 20000;
 
 bool isModifierVk(int vkCode)
 {
@@ -42,6 +48,10 @@ LRESULT CALLBACK keyboardProc(int nCode, WPARAM wParam, LPARAM lParam)
 HotkeyCapture::HotkeyCapture(QObject* parent)
     : QObject(parent)
 {
+    m_timeoutTimer = new QTimer(this);
+    m_timeoutTimer->setSingleShot(true);
+    m_timeoutTimer->setInterval(kCaptureTimeoutMs);
+    connect(m_timeoutTimer, &QTimer::timeout, this, &HotkeyCapture::cancelCapture);
 }
 
 HotkeyCapture::~HotkeyCapture()
@@ -58,7 +68,11 @@ void HotkeyCapture::startCapture()
     g_instance = this;
     m_keyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, keyboardProc, GetModuleHandleW(nullptr), 0);
     if (!m_keyboardHook)
+    {
         g_instance = nullptr;
+        return;
+    }
+    m_timeoutTimer->start();
 }
 
 void HotkeyCapture::cancelCapture()
@@ -71,6 +85,7 @@ void HotkeyCapture::cancelCapture()
 
 void HotkeyCapture::uninstallHook()
 {
+    m_timeoutTimer->stop();
     if (m_keyboardHook)
     {
         UnhookWindowsHookEx(static_cast<HHOOK>(m_keyboardHook));

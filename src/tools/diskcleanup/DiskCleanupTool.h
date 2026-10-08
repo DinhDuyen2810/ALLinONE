@@ -17,6 +17,8 @@ public:
     bool isAvailable() const override { return true; }
 
     QWidget* createWindow() override;
+    void stopBackgroundWorkForQuit() override;
+    bool isWindowBusy() const override;
 
 private:
     QPointer<QWidget> m_window; // một cửa sổ duy nhất

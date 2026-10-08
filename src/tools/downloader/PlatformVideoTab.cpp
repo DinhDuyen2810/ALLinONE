@@ -31,6 +31,13 @@ PlatformVideoTab::~PlatformVideoTab()
 {
     if (m_infoWorker && m_infoWorker->isRunning())
         m_infoWorker->wait(5000);
+    cancelActiveDownload();
+}
+
+void PlatformVideoTab::cancelActiveDownload()
+{
+    if (m_downloadWorker)
+        m_downloadWorker->cancel();
 }
 
 void PlatformVideoTab::buildUi()
