@@ -18,7 +18,14 @@ permissions:
   contents: write # cần để tự tạo GitHub Release + đính kèm file khi đẩy tag
 
 env:
-  QT_VERSION: "6.11.1"
+  # 6.10.3 thay vì 6.11.1 (bản Qt thật đang dùng để dev cục bộ, xem build_app.bat) - đã xác nhận THẬT qua
+  # `aqt list-qt windows desktop --arch 6.11.1`: toàn bộ nhánh 6.11.x (cả 6.11.0 lẫn 6.11.1) hiện CHƯA có
+  # dữ liệu kiến trúc (Updates.xml) trên mạng lưới mirror mà aqtinstall (công cụ cài Qt dùng trong CI) có
+  # thể truy cập - bản quá mới, chưa kịp đồng bộ, không phải lỗi cấu hình. 6.10.3 vẫn dùng ĐÚNG cùng bộ
+  # công cụ MinGW 13.1.0 như máy dev cục bộ (xác nhận qua `aqt list-qt --long-modules 6.10.3 win64_mingw`)
+  # nên nhị phân sinh ra tương đương - không ảnh hưởng gì tới tính năng ứng dụng. Có thể nâng lên 6.11.1
+  # sau khi mirror đồng bộ xong (thử lại `aqt list-qt windows desktop --arch 6.11.1` định kỳ).
+  QT_VERSION: "6.10.3"
 
 jobs:
   build:
