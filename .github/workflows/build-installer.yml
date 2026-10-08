@@ -1,0 +1,97 @@
+name: Build installer
+
+# Build hoàn toàn TỰ ĐỘNG, không phụ thuộc máy cục bộ nào - chạy từ bản clone sạch của repo trên máy ảo
+# GitHub, ra đúng bản OneForAll_Setup.exe mà người dùng tải về (xem dist\OneForAll_Setup.exe sinh ra ở
+# bước cuối). Đây là điều kiện BẮT BUỘC của SignPath Foundation (chứng chỉ ký số EV miễn phí cho dự án
+# mã nguồn mở) - "quy trình build phải tự động hoàn toàn và tích hợp sẵn, đảm bảo file nhị phân sinh ra
+# TRỰC TIẾP từ mã nguồn đã commit vào repo" - xem PROJECT_OVERVIEW.md mục 4m.
+#
+# Chạy khi: đẩy tag "vX.Y.Z" (bản phát hành thật - tự tạo GitHub Release kèm file cài đặt), đẩy lên
+# nhánh main (chỉ để xác nhận build không vỡ, không tạo Release), hoặc tự bấm chạy tay (workflow_dispatch).
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write # cần để tự tạo GitHub Release + đính kèm file khi đẩy tag
+
+env:
+  QT_VERSION: "6.11.1"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cài Qt 6.11.1 (MinGW 64-bit)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: "win64_mingw"
+          tools: "tools_mingw1310,qt.tools.win64_mingw1310"
+          cache: true
+
+      - name: Cài Ninja
+        uses: seanmiddleditch/gha-setup-ninja@master
+
+      - name: Cài Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Tải + xác minh adb/scrcpy, yt-dlp, ffmpeg (vendor/ không commit vào Git - xem .gitignore/THIRD_PARTY.md)
+        shell: pwsh
+        run: ./scripts/ci_fetch_vendor.ps1
+
+      - name: Cấu hình CMake
+        shell: pwsh
+        run: cmake -B build -G Ninja -DCMAKE_PREFIX_PATH="$env:Qt6_DIR" -DCMAKE_BUILD_TYPE=Release
+
+      - name: Biên dịch
+        run: cmake --build build
+
+      - name: Đóng gói Qt DLLs (windeployqt)
+        shell: pwsh
+        run: & "$env:Qt6_DIR\bin\windeployqt.exe" "build\OneForAll.exe" --no-translations --compiler-runtime
+
+      - name: Dựng OneForAll_Release (đúng mẫu build_app.bat bước [4/6]-[6/6])
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "OneForAll_Release" | Out-Null
+          Copy-Item "build\OneForAll.exe" "OneForAll_Release\" -Force
+          Get-ChildItem "build\*.dll" -ErrorAction SilentlyContinue | Copy-Item -Destination "OneForAll_Release\" -Force
+          New-Item -ItemType Directory -Force -Path "OneForAll_Release\scrcpy" | Out-Null
+          Copy-Item "vendor\scrcpy\*" "OneForAll_Release\scrcpy\" -Recurse -Force
+          New-Item -ItemType Directory -Force -Path "OneForAll_Release\yt-dlp" | Out-Null
+          Copy-Item "vendor\yt-dlp\*" "OneForAll_Release\yt-dlp\" -Recurse -Force
+          foreach ($d in @("generic","iconengines","imageformats","multimedia","networkinformation","platforms","styles","tls")) {
+              if (Test-Path "build\$d") {
+                  New-Item -ItemType Directory -Force -Path "OneForAll_Release\$d" | Out-Null
+                  Copy-Item "build\$d\*" "OneForAll_Release\$d\" -Recurse -Force
+              }
+          }
+
+      - name: Biên dịch trình cài đặt (Inno Setup, đúng mẫu build_installer.bat)
+        shell: pwsh
+        run: |
+          $ISCC = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          $appver = (Get-Content "VERSION" -Raw).Trim()
+          Write-Host "Phien ban: $appver"
+          & $ISCC "/DMyAppVersion=$appver" "installer\OneForAll.iss"
+          if ($LASTEXITCODE -ne 0) { throw "ISCC that bai (ma $LASTEXITCODE)" }
+
+      - name: Tải lên artifact (xem lại được ở mọi lần chạy, kể cả không phải tag)
+        uses: actions/upload-artifact@v4
+        with:
+          name: OneForAll_Setup
+          path: dist/OneForAll_Setup.exe
+          retention-days: 90
+
+      - name: Tạo GitHub Release (chỉ khi đẩy tag "vX.Y.Z")
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/OneForAll_Setup.exe
+          generate_release_notes: true
