@@ -13,7 +13,7 @@
 ; file VERSION ở gốc dự án rồi truyền vào, đồng bộ với CMakeLists.txt/UpdateChecker (xem VERSION,
 ; src/core/update/Version.h.in). Giá trị dưới đây chỉ là mặc định khi build tay không truyền cờ này.
 #ifndef MyAppVersion
-  #define MyAppVersion "1.11.0"
+  #define MyAppVersion "1.15.0"
 #endif
 #define MyAppExeName "OneForAll.exe"
 #define MyAppURL "https://github.com/DinhDuyen2810/ALLinONE"

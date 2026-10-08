@@ -1,6 +1,6 @@
 # ONE FOR ALL - BỘ CÔNG CỤ ĐA NĂNG DESKTOP
 
-> **Phiên bản:** 1.12.0  
+> **Phiên bản:** 1.15.0  
 > **Ngôn ngữ:** C++20  
 > **GUI Framework:** Qt 6.11.1 (MinGW 64-bit)  
 > **Hệ điều hành:** Windows 10 / Windows 11  
