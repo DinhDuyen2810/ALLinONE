@@ -17,6 +17,13 @@ on:
 permissions:
   contents: write # cần để tự tạo GitHub Release + đính kèm file khi đẩy tag
 
+# Hủy lượt chạy CŨ hơn đang dở dang của CÙNG nhánh/tag khi có lượt chạy MỚI (vd đẩy nhiều commit sửa lỗi
+# liên tiếp trong lúc đang debug pipeline) - tránh tốn phút chạy CI vô ích cho kết quả sắp lỗi thời.
+# KHÔNG áp dụng cho tag (mỗi tag là một bản phát hành riêng biệt, không được hủy ngang).
+concurrency:
+  group: build-installer-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
 env:
   # 6.10.3 thay vì 6.11.1 (bản Qt thật đang dùng để dev cục bộ, xem build_app.bat) - đã xác nhận THẬT qua
   # `aqt list-qt windows desktop --arch 6.11.1`: toàn bộ nhánh 6.11.x (cả 6.11.0 lẫn 6.11.1) hiện CHƯA có
@@ -34,12 +41,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Cài Qt 6.11.1 (MinGW 64-bit)
+      - name: Cài Qt (MinGW 64-bit)
         uses: jurplel/install-qt-action@v4
         with:
           version: ${{ env.QT_VERSION }}
           arch: "win64_mingw"
           tools: "tools_mingw1310,qt.tools.win64_mingw1310"
+          # Qt6Multimedia + Qt6Svg là module RIÊNG (không nằm trong gói Qt6 cơ bản) - CMakeLists.txt dòng
+          # 24 (find_package(Qt6 REQUIRED COMPONENTS ... Multimedia Svg ...)) cần cả hai - thiếu dòng này
+          # khiến cấu hình CMake thất bại ngay (xác nhận THẬT qua log chạy lần đầu: "Could NOT find
+          # Qt6Multimedia").
+          modules: "qtmultimedia qtsvg"
           cache: true
 
       - name: Cài Ninja
