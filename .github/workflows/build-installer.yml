@@ -54,7 +54,8 @@ jobs:
 
       - name: Đóng gói Qt DLLs (windeployqt)
         shell: pwsh
-        run: & "$env:Qt6_DIR\bin\windeployqt.exe" "build\OneForAll.exe" --no-translations --compiler-runtime
+        run: |
+          & "$env:Qt6_DIR\bin\windeployqt.exe" "build\OneForAll.exe" --no-translations --compiler-runtime
 
       - name: Dựng OneForAll_Release (đúng mẫu build_app.bat bước [4/6]-[6/6])
         shell: pwsh
