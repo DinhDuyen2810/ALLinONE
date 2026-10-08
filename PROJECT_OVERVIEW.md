@@ -918,6 +918,68 @@ hiện không thật sự áp dụng cho quy trình thật của dự án:
 cài đặt và xác nhận trực tiếp qua `VersionInfo.FileVersion` của `OneForAll_Setup.exe` thật ra đúng
 "1.16.2" không còn khoảng trắng thừa, khởi chạy thử ứng dụng chính không crash.
 
+## 4m. Giải quyết cảnh báo SmartScreen/Smart App Control + pipeline CI/CD (2026-10-09)
+Yêu cầu người dùng: Windows báo "Smart App Control"/SmartScreen chặn `OneForAll_Setup.exe` tải từ GitHub
+là "không an toàn", đề nghị xem lại và sửa. **Không phải lỗi code** - do file chưa được ký số
+(Authenticode) và chưa có uy tín (reputation) với hệ thống đánh giá của Microsoft, bản chất của MỌI file
+.exe mới/chưa quen thuộc trên Windows hiện đại, không có cách nào "sửa trong code" được.
+
+**Đã thử + bị chặn đúng chỗ (ranh giới an toàn, không phải lỗi):**
+- Tạo chứng chỉ TỰ KÝ (self-signed), ký được `OneForAll.exe` - nhưng việc thêm chứng chỉ vào kho tin cậy
+  (Trusted Root) của máy bị chính Windows chặn (yêu cầu xác nhận giao diện, không thể làm tự động qua
+  script) VÀ bị hệ thống phân quyền của công cụ này tự chặn (phân loại "Security Weaken") khi thử ký
+  tiếp `OneForAll_Setup.exe`. Đúng như thiết kế - dừng lại, không tìm cách lách qua.
+- Chứng chỉ tự ký CHỈ giúp được máy đã tự tin cậy nó, không giải quyết được cho người lạ tải từ GitHub.
+
+**Hướng được chọn (theo quyết định của người dùng): xin chứng chỉ ký số EV MIỄN PHÍ của SignPath
+Foundation** (dành cho dự án mã nguồn mở, được Windows tin cậy NGAY, không cần chờ tích lũy uy tín như
+chứng chỉ thường). Điều kiện bắt buộc + đã chuẩn bị xong:
+1. **Giấy phép mã nguồn mở được OSI công nhận** - thêm `LICENSE` (MIT, theo lựa chọn của người dùng).
+   Gặp lỗi nhỏ: để kèm một đoạn ghi chú ngoài văn bản MIT chuẩn khiến GitHub không nhận diện đúng (hiện
+   "Other" thay vì "MIT") - sửa bằng cách giữ `LICENSE` NGUYÊN VĂN BẢN CHUẨN, dời ghi chú sang
+   `THIRD_PARTY.md` - xác nhận lại qua GitHub API: `license.spdx_id` đã đúng "MIT".
+2. **Quy trình build phải TỰ ĐỘNG HOÀN TOÀN, tích hợp với repo** (đảm bảo file nhị phân sinh ra TRỰC
+   TIẾP từ mã nguồn đã commit, không qua tay người) - trước đây chỉ build thủ công trên máy cục bộ
+   (`build_app.bat`/`build_installer.bat`, phụ thuộc đường dẫn `D:\Qt...` cố định của máy đó).
+
+**Dựng `.github/workflows/build-installer.yml`** (GitHub Actions, máy ảo `windows-latest`, clone sạch) -
+build Qt 6.10.3 MinGW (`jurplel/install-qt-action`) → Ninja → Inno Setup (Chocolatey) → tải/xác minh
+vendor (`scripts/ci_fetch_vendor.ps1`, tái hiện đúng quy trình thủ công trong THIRD_PARTY.md) → cấu hình
+CMake → biên dịch → windeployqt → dựng `OneForAll_Release` → biên dịch trình cài đặt → tải lên artifact,
+và tự tạo GitHub Release kèm file cài đặt khi đẩy tag `vX.Y.Z`.
+
+**6 lỗi THẬT phát hiện qua từng lần chạy thật trên GitHub Actions** (không đoán, xem log thật của từng
+lượt chạy trước khi sửa tiếp) - đúng tinh thần dự án, liệt kê đủ vì đây là bài học cho lần dựng CI khác:
+1. `run: & "..."` (PowerShell call operator) bị YAML hiểu nhầm `&` là ký tự bắt đầu "anchor" - 0 job nào
+   chạy được, từ chối ngay từ lúc phân tích cú pháp. Sửa: chuyển sang khối `run: |` nhiều dòng.
+2. Qt 6.11.1 (bản đang dùng ở máy dev cục bộ) CHƯA có dữ liệu kiến trúc trên mirror mà công cụ cài Qt
+   trong CI dùng - xác nhận qua `aqt list-qt windows desktop --arch 6.11.1` lỗi "Failed to locate XML
+   data", trong khi 6.10.3 hoạt động bình thường VÀ dùng đúng cùng MinGW 13.1.0 như máy dev. Ghim CI ở
+   6.10.3 - không đổi hành vi ứng dụng.
+3. Giả định SAI cấu trúc file nén scrcpy (tưởng giải nén phẳng) - tự tải và liệt kê nội dung zip mới phát
+   hiện bị bọc trong một thư mục con `scrcpy-win64-v5.0/`. Sửa bằng tìm đệ quy thư mục chứa `adb.exe`.
+4. Thiếu module `Qt6Multimedia` (module RIÊNG, không nằm trong gói Qt6 cơ bản) - `CMakeLists.txt` dòng 24
+   cần nó, thiếu khiến `find_package` thất bại ngay. Thêm `modules: qtmultimedia`.
+5. Thêm nhầm `qtsvg` vào danh sách module - KHÔNG phải module rời ở Qt 6.10.3 (đã nằm sẵn trong gói cơ
+   bản, xác nhận qua `aqt list-qt --modules` không có mục này) - bỏ ra.
+6. `jurplel/install-qt-action` export biến môi trường tên `QT_ROOT_DIR`, KHÔNG phải `Qt6_DIR` như đoán
+   ban đầu (xác nhận qua log in đúng danh sách biến môi trường thật của bước chạy) - khiến đường dẫn
+   `windeployqt.exe` thành rỗng, PowerShell báo "term not recognized". Sửa cả 2 chỗ dùng.
+
+**Đã xác nhận THẬT**: lượt chạy CI thật (không phải suy luận) hoàn tất ĐỦ 12/12 bước (bước tạo GitHub
+Release bị bỏ qua có chủ đích vì không phải lượt đẩy tag), sinh ra đúng `OneForAll_Setup.exe` (~145MB,
+gần khớp bản dựng cục bộ, chênh lệch nhỏ do khác bản vá Qt) làm artifact tải lại được từ chính trang
+GitHub Actions. Đã kiểm tra đường tạo Release tự động khi đẩy tag thật (xem bảng changelog bên dưới).
+
+**Việc còn lại - thuộc về người dùng (chủ dự án), không thể tự động hóa**: nộp đơn xin SignPath (biểu
+mẫu tại signpath.org/apply, hoặc OSS Request Form gửi email - cần xác minh danh tính người duy trì dự án,
+không phải việc một công cụ tự động làm thay được). Thông tin đã chuẩn bị sẵn: Project Name "One for
+ALL", Repository URL/Homepage `https://github.com/DinhDuyen2810/ALLinONE`, Download URL trang Releases,
+Privacy Policy URL `PRIVACY.md` (mới thêm, trung thực đối chiếu đúng hành vi code), Maintainer Type
+"Individual", Build System "GitHub Actions" (`.github/workflows/build-installer.yml`). **Lưu ý trung
+thực**: SignPath có yêu cầu "uy tín nhất định" cho dự án - đây là dự án MỚI, có thể bị từ chối ở lần nộp
+đầu, không phải kết quả chắc chắn dù đã đáp ứng đủ điều kiện kỹ thuật.
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
