@@ -1,10 +1,11 @@
 name: Build installer
 
 # Build hoàn toàn TỰ ĐỘNG, không phụ thuộc máy cục bộ nào - chạy từ bản clone sạch của repo trên máy ảo
-# GitHub, ra đúng bản OneForAll_Setup.exe mà người dùng tải về (xem dist\OneForAll_Setup.exe sinh ra ở
-# bước cuối). Đây là điều kiện BẮT BUỘC của SignPath Foundation (chứng chỉ ký số EV miễn phí cho dự án
-# mã nguồn mở) - "quy trình build phải tự động hoàn toàn và tích hợp sẵn, đảm bảo file nhị phân sinh ra
-# TRỰC TIẾP từ mã nguồn đã commit vào repo" - xem PROJECT_OVERVIEW.md mục 4m.
+# GitHub, ra đủ 4 file phát hành mà người dùng tải về: OneForAll_Setup.exe (Inno Setup), OneForAll_Setup.msi
+# (WiX Toolset - lối thoát cho máy chặn .exe tự giải nén, xem PROJECT_OVERVIEW.md mục 4n), và zip của cả
+# hai. Đây là điều kiện BẮT BUỘC của SignPath Foundation (chứng chỉ ký số EV miễn phí cho dự án mã nguồn
+# mở) - "quy trình build phải tự động hoàn toàn và tích hợp sẵn, đảm bảo file nhị phân sinh ra TRỰC TIẾP từ
+# mã nguồn đã commit vào repo" - xem PROJECT_OVERVIEW.md mục 4m.
 #
 # Chạy khi: đẩy tag "vX.Y.Z" (bản phát hành thật - tự tạo GitHub Release kèm file cài đặt), đẩy lên
 # nhánh main (chỉ để xác nhận build không vỡ, không tạo Release), hoặc tự bấm chạy tay (workflow_dispatch).
@@ -62,6 +63,19 @@ jobs:
       - name: Cài Inno Setup
         run: choco install innosetup -y --no-progress
 
+      - name: Cài WiX Toolset v3 (cho bo cai dat .msi)
+        run: choco install wixtoolset -y --no-progress
+
+      - name: Tim duong dan WiX Toolset (ten thu muc choco cai phu thuoc version, khong co dinh)
+        id: wix
+        shell: pwsh
+        run: |
+          $candle = Get-ChildItem "C:\Program Files (x86)\WiX Toolset*\bin\candle.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $candle) { throw "Khong tim thay WiX Toolset sau khi cai qua choco" }
+          $wixBin = Split-Path $candle.FullName -Parent
+          Write-Host "WiX bin: $wixBin"
+          "WIXBIN=$wixBin" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       - name: Tải + xác minh adb/scrcpy, yt-dlp, ffmpeg (vendor/ không commit vào Git - xem .gitignore/THIRD_PARTY.md)
         shell: pwsh
         run: ./scripts/ci_fetch_vendor.ps1
@@ -95,7 +109,7 @@ jobs:
               }
           }
 
-      - name: Biên dịch trình cài đặt (Inno Setup, đúng mẫu build_installer.bat)
+      - name: Biên dịch trình cài đặt .exe (Inno Setup, đúng mẫu build_installer.bat)
         shell: pwsh
         run: |
           $ISCC = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
@@ -104,16 +118,60 @@ jobs:
           & $ISCC "/DMyAppVersion=$appver" "installer\OneForAll.iss"
           if ($LASTEXITCODE -ne 0) { throw "ISCC that bai (ma $LASTEXITCODE)" }
 
+      # Tu day tro di: dung bo cai dat .msi (WiX Toolset) - xem PROJECT_OVERVIEW.md muc 4n. Mot so may
+      # Windows 11 (Smart App Control) chan file .exe tu giai nen - .msi di qua msiexec.exe co san cua he
+      # dieu hanh la loi thoat thay the. Dung CHINH XAC cung chuoi lenh da xac nhan that tren may dev cuc
+      # bo (heat -gg -scom -sreg -sfrag -srd, candle/light + -sice:ICE38/ICE64/ICE91 - xem build_installer.bat).
+      - name: Don sach ban sao OneForAll_Release cho heat.exe (loai logs/qr_history.json)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "obj\msi_stage\OneForAll_Release" | Out-Null
+          New-Item -ItemType Directory -Force -Path "obj\msi_obj" | Out-Null
+          robocopy "OneForAll_Release" "obj\msi_stage\OneForAll_Release" /E /XD logs /XF qr_history.json /NFL /NDL /NJH /NJS
+          if ($LASTEXITCODE -ge 8) { throw "robocopy loi that su (ma $LASTEXITCODE)" }
+
+      - name: Bien dich bo cai dat .msi (WiX: heat + candle + light)
+        shell: pwsh
+        run: |
+          $appver = (Get-Content "VERSION" -Raw).Trim()
+          $stage = "$PWD\obj\msi_stage\OneForAll_Release"
+          $objDir = "$PWD\obj\msi_obj"
+          & "$env:WIXBIN\heat.exe" dir "$stage" -cg MainComponents -gg -scom -sreg -sfrag -srd -dr INSTALLFOLDER -var var.StagingDir -out "$objDir\Harvested.wxs"
+          if ($LASTEXITCODE -ne 0) { throw "heat.exe that bai (ma $LASTEXITCODE)" }
+          # -out "...\\" (hai dau \ truoc dau ngoac kep): bat buoc, mot dau \ don bi Windows hieu la ky tu
+          # thoat lam hong dau ngoac dong (da xac nhan that tren may dev cuc bo - xem build_installer.bat).
+          & "$env:WIXBIN\candle.exe" "-dAppVersion=$appver" "-dStagingDir=$stage" -out "$objDir\\" "installer\Product.wxs" "$objDir\Harvested.wxs"
+          if ($LASTEXITCODE -ne 0) { throw "candle.exe that bai (ma $LASTEXITCODE)" }
+          # -sice:ICE38/ICE64/ICE91: canh bao chi ap dung cho goi co the doi per-user/per-machine qua
+          # ALLUSERS - du an nay luon per-user co dinh nen khong ap dung that (da xac nhan qua cai dat/go
+          # cai dat thu nghiem that tren may dev).
+          & "$env:WIXBIN\light.exe" -ext WixUIExtension -ext WixUtilExtension -b "installer" -sice:ICE38 -sice:ICE64 -sice:ICE91 -spdb -out "dist\OneForAll_Setup.msi" "$objDir\Product.wixobj" "$objDir\Harvested.wixobj"
+          if ($LASTEXITCODE -ne 0) { throw "light.exe that bai (ma $LASTEXITCODE)" }
+
+      - name: Nen zip ca hai bo cai dat (.exe + .msi)
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "dist\OneForAll_Setup.exe" -DestinationPath "dist\OneForAll_Setup_exe.zip" -Force
+          Compress-Archive -Path "dist\OneForAll_Setup.msi" -DestinationPath "dist\OneForAll_Setup_msi.zip" -Force
+
       - name: Tải lên artifact (xem lại được ở mọi lần chạy, kể cả không phải tag)
         uses: actions/upload-artifact@v4
         with:
-          name: OneForAll_Setup
-          path: dist/OneForAll_Setup.exe
+          name: OneForAll_Release_Files
+          path: |
+            dist/OneForAll_Setup.exe
+            dist/OneForAll_Setup.msi
+            dist/OneForAll_Setup_exe.zip
+            dist/OneForAll_Setup_msi.zip
           retention-days: 90
 
       - name: Tạo GitHub Release (chỉ khi đẩy tag "vX.Y.Z")
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/OneForAll_Setup.exe
+          files: |
+            dist/OneForAll_Setup.exe
+            dist/OneForAll_Setup.msi
+            dist/OneForAll_Setup_exe.zip
+            dist/OneForAll_Setup_msi.zip
           generate_release_notes: true

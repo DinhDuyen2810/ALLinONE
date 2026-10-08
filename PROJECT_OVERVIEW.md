@@ -980,6 +980,68 @@ Privacy Policy URL `PRIVACY.md` (mới thêm, trung thực đối chiếu đúng
 thực**: SignPath có yêu cầu "uy tín nhất định" cho dự án - đây là dự án MỚI, có thể bị từ chối ở lần nộp
 đầu, không phải kết quả chắc chắn dù đã đáp ứng đủ điều kiện kỹ thuật.
 
+## 4n. Bộ cài đặt .msi (WiX Toolset) + zip cho cả hai định dạng (2026-10-09)
+Yêu cầu người dùng: thêm quy tắc MỚI - từ nay MỖI LẦN sửa code đều phải tự dựng lại ĐỦ BỐN file phát hành
+(`OneForAll_Setup.exe`, `OneForAll_Setup.msi`, và zip của cả hai), không chỉ riêng `.exe` như trước. Lý do:
+người tải về chỉ double-click và chạy ngay, không tự chọn định dạng - cần có sẵn đủ lựa chọn mọi lúc, đặc
+biệt sau khi phát hiện một số máy Windows 11 (Smart App Control) chặn `.exe` tự giải nén (mục 4m) - `.msi`
+đi qua `msiexec.exe` có sẵn của hệ điều hành, là lối thoát thay thế cho người dùng gặp vướng mắc đó.
+
+**Công cụ: WiX Toolset v3.14.1** (`candle.exe`/`heat.exe`/`light.exe`, xem THIRD_PARTY.md) - không có
+trình cài đặt riêng, chỉ là file .exe giải nén từ zip chính thức. `heat.exe` tự "gặt" (harvest) toàn bộ
+cây thư mục `OneForAll_Release\` (đã dọn sạch `logs\`/`profiles\qr_history.json` qua một bản sao riêng ở
+`obj\msi_stage\`, cùng quy tắc Excludes như `OneForAll.iss`) thành `Harvested.wxs` lúc build - KHÔNG liệt
+kê tay từng file (quá nhiều: DLL Qt + plugin nhiều thư mục con + vendor/scrcpy + vendor/yt-dlp).
+
+**`installer/Product.wxs`** (mới): cài đặt per-user (`InstallScope="perUser"`, vào `LocalAppDataFolder`,
+KHÔNG cần quyền Administrator - đúng tinh thần `PrivilegesRequired=lowest` của bản .exe). Giao diện
+`WixUI_Minimal` (CỐ Ý không hỏi license, không hỏi chọn thư mục cài - chỉ Welcome → cài → Finish, đúng yêu
+cầu "double-click và chạy, không bắt tự setup gì cả", còn đơn giản hơn cả bản .exe).
+
+**3 lỗi THẬT gặp khi biên dịch lần đầu, đã xác nhận qua chạy thật candle.exe/light.exe (không đoán)**:
+1. `heat.exe` tự sinh `File/@Id` dạng BĂM (vd `filC8CB3AB6...`) thay vì giữ nguyên tên file, để tránh trùng
+   tên giữa các thư mục con plugin Qt khác nhau - không thể cậy vào `[#OneForAll.exe]` (cú pháp tham chiếu
+   theo File Id) để chỉ định exe chính cho nút "Khởi chạy sau khi cài"/shortcut. Sửa: dùng đường dẫn qua
+   thư mục đích `[INSTALLFOLDER]OneForAll.exe` (giống hệt cách Shortcut Target đã làm), không phụ thuộc Id.
+2. Chuỗi tiếng Việt có dấu trong `Product.wxs` (vd "Gỡ cài đặt", "Khởi chạy") khiến `light.exe` báo lỗi
+   LGHT0311 "characters not available in code page 1252" - ĐÃ THỬ đặt `Product/@Codepage`/
+   `Package/@SummaryCodepage` = 1258 (ANSI tiếng Việt) rồi cả 65001 (UTF-8, bị `candle.exe` từ chối thẳng
+   vì OLE Summary Information chỉ nhận codepage ANSI cổ điển) - KHÔNG ăn thua, lỗi vẫn y nguyên (xác nhận
+   qua thử nghiệm cô lập: xóa riêng TỪNG chuỗi có dấu thì lỗi của ĐÚNG chuỗi đó biến mất, bất kể codepage
+   khai báo gì - chứng tỏ nguyên nhân thật là xung đột codepage khi `light.exe` gộp section của Product.wxs
+   với các thư viện .wixlib có sẵn của WiX (`WixUIExtension`/`WixUtilExtension`, biên dịch sẵn ở 1252),
+   không phải do khai báo sai). Quyết định: bỏ dấu các chuỗi hiển thị TRONG LÚC CÀI ĐẶT (không phải giao
+   diện ứng dụng - Qt vẫn Unicode đầy đủ), đơn giản/chắc chắn hơn dùng cơ chế `.wxl` đa ngôn ngữ phức tạp.
+3. `light.exe` báo lỗi (không phải cảnh báo) ICE38/ICE64/ICE91 cho MỌI component do `heat.exe` sinh ra -
+   đều là cảnh báo "sai" CHỈ áp dụng cho gói cài có thể đổi giữa per-user/per-machine qua thuộc tính
+   ALLUSERS; dự án này LUÔN LUÔN per-user cố định, không bao giờ đổi, nên không áp dụng thật. Sửa: thêm
+   `-sice:ICE38 -sice:ICE64 -sice:ICE91` vào `light.exe`.
+
+**Đã xác nhận THẬT toàn bộ vòng đời cài đặt/gỡ cài đặt bằng .msi** (không chỉ biên dịch thành công, giống
+hệt kỷ luật đã áp dụng cho bản .exe ở mục 5b):
+- `msiexec /i ... /qn` im lặng → exit code 0, đủ 52 file đúng vị trí `%LOCALAPPDATA%\One for ALL\`,
+  shortcut Start Menu + Desktop đúng, khóa registry `HKCU\Software\OneForAll` đúng.
+- Khởi chạy THẬT `OneForAll.exe` vừa cài từ MSI - tiến trình chạy được, dừng được bình thường.
+- `msiexec /x ... /qn` im lặng → exit code 0, xác nhận xóa sạch: thư mục cài đặt, CẢ HAI shortcut, khóa
+  registry - không còn gì sót lại (dù ICE64 cảnh báo nguy cơ rác thư mục rỗng, thực tế MSI vẫn tự dọn sạch).
+
+**`build_installer.bat` mở rộng thành 5 bước** (một lệnh duy nhất ra đủ 4 file, đúng yêu cầu "tự động"):
+dựng `OneForAll_Release\` mới nhất → biên dịch `.exe` (Inno Setup, như cũ) → dọn bản sao sạch cho
+`heat.exe` → biên dịch `.msi` (heat + candle + light) → nén zip cả hai (`OneForAll_Setup_exe.zip`,
+`OneForAll_Setup_msi.zip` qua `Compress-Archive`). Gặp 1 lỗi cú pháp dòng lệnh Windows kinh điển khi viết
+script: `-out "...\"` (một dấu `\` ngay trước dấu `"` đóng) bị Windows hiểu `\"` là ký tự `"` thoát, làm
+hỏng toàn bộ chuỗi tham số - sửa bằng `-out "...\\"` (NHÂN ĐÔI dấu `\` cuối, quy tắc phân tích dòng lệnh
+chuẩn của Windows, không phải lỗi riêng của WiX). File `.wixpdb` (debug symbols, không cần cho bản phát
+hành) bị tắt bằng cờ `-spdb` của `light.exe`.
+
+Tìm WiX qua `WIX_TOOLSET_BIN` (biến môi trường tùy chọn) → `%LOCALAPPDATA%\WixToolset` (quy ước khuyến
+dùng) → `D:\WixToolset` (vị trí hiện tại trên máy dev) - báo lỗi rõ ràng kèm link tải nếu không thấy ở cả
+ba. Thư mục `obj\` (nơi `heat.exe`/`candle.exe` ghi file trung gian) thêm vào `.gitignore`, không commit.
+
+**Việc còn lại**: cập nhật `.github/workflows/build-installer.yml` để CI cũng tự dựng đủ 4 file (cài WiX
+qua Chocolatey, lặp lại đúng chuỗi lệnh đã xác nhận ở trên) và đính kèm cả 4 vào GitHub Release khi đẩy tag
+- xem mục 5c để biết quy trình phát hành đã cập nhật.
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
@@ -1029,8 +1091,11 @@ hiển thị trong `MainWindow` lúc chạy, nhúng vào exe qua tài nguyên Wi
 
 **Build:** `build_installer.bat` (tự gọi `build_app.bat /nopause` để dựng `OneForAll_Release\` mới nhất
 rồi biên dịch `installer/OneForAll.iss` bằng `ISCC.exe`) → `dist\OneForAll_Setup.exe` (một file duy
-nhất, ~140MB do có ffmpeg/yt-dlp đóng gói sẵn, nén LZMA2 ultra). Thư mục `dist/` không được commit (xem
-`.gitignore`), giống `build/`/`OneForAll_Release/`/`vendor/`.
+nhất, ~140MB do có ffmpeg/yt-dlp đóng gói sẵn, nén LZMA2 ultra). Cùng một lệnh này giờ cũng tự dựng LUÔN
+`dist\OneForAll_Setup.msi` (WiX Toolset, xem mục 4n) và zip của cả hai
+(`OneForAll_Setup_exe.zip`/`OneForAll_Setup_msi.zip`) - đủ 4 file mỗi lần chạy. Thư mục `dist/` và `obj/`
+(file trung gian của WiX) không được commit (xem `.gitignore`), giống `build/`/`OneForAll_Release/`/
+`vendor/`.
 
 ### 5c. Quy trình phát hành bản mới (để `UpdateChecker` - mục 4k - nhận ra)
 Các bước **thủ công trên GitHub** người phát hành (chủ dự án) phải tự làm mỗi lần muốn người dùng đã cài
@@ -1038,16 +1103,17 @@ Các bước **thủ công trên GitHub** người phát hành (chủ dự án) 
 1. Sửa file `VERSION` ở gốc dự án thành số phiên bản mới (vd `1.16.0`) - đây là nguồn DUY NHẤT, không sửa
    version ở nơi khác.
 2. Cập nhật changelog `PROJECT_OVERVIEW.md`/`README.md` như thường lệ, commit.
-3. Chạy `build_installer.bat` → ra `dist\OneForAll_Setup.exe` (đã tự mang đúng version mới nhờ bước 1).
+3. Chạy `build_installer.bat` → ra ĐỦ 4 file trong `dist\` (đã tự mang đúng version mới nhờ bước 1):
+   `OneForAll_Setup.exe`, `OneForAll_Setup.msi`, `OneForAll_Setup_exe.zip`, `OneForAll_Setup_msi.zip`.
 4. Gắn tag Git ĐÚNG KHỚP version (bắt buộc có tiền tố "v", `UpdateChecker` tự bỏ tiền tố này khi so sánh):
    ```
    git tag v1.16.0
    git push origin v1.16.0
    ```
 5. Tạo GitHub Release cho tag vừa đẩy (trang GitHub của repo → Releases → "Draft a new release" → chọn
-   tag `v1.16.0` → đính kèm file `dist\OneForAll_Setup.exe` làm asset → Publish). Có thể làm qua
-   `gh release create v1.16.0 dist/OneForAll_Setup.exe --notes "..."` nếu đã cài GitHub CLI, nhưng web UI
-   không cần cài gì thêm.
+   tag `v1.16.0` → đính kèm CẢ 4 FILE trong `dist\` làm asset → Publish). Có thể làm qua
+   `gh release create v1.16.0 dist/OneForAll_Setup.exe dist/OneForAll_Setup.msi dist/OneForAll_Setup_exe.zip dist/OneForAll_Setup_msi.zip --notes "..."`
+   nếu đã cài GitHub CLI, nhưng web UI không cần cài gì thêm.
 6. Xong - lần mở ứng dụng tiếp theo trên MỌI máy đã cài bản có bộ tự cập nhật (v1.15.0 trở đi), app sẽ tự
    hỏi thấy v1.16.0 mới hơn, hiện hộp thoại mời cập nhật.
 

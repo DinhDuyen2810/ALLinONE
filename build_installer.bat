@@ -8,8 +8,11 @@ set "SKIP_PAUSE="
 if /i "%~1"=="/nopause" set "SKIP_PAUSE=1"
 
 echo ===================================================
-echo   DONG GOI BO CAI DAT ONE FOR ALL (setup.exe)
+echo   DONG GOI BO CAI DAT ONE FOR ALL (setup.exe + setup.msi + zip)
 echo ===================================================
+rem Tu ban ghi nho du an (2026-10-09): MOI lan sua code deu phai dung lai CA BON file phat hanh - setup.exe,
+rem setup.msi, VA zip cua ca hai - khong chi rieng setup.exe nhu truoc. Ly do: nguoi tai ve chi double-click
+rem chay ngay, khong tu chon dinh dang - can co san ca 4 moi luc (xem PROJECT_OVERVIEW.md muc 4n/4o).
 
 set "ISCC=%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe"
 if not exist "%ISCC%" (
@@ -19,13 +22,29 @@ if not exist "%ISCC%" (
     exit /b 1
 )
 
+rem Tim WiX Toolset (candle.exe/heat.exe/light.exe) - khong phai trinh cai dat, chi la file .exe giai nen
+rem tu zip chinh thuc cua wixtoolset/wix3 (xem THIRD_PARTY.md). Uu tien WIX_TOOLSET_BIN (bien moi truong,
+rem cho may khac tu dat duong dan rieng), roi %LOCALAPPDATA%\WixToolset (quy uoc khuyen dung cho may moi),
+rem roi D:\WixToolset (vi tri da dung tren may dev hien tai).
+set "WIXBIN="
+if defined WIX_TOOLSET_BIN if exist "%WIX_TOOLSET_BIN%\candle.exe" set "WIXBIN=%WIX_TOOLSET_BIN%"
+if not defined WIXBIN if exist "%LOCALAPPDATA%\WixToolset\candle.exe" set "WIXBIN=%LOCALAPPDATA%\WixToolset"
+if not defined WIXBIN if exist "D:\WixToolset\candle.exe" set "WIXBIN=D:\WixToolset"
+if not defined WIXBIN (
+    echo [LOI] Khong tim thay WiX Toolset ^(candle.exe/heat.exe/light.exe^).
+    echo Tai ban nhi phan WiX Toolset v3 tai: https://github.com/wixtoolset/wix3/releases
+    echo Giai nen vao %%LOCALAPPDATA%%\WixToolset ^(hoac dat bien WIX_TOOLSET_BIN tro toi thu muc chua candle.exe^).
+    if not defined SKIP_PAUSE pause
+    exit /b 1
+)
+
 echo.
-echo [1/2] Dung lai OneForAll_Release\ moi nhat (goi build_app.bat)...
+echo [1/5] Dung lai OneForAll_Release\ moi nhat (goi build_app.bat)...
 call "%~dp0build_app.bat" /nopause
 if errorlevel 1 goto error
 
 echo.
-echo [2/2] Bien dich bo cai dat bang Inno Setup...
+echo [2/5] Bien dich bo cai dat .exe bang Inno Setup...
 rem Doc so phien ban tu file VERSION o goc du an (nguon DUY NHAT - xem CMakeLists.txt) roi truyen vao
 rem Inno Setup qua /D, de AppVersion trong trinh cai dat luon khop voi APP_VERSION ben trong exe.
 set "APPVER="
@@ -48,9 +67,50 @@ echo   Phien ban: %APPVER%
 if errorlevel 1 goto error
 
 echo.
+echo [3/5] Don sach OneForAll_Release\ de "gat" (heat.exe) dung bo cai dat .msi...
+rem Can mot ban sao RIENG, da loai logs\ va profiles\qr_history.json (giong het quy tac Excludes cua
+rem OneForAll.iss) - vi heat.exe khong co co che loai tru theo mau nhu Inno Setup, phai loc truoc roi moi
+rem "gat" thu muc. exit code 1 cua robocopy la BINH THUONG (nghia la da copy file thanh cong), khong phai
+rem loi - chi >=8 moi la loi that su.
+set "MSI_STAGE=%~dp0obj\msi_stage\OneForAll_Release"
+set "MSI_OBJ=%~dp0obj\msi_obj"
+if exist "%~dp0obj" rmdir /s /q "%~dp0obj"
+mkdir "%MSI_STAGE%" 2>nul
+mkdir "%MSI_OBJ%" 2>nul
+robocopy "%~dp0OneForAll_Release" "%MSI_STAGE%" /E /XD logs /XF qr_history.json /NFL /NDL /NJH /NJS >nul
+if errorlevel 8 goto error
+
+echo.
+echo [4/5] Bien dich bo cai dat .msi bang WiX Toolset (heat + candle + light)...
+"%WIXBIN%\heat.exe" dir "%MSI_STAGE%" -cg MainComponents -gg -scom -sreg -sfrag -srd -dr INSTALLFOLDER -var var.StagingDir -out "%MSI_OBJ%\Harvested.wxs"
+if errorlevel 1 goto error
+rem -out "...\\" (hai dau \ truoc dau ngoac kep dong): bat buoc vi mot dau \ don truoc " bi Windows hieu
+rem la ky tu thoat lam hong dau ngoac (da xac nhan that: candle.exe bao loi CNDL0117 "contains a literal
+rem quote character" khi chi co mot dau \ - day la quy tac phan tich dong lenh chuan cua Windows, khong
+rem phai loi cua candle.exe).
+"%WIXBIN%\candle.exe" "-dAppVersion=%APPVER%" "-dStagingDir=%MSI_STAGE%" -out "%MSI_OBJ%\\" "%~dp0installer\Product.wxs" "%MSI_OBJ%\Harvested.wxs"
+if errorlevel 1 goto error
+rem -sice:ICE38/ICE64/ICE91: ca ba deu la canh bao "sai" CHI VOI goi cai dat co the chuyen doi per-user/
+rem per-machine qua thuoc tinh ALLUSERS - du an nay LUON LUON cai dat kieu per-user (InstallScope="perUser"
+rem co dinh trong Product.wxs, khong bao gio doi), nen ca ba khong ap dung that su (da xac nhan that: cai
+rem dat + go cai dat thu nghiem bang msiexec /i va /x deu don sach hoan toan, khong con rac).
+"%WIXBIN%\light.exe" -ext WixUIExtension -ext WixUtilExtension -b "%~dp0installer" -sice:ICE38 -sice:ICE64 -sice:ICE91 -spdb -out "%~dp0dist\OneForAll_Setup.msi" "%MSI_OBJ%\Product.wixobj" "%MSI_OBJ%\Harvested.wixobj"
+if errorlevel 1 goto error
+
+echo.
+echo [5/5] Nen zip ca hai bo cai dat (cho ai muon tai dang .zip thay vi .exe/.msi truc tiep)...
+powershell -NoProfile -Command "Compress-Archive -Path '%~dp0dist\OneForAll_Setup.exe' -DestinationPath '%~dp0dist\OneForAll_Setup_exe.zip' -Force"
+if errorlevel 1 goto error
+powershell -NoProfile -Command "Compress-Archive -Path '%~dp0dist\OneForAll_Setup.msi' -DestinationPath '%~dp0dist\OneForAll_Setup_msi.zip' -Force"
+if errorlevel 1 goto error
+
+echo.
 echo ===================================================
-echo   DONG GOI THANH CONG!
-echo   Bo cai dat: dist\OneForAll_Setup.exe
+echo   DONG GOI THANH CONG! (ca 4 file trong dist\)
+echo   - OneForAll_Setup.exe       (trinh cai dat, Inno Setup)
+echo   - OneForAll_Setup.msi       (trinh cai dat, Windows Installer)
+echo   - OneForAll_Setup_exe.zip   (zip cua file .exe)
+echo   - OneForAll_Setup_msi.zip   (zip cua file .msi)
 echo ===================================================
 if not defined SKIP_PAUSE pause
 exit /b 0

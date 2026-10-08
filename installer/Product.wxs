@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Nguồn WiX cho bản cài đặt .msi của "One for ALL" - song song với installer/OneForAll.iss (Inno Setup,
+  sinh ra .exe). Lý do có CẢ HAI định dạng: một số máy/chính sách Windows (Smart App Control) đặc biệt để
+  ý hành vi "tự giải nén ra thư mục tạm rồi chạy" vốn dĩ của MỌI trình cài đặt kiểu Inno Setup/NSIS - MSI
+  đi qua dịch vụ Windows Installer có sẵn của hệ điều hành (msiexec.exe) thay vì tự giải nén, nên là một
+  lựa chọn thay thế cho người dùng nào gặp vướng mắc với bản .exe (xem PROJECT_OVERVIEW.md mục 4n).
+
+  Danh sách file KHÔNG liệt kê tay ở đây (quá nhiều - DLL Qt + plugin nhiều thư mục con + vendor/scrcpy +
+  vendor/yt-dlp, thay đổi tùy máy build có sẵn vendor/ hay không) - build_msi.bat tự dùng heat.exe của
+  WiX để "gặt" (harvest) toàn bộ cây thư mục OneForAll_Release (bản đã dọn sạch logs\/qr_history.json,
+  đúng quy tắc Excludes như installer/OneForAll.iss) thành Harvested.wxs lúc build, include() vào đây.
+
+  Cài đặt THEO NGƯỜI DÙNG (per-user, InstallScope="perUser") - không cần quyền Administrator, đúng tinh
+  thần PrivilegesRequired=lowest đã dùng cho bản .exe.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <!-- ProductVersion/ProductCode: build_msi.bat truyền qua -dAppVersion, đọc từ file VERSION ở gốc dự án
+       (nguồn DUY NHẤT cho version - xem CMakeLists.txt/installer/OneForAll.iss cùng đọc file này). -->
+  <?ifndef AppVersion?>
+    <?define AppVersion = "0.0.0" ?>
+  <?endif?>
+
+  <Product Id="*"
+           Name="One for ALL"
+           Language="1033"
+           Version="$(var.AppVersion)"
+           Manufacturer="DinhDuyen2810"
+           UpgradeCode="7B6F1A2E-9C4D-4E8A-BF3C-1D2E3F4A5B6C">
+
+    <Package InstallerVersion="500"
+             Compressed="yes"
+             InstallScope="perUser"
+             Description="One for ALL - Windows desktop utility suite"
+             Manufacturer="DinhDuyen2810" />
+
+    <!-- Nâng cấp tại chỗ khi cài bản mới đè bản cũ (cùng UpgradeCode, khác version) - gỡ bản cũ trước
+         khi cài bản mới, tránh file trùng/rác tích tụ qua nhiều lần cập nhật. -->
+    <!-- Chữ KHÔNG dấu cố ý (áp dụng cho mọi chuỗi hiển thị trong file .wxs này, không riêng dòng này) -
+         đã xác nhận thật: light.exe (bản MSI linker của WiX v3.14) báo lỗi LGHT0311 "characters not
+         available in code page 1252" với bất kỳ chuỗi có dấu tiếng Việt nào ở đây, KỂ CẢ sau khi đặt
+         Product/@Codepage + Package/@SummaryCodepage = 1258 (đã thử, không ăn thua - xem lại lịch sử nếu
+         cần). Nguyên nhân: các chuỗi này cuối cùng bị gộp chung bảng với WixUIExtension/WixUtilExtension
+         (thư viện .wixlib có sẵn của WiX, biên dịch ở codepage 1252 mặc định) khi light.exe link, không
+         có cách nào ép toàn bộ database cuối cùng sang 1258 chỉ bằng thuộc tính Codepage. Vì đây chỉ là
+         chữ hiển thị TRONG LÚC CÀI ĐẶT (không phải giao diện ứng dụng - ứng dụng Qt vẫn Unicode đầy đủ),
+         chấp nhận bỏ dấu ở đây cho đơn giản/chắc chắn thay vì dùng cơ chế .wxl phức tạp hơn. -->
+    <MajorUpgrade DowngradeErrorMessage="Da co mot ban moi hon cua One for ALL duoc cai tren may nay." />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="AppIcon.ico" SourceFile="..\assets\app_icon.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon.ico" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/DinhDuyen2810/ALLinONE" />
+    <Property Id="ARPNOREPAIR" Value="1" />
+
+    <!-- Cài vào LocalAppDataFolder (per-user, giống {autopf} của bản .exe khi không có quyền Admin) -
+         KHÔNG dùng ProgramFilesFolder vì đó luôn cần quyền Administrator cho MSI, khác .exe linh hoạt
+         hơn qua PrivilegesRequiredOverridesAllowed. -->
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="LocalAppDataFolder">
+        <Directory Id="INSTALLFOLDER" Name="One for ALL" />
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ApplicationProgramsFolder" Name="One for ALL" />
+      </Directory>
+      <Directory Id="DesktopFolder" />
+    </Directory>
+
+    <DirectoryRef Id="ApplicationProgramsFolder">
+      <Component Id="ApplicationShortcut" Guid="4A1B2C3D-5E6F-4789-9ABC-DEF012345678">
+        <Shortcut Id="StartMenuShortcut"
+                  Name="One for ALL"
+                  Description="One for ALL - Windows desktop utility suite"
+                  Target="[INSTALLFOLDER]OneForAll.exe"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="AppIcon.ico" />
+        <Shortcut Id="UninstallShortcut"
+                  Name="Go cai dat One for ALL"
+                  Target="[System64Folder]msiexec.exe"
+                  Arguments="/x [ProductCode]" />
+        <RemoveFolder Id="RemoveApplicationProgramsFolder" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\OneForAll" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="DesktopFolder">
+      <Component Id="DesktopShortcut" Guid="8D4E5F6A-7B8C-49DE-AF01-234567890ABC">
+        <Shortcut Id="DesktopShortcutIcon"
+                  Name="One for ALL"
+                  Description="One for ALL - Windows desktop utility suite"
+                  Target="[INSTALLFOLDER]OneForAll.exe"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="AppIcon.ico" />
+        <RegistryValue Root="HKCU" Key="Software\OneForAll" Name="desktop_shortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <!-- ComponentGroup "MainComponents" được sinh TỰ ĐỘNG bởi heat.exe vào Harvested.wxs lúc build (xem
+         build_msi.bat) - chứa toàn bộ file thật của OneForAll_Release (exe/DLL/plugin/vendor). -->
+    <Feature Id="MainApplication" Title="One for ALL" Level="1">
+      <ComponentGroupRef Id="MainComponents" />
+      <ComponentRef Id="ApplicationShortcut" />
+      <ComponentRef Id="DesktopShortcut" />
+    </Feature>
+
+    <!-- WixUI_Minimal: CỐ Ý không hỏi license, không hỏi chọn thư mục - đúng yêu cầu người dùng "chỉ cần
+         double-click và chạy, không bắt họ tự setup gì cả". Chỉ còn: Welcome -> cài -> Finish (có ô tick
+         tùy chọn tự mở ứng dụng, giống [Run] postinstall skipifsilent của bản .exe). Cài cố định vào
+         LocalAppDataFolder\One for ALL - không cần hỏi vì luôn là vị trí per-user hợp lệ sẵn, không cần
+         quyền Administrator. -->
+    <UIRef Id="WixUI_Minimal" />
+    <UIRef Id="WixUI_ErrorProgressText" />
+
+    <!-- Dùng đường dẫn qua thư mục đích (giống hệt Target của Shortcut ở trên) thay vì cú pháp [#FileId] -
+         heat.exe tự sinh File/@Id dạng băm (vd "filC8CB...") để tránh trùng tên file giữa các thư mục con
+         Qt plugin khác nhau, nên KHÔNG thể cậy vào Id="OneForAll.exe" cố định được (đã xác nhận thật bằng
+         cách đọc Harvested.wxs sau khi chạy heat.exe - xem build_msi.bat). -->
+    <Property Id="WixShellExecTarget" Value="[INSTALLFOLDER]OneForAll.exe" />
+    <CustomAction Id="LaunchApplication" BinaryKey="WixCA" DllEntry="WixShellExec" Impersonate="yes" />
+    <UI>
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchApplication">WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 and NOT Installed</Publish>
+    </UI>
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Khoi chay One for ALL" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+  </Product>
+</Wix>

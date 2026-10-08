@@ -9,12 +9,17 @@ gói kèm theo liệt kê dưới đây giữ nguyên giấy phép GỐC của c
 |---|---|---|---|
 | **Inno Setup** (Jordan Russell/Martijn Laan) | Biên dịch `installer/OneForAll.iss` thành `dist\OneForAll_Setup.exe` (một file cài đặt duy nhất) qua `build_installer.bat` | Tùy chỉnh (miễn phí cho mọi mục đích, kể cả thương mại) | https://jrsoftware.org/isinfo.php |
 | **Vietnamese.isl** (memecoder, bản dịch cộng đồng) | Giao diện bộ cài đặt thuần tiếng Việt | Cùng giấy phép Inno Setup | https://github.com/jrsoftware/issrc/blob/main/Files/Languages/Unofficial/Vietnamese.isl (vendor một bản tại `installer/Vietnamese.isl`) |
+| **WiX Toolset v3** (`candle.exe`/`heat.exe`/`light.exe`, .NET Foundation) | Biên dịch `installer/Product.wxs` (+ `Harvested.wxs` do `heat.exe` tự sinh) thành `dist\OneForAll_Setup.msi` qua `build_installer.bat` - bản cài đặt thay thế cho `OneForAll_Setup.exe`, đi qua dịch vụ Windows Installer có sẵn (`msiexec.exe`) thay vì tự giải nén ra thư mục tạm (xem PROJECT_OVERVIEW.md mục 4n/4o) | MS-RL | https://github.com/wixtoolset/wix3 |
 
-Ghi chú: Inno Setup CHỈ là công cụ phát triển (giống Qt SDK/CMake/Ninja) - không đóng gói/phân phối cùng
-`OneForAll.exe`, người dùng cuối không cần cài. Tải bản 7.1.0 trực tiếp từ GitHub Releases của dự án
-(`jrsoftware/issrc`), đã xác minh đúng SHA-256 theo `digest` mà GitHub Releases API trả về trước khi cài.
-`Vietnamese.isl` lấy từ chính kho mã nguồn chính thức của Inno Setup (thư mục dành cho bản dịch cộng
-đồng chưa đóng gói sẵn), không phải nguồn thứ ba không rõ gốc.
+Ghi chú: Inno Setup và WiX Toolset CHỈ là công cụ phát triển (giống Qt SDK/CMake/Ninja) - không đóng gói/
+phân phối cùng `OneForAll.exe`, người dùng cuối không cần cài. Tải bản Inno Setup 7.1.0 trực tiếp từ
+GitHub Releases của dự án (`jrsoftware/issrc`), đã xác minh đúng SHA-256 theo `digest` mà GitHub Releases
+API trả về trước khi cài. `Vietnamese.isl` lấy từ chính kho mã nguồn chính thức của Inno Setup (thư mục
+dành cho bản dịch cộng đồng chưa đóng gói sẵn), không phải nguồn thứ ba không rõ gốc. WiX Toolset v3.14.1
+tải trực tiếp từ bản phát hành chính thức `wixtoolset/wix3` trên GitHub (`wix314-binaries.zip`) - KHÔNG có
+checksum chính thức đính kèm bản phát hành này (đã kiểm tra qua GitHub Releases API, trường `digest` trả
+về rỗng) - chấp nhận cùng mức rủi ro đã áp dụng cho BtbN/FFmpeg-Builds (không có nguồn xác minh thay thế,
+vẫn tải trực tiếp từ kho chính thức của chính dự án đó).
 
 ## Thư viện được nhúng (vendored) trong `src/third_party/` (mã nguồn, đi kèm trong Git)
 | Thư viện | Dùng để | Giấy phép | Nguồn |
