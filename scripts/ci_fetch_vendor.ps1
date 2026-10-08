@@ -39,8 +39,12 @@ Assert-Sha256 $scrcpyZip $expectedHash
 
 $scrcpyExtract = Join-Path $tmp "scrcpy-extract"
 Expand-Archive -Path $scrcpyZip -DestinationPath $scrcpyExtract -Force
-# Bản win64 của scrcpy giải nén PHẲNG (không có thư mục con) - copy thẳng toàn bộ nội dung.
-Copy-Item -Path (Join-Path $scrcpyExtract "*") -Destination $vendorScrcpy -Recurse -Force
+# Zip chính thức của scrcpy bọc toàn bộ nội dung trong MỘT thư mục con (vd "scrcpy-win64-v5.0/") - xác
+# nhận THẬT bằng cách tự tải và liệt kê nội dung zip (không đoán) - tìm chính xác thư mục chứa adb.exe
+# rồi copy từ đó, không giả định cấu trúc phẳng.
+$scrcpyInner = Get-ChildItem -Path $scrcpyExtract -Filter "adb.exe" -Recurse | Select-Object -First 1
+if (-not $scrcpyInner) { throw "Khong tim thay adb.exe trong ban scrcpy giai nen" }
+Copy-Item -Path (Join-Path $scrcpyInner.DirectoryName "*") -Destination $vendorScrcpy -Recurse -Force
 if (-not (Test-Path (Join-Path $vendorScrcpy "adb.exe"))) { throw "Thieu adb.exe sau khi giai nen scrcpy" }
 Write-Host "  Da cai dat vendor/scrcpy/"
 
