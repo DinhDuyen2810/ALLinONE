@@ -1103,6 +1103,10 @@ khoản VPN, hook/chuột/phím thật, hộp thoại UAC) được ghi rõ ở 
   nhau. GitHub tạo lượt chạy "failure" với 0 job và không có log (xác nhận thật ở lượt chạy đầu của
   v1.19.0, tìm ra bằng cách phân tích tệp bằng PyYAML). Đã đặt tên bước trong dấu nháy. Bài học: kiểm cú
   pháp workflow tại chỗ (`python -c "import yaml; yaml.safe_load(open(...))"`) trước khi push.
+- **Đã xác nhận THẬT trên GitHub Actions** (lượt chạy 37879516025, commit `cb08964`): đủ 17 bước đều
+  success - gồm cả kiểm checksum ffmpeg, biên dịch trên Qt 6.10.3, và 3 bước WiX (dọn bản sao bằng
+  robocopy, heat + candle + light, nén zip) vốn CHƯA TỪNG chạy trên CI trước đó. Bước tạo GitHub Release
+  bị bỏ qua có chủ đích (không phải lượt đẩy tag).
 - `ci_fetch_vendor.ps1`: ffmpeg nay được kiểm SHA-256 theo `checksums.sha256` của bản phát hành (trước đó
   tải không kiểm; THIRD_PARTY.md lại ghi là đã kiểm).
 - Bộ cài đặt (cả `.exe` lẫn `.msi`) loại TOÀN BỘ `profiles\` của thư mục Release và chỉ đóng gói

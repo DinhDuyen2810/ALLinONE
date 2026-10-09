@@ -25,7 +25,9 @@ Không coi một lần sửa là xong cho tới khi đã làm đủ, theo đúng
 5. **Push** lên `origin main`, rồi kiểm tra lượt chạy GitHub Actions mới nhất có PASS không (máy này
    không có `gh`; dùng API công khai:
    `https://api.github.com/repos/DinhDuyen2810/ALLinONE/actions/runs?per_page=3`). CI fail thì đọc log
-   thật rồi sửa, không đoán.
+   thật rồi sửa, không đoán. Nếu có sửa `.github/workflows/*.yml` thì kiểm cú pháp TRƯỚC khi push
+   (`python -c "import yaml,io; yaml.safe_load(io.open('.github/workflows/build-installer.yml',encoding='utf-8'))"`) -
+   tệp workflow sai cú pháp cho ra lượt chạy "failure" với 0 job và không có log nào để đọc.
 
 `dist\`, `obj\`, `build\`, `OneForAll_Release\`, `vendor\`, `logs\` không commit (xem `.gitignore`).
 
