@@ -139,7 +139,9 @@ jobs:
           New-Item -ItemType Directory -Force -Path "obj\msi_stage\OneForAll_Release\profiles" | Out-Null
           Copy-Item "profiles\default.json" "obj\msi_stage\OneForAll_Release\profiles\default.json" -Force
 
-      - name: Bien dich bo cai dat .msi (WiX: heat + candle + light)
+      # Ten buoc phai dat trong dau nhay: chuoi YAML tran chua ": " (o "WiX: heat") bi hieu la mot cap khoa-gia
+      # tri long nhau, lam CA tep workflow khong hop le - GitHub tao luot chay "failure" voi 0 job, khong co log.
+      - name: "Bien dich bo cai dat .msi (WiX - heat + candle + light)"
         shell: pwsh
         run: |
           $appver = (Get-Content "VERSION" -Raw).Trim()

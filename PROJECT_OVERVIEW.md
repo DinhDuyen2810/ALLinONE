@@ -1098,6 +1098,11 @@ khoản VPN, hook/chuột/phím thật, hộp thoại UAC) được ghi rõ ở 
 - CI: bước dọn bản sao cho `heat.exe` dùng `robocopy` (trả mã 1 khi copy THÀNH CÔNG) trong bước
   `shell: pwsh` - GitHub Actions kết thúc bước bằng mã thoát của lệnh native cuối nên bước sẽ bị tính là
   thất bại; đã đặt lại `$LASTEXITCODE`. Ghim `gha-setup-ninja@v6` thay cho `@master`.
+- CI: tệp workflow của bản 1.18.0 (chưa từng được push nên chưa từng chạy) KHÔNG hợp lệ - tên bước
+  `... (WiX: heat + candle + light)` là chuỗi YAML trần chứa `": "`, bị hiểu thành cặp khóa-giá trị lồng
+  nhau. GitHub tạo lượt chạy "failure" với 0 job và không có log (xác nhận thật ở lượt chạy đầu của
+  v1.19.0, tìm ra bằng cách phân tích tệp bằng PyYAML). Đã đặt tên bước trong dấu nháy. Bài học: kiểm cú
+  pháp workflow tại chỗ (`python -c "import yaml; yaml.safe_load(open(...))"`) trước khi push.
 - `ci_fetch_vendor.ps1`: ffmpeg nay được kiểm SHA-256 theo `checksums.sha256` của bản phát hành (trước đó
   tải không kiểm; THIRD_PARTY.md lại ghi là đã kiểm).
 - Bộ cài đặt (cả `.exe` lẫn `.msi`) loại TOÀN BỘ `profiles\` của thư mục Release và chỉ đóng gói
