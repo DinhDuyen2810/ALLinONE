@@ -158,6 +158,11 @@ target_link_libraries(wifi_ui PUBLIC wifi_core Qt6::Widgets Qt6::Network wlanapi
 add_executable(wifi_ui_tests EXCLUDE_FROM_ALL tests/wifi_ui_tests.cpp)
 target_link_libraries(wifi_ui_tests PRIVATE wifi_ui)
 
+# ---- Stress test QR + WiFi (hàng chục nghìn đầu vào ngẫu nhiên/bệnh lý + thao tác dồn dập, chạy offscreen,
+#      không ra Internet, chỉ gọi API WLAN đọc): cmake --build build --target qrwifi_stress_tests ----
+add_executable(qrwifi_stress_tests EXCLUDE_FROM_ALL tests/qrwifi_stress_tests.cpp)
+target_link_libraries(qrwifi_stress_tests PRIVATE qr_ui wifi_ui Qt6::Svg psapi)
+
 # ---- Lõi Connect Together (mã hóa, giao thức, mã ghép đôi) - thuần Qt + Windows CNG, test được ----
 add_library(connect_core STATIC
     src/tools/connect/model/ScreenSide.h
@@ -192,6 +197,10 @@ target_link_libraries(connect_core PUBLIC Qt6::Core Qt6::Gui Qt6::Network bcrypt
 # ---- Kiểm thử lõi Connect Together: cmake --build build --target connect_tests ----
 add_executable(connect_tests EXCLUDE_FROM_ALL tests/connect_tests.cpp)
 target_link_libraries(connect_tests PRIVATE connect_core)
+
+# ---- Kiểm thử sức chịu đựng (stress/fuzz) Connect Together: cmake --build build --target connect_stress_tests ----
+add_executable(connect_stress_tests EXCLUDE_FROM_ALL tests/connect_stress_tests.cpp)
+target_link_libraries(connect_stress_tests PRIVATE connect_core psapi)
 
 # ---- Giao diện Connect Together ----
 add_library(connect_ui STATIC
@@ -333,6 +342,12 @@ target_link_libraries(vpn_ui PUBLIC vpn_core Qt6::Widgets)
 add_executable(vpn_ui_tests EXCLUDE_FROM_ALL tests/vpn_ui_tests.cpp)
 target_link_libraries(vpn_ui_tests PRIVATE vpn_ui)
 
+# ---- Stress test lõi Disk Cleanup + VPN (cây thư mục tạm hàng chục nghìn tệp, bật/dừng quét ngẫu nhiên, xóa
+# trong lúc luồng khác khóa tệp, fuzz các hàm kiểm an toàn; chỉ đụng QTemporaryDir, không đổi phân vùng,
+# không kết nối VPN): cmake --build build --target disk_vpn_stress_tests ----
+add_executable(disk_vpn_stress_tests EXCLUDE_FROM_ALL tests/disk_vpn_stress_tests.cpp)
+target_link_libraries(disk_vpn_stress_tests PRIVATE diskcleanup_core vpn_core)
+
 # ---- Lõi Security Gateway (cổng lệnh PowerShell + bảo vệ web + quét mã độc qua Windows Defender) ----
 # CommandLauncher cần gửi Ctrl+V thật qua InputController - link input_core (dùng chung với Auto Click).
 add_library(security_core STATIC
@@ -436,6 +451,11 @@ target_link_libraries(downloader_ui PUBLIC downloader_core Qt6::Widgets)
 # ---- Kiểm thử "khói" UI Downloader: cmake --build build --target downloader_ui_tests ----
 add_executable(downloader_ui_tests EXCLUDE_FROM_ALL tests/downloader_ui_tests.cpp)
 target_link_libraries(downloader_ui_tests PRIVATE downloader_ui)
+
+# ---- Stress test lõi Security Gateway + Downloader (đầu vào rất lớn/ngẫu nhiên, FileDownloader với máy
+# chủ HTTP "khó chịu" trên 127.0.0.1): cmake --build build --target secdl_stress_tests ----
+add_executable(secdl_stress_tests EXCLUDE_FROM_ALL tests/secdl_stress_tests.cpp)
+target_link_libraries(secdl_stress_tests PRIVATE security_core downloader_core)
 
 set(SOURCES
     src/main.cpp
@@ -555,3 +575,41 @@ add_executable(autoclick_tests EXCLUDE_FROM_ALL
 )
 target_include_directories(autoclick_tests PRIVATE src)
 target_link_libraries(autoclick_tests PRIVATE Qt6::Widgets input_core core_shared user32)
+
+# ---- Kiểm thử CHỊU TẢI phần lõi dùng chung + Auto Click + Android: cmake --build build --target core_stress_tests ----
+# Nhiều luồng/dữ liệu ngẫu nhiên số lượng lớn/lặp hàng nghìn lần cho AppPaths, Logger, PowerShellRunner (chạy
+# powershell.exe THẬT với lệnh vô hại), WinProcessTree, tự cập nhật, ActionSerializer/ActionRunner, adb parse,
+# và cửa sổ Auto Click/Android (nền tảng offscreen). Tự liệt kê nguồn Auto Click như autoclick_tests ở trên.
+# KHÔNG gửi chuột/phím thật, không cài hook, không chạy script cập nhật - xem ghi chú đầu tệp test.
+add_executable(core_stress_tests EXCLUDE_FROM_ALL
+    tests/core_stress_tests.cpp
+    src/core/ToolManager.cpp
+    src/tools/android/AndroidControlTool.cpp
+    src/tools/autoclick/AutoClickTool.cpp
+    src/tools/autoclick/AutoClickWindow.h
+    src/tools/autoclick/AutoClickWindow.cpp
+    src/tools/autoclick/model/Action.cpp
+    src/tools/autoclick/model/ActionChain.cpp
+    src/tools/autoclick/storage/ActionSerializer.cpp
+    src/tools/autoclick/engine/ActionRunner.h
+    src/tools/autoclick/engine/ActionRunner.cpp
+    src/tools/autoclick/engine/StopHotkey.cpp
+    src/tools/autoclick/capture/CoordinateOverlay.h
+    src/tools/autoclick/capture/CoordinateOverlay.cpp
+    src/tools/autoclick/capture/MouseCapture.h
+    src/tools/autoclick/capture/MouseCapture.cpp
+    src/tools/autoclick/capture/HotkeyCapture.h
+    src/tools/autoclick/capture/HotkeyCapture.cpp
+    src/tools/autoclick/capture/DragGestureCapture.h
+    src/tools/autoclick/capture/DragGestureCapture.cpp
+    src/tools/autoclick/overlay/RuntimeOverlay.h
+    src/tools/autoclick/overlay/RuntimeOverlay.cpp
+    src/tools/autoclick/widgets/ChainListWidget.h
+    src/tools/autoclick/widgets/ChainListWidget.cpp
+    src/tools/autoclick/widgets/ActionListWidget.h
+    src/tools/autoclick/widgets/ActionListWidget.cpp
+    src/tools/autoclick/widgets/ActionEditorWidget.h
+    src/tools/autoclick/widgets/ActionEditorWidget.cpp
+)
+target_include_directories(core_stress_tests PRIVATE src)
+target_link_libraries(core_stress_tests PRIVATE update_core android_ui android_core input_core core_shared Qt6::Widgets user32)

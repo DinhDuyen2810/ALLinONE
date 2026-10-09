@@ -2160,6 +2160,118 @@ int main(int argc, char** argv)
         CHECK(!a.isRunning() && !b.isRunning());
     }
 
+    // ---- Hồi quy (tìm ra bởi connect_stress_tests): (1) hai máy CÙNG nhập mã cho nhau phải kết thúc với cùng
+    // một khóa; (2) một kết nối đến CHƯA xác thực (chỉ khai id trong preamble) không được cản kết nối thật đã
+    // xác thực hai chiều. ----
+    {
+        QTemporaryDir tmp;
+        CHECK(tmp.isValid());
+        PeerStore storeA(tmp.filePath("peers_a.json"));
+        PeerStore storeB(tmp.filePath("peers_b.json"));
+        FakeInjector injectorA, injectorB;
+        auto configure = [](ConnectSessionController& c, const QString& id, const QString& name, PeerStore* store,
+                            FakeInjector* injector) {
+            ConnectSessionController::TestConfig cfg;
+            cfg.identity.id = id;
+            cfg.identity.machineName = name;
+            cfg.store = store;
+            cfg.injector = injector;
+            cfg.installGlobalHook = false;
+            cfg.enableDiscovery = false;
+            cfg.enableClipboardSync = false;
+            cfg.usePreferredPort = false;
+            cfg.handshakeTimeoutMs = 4000;
+            cfg.housekeepingIntervalMs = 100;
+            c.configureForTesting(cfg);
+        };
+        ConnectSessionController a, b;
+        configure(a, "aaaa-may-a", "May A", &storeA, &injectorA);
+        configure(b, "bbbb-may-b", "May B", &storeB, &injectorB);
+        QString err;
+        CHECK(a.start(&err));
+        CHECK(b.start(&err));
+        QList<QString> failedA, failedB;
+        int succeededA = 0, succeededB = 0, droppedAtA = 0;
+        QObject::connect(&a, &ConnectSessionController::pairingFailed, [&](QString r) { failedA << r; });
+        QObject::connect(&b, &ConnectSessionController::pairingFailed, [&](QString r) { failedB << r; });
+        QObject::connect(&a, &ConnectSessionController::pairingSucceeded, [&](QString, QString) { ++succeededA; });
+        QObject::connect(&b, &ConnectSessionController::pairingSucceeded, [&](QString, QString) { ++succeededB; });
+        QObject::connect(&a, &ConnectSessionController::peerConnectionChanged, [&](QString, bool on) {
+            if (!on)
+                ++droppedAtA;
+        });
+
+        // (1) Mỗi máy tạo mã rồi nhập mã của máy kia, hai yêu cầu đi chéo nhau trong cùng một nhịp. Trước khi
+        // sửa: mỗi máy giữ khóa do máy KIA sinh ra -> hai khóa khác nhau, "đã ghép đôi" mà không bao giờ có phiên.
+        const QString codeA = a.beginPairingSession();
+        const QString codeB = b.beginPairingSession();
+        a.connectWithCode(QHostAddress::LocalHost, b.listenPort(), codeB);
+        b.connectWithCode(QHostAddress::LocalHost, a.listenPort(), codeA);
+        CHECK(waitUntil([&] { return succeededA >= 1 && succeededB >= 1 && !a.isPairingSessionOpen() && !b.isPairingSessionOpen(); },
+                        8000));
+        pump(200);
+        CHECK(failedA.isEmpty() && failedB.isEmpty());
+        CHECK(storeA.find("bbbb-may-b") != nullptr && storeB.find("aaaa-may-a") != nullptr);
+        if (storeA.find("bbbb-may-b") && storeB.find("aaaa-may-a"))
+            CHECK(storeA.find("bbbb-may-b")->longTermKey == storeB.find("aaaa-may-a")->longTermKey);
+        CHECK(waitUntil([&] { return a.isPeerConnected("bbbb-may-b") && b.isPeerConnected("aaaa-may-a"); }, 6000));
+
+        // (2) Chỉ B chủ động nối. Một máy lạ mở kết nối tới B, khai id của A rồi nằm im; kết nối do chính B mở
+        // tới A (bắt tay xong) vẫn phải được nhận ngay và đứng vững. Trước khi sửa: B vứt kết nối thật vì
+        // "đã có kết nối ưu tiên từ A đang bắt tay".
+        a.setPeerAutoConnect("bbbb-may-b", false);
+        b.setPeerAutoConnect("aaaa-may-a", false);
+        b.stop();
+        CHECK(waitUntil([&] { return !a.isPeerConnected("bbbb-may-b"); }));
+        CHECK(b.start(&err));
+        pump(100);
+        CHECK(!b.isPeerConnected("aaaa-may-a") && b.pendingLinkCountForTesting() == 0);
+        QTcpSocket squatter;
+        squatter.connectToHost(QHostAddress::LocalHost, b.listenPort());
+        CHECK(waitUntil([&] { return squatter.state() == QAbstractSocket::ConnectedState; }));
+        const QByteArray fakePreamble = ConnectProtocol::buildPreamble(ConnectProtocol::LinkPurpose::Session, "aaaa-may-a");
+        QByteArray fakeFrame(4, '\0');
+        qToBigEndian<quint32>(static_cast<quint32>(fakePreamble.size()), reinterpret_cast<uchar*>(fakeFrame.data()));
+        squatter.write(fakeFrame + fakePreamble);
+        squatter.flush();
+        CHECK(waitUntil([&] { return b.pendingLinkCountForTesting() == 1; }));
+        droppedAtA = 0;
+        b.setPeerAutoConnect("aaaa-may-a", true); // B mở kết nối tới A ngay
+        CHECK(waitUntil([&] { return a.isPeerConnected("bbbb-may-b") && b.isPeerConnected("aaaa-may-a"); }, 2500));
+        pump(200);
+        CHECK(a.isPeerConnected("bbbb-may-b") && b.isPeerConnected("aaaa-may-a"));
+        CHECK(droppedAtA == 0);
+        CHECK(waitUntil([&] { return squatter.state() == QAbstractSocket::UnconnectedState; })); // kết nối mạo danh bị dọn
+
+        a.stop();
+        b.stop();
+    }
+
+    // ---- Hồi quy: tệp danh tính HỎNG -> danh tính sinh lại phải lưu được xuống đĩa (bản trước còn giữ tệp
+    // mở lúc ghi đè nên ghi thất bại: mỗi lần chạy ra một id mới, mọi máy đã ghép đôi coi máy này là máy lạ).
+    // Đặt ở cuối vì mục này đổi tệp của LocalIdentityStore dùng chung. ----
+    {
+        QTemporaryDir tmp;
+        CHECK(tmp.isValid());
+        const QString path = tmp.filePath("identity_hong.json");
+        for (const QByteArray& broken : {QByteArray("khong phai json"), QByteArray("{\"id\": \"co khoang trang\"}"), QByteArray()})
+        {
+            QFile f(path);
+            CHECK(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            f.write(broken);
+            f.close();
+            LocalIdentityStore::instance().setFilePath(path);
+            const QString regenerated = LocalIdentityStore::instance().identity().id;
+            CHECK(ConnectProtocol::isValidPeerId(regenerated));
+            QFile saved(path);
+            CHECK(saved.open(QIODevice::ReadOnly));
+            CHECK(QJsonDocument::fromJson(saved.readAll()).object().value("id").toString() == regenerated);
+            saved.close();
+            LocalIdentityStore::instance().setFilePath(path); // "lần chạy sau": đọc lại ra đúng id đó
+            CHECK(LocalIdentityStore::instance().identity().id == regenerated);
+        }
+    }
+
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);
     std::fflush(stdout);
     return g_fail == 0 ? 0 : 1;

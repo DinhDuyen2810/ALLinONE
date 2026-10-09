@@ -5,6 +5,7 @@
 #include <QJsonArray>
 #include <QFile>
 #include <QSaveFile>
+#include <climits>
 
 QString ActionSerializer::getDefaultProfilePath()
 {
@@ -12,6 +13,27 @@ QString ActionSerializer::getDefaultProfilePath()
 }
 
 static int clampInt(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+// Màn hình ảo Windows: tọa độ 16-bit có dấu (cùng miền với các ô X/Y của ActionEditorWidget).
+static constexpr int kMinScreenCoord = -32768;
+static constexpr int kMaxScreenCoord = 32767;
+
+/// Một khoảng thời gian (ms) đọc từ JSON, ép về miền [0, INT_MAX] (~24 ngày). Tệp hồ sơ có thể do người
+/// dùng sửa tay hoặc nhập từ nơi khác: số âm trước đây được nhận nguyên (hiện "-5 ms" trong danh sách),
+/// còn số khổng lồ (vd 1e18) làm TRÀN phép cộng mốc thời gian steady_clock trong ActionRunner/
+/// InputController (ms -> ns) và bị cắt cụt thành số vô nghĩa ở mọi chỗ ép về int (ô nhập của editor,
+/// thời lượng kéo/gõ/cuộn).
+static std::chrono::milliseconds readDurationMs(const QJsonValue& value, int defaultMs)
+{
+    if (!value.isDouble())
+        return std::chrono::milliseconds(defaultMs);
+    const double ms = value.toDouble();
+    if (!(ms > 0.0)) // âm, 0, NaN
+        return std::chrono::milliseconds(0);
+    if (ms >= static_cast<double>(INT_MAX))
+        return std::chrono::milliseconds(INT_MAX);
+    return std::chrono::milliseconds(static_cast<qint64>(ms));
+}
 
 static QString actionTypeToString(ActionType type)
 {
@@ -143,16 +165,18 @@ bool ActionSerializer::fromJsonString(const QString& jsonStr, std::vector<Action
             Action action;
             action.type = stringToActionType(actObj["type"].toString());
             action.enabled = actObj["enabled"].toBool(true);
-            action.waitBefore = std::chrono::milliseconds(actObj["waitBefore"].toInteger(0));
-            action.waitAfter = std::chrono::milliseconds(actObj["waitAfter"].toInteger(500));
-            action.duration = std::chrono::milliseconds(actObj["duration"].toInteger(0));
+            action.waitBefore = readDurationMs(actObj["waitBefore"], 0);
+            action.waitAfter = readDurationMs(actObj["waitAfter"], 500);
+            action.duration = readDurationMs(actObj["duration"], 0);
 
-            action.x = actObj["x"].toInt(500);
-            action.y = actObj["y"].toInt(300);
-            action.startX = actObj["startX"].toInt(100);
-            action.startY = actObj["startY"].toInt(100);
-            action.endX = actObj["endX"].toInt(500);
-            action.endY = actObj["endY"].toInt(500);
+            // Tọa độ ép về miền màn hình ảo Windows (cùng miền với ô nhập của editor): giá trị cỡ ±2 tỉ trong
+            // tệp sửa tay làm tràn phép nội suy (end - start) lúc kéo chuột.
+            action.x = clampInt(actObj["x"].toInt(500), kMinScreenCoord, kMaxScreenCoord);
+            action.y = clampInt(actObj["y"].toInt(300), kMinScreenCoord, kMaxScreenCoord);
+            action.startX = clampInt(actObj["startX"].toInt(100), kMinScreenCoord, kMaxScreenCoord);
+            action.startY = clampInt(actObj["startY"].toInt(100), kMinScreenCoord, kMaxScreenCoord);
+            action.endX = clampInt(actObj["endX"].toInt(500), kMinScreenCoord, kMaxScreenCoord);
+            action.endY = clampInt(actObj["endY"].toInt(500), kMinScreenCoord, kMaxScreenCoord);
             action.mouseButton = static_cast<MouseButtonType>(clampInt(actObj["mouseButton"].toInt(0), 0, 2));
 
             action.text = actObj["text"].toString().toStdString();

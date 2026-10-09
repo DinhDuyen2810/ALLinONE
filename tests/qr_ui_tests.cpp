@@ -215,6 +215,32 @@ int main(int argc, char** argv)
         re->click();
         CHECK(win.tabs()->currentWidget() == gen);
         CHECK(!gen->currentContent().isEmpty());
+
+        // Hồi quy: "Tạo lại mã" phải giữ NGUYÊN VĂN nội dung đã quét. Ô văn bản (QPlainTextEdit) đổi CRLF
+        // thành LF và U+00A0 thành dấu cách, nên mã tạo lại từ một vCard (dùng CRLF) từng mang nội dung khác.
+        const QString crlf = QString("BEGIN:VCARD\r\nFN:An") + QChar(0x00A0) + "Nguyen\r\nEND:VCARD";
+        QRStyle st;
+        st.targetSize = 400;
+        win.tabs()->setCurrentWidget(scan);
+        CHECK(scan->scanImage(QRCodec::render(QRCodec::encode(crlf, QREcc::Medium), st), "crlf") == 1);
+        re->click();
+        CHECK(gen->currentContent() == crlf);
+        {
+            const auto r = QRCodec::decode(gen->currentImage());
+            CHECK(r.size() == 1 && r.first().text == crlf);
+        }
+        // Người dùng sửa ô văn bản thì nội dung là thứ đang hiện trong ô.
+        QPlainTextEdit* edit = nullptr; // ô của trang "Văn bản" (tab Tạo còn hai QPlainTextEdit khác: Email, SMS)
+        for (QPlainTextEdit* e : gen->findChildren<QPlainTextEdit*>())
+            if (e->placeholderText().startsWith("Nhập văn bản"))
+                edit = e;
+        CHECK(edit != nullptr);
+        if (edit)
+        {
+            edit->setPlainText("da sua");
+            gen->refresh();
+            CHECK(gen->currentContent() == "da sua");
+        }
     }
 
     // ---- 9. Lịch sử ----
@@ -307,6 +333,49 @@ int main(int argc, char** argv)
             CHECK(bak.open(QIODevice::ReadOnly) && bak.readAll().contains("du lieu cu"));
         }
         CHECK(store.load() && store.entries().size() == 1);
+
+        // Hồi quy: gặp tệp hỏng nhiều lần LIỀN NHAU (cùng một giây) - mỗi bản hỏng vẫn phải có tệp .bak riêng.
+        // Trước đây lần thứ ba trùng tên "<tệp>.<giờ-phút-giây>.bak" với lần thứ hai, đổi tên thất bại và bản
+        // hỏng bị lần add() kế tiếp ghi đè mất.
+        for (int round = 0; round < 4; ++round)
+        {
+            QFile f(corrupt);
+            CHECK(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            f.write(QByteArray("{ \"entries\": [ hong lan ") + QByteArray::number(round));
+            f.close();
+            CHECK(!store.load());
+            CHECK(!QFile::exists(corrupt));
+            store.add("generate", "Văn bản", "sau lan hong");
+        }
+        {
+            const QStringList backups = QDir(tmp.path()).entryList({"corrupt.json*.bak"}, QDir::Files);
+            CHECK(backups.size() == 5); // 1 bản ở trên + 4 bản vừa rồi, không bản nào bị mất
+            QByteArray all;
+            for (const QString& name : backups)
+            {
+                QFile b(tmp.filePath(name));
+                CHECK(b.open(QIODevice::ReadOnly));
+                all += b.readAll();
+            }
+            for (int round = 0; round < 4; ++round)
+                CHECK(all.contains(QByteArray("hong lan ") + QByteArray::number(round)));
+        }
+
+        // Hồi quy: tệp có NHIỀU hơn 300 mục (sửa tay/bản khác ghi) từng được nạp nguyên vẹn - giới hạn 300 chỉ
+        // áp ở add(). Nay load() cũng chỉ giữ 300 mục mới nhất (đứng đầu tệp).
+        {
+            QByteArray big = "{ \"entries\": [";
+            for (int i = 0; i < 1000; ++i)
+                big += (i ? "," : "") + QByteArray("{\"source\":\"scan\",\"type\":\"t\",\"content\":\"muc ") + QByteArray::number(i) + "\"}";
+            big += "] }";
+            QFile f(corrupt);
+            CHECK(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            f.write(big);
+            f.close();
+            CHECK(store.load());
+            CHECK(store.entries().size() == 300);
+            CHECK(store.entries().first().content == "muc 0" && store.entries().last().content == "muc 299");
+        }
 
         // Tệp chưa tồn tại = lịch sử rỗng, không phải lỗi, không sinh .bak.
         store.setFilePath(tmp.filePath("missing.json"));

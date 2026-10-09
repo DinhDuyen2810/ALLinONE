@@ -78,7 +78,13 @@ QWidget* QRGenerateTab::makeTextPage()
     auto* l = new QVBoxLayout(w);
     l->setContentsMargins(0, 6, 0, 6);
     m_textEdit = makeMulti("Nhập văn bản bất kỳ (hỗ trợ tiếng Việt, emoji...)", w, 130);
-    connect(m_textEdit, &QPlainTextEdit::textChanged, this, &QRGenerateTab::scheduleRefresh);
+    connect(m_textEdit, &QPlainTextEdit::textChanged, this, [this] {
+        // Người dùng sửa ô văn bản: từ đây nội dung là thứ đang hiện trong ô, bản nguyên văn của "Tạo lại
+        // mã" (xem setRawText) hết hiệu lực.
+        if (!m_rawText.isNull() && m_textEdit->toPlainText() != m_rawTextShown)
+            m_rawText = QString();
+        scheduleRefresh();
+    });
     l->addWidget(m_textEdit);
     return w;
 }
@@ -418,6 +424,8 @@ QString QRGenerateTab::buildContent(QString* problem) const
     {
         case QRContentType::Text:
         {
+            if (!m_rawText.isNull())
+                return QRPayload::makeText(m_rawText); // nguyên văn từ "Tạo lại mã", ô văn bản chưa bị sửa
             const QString t = m_textEdit->toPlainText();
             if (t.isEmpty())
                 return fail("Nhập nội dung ở bên trái để tạo mã QR.");
@@ -490,7 +498,14 @@ QString QRGenerateTab::currentContent() const
 void QRGenerateTab::setRawText(const QString& text)
 {
     m_typeCombo->setCurrentIndex(0); // Văn bản
+    m_rawText = QString();
     m_textEdit->setPlainText(text);
+    // QPlainTextEdit không giữ nguyên văn: toPlainText() đổi CRLF/CR/U+2028/U+2029 thành LF và khoảng trắng
+    // không ngắt (U+00A0) thành dấu cách. "Tạo lại mã" từ một mã đã quét (vd vCard dùng CRLF) vì thế từng
+    // sinh ra mã mang nội dung KHÁC mã gốc. Giữ bản nguyên văn và dùng nó chừng nào ô văn bản chưa bị sửa.
+    m_rawTextShown = m_textEdit->toPlainText();
+    if (!text.isEmpty() && m_rawTextShown != text)
+        m_rawText = text;
     refresh();
 }
 

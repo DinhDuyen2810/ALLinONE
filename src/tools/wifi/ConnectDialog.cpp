@@ -269,7 +269,10 @@ void ConnectDialog::pollConnectionStatus()
 
     if (m_phase == Phase::WaitingDisconnect)
     {
-        if (!cur.isConnected)
+        // "Đã rời SSID này" chứ không phải "không còn kết nối gì": ngay sau khi bị ngắt, Windows có thể tự nối
+        // sang một mạng đã lưu KHÁC trong tầm. Trước đây điều kiện chỉ là !isConnected nên trường hợp đó bị
+        // coi là "chưa ngắt được", chờ hết 10 giây rồi báo lỗi dù liên kết cũ tới SSID này đã mất hẳn.
+        if (!cur.isConnected || cur.ssid != m_attemptSsid)
         {
             startConnect();
             return;

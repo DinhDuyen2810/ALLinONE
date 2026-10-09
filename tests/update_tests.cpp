@@ -158,6 +158,32 @@ int main(int argc, char** argv)
         CHECK(!isTrustedDownloadUrl("https://user@github.com/x/y/a.exe"));     // userinfo che host thật
         CHECK(!isTrustedDownloadUrl("file:///C:/a.exe"));
         CHECK(!isTrustedDownloadUrl(""));
+        // Cổng: chỉ mặc định/443 (lỗi tìm thấy khi chạy core_stress_tests: cổng bất kỳ đều được nhận).
+        CHECK(isTrustedDownloadUrl("https://github.com:443/x/y/a.exe"));
+        CHECK(!isTrustedDownloadUrl("https://github.com:8443/x/y/a.exe"));
+        CHECK(!isTrustedDownloadUrl("https://github.com:80/x/y/a.exe"));
+        CHECK(!isTrustedDownloadUrl("https://github.com:0/x/y/a.exe"));
+        CHECK(!isTrustedDownloadUrl("https://github.com./x/y/a.exe"));         // dấu chấm cuối tên máy
+        CHECK(!isTrustedDownloadUrl("https://evil.example\\@github.com/a.exe")); // dấu gạch ngược trước '@'
+        CHECK(!isTrustedDownloadUrl(" https://github.com/x/y/a.exe"));         // khoảng trắng đầu
+    }
+
+    // ---- parseLatestRelease: "size" ngoài miền (âm, phân số, 1e300, sai kiểu) -> 0, không tràn thành số âm ----
+    {
+        const auto sizeFor = [](const char* sizeJson) {
+            const QByteArray json = QByteArray(R"({ "tag_name": "v9.0.0", "assets": [
+                { "name": "OneForAll_Setup.exe", "browser_download_url": "https://github.com/x/y/a.exe", "size": )") +
+                                    sizeJson + " } ] }";
+            return parseLatestRelease(json).downloadSize;
+        };
+        CHECK(sizeFor("52428800") == 52428800);
+        CHECK(sizeFor("5000000000") == 5000000000LL); // > 4 GB vẫn đúng
+        CHECK(sizeFor("-5") == 0);
+        CHECK(sizeFor("1e300") == 0);
+        CHECK(sizeFor("-1e300") == 0);
+        CHECK(sizeFor("1.5") == 0);
+        CHECK(sizeFor("\"123\"") == 0);
+        CHECK(sizeFor("null") == 0);
     }
 
     // ---- classifyInstall: chỉ coi là "đã cài" khi exe đang chạy nằm đúng trong thư mục cài tương ứng ----

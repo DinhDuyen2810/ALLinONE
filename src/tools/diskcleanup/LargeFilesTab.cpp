@@ -320,7 +320,9 @@ void LargeFilesTab::onDeleteSelectedClicked()
         if (idx.row() >= m_results.size())
             continue;
         const LargeFileEntry& entry = m_results[idx.row()];
-        const QString reason = RecycleBinOps::notRecyclableReason(entry.path, entry.sizeBytes);
+        // So theo kích thước HIỆN TẠI nếu tệp đã lớn lên từ lúc quét (tệp nhật ký/đĩa ảo vẫn đang được ghi).
+        const QString reason =
+            RecycleBinOps::notRecyclableReason(entry.path, qMax(entry.sizeBytes, FsSafety::rawInfo(entry.path).sizeBytes));
         if (!reason.isEmpty())
         {
             notRecyclable << QDir::toNativeSeparators(entry.path) + "\n      (" + reason + ")";

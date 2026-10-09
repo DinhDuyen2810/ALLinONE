@@ -31,6 +31,9 @@ struct RequestState
     int httpStatus{0};
     bool dropPart{false};       ///< Phần đã tải không còn dùng tiếp được - xóa .part, lần sau tải lại từ đầu
     bool abortScheduled{false};
+    bool identityRequested{false}; ///< Lượt này gửi "Accept-Encoding: identity" (xem startNetworkRequest)
+    bool retryCompressed{false};   ///< Máy chủ vẫn trả bản NÉN - bỏ lượt này, gửi lại để Qt tự giải nén
+    qint64 expectedTotal{-1};      ///< Kích thước cả tệp theo Content-Range của phản hồi 206 (-1 = không rõ)
     QString failure;            ///< Lỗi do chính ta phát hiện (ghi đĩa, phản hồi sai) - ưu tiên hơn lỗi mạng
 };
 } // namespace
@@ -44,11 +47,13 @@ FileDownloader::FileDownloader(QObject* parent)
     auto* speedTimer = new QTimer(this);
     speedTimer->setInterval(500);
     connect(speedTimer, &QTimer::timeout, this, [this]() {
-        for (auto it = m_activeReplies.constBegin(); it != m_activeReplies.constEnd(); ++it)
+        // Duyệt trên BẢN SAO danh sách ID: slot nghe itemUpdated có thể gọi pause()/cancel(), mà hai hàm đó
+        // gỡ phần tử khỏi m_activeReplies ngay lập tức (abort() phát finished() đồng bộ).
+        const QList<int> activeIds = m_activeReplies.keys();
+        for (const int id : activeIds)
         {
-            const int id = it.key();
-            QNetworkReply* reply = it.value();
-            if (!m_items.contains(id)) continue;
+            QNetworkReply* reply = m_activeReplies.value(id);
+            if (!reply || !m_items.contains(id)) continue;
             auto& item = m_items[id];
             const QVariant prevSample = reply->property("lastSampleBytes");
             // Mẫu đầu tiên của một lượt TIẾP TỤC tải: lấy mốc là số byte đã có sẵn, không phải 0 - nếu
@@ -71,6 +76,18 @@ FileDownloader::~FileDownloader()
     const auto replies = m_activeReplies.values();
     for (auto* reply : replies)
         reply->abort();
+
+    // Mục đang TẠM DỪNG (và mục lỗi còn giữ lại phần đã tải để thử tiếp) cũng có tệp .part trên đĩa. Thứ để
+    // tiếp tục (ETag/Last-Modified) chỉ nằm trong bộ nhớ nên phiên sau không dùng lại được - xóa luôn. Trước
+    // đây chỉ dọn tệp của mục ĐANG tải: thoát ứng dụng khi còn mục tạm dừng là để lại "<tên>.part" mãi mãi
+    // trong thư mục lưu của người dùng.
+    for (auto it = m_items.constBegin(); it != m_items.constEnd(); ++it)
+    {
+        const bool ownsPart = it->status == DownloadItem::Status::Paused ||
+                              (it->status == DownloadItem::Status::Failed && m_validators.contains(it.key()));
+        if (ownsPart)
+            QFile::remove(it->destPath + FileDownloaderInternal::kPartSuffix);
+    }
 }
 
 int FileDownloader::enqueue(const QString& url, const QString& destPath)
@@ -97,6 +114,20 @@ bool FileDownloader::isDestPathInUse(const QString& destPath) const
     return false;
 }
 
+int FileDownloader::activeItemWritingTo(const QString& destPath, int exceptId) const
+{
+    const QString wanted = QDir::cleanPath(destPath);
+    for (auto it = m_activeReplies.constBegin(); it != m_activeReplies.constEnd(); ++it)
+    {
+        if (it.key() == exceptId)
+            continue;
+        const auto item = m_items.constFind(it.key());
+        if (item != m_items.constEnd() && QDir::cleanPath(item->destPath).compare(wanted, Qt::CaseInsensitive) == 0)
+            return it.key();
+    }
+    return 0;
+}
+
 void FileDownloader::start(int id)
 {
     if (!m_items.contains(id))
@@ -116,7 +147,9 @@ void FileDownloader::start(int id)
 
 void FileDownloader::startAllQueued()
 {
-    for (int id : std::as_const(m_order))
+    // Bản sao: start() phát tín hiệu, slot nghe tín hiệu có thể enqueue() thêm (đổi m_order giữa vòng lặp).
+    const QList<int> order = m_order;
+    for (const int id : order)
     {
         if (!m_items.contains(id))
             continue;
@@ -128,7 +161,8 @@ void FileDownloader::startAllQueued()
 
 void FileDownloader::tryStartNextQueued()
 {
-    for (int id : std::as_const(m_order))
+    const QList<int> order = m_order; // bản sao - xem startAllQueued()
+    for (const int id : order)
     {
         if (m_activeReplies.size() >= m_maxConcurrent)
             break;
@@ -158,6 +192,25 @@ void FileDownloader::startNetworkRequest(int id)
         return;
     }
 
+    // Hai mục cùng nhắm MỘT tệp đích dùng chung một tệp .part. Cho cả hai chạy cùng lúc thì mục vào sau cắt
+    // tệp về 0 rồi cả hai cùng ghi vào đó - mục nào xong trước báo "Hoàn tất" với một tệp TRỘN LẪN hai nội
+    // dung (thấy thật khi stress test). Giao diện tránh trùng tên qua isDestPathInUse(), nhưng nơi gọi khác
+    // (vd tải bản cập nhật hai lần liên tiếp) thì không.
+    for (auto other = m_items.constBegin(); other != m_items.constEnd(); ++other)
+    {
+        if (other.key() == id ||
+            QDir::cleanPath(other->destPath).compare(QDir::cleanPath(it.destPath), Qt::CaseInsensitive) != 0)
+            continue;
+        if (m_activeReplies.contains(other.key()))
+        {
+            failItem(id, "Một mục khác trong hàng đợi đang tải vào đúng tệp đích này - chờ nó xong rồi thử lại.");
+            return;
+        }
+        // Mục kia đang nghỉ (tạm dừng/lỗi): tệp .part chung sắp bị lượt này ghi đè, nó không được "tiếp tục"
+        // từ đó nữa (sẽ nối phần còn lại của tệp NÓ vào sau dữ liệu của tệp NÀY).
+        m_validators.remove(other.key());
+    }
+
     const QFileInfo destInfo(it.destPath);
     QDir().mkpath(destInfo.absolutePath());
 
@@ -185,13 +238,19 @@ void FileDownloader::startNetworkRequest(int id)
     req.setHeader(QNetworkRequest::UserAgentHeader, "OneForAll-Downloader/1.0");
     req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
     req.setTransferTimeout(kTransferTimeoutMs);
+    // LUÔN xin bản KHÔNG nén. Để mặc định thì Qt tự xin gzip/deflate rồi tự giải nén, và khi đó nó bỏ
+    // Content-Length, coi việc máy chủ đóng kết nối là "hết dữ liệu": một phản hồi nén bị ĐỨT giữa chừng
+    // được báo "Hoàn tất" với tệp cụt (thấy thật khi stress test). Bản không nén thì Qt đối chiếu được với
+    // Content-Length, và vị trí byte trong tệp .part cũng khớp với Range khi tiếp tục. Máy chủ nào vẫn trả
+    // bản nén (vd tệp lưu sẵn dạng gzip trên kho lưu trữ đám mây) thì gửi lại không kèm header này - xem
+    // m_compressedOnly.
+    st->identityRequested = !m_compressedOnly.contains(id);
+    if (st->identityRequested)
+        req.setRawHeader("Accept-Encoding", "identity");
     if (st->resuming)
     {
         req.setRawHeader("Range", "bytes=" + QByteArray::number(st->existingSize) + "-");
         req.setRawHeader("If-Range", validator);
-        // Vị trí byte trong tệp .part là của nội dung KHÔNG nén - yêu cầu rõ để server không trả một
-        // khoảng byte của bản nén (Qt cũng không tự giải nén khi ta tự đặt header này).
-        req.setRawHeader("Accept-Encoding", "identity");
     }
 
     QNetworkReply* reply = m_nam->get(req);
@@ -201,7 +260,6 @@ void FileDownloader::startNetworkRequest(int id)
     it.receivedBytes = st->received;
     if (!st->resuming)
         it.totalBytes = -1;
-    emit itemUpdated(id);
 
     // Đọc mã trạng thái + header MỘT lần cho mỗi lượt - gọi ở readyRead đầu tiên, và ở finished() cho
     // phản hồi không có thân (không có readyRead nào).
@@ -226,6 +284,16 @@ void FileDownloader::startNetworkRequest(int id)
             return;
         DownloadItem& item = itemIt.value();
 
+        const QByteArray encoding = reply->rawHeader("Content-Encoding").trimmed().toLower();
+        if (st->identityRequested && !(encoding.isEmpty() || encoding == "identity"))
+        {
+            // Xin bản không nén mà vẫn nhận bản nén: Qt KHÔNG giải nén khi ta tự đặt Accept-Encoding - ghi thẳng
+            // ra đĩa là hỏng tệp. Bỏ lượt này; finished() gửi lại ở chế độ để Qt tự giải nén.
+            m_compressedOnly.insert(id);
+            st->retryCompressed = true;
+            return;
+        }
+
         const QVariant lenHeader = reply->header(QNetworkRequest::ContentLengthHeader);
         const qint64 contentLength = lenHeader.isValid() ? lenHeader.toLongLong() : -1;
         const QByteArray newValidator = FileDownloaderInternal::pickResumeValidator(
@@ -233,12 +301,11 @@ void FileDownloader::startNetworkRequest(int id)
 
         if (st->resuming && st->httpStatus == 206)
         {
-            // Server nhận Range: kiểm tra nó trả ĐÚNG đoạn bắt đầu từ chỗ ta đang có, ở dạng không nén -
-            // sai thì ghép vào sẽ ra tệp hỏng mà vẫn báo "Hoàn tất".
+            // Server nhận Range: kiểm tra nó trả ĐÚNG đoạn bắt đầu từ chỗ ta đang có (dạng không nén đã kiểm
+            // ở trên) - sai thì ghép vào sẽ ra tệp hỏng mà vẫn báo "Hoàn tất".
             qint64 rangeStart = -1, rangeTotal = -1;
-            const QByteArray encoding = reply->rawHeader("Content-Encoding").trimmed().toLower();
             if (!FileDownloaderInternal::parseContentRange(reply->rawHeader("Content-Range"), &rangeStart, &rangeTotal) ||
-                rangeStart != st->existingSize || !(encoding.isEmpty() || encoding == "identity"))
+                rangeStart != st->existingSize)
             {
                 st->failure = "Máy chủ trả về sai đoạn dữ liệu khi tiếp tục tải - hãy thử lại để tải lại từ đầu.";
                 st->dropPart = true;
@@ -246,6 +313,7 @@ void FileDownloader::startNetworkRequest(int id)
             }
             item.totalBytes = rangeTotal > 0 ? rangeTotal
                                              : (contentLength >= 0 ? st->existingSize + contentLength : -1);
+            st->expectedTotal = rangeTotal;
             if (!newValidator.isEmpty())
                 m_validators[id] = newValidator;
             return;
@@ -267,7 +335,9 @@ void FileDownloader::startNetworkRequest(int id)
             item.receivedBytes = 0;
         }
         item.totalBytes = contentLength >= 0 ? contentLength : -1;
-        if (newValidator.isEmpty())
+        // Phản hồi được Qt tự giải nén (m_compressedOnly) không tiếp tục được: vị trí byte trong tệp .part là
+        // của nội dung đã giải nén, không tương ứng với khoảng byte nào máy chủ hiểu.
+        if (newValidator.isEmpty() || !st->identityRequested)
             m_validators.remove(id);
         else
             m_validators[id] = newValidator;
@@ -287,7 +357,7 @@ void FileDownloader::startNetworkRequest(int id)
             return;
         processHeaders();
 
-        if (!st->failure.isEmpty())
+        if (!st->failure.isEmpty() || st->retryCompressed)
         {
             reply->readAll();
             scheduleAbort();
@@ -352,6 +422,14 @@ void FileDownloader::startNetworkRequest(int id)
             tryStartNextQueued();
             return;
         }
+        if (st->retryCompressed)
+        {
+            // Gửi lại ngay (không qua hàng đợi - chỗ tải của lượt vừa bỏ còn trống), lần này để Qt tự giải nén.
+            QFile::remove(st->partPath);
+            m_validators.remove(id);
+            startNetworkRequest(id);
+            return;
+        }
 
         QString error = st->failure;
         // Tới đây mà còn OperationCanceledError thì không phải do pause()/cancel()/ta tự hủy (đã xử lý ở
@@ -364,6 +442,19 @@ void FileDownloader::startNetworkRequest(int id)
             error = QString("Máy chủ trả mã lỗi HTTP %1.").arg(st->httpStatus);
         if (error.isEmpty() && !flushed)
             error = "Không ghi được dữ liệu vào đĩa (" + st->file.errorString() + ") - kiểm tra dung lượng trống.";
+
+        // Phản hồi 206 trọn vẹn nhưng chỉ chứa MỘT PHẦN đoạn được hỏi (chuẩn HTTP cho phép; có máy chủ/CDN giới
+        // hạn kích thước mỗi lần trả) - CHƯA xong. Trước đây coi là xong và đổi tên một tệp thiếu dữ liệu thành
+        // tệp đích (thấy thật khi stress test). Xin tiếp phần còn lại; không tiến thêm được byte nào thì báo lỗi.
+        if (error.isEmpty() && st->expectedTotal > 0 && st->received < st->expectedTotal)
+        {
+            if (st->received > st->existingSize && m_validators.contains(id))
+            {
+                startNetworkRequest(id);
+                return;
+            }
+            error = "Máy chủ dừng gửi khi chưa đủ dữ liệu của tệp.";
+        }
 
         if (error.isEmpty())
         {
@@ -399,6 +490,11 @@ void FileDownloader::startNetworkRequest(int id)
         }
         tryStartNextQueued();
     });
+
+    // Phát SAU khi đã nối hai slot ở trên: slot nghe tín hiệu này có thể gọi pause()/cancel() ngay, mà abort()
+    // phát finished() tức thì - nếu lúc đó slot finished chưa được nối thì không ai đóng tệp .part, gỡ mục
+    // khỏi m_activeReplies hay hủy reply, và mục đó chiếm mãi một chỗ tải đồng thời.
+    emit itemUpdated(id);
 }
 
 void FileDownloader::pause(int id)
@@ -427,8 +523,15 @@ void FileDownloader::cancel(int id)
     it.status = DownloadItem::Status::Canceled;
     it.speedBytesPerSec = 0;
     if (auto* reply = m_activeReplies.value(id))
-        reply->abort(); // finished() đóng tệp .part rồi xóa nó (xem nhánh Canceled ở trên)
-    QFile::remove(it.destPath + FileDownloaderInternal::kPartSuffix); // mục chưa chạy/đang tạm dừng: tự dọn ở đây
+    {
+        // finished() đóng tệp .part, xóa nó rồi phát itemUpdated (xem nhánh Canceled ở trên). Không làm gì thêm
+        // sau lời gọi này: slot nghe itemUpdated có thể đã bắt đầu lại chính mục này (tệp .part mới đang mở).
+        reply->abort();
+        return;
+    }
+    // Mục chưa chạy/đang tạm dừng: tự dọn ở đây - trừ khi tệp .part đó đang được một mục KHÁC cùng đích ghi.
+    if (activeItemWritingTo(it.destPath, id) == 0)
+        QFile::remove(it.destPath + FileDownloaderInternal::kPartSuffix);
     m_validators.remove(id);
     emit itemUpdated(id);
 }
@@ -481,11 +584,15 @@ QString sanitizeFileName(const QString& rawName)
     if (out.isEmpty())
         return {};
 
-    // Tên thiết bị dành riêng của Windows (kể cả khi có phần mở rộng: "NUL.txt" vẫn là thiết bị NUL).
-    static const QRegularExpression reservedRx(
-        QStringLiteral("^(CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9]|CONIN\\$|CONOUT\\$)$"),
-        QRegularExpression::CaseInsensitiveOption);
-    if (reservedRx.match(out.section('.', 0, 0).trimmed()).hasMatch())
+    // Tên thiết bị dành riêng của Windows (kể cả khi có phần mở rộng: "NUL.txt" vẫn là thiết bị NUL; COM/LPT
+    // nhận cả chữ số mũ ¹ ² ³ - Windows coi "COM¹" như "COM1").
+    auto isReserved = [](const QString& candidate) {
+        static const QRegularExpression reservedRx(
+            QStringLiteral("^(CON|PRN|AUX|NUL|COM[0-9\\x{B9}\\x{B2}\\x{B3}]|LPT[0-9\\x{B9}\\x{B2}\\x{B3}]|CONIN\\$|CONOUT\\$)$"),
+            QRegularExpression::CaseInsensitiveOption);
+        return reservedRx.match(candidate.section('.', 0, 0).trimmed()).hasMatch();
+    };
+    if (isReserved(out))
         out.prepend('_');
 
     constexpr int kMaxLength = 150;
@@ -498,6 +605,9 @@ QString sanitizeFileName(const QString& rawName)
             stem.chop(1); // không cắt đôi một ký tự ngoài BMP
         stripTail(stem);
         out = stem + ext;
+        // Cắt ngắn có thể vừa TẠO RA một tên dành riêng: "NUL" + 150 khoảng trắng + "x" -> "NUL".
+        if (isReserved(out))
+            out.prepend('_');
     }
     return out;
 }

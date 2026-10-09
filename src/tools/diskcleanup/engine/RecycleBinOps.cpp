@@ -5,7 +5,10 @@
 #include <shellapi.h>
 #include <string>
 
+#include "FsSafety.h"
+
 #include <QDir>
+#include <QSet>
 #include <QStorageInfo>
 #include <vector>
 
@@ -45,11 +48,10 @@ QString describeFileOperationError(int code)
     }
 }
 
-bool runFileOperation(const QStringList& paths, FILEOP_FLAGS extraFlags, QString* error)
+/// Một lần gọi SHFileOperationW cho đúng danh sách này. *cancelled = thao tác bị HỦY (người dùng trả lời
+/// "Không" ở hộp hỏi lại của FOF_WANTNUKEWARNING, hoặc Shell tự dừng) - khác với lỗi của riêng một mục.
+int shellDelete(const QStringList& paths, FILEOP_FLAGS extraFlags, bool* cancelled)
 {
-    if (paths.isEmpty())
-        return true;
-
     std::vector<wchar_t> fromBuffer = buildDoubleNullList(paths);
 
     SHFILEOPSTRUCTW op{};
@@ -60,13 +62,97 @@ bool runFileOperation(const QStringList& paths, FILEOP_FLAGS extraFlags, QString
     op.fFlags = static_cast<FILEOP_FLAGS>(FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI | extraFlags);
 
     const int res = SHFileOperationW(&op);
-    if (res != 0 || op.fAnyOperationsAborted)
+    *cancelled = (res == 0 && op.fAnyOperationsAborted) || res == 0x75 /*DE_OPCANCELLED*/ || res == ERROR_CANCELLED;
+    return res;
+}
+
+/// Số đường dẫn tối đa giao cho Shell trong MỘT lần gọi - xem runFileOperation().
+constexpr int kShellBatchSize = 64;
+/// Số lần tối đa chấp nhận Shell báo lỗi trong một thao tác; quá số này thì dừng, các mục còn lại giữ nguyên.
+constexpr int kMaxShellFailures = 40;
+
+bool runFileOperation(const QStringList& paths, FILEOP_FLAGS extraFlags, QString* error)
+{
+    // Lọc trước khi giao cho Shell (đã xác nhận từng điểm bằng chạy thử thật trên thư mục tạm):
+    //  - Đường dẫn mà Shell sẽ hiểu thành một đối tượng KHÁC (tên có dấu chấm/khoảng trắng cuối, ký tự đại
+    //    diện, tương đối, gốc ổ đĩa...) bị TỪ CHỐI - xem FsSafety::unsafeShellPathReason.
+    //  - Mục đã tự biến mất và mục lặp bị bỏ: chỉ MỘT đường dẫn không tồn tại trong danh sách là Shell từ
+    //    chối CẢ LÔ (ERROR_FILE_NOT_FOUND) và không xóa gì.
+    //  - TỆP đang bị chương trình khác giữ được để lại ngay, không giao cho Shell: mỗi tệp như vậy làm Shell
+    //    tự thử lại ~1,2 giây rồi mới báo lỗi (xem FsSafety::lockedAgainstDelete).
+    QStringList pending;
+    QSet<QString> seen;
+    int refusedCount = 0;
+    int lockedCount = 0;
+    for (const QString& raw : paths)
     {
-        if (error)
-            *error = "Thao tác xóa thất bại: " + describeFileOperationError(res);
-        return false;
+        const QString path = QDir::cleanPath(QDir::fromNativeSeparators(raw));
+        if (!FsSafety::unsafeShellPathReason(path).isEmpty())
+        {
+            ++refusedCount;
+            continue;
+        }
+        const QString key = path.toLower();
+        if (seen.contains(key))
+            continue;
+        const FsSafety::RawInfo info = FsSafety::rawInfo(path);
+        if (!info.exists)
+            continue;
+        seen.insert(key);
+        if (!info.isDir && FsSafety::lockedAgainstDelete(path))
+        {
+            ++lockedCount;
+            continue;
+        }
+        pending << path;
     }
-    return true;
+
+    bool allOk = refusedCount == 0 && lockedCount == 0;
+    QString firstError;
+    if (refusedCount > 0)
+        firstError = QString("%1 đường dẫn bị từ chối vì Windows có thể hiểu thành một tệp/thư mục khác.").arg(refusedCount);
+    else if (lockedCount > 0)
+        firstError = "Thao tác xóa thất bại: " + describeFileOperationError(ERROR_SHARING_VIOLATION);
+
+    // Shell DỪNG CẢ LÔ ở mục lỗi đầu tiên (vd một tệp đang bị chương trình khác khóa): các mục đứng sau nó
+    // không bao giờ được xử lý dù hoàn toàn xóa được - với thư mục tạm (luôn có vài tệp đang mở) nghĩa là
+    // "Dọn dẹp" gần như không dọn được gì. Vì thế chia thành lô nhỏ và, khi một lô lỗi, bỏ đúng mục gây
+    // lỗi (mục đầu tiên còn tồn tại - Shell xử lý theo thứ tự) rồi chạy tiếp phần còn lại. Mỗi vòng danh
+    // sách ngắn đi ít nhất một mục nên luôn kết thúc; số lần Shell báo lỗi cũng có trần (mỗi lần có thể
+    // mất hơn 1 giây) để thao tác không kéo dài vô hạn khi rất nhiều mục cùng không xóa được.
+    bool cancelled = false;
+    int shellFailures = 0;
+    for (int offset = 0; offset < pending.size() && !cancelled && shellFailures < kMaxShellFailures; offset += kShellBatchSize)
+    {
+        QStringList batch = pending.mid(offset, kShellBatchSize);
+        while (!batch.isEmpty() && shellFailures < kMaxShellFailures)
+        {
+            const int res = shellDelete(batch, extraFlags, &cancelled);
+            if (res == 0 && !cancelled)
+                break;
+            allOk = false;
+            ++shellFailures;
+            if (firstError.isEmpty())
+                firstError = "Thao tác xóa thất bại: " + (cancelled ? QString("thao tác đã bị hủy.") : describeFileOperationError(res));
+            if (cancelled)
+                break; // không hỏi lại người dùng thêm lần nào nữa cho các mục còn lại
+
+            QStringList remaining;
+            for (const QString& path : batch)
+                if (FsSafety::existsNoFollow(path))
+                    remaining << path;
+            // "Không tìm thấy" + có mục vừa tự biến mất: lỗi do chính mục đã mất đó, chưa mục nào được xử
+            // lý - thử lại nguyên phần còn lại. Mọi trường hợp khác: mục đầu tiên còn tồn tại là mục lỗi.
+            const bool vanishedOnly = (res == ERROR_FILE_NOT_FOUND || res == ERROR_PATH_NOT_FOUND) && remaining.size() < batch.size();
+            if (!vanishedOnly && !remaining.isEmpty())
+                remaining.removeFirst();
+            batch = remaining;
+        }
+    }
+
+    if (!allOk && error)
+        *error = firstError;
+    return allOk;
 }
 } // namespace
 
@@ -98,7 +184,15 @@ QString RecycleBinOps::notRecyclableReason(const QString& path, qint64 sizeBytes
     const std::wstring native = QDir::toNativeSeparators(path).toStdWString();
     wchar_t volumeRoot[MAX_PATH + 1] = {};
     if (!GetVolumePathNameW(native.c_str(), volumeRoot, MAX_PATH))
-        return {};
+    {
+        // Không xác định được ổ chứa (vd đường dẫn quá dài): dùng gốc ổ đĩa "X:\" của chính đường dẫn.
+        if (native.size() < 3 || native[1] != L':' || native[2] != L'\\')
+            return {};
+        volumeRoot[0] = native[0];
+        volumeRoot[1] = L':';
+        volumeRoot[2] = L'\\';
+        volumeRoot[3] = L'\0';
+    }
 
     internal::DriveKind kind = internal::DriveKind::Other;
     switch (GetDriveTypeW(volumeRoot))
@@ -111,6 +205,16 @@ QString RecycleBinOps::notRecyclableReason(const QString& path, qint64 sizeBytes
 
     bool nukeOnDelete = false;
     qint64 maxCapacityMb = -1;
+    // Chính sách "Không chuyển tệp đã xóa vào Thùng rác" (NoRecycleFiles, đặt qua Group Policy cho người
+    // dùng hoặc cả máy): Shell xóa hẳn MỌI thứ dù cấu hình từng ổ ra sao.
+    for (HKEY policyRoot : {HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE})
+    {
+        DWORD value = 0;
+        DWORD size = sizeof(value);
+        if (RegGetValueW(policyRoot, L"Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer", L"NoRecycleFiles",
+                         RRF_RT_REG_DWORD, nullptr, &value, &size) == ERROR_SUCCESS && value != 0)
+            nukeOnDelete = true;
+    }
     wchar_t volumeGuidPath[64] = {};
     if (kind == internal::DriveKind::Fixed && GetVolumeNameForVolumeMountPointW(volumeRoot, volumeGuidPath, 64))
     {
@@ -127,7 +231,7 @@ QString RecycleBinOps::notRecyclableReason(const QString& path, qint64 sizeBytes
             DWORD value = 0;
             DWORD size = sizeof(value);
             if (RegGetValueW(HKEY_CURRENT_USER, key.c_str(), L"NukeOnDelete", RRF_RT_REG_DWORD, nullptr, &value, &size) == ERROR_SUCCESS)
-                nukeOnDelete = value != 0;
+                nukeOnDelete = nukeOnDelete || value != 0;
             size = sizeof(value);
             if (RegGetValueW(HKEY_CURRENT_USER, key.c_str(), L"MaxCapacity", RRF_RT_REG_DWORD, nullptr, &value, &size) == ERROR_SUCCESS)
                 maxCapacityMb = static_cast<qint64>(value);

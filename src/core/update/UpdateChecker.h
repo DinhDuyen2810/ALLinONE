@@ -65,8 +65,8 @@ int compareVersions(const QString& a, const QString& b);
 /// phát hành không đính kèm đúng tên asset này - coi như không có gì để tự cập nhật.
 UpdateInfo parseLatestRelease(const QByteArray& json);
 
-/// URL tải bản cập nhật có đáng tin không: BẮT BUỘC https và host đúng "github.com" (dạng
-/// browser_download_url của GitHub Releases). Tệp tải về sẽ được CHẠY trên máy người dùng - không nhận
-/// http thường hay host lạ dù JSON nói gì.
+/// URL tải bản cập nhật có đáng tin không: BẮT BUỘC https, host đúng "github.com", không kèm userinfo,
+/// cổng mặc định (dạng browser_download_url của GitHub Releases). Tệp tải về sẽ được CHẠY trên máy người
+/// dùng - không nhận http thường, host lạ hay cổng lạ dù JSON nói gì.
 bool isTrustedDownloadUrl(const QString& url);
 }

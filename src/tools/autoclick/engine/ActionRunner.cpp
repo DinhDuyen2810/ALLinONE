@@ -29,7 +29,17 @@ void ActionRunner::requestStop()
     if (!isRunning())
         return;
 
-    m_state = RunnerState::Stopping;
+    // Chỉ chuyển sang "Đang dừng" từ trạng thái còn đang chạy/tạm dừng. isRunning() vẫn là true trong khoảnh
+    // khắc run() đã đặt trạng thái kết thúc (Idle/Finished/Error) nhưng luồng chưa thoát hẳn - gán thẳng như
+    // trước sẽ đè "Đang dừng" lên trạng thái kết thúc và runnerState() kẹt ở đó cho tới lần chạy sau (đã
+    // bắt được bằng core_stress_tests: 3/400 lần khi bấm dừng đúng lúc chuỗi vừa tự chạy xong).
+    RunnerState expected = RunnerState::Running;
+    if (!m_state.compare_exchange_strong(expected, RunnerState::Stopping))
+    {
+        expected = RunnerState::Paused;
+        if (!m_state.compare_exchange_strong(expected, RunnerState::Stopping))
+            return;
+    }
     emit stateChanged(RunnerState::Stopping);
 }
 
@@ -38,8 +48,11 @@ void ActionRunner::requestPause()
     if (!isRunning() || m_stopRequested)
         return;
 
+    // Cùng lý do với requestStop(): chỉ đổi trạng thái khi luồng còn đang thật sự chạy.
+    RunnerState expected = RunnerState::Running;
+    if (!m_state.compare_exchange_strong(expected, RunnerState::Paused))
+        return;
     m_pauseRequested = true;
-    m_state = RunnerState::Paused;
     emit stateChanged(RunnerState::Paused);
 }
 
@@ -48,8 +61,10 @@ void ActionRunner::requestResume()
     if (!isRunning() || m_stopRequested)
         return;
 
+    RunnerState expected = RunnerState::Paused;
+    if (!m_state.compare_exchange_strong(expected, RunnerState::Running))
+        return;
     m_pauseRequested = false;
-    m_state = RunnerState::Running;
     emit stateChanged(RunnerState::Running);
 }
 
@@ -140,10 +155,11 @@ void ActionRunner::run()
     m_state = RunnerState::Running;
     emit stateChanged(RunnerState::Running);
 
+    // arg() một lần: tên chuỗi do người dùng đặt có thể chứa "%2"/"%3".
     Logger::instance().info("AutoClick", QString("Starting chain: %1 (Actions: %2, Repeat: %3)")
-                                            .arg(QString::fromStdString(m_chain.name))
-                                            .arg(m_chain.actions.size())
-                                            .arg(m_chain.repeatCount));
+                                            .arg(QString::fromStdString(m_chain.name),
+                                                 QString::number(m_chain.actions.size()),
+                                                 QString::number(m_chain.repeatCount)));
 
     int totalRounds = m_chain.repeatCount;
     int currentRound = 0;
@@ -187,6 +203,7 @@ void ActionRunner::run()
             if (m_stopRequested)
                 break;
 
+            const auto actionBegan = std::chrono::steady_clock::now();
             const int sourceIndex = enabledIndices[i];
             const auto& act = m_chain.actions[static_cast<size_t>(sourceIndex)];
             QString nextDesc = (i + 1 < enabledIndices.size())
@@ -240,6 +257,15 @@ void ActionRunner::run()
             }
 
             emit actionFinished(static_cast<int>(i + 1));
+
+            // NHỊP TỐI THIỂU: một hành động không có khoảng chờ nào và tự nó xong tức thì ("Nhấn phím", "Gõ
+            // văn bản" tức thì với Chờ trước = Chờ sau = 0) cho vòng lặp này quay hàng chục nghìn lần mỗi
+            // giây, mỗi lần đẩy vài tín hiệu sang luồng giao diện + một dòng log. Luồng giao diện xử lý không
+            // kịp, hàng đợi sự kiện phình mãi và nút Dừng/phím dừng toàn cục (cũng nằm trong hàng đợi đó) chỉ
+            // có tác dụng sau khi xử lý hết phần tồn đọng - đo thật bằng core_stress_tests: chạy 2 giây thì
+            // 233 giây sau khi bấm Dừng giao diện mới nhận ra. Nhường ít nhất 1 ms mỗi hành động.
+            if (std::chrono::steady_clock::now() - actionBegan < std::chrono::milliseconds(1))
+                msleep(1);
         }
     }
 

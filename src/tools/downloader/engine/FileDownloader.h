@@ -5,6 +5,7 @@
 #include <QByteArray>
 #include <QHash>
 #include <QObject>
+#include <QSet>
 #include <functional>
 
 class QNetworkAccessManager;
@@ -22,7 +23,13 @@ class QNetworkReply;
 /// `If-Range: <ETag/Last-Modified nhận ở lần trước>` - server chỉ trả 206 nếu tệp CHƯA đổi, còn đổi rồi
 /// thì trả 200 kèm toàn bộ tệp mới và ta tải lại từ đầu (trước đây gửi Range trần, tệp trên server đổi
 /// giữa hai lần là ghép ra tệp hỏng). Lần trước server không cho ETag/Last-Modified nào thì không có gì
-/// bảo đảm - tải lại từ đầu.
+/// bảo đảm - tải lại từ đầu. Phản hồi 206 chỉ chứa một phần đoạn được hỏi thì tự xin tiếp phần còn lại.
+///
+/// Mọi yêu cầu đều xin bản KHÔNG nén (`Accept-Encoding: identity`) để Qt đối chiếu được số byte nhận với
+/// Content-Length - đứt kết nối giữa chừng luôn bị phát hiện. Riêng máy chủ vẫn trả bản nén thì để Qt tự
+/// giải nén; với các máy chủ đó KHÔNG tiếp tục tải dở được và không phát hiện được phản hồi bị đứt.
+///
+/// Hai mục cùng tệp đích không chạy đồng thời: mục bắt đầu sau báo lỗi cho tới khi mục kia dừng.
 ///
 /// Chỉ nhận URL http/https (xem FileDownloaderInternal::isHttpUrl).
 class FileDownloader : public QObject
@@ -66,11 +73,14 @@ private:
     void startNetworkRequest(int id);
     void tryStartNextQueued();
     void failItem(int id, const QString& error);
+    /// ID của mục ĐANG tải (khác `exceptId`) vào đúng tệp đích này; 0 nếu không có.
+    int activeItemWritingTo(const QString& destPath, int exceptId) const;
 
     QNetworkAccessManager* m_nam{nullptr};
     QHash<int, DownloadItem> m_items;
     QHash<int, QNetworkReply*> m_activeReplies;
     QHash<int, QByteArray> m_validators; ///< ETag mạnh/Last-Modified của phần đang nằm trong tệp .part
+    QSet<int> m_compressedOnly;          ///< Mục mà máy chủ trả bản nén dù được xin bản không nén (xem .cpp)
     QList<int> m_order;
     int m_nextId{1};
     int m_maxConcurrent{3};
@@ -90,7 +100,7 @@ bool isHttpUrl(const QString& url);
 /// thành phần thư mục (kể cả "\" - `QUrl::fileName()` giải mã "%5C" thành "\" và "..%5C..%5Cx.bat" từng
 /// thoát được khỏi thư mục lưu), ký tự cấm trên Windows (\ / : * ? " < > | và ký tự điều khiển; ':' còn mở
 /// alternate data stream), ký tự đảo chiều chữ (giả mạo phần mở rộng), dấu chấm/khoảng trắng ở cuối, tên
-/// thiết bị dành riêng (CON, PRN, AUX, NUL, COM1-9, LPT1-9), và cắt còn tối đa 150 ký tự (giữ phần mở
+/// thiết bị dành riêng (CON, PRN, AUX, NUL, COM0-9, LPT0-9, kể cả COM¹²³/LPT¹²³), và cắt còn tối đa 150 ký tự (giữ phần mở
 /// rộng). Trả chuỗi RỖNG nếu không còn gì dùng được (nơi gọi tự đặt tên mặc định). Thuần chuỗi.
 QString sanitizeFileName(const QString& rawName);
 

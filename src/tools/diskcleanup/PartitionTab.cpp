@@ -516,7 +516,10 @@ void PartitionTab::onResizeClicked()
 
     // Kẹp theo BYTE vào đúng khoảng Windows trả về (ô nhập làm tròn 2 chữ số thập phân GB).
     const qint64 newSizeBytes = PartitionManager::internal::clampResizeBytes(m_newSizeSpin->value(), m_supportedRange);
-    if (newSizeBytes == p->sizeBytes)
+    // So cả theo độ chính xác của ô nhập: giá trị CHƯA được sửa (kích thước hiện tại đã làm tròn 2 chữ
+    // số) đổi ra byte lệch vài MB - không được biến thành một lệnh Resize-Partition thật.
+    if (newSizeBytes == p->sizeBytes ||
+        PartitionManager::internal::isSameSizeAtInputPrecision(m_newSizeSpin->value(), p->sizeBytes))
     {
         QMessageBox::information(this, "Đổi kích thước", "Kích thước mới bằng kích thước hiện tại - không có gì để đổi.");
         return;

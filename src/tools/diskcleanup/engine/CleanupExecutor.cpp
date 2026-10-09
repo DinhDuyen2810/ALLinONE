@@ -33,7 +33,8 @@ void CleanupExecutor::run()
     //    nhưng đích đã mất - lối tắt hỏng trong "Tệp gần đây" từng được tính "đã giải phóng" mà không hề xóa.
     //  - Đường dẫn LẶP (hai hạng mục cùng trỏ vào một thư mục, vd "Tệp tạm hệ thống" và "Tệp nhật ký" đều
     //    quét %WINDIR%\Temp) chỉ xóa/tính MỘT lần.
-    //  - Đường dẫn rỗng/tương đối/gốc ổ đĩa và junction/symlink THƯ MỤC không bao giờ được xóa từ đây.
+    //  - Đường dẫn rỗng/tương đối/gốc ổ đĩa, đường dẫn mà Windows hiểu thành một đối tượng khác (tên có dấu
+    //    chấm/khoảng trắng cuối...) và junction/symlink THƯ MỤC không bao giờ được xóa từ đây.
     //  - Chế độ Thùng rác: mục KHÔNG vào Thùng rác được (quá lớn, Thùng rác tắt, ổ không có Thùng rác)
     //    được GIỮ NGUYÊN - Shell sẽ hủy hẳn chúng nếu cứ đưa vào (xem RecycleBinOps::moveToRecycleBin).
     QStringList toDelete;
@@ -53,7 +54,9 @@ void CleanupExecutor::run()
         seen.insert(key);
 
         const qint64 size = i < m_sizes.size() ? m_sizes[i] : 0;
-        if (!FsSafety::unsafeCleanupRootReason(path, {}).isEmpty())
+        // unsafeShellPathReason (không chỉ unsafeCleanupRootReason): còn chặn cả tên mà Shell hiểu thành
+        // một tệp KHÁC - vd "thư mục/tệp." (dấu chấm cuối) làm Shell xóa "thư mục/tệp".
+        if (!FsSafety::unsafeShellPathReason(path).isEmpty())
         {
             ++refusedCount;
             continue;
@@ -72,7 +75,8 @@ void CleanupExecutor::run()
         }
         if (!m_permanent)
         {
-            const QString reason = RecycleBinOps::notRecyclableReason(path, size);
+            // Tệp có thể đã LỚN LÊN từ lúc quét - so với kích thước hiện tại, không chỉ kích thước cũ.
+            const QString reason = RecycleBinOps::notRecyclableReason(path, info.isDir ? size : qMax(size, info.sizeBytes));
             if (!reason.isEmpty())
             {
                 ++notRecyclableCount;
@@ -116,9 +120,12 @@ void CleanupExecutor::run()
     QStringList notes;
     if (failedCount > 0)
     {
-        notes << (!ok && !error.isEmpty()
-                      ? error
-                      : QString("%1 mục không xóa được (có thể đang được chương trình khác sử dụng).").arg(failedCount));
+        // Luôn kèm SỐ mục: một mục lỗi không còn chặn các mục sau nó (xem RecycleBinOps), nên thông báo
+        // lỗi của Shell chỉ nói về mục lỗi ĐẦU TIÊN.
+        QString note = QString("%1 mục không xóa được (có thể đang được chương trình khác sử dụng).").arg(failedCount);
+        if (!ok && !error.isEmpty())
+            note += " Lỗi đầu tiên: " + error;
+        notes << note;
     }
     if (notRecyclableCount > 0)
     {

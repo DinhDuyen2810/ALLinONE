@@ -97,7 +97,15 @@ bool QRHistoryStore::load()
         // tên sang .bak để tệp mới không đè lên nó, người dùng còn tự cứu/sửa tay được.
         QString backup = m_path + ".bak";
         if (QFile::exists(backup))
-            backup = m_path + "." + QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss") + ".bak";
+        {
+            // Tên theo thời điểm chỉ chính xác tới GIÂY: hai lần gặp tệp hỏng trong cùng một giây cho ra cùng
+            // một tên, QFile::rename() thất bại (đích đã có) và tệp hỏng nằm lại để lần add() kế tiếp đè mất.
+            // Thêm số thứ tự cho tới khi có tên chưa dùng.
+            const QString stamped = m_path + "." + QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss");
+            backup = stamped + ".bak";
+            for (int n = 2; QFile::exists(backup) && n < 1000; ++n)
+                backup = QString("%1-%2.bak").arg(stamped).arg(n);
+        }
         if (QFile::rename(m_path, backup))
             Logger::instance().warning("QR", "Tệp lịch sử QR bị hỏng, đã đổi tên thành: " + backup);
         else
@@ -115,6 +123,11 @@ bool QRHistoryStore::load()
         e.content = o.value("content").toString();
         if (!e.content.isEmpty())
             m_entries.push_back(e);
+        // Giới hạn 300 mục trước đây chỉ được áp ở add(): một tệp nhiều mục hơn (sửa tay, bản khác ghi) nạp
+        // vào nguyên cả nghìn mục, bảng lịch sử dựng hết và mỗi lần ghi lại chép đủ chừng đó. Giữ các mục
+        // MỚI NHẤT (đứng đầu tệp), như add() vẫn làm.
+        if (m_entries.size() >= kMaxEntries)
+            break;
     }
     return true;
 }

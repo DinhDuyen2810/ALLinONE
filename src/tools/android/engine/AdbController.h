@@ -60,7 +60,8 @@ QList<AndroidDeviceInfo> parseDevicesOutput(const QString& output);
 bool isKnownDeviceState(const QString& state);
 
 /// Hai đường dẫn có trỏ tới CÙNG một tệp thực thi không (không phân biệt hoa/thường, kiểu dấu gạch,
-/// tiền tố "\\?\"; phân giải liên kết/junction nếu tệp tồn tại).
+/// tiền tố "\\?\"; khi cả hai tệp tồn tại thì so thêm danh tính tệp vật lý - tên ngắn 8.3, liên kết,
+/// junction đều ra đúng).
 bool isSameExecutablePath(const QString& a, const QString& b);
 
 /// TerminateProcess mọi tiến trình có đường dẫn tệp ảnh khớp `exePath` (trừ chính tiến trình đang gọi),

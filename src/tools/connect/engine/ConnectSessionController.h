@@ -61,6 +61,8 @@ struct DiscoveredPeer
  *     R -> I  PairAccept{tên, id, khóa dài hạn, cổng nghe} [K_code, nonce ngẫu nhiên, AAD chiều R]
  *     -> đóng kết nối. Giải mã thất bại ở R = một lần thử mã sai; quá PairingCode::kMaxAttempts lần thì
  *        hủy mã.
+ *     Hai máy cùng nhập mã cho nhau (hai yêu cầu đi chéo): máy có id LỚN hơn hoãn PairAccept của mình tới
+ *     khi lần ghép đôi đi của chính nó kết thúc - để cả hai kết thúc với CÙNG một khóa dài hạn.
  *
  *   Phiên (K = khóa dài hạn của cặp máy):
  *     I -> R  preamble{v, Session, idI}                    (không mã hóa - để R biết dùng khóa của ai)
@@ -189,6 +191,8 @@ private:
         qint64 createdMs{0};
         qint64 lastRxMs{0};
         qint64 probeSentMs{0};   // != 0: đang chờ trả lời một Heartbeat dò "còn sống không"
+        bool pairRequestHeld{false};      // PairResponder: đã nhận PairRequest hợp lệ nhưng đang hoãn trả lời
+        ProtocolMessage heldPairRequest;  // (hai máy cùng nhập mã cho nhau - xem handlePairRequest)
     };
     struct ReconnectState
     {
@@ -221,6 +225,8 @@ private:
     // ---- Ghép đôi ----
     void handlePairRequest(NetworkSession* session, const ProtocolMessage& msg);
     void handlePairAccept(NetworkSession* session, const ProtocolMessage& msg);
+    bool outgoingPairingInFlight() const;
+    void resumeHeldPairRequests();
     void registerPairingFailure();
     void finalizePairing(const QString& peerId, const QString& machineName, const QHostAddress& addr, quint16 port,
                          const QByteArray& longTermKey);

@@ -9,21 +9,24 @@
  * khi chính chuỗi đang chạy lại liên tục giành con trỏ chuột (SetCursorPos) - với chuỗi lặp vô hạn có thời
  * gian chờ ngắn thì gần như không bấm trúng được.
  *
- * Tổ hợp CỐ ĐỊNH Ctrl+Alt+F8 (không phải F8 trần): F1-F12 nằm trong danh sách phím mà chính chuỗi hành
+ * Tổ hợp ưu tiên là Ctrl+Alt+F8 (không phải F8 trần): F1-F12 nằm trong danh sách phím mà chính chuỗi hành
  * động có thể gửi đi ("Nhấn phím"), và RegisterHotKey khớp cả phím do SendInput tiêm vào - dùng phím đơn
- * thì một chuỗi có bước "Nhấn F8" sẽ tự dừng chính nó.
+ * thì một chuỗi có bước "Nhấn F8" sẽ tự dừng chính nó. Nếu chương trình khác đã giữ tổ hợp đó thì tự thử
+ * lần lượt Ctrl+Alt+F9, Ctrl+Alt+F10, Ctrl+Shift+F8 - label() luôn trả về tổ hợp ĐANG có hiệu lực để HUD
+ * hiện đúng phím người dùng phải bấm.
  *
  * Chỉ ĐĂNG KÝ trong lúc chuỗi đang chạy rồi hủy ngay khi dừng (không giữ phím tắt của hệ thống khi không
  * cần). Gom toàn bộ lời gọi Win32 vào đây theo Rule 3 (Win32 chỉ nằm ở tầng engine/capture).
  */
 namespace StopHotkey
 {
-/// Nhãn hiển thị cho người dùng ("Ctrl+Alt+F8").
+/// Nhãn hiển thị cho người dùng: tổ hợp đang đăng ký, hoặc tổ hợp ưu tiên ("Ctrl+Alt+F8") khi chưa đăng ký.
 QString label();
 
 /// Đăng ký phím tắt, gắn với cửa sổ có handle `windowId` (QWidget::winId()) - WM_HOTKEY sẽ được gửi tới
-/// đúng cửa sổ đó (kể cả khi nó đang thu nhỏ). Trả về false nếu Windows từ chối, thường vì một ứng dụng
-/// khác đã đăng ký đúng tổ hợp này. PHẢI gọi từ luồng sở hữu cửa sổ (luồng GUI).
+/// đúng cửa sổ đó (kể cả khi nó đang thu nhỏ). Trả về false nếu Windows từ chối MỌI tổ hợp trong danh sách
+/// (chương trình khác đã giữ hết) hoặc đang có một phím dừng đăng ký sẵn. PHẢI gọi từ luồng sở hữu cửa sổ
+/// (luồng GUI).
 bool registerFor(WId windowId);
 
 void unregisterFor(WId windowId);

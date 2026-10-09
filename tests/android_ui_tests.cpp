@@ -22,6 +22,7 @@
 #include "tools/android/DevicesTab.h"
 #include "tools/android/WirelessPairDialog.h"
 #include "tools/android/engine/AdbController.h"
+#include "tools/android/engine/AdbDeviceLister.h"
 
 static int g_fail = 0, g_pass = 0;
 #define CHECK(cond)                                                            \
@@ -106,6 +107,37 @@ int main(int argc, char** argv)
             if (label->textFormat() == Qt::PlainText)
                 hasPlainStatusLabel = true;
         CHECK(hasPlainStatusLabel);
+    }
+
+    // Làm mới danh sách: lựa chọn đi theo THIẾT BỊ (số serial), không theo số hàng. Trước đây rút thiết bị
+    // đang chọn thì lựa chọn âm thầm nhảy sang thiết bị vừa dồn lên đúng hàng đó.
+    if (devicesTab)
+    {
+        auto* table = devicesTab->findChild<QTableWidget*>();
+        auto* lister = devicesTab->findChild<AdbDeviceLister*>();
+        CHECK(table && lister);
+        if (table && lister)
+        {
+            const auto device = [](const QString& serial) {
+                AndroidDeviceInfo d;
+                d.serial = serial;
+                d.state = "device";
+                return d;
+            };
+            const auto selectedSerial = [table]() {
+                const auto rows = table->selectionModel()->selectedRows();
+                return rows.size() == 1 ? table->item(rows.first().row(), 0)->text() : QString();
+            };
+            emit lister->listed({device("AAA"), device("BBB")}, QString());
+            table->selectRow(0);
+            CHECK(selectedSerial() == "AAA");
+            emit lister->listed({device("BBB"), device("AAA")}, QString()); // đổi thứ tự
+            CHECK(selectedSerial() == "AAA");
+            emit lister->listed({device("BBB")}, QString());                // AAA bị rút
+            CHECK(selectedSerial().isEmpty());
+            emit lister->listed({}, QString());
+            CHECK(table->rowCount() == 0);
+        }
     }
 
     QString missing;

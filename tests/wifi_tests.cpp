@@ -276,6 +276,42 @@ int main(int argc, char** argv)
         CHECK(WifiNetworkUtil::mergeDuplicates({}).isEmpty());
     }
 
+    // ---- SSID có ký tự điều khiển: XML KHÔNG thành lỗi mà thành hồ sơ mang tên KHÁC -> phải bị chặn từ trước ----
+    {
+        // Hồi quy: QXmlStreamWriter lặng lẽ bỏ ký tự không hợp lệ, bộ đọc XML đổi CR thành LF. SSID "Nha<0x01>"
+        // từng được dựng thành hồ sơ tên "Nha" - đè lên hồ sơ "Nha" thật mà không sao lưu (WlanController sao
+        // lưu/kết nối/hoàn tác theo tên "Nha<0x01>").
+        WifiProfile p;
+        const QString evil = QString("Nha") + QChar(0x01);
+        CHECK(WlanProfileXml::parse(WlanProfileXml::build(evil.toUtf8(), evil, WifiSecurity::Wpa2Psk, "matkhau123", true), &p));
+        CHECK(p.name == "Nha"); // đúng hiện tượng: tên đã bị rút gọn
+        CHECK(!WlanProfileXml::isSafeProfileName(evil));
+        CHECK(!WlanProfileXml::isSafeProfileName(QString("Nha") + QChar(u'\0') + "x"));
+        CHECK(!WlanProfileXml::isSafeProfileName("Nha\rB"));
+        CHECK(!WlanProfileXml::isSafeProfileName(QString("Nha") + QChar(0xD83D))); // surrogate lẻ
+        CHECK(!WlanProfileXml::isSafeProfileName(QString()));
+        CHECK(WlanProfileXml::isSafeProfileName("Wifi <Nhà> & \"Bạn\" 'ơi'"));
+        CHECK(WlanProfileXml::isSafeProfileName("Tab\tAnd\nNewline"));
+        CHECK(WlanProfileXml::isSafeProfileName(QString::fromUtf8("Quán \xF0\x9F\x98\x80")));
+        CHECK(WlanProfileXml::isSafeProfileName(QString::fromLatin1("caf\xE9\x85"))); // SSID không phải UTF-8 (Latin-1)
+    }
+
+    // ---- Hồ sơ trùng TÊN nhưng của mạng khác: nhận ra bằng <hex>, không bằng tên ----
+    {
+        // Windows tự đặt tên "Foo 2" cho hồ sơ thứ hai của SSID "Foo". Một mạng có SSID thật là "Foo 2" khi đó
+        // trùng TÊN với hồ sơ này - ghi đè sẽ xóa mất hồ sơ của mạng "Foo".
+        const QString foo2 = WlanProfileXml::build("Foo", "Foo 2", WifiSecurity::Wpa2Psk, "matkhau123", true);
+        CHECK(WlanProfileXml::describesSsid(foo2, "Foo"));
+        CHECK(!WlanProfileXml::describesSsid(foo2, "Foo 2"));
+        CHECK(!WlanProfileXml::describesSsid(foo2, QByteArray()));
+        const QByteArray raw = QByteArray::fromHex("ff00fe41"); // SSID không phải UTF-8, có byte 0
+        CHECK(WlanProfileXml::describesSsid(WlanProfileXml::build(raw, "x", WifiSecurity::Open, QString(), false), raw));
+        CHECK(WlanProfileXml::describesSsid(QString(foo2).replace("466F6F", "466f6f"), "Foo")); // hex chữ thường
+        // Không đủ căn cứ (XML hỏng, không có <hex>) thì KHÔNG kết luận "mạng khác".
+        CHECK(WlanProfileXml::describesSsid("khong phai xml", "Foo"));
+        CHECK(WlanProfileXml::describesSsid(QString(foo2).remove("<hex>466F6F</hex>"), "Bar"));
+    }
+
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

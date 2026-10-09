@@ -37,6 +37,10 @@ void LocalIdentityStore::loadOrCreate()
     if (f.open(QIODevice::ReadOnly))
     {
         const QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+        // Đóng NGAY sau khi đọc: nếu tệp hỏng, bên dưới sẽ ghi lại bằng QSaveFile (đổi tên ĐÈ lên đích) - trên
+        // Windows việc đổi tên đè thất bại khi tệp đích còn đang mở. Để mở thì danh tính vừa sinh lại không
+        // bao giờ lưu được: mỗi lần chạy ứng dụng ra một id mới, mọi máy đã ghép đôi coi máy này là máy lạ.
+        f.close();
         if (doc.isObject())
         {
             const QJsonObject o = doc.object();

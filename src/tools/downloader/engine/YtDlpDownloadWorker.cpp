@@ -198,7 +198,9 @@ qint64 toLongLongOrMinusOne(const QByteArray& field)
     bool ok = false;
     // yt-dlp trả số thực cho speed/eta đôi khi (vd "1234567.8") - toDouble rồi ép về qint64 cho an toàn.
     const double d = field.toDouble(&ok);
-    return ok ? static_cast<qint64>(d) : -1;
+    // toDouble() nhận cả "nan"/"inf"/"1e999"; ép các giá trị đó (hay số ngoài tầm qint64) sang số nguyên là
+    // hành vi không xác định - thực tế ra -9223372036854775808. Số âm cũng không có nghĩa với các trường này.
+    return (ok && d >= 0.0 && d < 9.0e18) ? static_cast<qint64>(d) : -1;
 }
 } // namespace
 

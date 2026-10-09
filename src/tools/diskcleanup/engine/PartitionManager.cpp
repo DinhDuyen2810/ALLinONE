@@ -8,6 +8,9 @@
 #include <QJsonObject>
 #include <QJsonValue>
 
+#include <cmath>
+#include <limits>
+
 namespace
 {
 /// Dùng chung PowerShellRunner (src/core/) - xem ở đó lý do dùng -EncodedCommand thay vì stdin/-File.
@@ -154,6 +157,20 @@ QString buildResizeScript(int diskNumber, int partitionNumber, qint64 newSizeByt
 
 namespace
 {
+/// double -> qint64 CÓ BÃO HÒA. Ép kiểu thẳng một double ngoài khoảng qint64 (JSON hỏng/bị cắt cụt cho ra
+/// 1e300, hay NaN/vô cực từ phép tính) là hành vi KHÔNG XÁC ĐỊNH trong C++ - trên x86-64 thực tế cho ra
+/// INT64_MIN, tức một "kích thước" âm khổng lồ đi tiếp vào các phép so khoảng.
+qint64 saturatedInt64(double value)
+{
+    if (std::isnan(value))
+        return 0;
+    if (value >= 9223372036854775807.0)
+        return std::numeric_limits<qint64>::max();
+    if (value <= -9223372036854775808.0)
+        return std::numeric_limits<qint64>::min();
+    return static_cast<qint64>(value);
+}
+
 PartitionInfo partitionFromJsonObject(const QJsonObject& o)
 {
     PartitionInfo p;
@@ -161,13 +178,13 @@ PartitionInfo partitionFromJsonObject(const QJsonObject& o)
     p.partitionNumber = o.value("PartitionNumber").toInt(-1);
     p.driveLetter = o.value("DriveLetter").toString();
     p.type = o.value("Type").toString();
-    p.sizeBytes = static_cast<qint64>(o.value("Size").toDouble(0));
+    p.sizeBytes = saturatedInt64(o.value("Size").toDouble(0));
     p.isBoot = o.value("IsBoot").toBool(false);
     p.isSystem = o.value("IsSystem").toBool(false);
     p.isActive = o.value("IsActive").toBool(false);
     p.fileSystem = o.value("FileSystem").toString();
     p.label = o.value("Label").toString();
-    const qint64 remaining = static_cast<qint64>(o.value("SizeRemaining").toDouble(-1));
+    const qint64 remaining = saturatedInt64(o.value("SizeRemaining").toDouble(-1));
     p.freeBytes = remaining;
     return p;
 }
@@ -217,9 +234,9 @@ SupportedSizeRange parseSupportedSizeJson(const QByteArray& json, QString* error
         return range;
     }
     const QJsonObject o = doc.object();
-    range.minBytes = static_cast<qint64>(o.value("SizeMin").toDouble(0));
-    range.maxBytes = static_cast<qint64>(o.value("SizeMax").toDouble(0));
-    range.ok = range.maxBytes > 0 && range.maxBytes >= range.minBytes;
+    range.minBytes = saturatedInt64(o.value("SizeMin").toDouble(0));
+    range.maxBytes = saturatedInt64(o.value("SizeMax").toDouble(0));
+    range.ok = range.minBytes >= 0 && range.maxBytes > 0 && range.maxBytes >= range.minBytes;
     if (!range.ok && error)
         *error = "Kích thước cho phép không hợp lệ";
     return range;
@@ -227,7 +244,11 @@ SupportedSizeRange parseSupportedSizeJson(const QByteArray& json, QString* error
 
 qint64 clampResizeBytes(double sizeGb, const SupportedSizeRange& range)
 {
-    const qint64 bytes = static_cast<qint64>(sizeGb * 1024.0 * 1024.0 * 1024.0);
+    // Khoảng không hợp lệ hoặc giá trị không phải số: trả về 0 - resizeBlockReason() từ chối mọi kích
+    // thước <= 0, nên không bao giờ thành một lệnh đổi kích thước thật.
+    if (!range.ok || range.minBytes < 0 || range.maxBytes < range.minBytes || std::isnan(sizeGb))
+        return 0;
+    const qint64 bytes = saturatedInt64(sizeGb * 1024.0 * 1024.0 * 1024.0);
     return qBound(range.minBytes, bytes, range.maxBytes);
 }
 
@@ -237,6 +258,10 @@ QString resizeBlockReason(int diskNumber, int partitionNumber, qint64 sizeAtQuer
 {
     if (diskNumber < 0 || partitionNumber < 0)
         return "Chưa xác định được phân vùng cần đổi kích thước.";
+    // Kích thước lúc tra <= 0 nghĩa là lúc đó KHÔNG đọc được kích thước (JSON thiếu trường Size) - phép
+    // đối chiếu "vẫn là phân vùng đó" bên dưới sẽ thành 0 == 0, tức không đối chiếu được gì.
+    if (sizeAtQueryBytes <= 0)
+        return "Không xác định được kích thước của phân vùng lúc tra - hãy bấm Làm mới và tra lại.";
 
     const PartitionInfo* current = nullptr;
     for (const PartitionInfo& p : currentPartitions)
@@ -252,7 +277,7 @@ QString resizeBlockReason(int diskNumber, int partitionNumber, qint64 sizeAtQuer
     if (current->sizeBytes != sizeAtQueryBytes)
         return "Kích thước hiện tại của phân vùng đã khác lúc tra (danh sách đĩa/phân vùng đã thay đổi). Hãy "
                "bấm Làm mới, chọn lại phân vùng và tra lại kích thước.";
-    if (!currentRange.ok || currentRange.maxBytes < currentRange.minBytes)
+    if (!currentRange.ok || currentRange.minBytes < 0 || currentRange.maxBytes < currentRange.minBytes)
         return "Không xác nhận lại được khoảng kích thước Windows cho phép.";
     if (newSizeBytes <= 0 || newSizeBytes < currentRange.minBytes || newSizeBytes > currentRange.maxBytes)
         return QString("Kích thước mới (%1 byte) nằm ngoài khoảng Windows cho phép (%2 - %3 byte).")
@@ -262,6 +287,14 @@ QString resizeBlockReason(int diskNumber, int partitionNumber, qint64 sizeAtQuer
     if (newSizeBytes == current->sizeBytes)
         return "Kích thước mới bằng kích thước hiện tại - không có gì để đổi.";
     return {};
+}
+
+bool isSameSizeAtInputPrecision(double sizeGb, qint64 currentBytes)
+{
+    if (!std::isfinite(sizeGb) || std::fabs(sizeGb) > 1e12) // ngoài khoảng này llround() không còn xác định
+        return false;
+    const double currentGb = static_cast<double>(currentBytes) / (1024.0 * 1024.0 * 1024.0);
+    return std::llround(sizeGb * 100.0) == std::llround(currentGb * 100.0);
 }
 
 } // namespace internal

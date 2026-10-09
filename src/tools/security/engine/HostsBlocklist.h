@@ -18,7 +18,9 @@
 ///    lần - không ghi đè bản sao lưu đã có, để luôn giữ được trạng thái TRƯỚC khi công cụ này đụng vào).
 ///  - Ghi nguyên tử qua QSaveFile (ghi ra tệp tạm rồi đổi tên đè lên) - mất điện/đầy đĩa giữa chừng không
 ///    để lại hosts cụt; kết quả ghi/commit được kiểm tra và trả lỗi thật.
-///  - Giữ nguyên từng byte các dòng không thuộc khối của mình, kể cả khi tệp không phải UTF-8.
+///  - Giữ nguyên từng byte các dòng không thuộc khối của mình, kể cả khi tệp không phải UTF-8. Kiểu xuống
+///    dòng: tệp thuần "\r\n" hoặc thuần "\n" được ghi lại đúng kiểu đó; tệp LẪN LỘN hai kiểu được đưa cả
+///    về "\r\n". Các dòng trắng ở cuối tệp được gom lại còn một.
 namespace HostsBlocklist
 {
 

@@ -350,54 +350,67 @@ void DuplicateFilesTab::onDeleteSelectedClicked()
     //  - từng bản chọn xóa phải còn đúng kích thước + thời điểm sửa như lúc quét, nếu không thì nó không
     //    còn chắc là bản sao nữa: giữ lại;
     //  - bản không vào Thùng rác được (quá lớn, ổ không có Thùng rác) cũng giữ lại - Shell sẽ hủy hẳn nó.
-    QStringList paths;
-    qint64 total = 0;
-    int skippedGroups = 0;
-    int skippedChanged = 0;
-    int skippedNotRecyclable = 0;
-    for (int i = 0; i < m_tree->topLevelItemCount(); ++i)
+    struct Selection
     {
-        QTreeWidgetItem* group = m_tree->topLevelItem(i);
-        QList<QTreeWidgetItem*> checked;
-        bool keeperIntact = false;
-        for (int j = 0; j < group->childCount(); ++j)
+        QStringList paths;
+        qint64 total{0};
+        int skippedGroups{0};
+        int skippedChanged{0};
+        int skippedNotRecyclable{0};
+    };
+    auto collectSelection = [this]() {
+        Selection sel;
+        for (int i = 0; i < m_tree->topLevelItemCount(); ++i)
         {
-            QTreeWidgetItem* child = group->child(j);
-            if (child->checkState(0) == Qt::Checked)
+            QTreeWidgetItem* group = m_tree->topLevelItem(i);
+            QList<QTreeWidgetItem*> checked;
+            bool keeperIntact = false;
+            for (int j = 0; j < group->childCount(); ++j)
             {
-                checked << child;
+                QTreeWidgetItem* child = group->child(j);
+                if (child->checkState(0) == Qt::Checked)
+                {
+                    checked << child;
+                    continue;
+                }
+                keeperIntact = keeperIntact ||
+                               DuplicateFinder::fileUnchanged(child->data(0, Qt::UserRole).toString(),
+                                                              child->data(1, Qt::UserRole).toLongLong(),
+                                                              child->data(0, kLastWriteRole).toLongLong());
+            }
+            if (checked.isEmpty())
+                continue;
+            if (!keeperIntact)
+            {
+                ++sel.skippedGroups;
                 continue;
             }
-            keeperIntact = keeperIntact ||
-                           DuplicateFinder::fileUnchanged(child->data(0, Qt::UserRole).toString(),
-                                                          child->data(1, Qt::UserRole).toLongLong(),
-                                                          child->data(0, kLastWriteRole).toLongLong());
-        }
-        if (checked.isEmpty())
-            continue;
-        if (!keeperIntact)
-        {
-            ++skippedGroups;
-            continue;
-        }
-        for (QTreeWidgetItem* child : checked)
-        {
-            const QString path = child->data(0, Qt::UserRole).toString();
-            const qint64 size = child->data(1, Qt::UserRole).toLongLong();
-            if (!DuplicateFinder::fileUnchanged(path, size, child->data(0, kLastWriteRole).toLongLong()))
+            for (QTreeWidgetItem* child : checked)
             {
-                ++skippedChanged;
-                continue;
+                const QString path = child->data(0, Qt::UserRole).toString();
+                const qint64 size = child->data(1, Qt::UserRole).toLongLong();
+                if (!DuplicateFinder::fileUnchanged(path, size, child->data(0, kLastWriteRole).toLongLong()))
+                {
+                    ++sel.skippedChanged;
+                    continue;
+                }
+                if (!RecycleBinOps::notRecyclableReason(path, size).isEmpty())
+                {
+                    ++sel.skippedNotRecyclable;
+                    continue;
+                }
+                sel.paths << path;
+                sel.total += size;
             }
-            if (!RecycleBinOps::notRecyclableReason(path, size).isEmpty())
-            {
-                ++skippedNotRecyclable;
-                continue;
-            }
-            paths << path;
-            total += size;
         }
-    }
+        return sel;
+    };
+    const Selection selection = collectSelection();
+    QStringList paths = selection.paths;
+    const qint64 total = selection.total;
+    const int skippedGroups = selection.skippedGroups;
+    const int skippedChanged = selection.skippedChanged;
+    const int skippedNotRecyclable = selection.skippedNotRecyclable;
 
     QStringList skippedNotes;
     if (skippedGroups > 0)
@@ -424,6 +437,23 @@ void DuplicateFilesTab::onDeleteSelectedClicked()
                               QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
         return;
 
+    // Hộp xác nhận chạy vòng lặp sự kiện riêng và có thể mở rất lâu - kiểm lại TOÀN BỘ một lần nữa ngay
+    // sát lúc xóa, chỉ xóa những tệp vừa được xác nhận VÀ vẫn còn đủ điều kiện (bản giữ lại còn nguyên,
+    // bản xóa chưa bị sửa). Tệp không còn đủ điều kiện được giữ nguyên.
+    const QStringList stillEligible = collectSelection().paths;
+    const int confirmedCount = paths.size();
+    QStringList recheckedPaths;
+    for (const QString& path : paths)
+        if (stillEligible.contains(path))
+            recheckedPaths << path;
+    paths = recheckedPaths;
+    if (paths.isEmpty())
+    {
+        QMessageBox::warning(this, "Xóa tệp trùng lặp",
+            "Các tệp đã thay đổi trong lúc chờ xác nhận - không xóa gì. Hãy quét lại để có kết quả mới.");
+        return;
+    }
+
     QString error;
     const bool ok = RecycleBinOps::moveToRecycleBin(paths, &error);
     int deleted = 0;
@@ -431,9 +461,9 @@ void DuplicateFilesTab::onDeleteSelectedClicked()
         if (!FsSafety::existsNoFollow(path))
             ++deleted;
 
-    if (!ok || deleted < paths.size())
+    if (!ok || deleted < confirmedCount)
         QMessageBox::critical(this, "Lỗi",
-            QString("Chỉ chuyển được %1/%2 tệp vào Thùng rác.\n%3").arg(deleted).arg(paths.size()).arg(error));
+            QString("Chỉ chuyển được %1/%2 tệp vào Thùng rác.\n%3").arg(deleted).arg(confirmedCount).arg(error));
 
     m_statusLabel->setText(QString("✓ Đã chuyển %1 tệp vào Thùng rác.").arg(deleted));
     // Quét lại để làm mới danh sách (các mục đã xóa không còn nữa) - kể cả khi lỗi một phần, để bảng

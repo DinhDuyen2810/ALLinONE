@@ -22,7 +22,9 @@ QDateTime parseIsoDateTime(const QJsonValue& v)
 ThreatRecord threatFromJsonObject(const QJsonObject& o)
 {
     ThreatRecord t;
-    t.threatId = static_cast<qint64>(o.value("ThreatID").toDouble());
+    // toInteger() thay cho ép kiểu từ toDouble(): số quá lớn/không nguyên trả về 0 thay vì hành vi không
+    // xác định của phép ép double ngoài tầm sang số nguyên, và không mất chữ số với ID lớn hơn 2^53.
+    t.threatId = o.value("ThreatID").toInteger();
     t.threatName = o.value("ThreatName").toString();
     t.severity = o.value("SeverityID").toInt();
     t.isActive = o.value("IsActive").toBool();

@@ -340,8 +340,13 @@ void DevicesTab::onDevicesListed(const QList<AndroidDeviceInfo>& devices, const 
         setItem(2, d.model.isEmpty() ? "—" : d.model);
         setItem(3, d.isWireless() ? "📶 Không dây" : "🔌 USB");
     }
+    // Thiết bị đang chọn đã biến mất thì BỎ chọn. Trước đây không làm gì trong trường hợp này: bảng vẫn giữ
+    // lựa chọn theo SỐ HÀNG, nên rút thiết bị A đang chọn ở hàng đầu thì lựa chọn âm thầm chuyển sang thiết
+    // bị B vừa dồn lên hàng đó - bấm "Điều khiển" ngay lúc danh sách tự làm mới là điều khiển nhầm máy.
     if (restoreRow >= 0)
         m_table->selectRow(restoreRow);
+    else
+        m_table->clearSelection();
 
     // Trước đây dòng trạng thái bị ghi đè "Tìm thấy N thiết bị." ở MỖI lần tự làm mới (3 giây/lần), xóa
     // mất mọi thông báo quan trọng hơn vừa hiện ("✓ Ghép đôi thành công...", "⚠ Phiên điều khiển kết

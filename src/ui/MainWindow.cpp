@@ -332,6 +332,11 @@ void MainWindow::onUpdateAvailable(UpdateInfo info)
     m_updateInstaller = new UpdateInstaller(this);
 
     connect(m_updateInstaller, &UpdateInstaller::progress, progress, [progress](qint64 received, qint64 total) {
+        // Đã bấm "Ẩn" thì thôi cập nhật hộp thoại: QProgressDialog::setValue() sau khi bị hủy tự gọi show()
+        // lại, nên trước đây hộp thoại vừa ẩn đã bật lên ngay ở mẩu dữ liệu kế tiếp (đã xác nhận thật bằng
+        // core_stress_tests) - nút "Ẩn" coi như không có tác dụng.
+        if (progress->wasCanceled())
+            return;
         if (total > 0)
         {
             progress->setMaximum(static_cast<int>(total / 1024));

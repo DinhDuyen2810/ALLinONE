@@ -434,6 +434,18 @@ bool WlanController::connectWithPassword(const QString& adapterGuid, const WifiN
         setErr(error, "Tên mạng (SSID) không hợp lệ (phải từ 1 đến 32 byte).");
         return false;
     }
+    // SSID là dữ liệu KHÔNG TIN CẬY (điểm phát nào cũng tự đặt được 32 byte tùy ý) và ở đây nó còn được dùng
+    // làm TÊN HỒ SƠ. Tên chứa ký tự điều khiển/U+0000/CR không đi nguyên vẹn qua XML hồ sơ (QXmlStreamWriter
+    // lặng lẽ BỎ ký tự không hợp lệ, bộ đọc XML đổi CR thành LF) lẫn tham số chuỗi của WLAN API: Windows sẽ
+    // tạo hồ sơ dưới một tên KHÁC tên dùng bên dưới để sao lưu/kết nối/hoàn tác - tức ghi đè KHÔNG sao lưu
+    // lên hồ sơ mang tên đã bị rút gọn đó (vd SSID "Nha<0x01>" đè hồ sơ "Nha" đang dùng tốt), rồi việc hoàn
+    // tác lại đi xóa một tên không tồn tại. Từ chối trước khi đụng tới bất kỳ hồ sơ nào.
+    if (!WlanProfileXml::isSafeProfileName(network.ssid))
+    {
+        setErr(error, "Tên mạng (SSID) này chứa ký tự điều khiển không hiển thị được nên không thể tạo hồ sơ kết nối "
+                      "an toàn từ đây. Nếu đây đúng là mạng của bạn, hãy kết nối bằng biểu tượng WiFi của Windows.");
+        return false;
+    }
 
     if (!WifiSecurityUtil::isSupportedForQuickConnect(securityOverride))
     {
@@ -476,6 +488,14 @@ bool WlanController::connectWithPassword(const QString& adapterGuid, const WifiN
             if (oldFlags & WLAN_PROFILE_GROUP_POLICY)
             {
                 setErr(error, "Hồ sơ của mạng này do chính sách nhóm (Group Policy) quản lý, không thể thay đổi.");
+                return false;
+            }
+            // Hồ sơ trùng TÊN nhưng thuộc một mạng KHÁC (xem WlanProfileXml::describesSsid): ghi đè sẽ xóa mất
+            // hồ sơ của mạng kia, kể cả khi lần kết nối này THÀNH CÔNG - lúc đó không có hoàn tác nào cứu nó.
+            if (!WlanProfileXml::describesSsid(oldXml, network.ssidBytes))
+            {
+                setErr(error, QString("Máy này đã có một hồ sơ tên \"%1\" nhưng của một mạng KHÁC. Không ghi đè để khỏi mất "
+                                      "hồ sơ đó - hãy xuất hoặc xóa nó ở tab \"Hồ sơ đã lưu\" rồi thử lại.").arg(profileName));
                 return false;
             }
             saved.existed = true;

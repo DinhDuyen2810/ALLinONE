@@ -13,6 +13,7 @@
 #include <QSpinBox>
 #include <QTableWidget>
 #include <QTemporaryDir>
+#include <climits>
 #include <cstdio>
 
 #include "core/AppPaths.h"
@@ -148,6 +149,33 @@ int main(int argc, char** argv)
         // Mảng "chains" rỗng là HỢP LỆ (hồ sơ chưa có chuỗi nào)
         CHECK(ActionSerializer::fromJsonString("{ \"chains\": [] }", out, &error));
         CHECK(out.empty());
+    }
+
+    // ---- ActionSerializer: thời gian ngoài miền trong tệp sửa tay/nhập từ nơi khác bị ép về [0, INT_MAX] ----
+    {
+        const QString json = R"({ "chains": [ { "name": "x", "actions": [
+            { "type": "KeyPress", "waitBefore": -5, "waitAfter": 9223372036854775807, "duration": 1e300 },
+            { "type": "KeyPress", "waitBefore": 1500, "waitAfter": "abc", "duration": -9223372036854775808 } ] } ] })";
+        std::vector<ActionChain> out;
+        CHECK(ActionSerializer::fromJsonString(json, out));
+        CHECK(out.size() == 1 && out[0].actions.size() == 2);
+        if (out.size() == 1 && out[0].actions.size() == 2)
+        {
+            CHECK(out[0].actions[0].waitBefore.count() == 0);         // âm -> 0
+            CHECK(out[0].actions[0].waitAfter.count() == INT_MAX);    // quá lớn -> trần (không tràn mốc thời gian)
+            CHECK(out[0].actions[0].duration.count() == INT_MAX);
+            CHECK(out[0].actions[1].waitBefore.count() == 1500);      // giá trị thường giữ nguyên
+            CHECK(out[0].actions[1].waitAfter.count() == 500);        // sai kiểu -> mặc định
+            CHECK(out[0].actions[1].duration.count() == 0);
+        }
+    }
+
+    // ---- Action::description: văn bản chứa "%1"/"%2" (vd chuỗi mã hóa URL) phải hiện nguyên văn ----
+    {
+        Action typeText;
+        typeText.type = ActionType::TypeText;
+        typeText.text = "a%2Fb %1";
+        CHECK(typeText.description() == QString::fromUtf8("Gõ \"a%2Fb %1\" (tức thì)"));
     }
 
     // ---- ActionSerializer: lưu/nạp tệp, đường dẫn mặc định, không tự tạo thư mục "profiles" lạc chỗ ----
@@ -317,6 +345,17 @@ int main(int argc, char** argv)
             editor->setAction(odd, 0);
             const Action backHotkey = editor->getAction();
             CHECK(backHotkey.keyCode == 49 && backHotkey.keyName == "1" && !backHotkey.enabled);
+
+            // Tọa độ màn hình ảo vượt ±10000 px (nhiều màn hình độ phân giải cao) không được bị ô nhập cắt.
+            Action wide;
+            wide.type = ActionType::MouseDrag;
+            wide.startX = 11500;
+            wide.startY = -12000;
+            wide.endX = 20000;
+            wide.endY = 15000;
+            editor->setAction(wide, 0);
+            const Action backWide = editor->getAction();
+            CHECK(backWide.startX == 11500 && backWide.startY == -12000 && backWide.endX == 20000 && backWide.endY == 15000);
 
             // Nạp một hành động phím thường: mục tạm "(phím khác: ...)" phải biến mất khỏi mọi combo
             Action normal;

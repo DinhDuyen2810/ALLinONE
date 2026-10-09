@@ -42,7 +42,10 @@ QString Action::description() const
             return QString("Giữ %1 tại (%2, %3) trong %4ms").arg(btnStr(mouseButton)).arg(x).arg(y).arg(duration.count());
 
         case ActionType::TypeText:
-            return QString("Gõ \"%1\" (%2)").arg(QString::fromStdString(text)).arg(textMode == TextTypeMode::Instant ? "tức thì" : "từng ký tự");
+            // arg() MỘT lần với cả hai đối số: gọi nối tiếp .arg(text).arg(...) thì "%1"/"%2" nằm trong chính
+            // văn bản người dùng (vd chuỗi mã hóa URL "a%2Fb") bị lần arg() thứ hai thay nhầm bằng tên chế độ.
+            return QString("Gõ \"%1\" (%2)")
+                .arg(QString::fromStdString(text), QString(textMode == TextTypeMode::Instant ? "tức thì" : "từng ký tự"));
 
         case ActionType::Hotkey:
         {

@@ -329,6 +329,14 @@ int main(int argc, char** argv)
         CHECK(QRPayload::parse(so).secretField == -1); // không có mật khẩu thì không có gì phải che
         CHECK(QRPayload::maskSecrets(so) == so);
 
+        // Hồi quy: trường P lặp lại mà trường SAU rỗng từng xóa mất mật khẩu trong kết quả parse() ->
+        // secretField = -1 -> tab Quét hiện nguyên văn chuỗi gốc (còn "P:<mật khẩu>") ở ô nội dung gốc.
+        const ParsedPayload twoP = QRPayload::parse("WIFI:S:x;P:bimat-that;P:;;");
+        CHECK(twoP.secretField == 2 && twoP.fields.value(2).second == "bimat-that");
+        CHECK(QRPayload::parse("WIFI:S:x;P:;P:bimat-that;;").fields.value(2).second == "bimat-that");
+        CHECK(QRPayload::parse("WIFI:S:x;P:;;").secretField == -1);
+        CHECK(!QRPayload::maskSecrets("WIFI:S:x;P:bimat-that;P:;;").contains("bimat"));
+
         EmailInfo e{"a@b.com", "Chào bạn & bạn", "Nội dung\nthứ hai"};
         const QString es = QRPayload::makeEmail(e);
         const ParsedPayload ep = QRPayload::parse(es);

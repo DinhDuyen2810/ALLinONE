@@ -7,6 +7,12 @@
 #include <QHideEvent>
 #include <QScrollArea>
 
+// Miền tọa độ của các ô X/Y: toàn bộ màn hình ảo Windows (tọa độ 16-bit có dấu). Trước đây là ±10000 - ba
+// màn hình 4K đặt ngang đã rộng 11520 px (ứng dụng chạy Per-Monitor DPI nên đây là pixel vật lý), tọa độ
+// bắt được ở màn hình ngoài cùng bị ô nhập âm thầm cắt về 10000 và click sai chỗ.
+static constexpr int kMinScreenCoord = -32768;
+static constexpr int kMaxScreenCoord = 32767;
+
 struct KeyInfo
 {
     const char* name;
@@ -242,10 +248,10 @@ QWidget* ActionEditorWidget::createClickPage()
 
     auto* posLayout = new QHBoxLayout();
     m_clickXSpin = new QSpinBox(w);
-    m_clickXSpin->setRange(-10000, 10000);
+    m_clickXSpin->setRange(kMinScreenCoord, kMaxScreenCoord);
     m_clickXSpin->setPrefix("X: ");
     m_clickYSpin = new QSpinBox(w);
-    m_clickYSpin->setRange(-10000, 10000);
+    m_clickYSpin->setRange(kMinScreenCoord, kMaxScreenCoord);
     m_clickYSpin->setPrefix("Y: ");
 
     QString spinStyle = "QSpinBox { background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 4px 6px; font-size: 12px; } QSpinBox:focus { border-color: #0969da; }";
@@ -279,10 +285,10 @@ QWidget* ActionEditorWidget::createDragPage()
 
     auto* startLayout = new QHBoxLayout();
     m_dragStartXSpin = new QSpinBox(w);
-    m_dragStartXSpin->setRange(-10000, 10000);
+    m_dragStartXSpin->setRange(kMinScreenCoord, kMaxScreenCoord);
     m_dragStartXSpin->setPrefix("X: ");
     m_dragStartYSpin = new QSpinBox(w);
-    m_dragStartYSpin->setRange(-10000, 10000);
+    m_dragStartYSpin->setRange(kMinScreenCoord, kMaxScreenCoord);
     m_dragStartYSpin->setPrefix("Y: ");
     m_dragStartXSpin->setStyleSheet(spinStyle);
     m_dragStartYSpin->setStyleSheet(spinStyle);
@@ -302,10 +308,10 @@ QWidget* ActionEditorWidget::createDragPage()
 
     auto* endLayout = new QHBoxLayout();
     m_dragEndXSpin = new QSpinBox(w);
-    m_dragEndXSpin->setRange(-10000, 10000);
+    m_dragEndXSpin->setRange(kMinScreenCoord, kMaxScreenCoord);
     m_dragEndXSpin->setPrefix("X: ");
     m_dragEndYSpin = new QSpinBox(w);
-    m_dragEndYSpin->setRange(-10000, 10000);
+    m_dragEndYSpin->setRange(kMinScreenCoord, kMaxScreenCoord);
     m_dragEndYSpin->setPrefix("Y: ");
     m_dragEndXSpin->setStyleSheet(spinStyle);
     m_dragEndYSpin->setStyleSheet(spinStyle);
@@ -353,10 +359,10 @@ QWidget* ActionEditorWidget::createHoldPage()
 
     auto* posLayout = new QHBoxLayout();
     m_holdXSpin = new QSpinBox(w);
-    m_holdXSpin->setRange(-10000, 10000);
+    m_holdXSpin->setRange(kMinScreenCoord, kMaxScreenCoord);
     m_holdXSpin->setPrefix("X: ");
     m_holdYSpin = new QSpinBox(w);
-    m_holdYSpin->setRange(-10000, 10000);
+    m_holdYSpin->setRange(kMinScreenCoord, kMaxScreenCoord);
     m_holdYSpin->setPrefix("Y: ");
     QString spinStyle = "QSpinBox { background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 4px 6px; font-size: 12px; } QSpinBox:focus { border-color: #0969da; }";
     m_holdXSpin->setStyleSheet(spinStyle);
@@ -450,6 +456,14 @@ QWidget* ActionEditorWidget::createHotkeyPage()
         m_captureHotkeyBtn->setEnabled(false);
         m_hotkeyCaptureStatus->setText("");
         m_hotkeyCapture->startCapture();
+        // startCapture() không báo gì khi Windows từ chối cài hook bàn phím - không tự kiểm tra thì nút cứ ở
+        // trạng thái "Đang chờ..." và bị vô hiệu hóa mãi (không có tín hiệu nào tới để bật lại).
+        if (!m_hotkeyCapture->isCapturing())
+        {
+            m_hotkeyCaptureStatus->setText("⚠ Không bắt được: Windows từ chối cài hook bàn phím - chọn phím thủ công ở trên.");
+            m_captureHotkeyBtn->setText("🎯 Bắt tổ hợp phím");
+            m_captureHotkeyBtn->setEnabled(true);
+        }
     });
     layout->addWidget(m_captureHotkeyBtn);
 

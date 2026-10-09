@@ -12,6 +12,7 @@
 #include <QProcess>
 #include <QTimer>
 #include <cstdio>
+#include <limits>
 
 #include <windows.h>
 
@@ -1176,6 +1177,234 @@ int main(int argc, char** argv)
         CHECK(!internal::resizeBlockReason(0, 2, 90000000000LL, list, range, 90000000000LL).isEmpty());
         // Không xác nhận lại được khoảng cho phép -> từ chối
         CHECK(!internal::resizeBlockReason(0, 2, 90000000000LL, list, SupportedSizeRange{}, 60000000000LL).isEmpty());
+    }
+
+    // =====================================================================================
+    // Hồi quy cho đợt stress test (tests/disk_vpn_stress_tests.cpp): mỗi khối dưới đây là một lỗi THẬT đã
+    // tái hiện được bằng chạy thử. Vẫn chỉ đụng tới QTemporaryDir.
+    // =====================================================================================
+    // Thao tác tệp THÔ qua "\\?\..." - cách duy nhất tạo/kiểm được tên có dấu chấm/khoảng trắng ở cuối.
+    auto rawPath = [](const QString& path) { return (QStringLiteral("\\\\?\\") + QDir::toNativeSeparators(path)).toStdWString(); };
+    auto rawCreate = [&](const QString& path, const QByteArray& content) {
+        const HANDLE h = CreateFileW(rawPath(path).c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h == INVALID_HANDLE_VALUE)
+            return false;
+        DWORD written = 0;
+        WriteFile(h, content.constData(), static_cast<DWORD>(content.size()), &written, nullptr);
+        CloseHandle(h);
+        return written == static_cast<DWORD>(content.size());
+    };
+    auto rawExists = [&](const QString& path) { return GetFileAttributesW(rawPath(path).c_str()) != INVALID_FILE_ATTRIBUTES; };
+
+    // ---- Tên có dấu chấm/khoảng trắng cuối: yêu cầu xóa "report." từng làm Shell xóa "report" (tệp KHÁC) ----
+    {
+        QTemporaryDir tmp;
+        CHECK(tmp.isValid());
+        const QString dir = tmp.path();
+        CHECK(rawCreate(dir + "/report", QByteArray(6000, 'A')));
+        CHECK(rawCreate(dir + "/report.", QByteArray(6000, 'B')));
+        CHECK(rawCreate(dir + "/copy", QByteArray(6000, 'B'))); // trùng NỘI DUNG với "report."
+        CHECK(rawCreate(dir + "/notes", QByteArray("that")));
+        CHECK(rawCreate(dir + "/notes ", QByteArray("khoang trang cuoi")));
+
+        // FsSafety nhìn đúng CHÍNH tệp có dấu chấm cuối, và biết nó không an toàn để giao cho Shell
+        CHECK(FsSafety::rawInfo(dir + "/report.").exists);
+        CHECK(!FsSafety::unsafeShellPathReason(dir + "/report.").isEmpty());
+        CHECK(!FsSafety::unsafeShellPathReason(dir + "/notes ").isEmpty());
+        CHECK(FsSafety::unsafeShellPathReason(dir + "/report").isEmpty());
+
+        for (bool permanent : {false, true})
+        {
+            QString err;
+            const QStringList request = {dir + "/report.", dir + "/notes "};
+            CHECK(!(permanent ? RecycleBinOps::permanentlyDelete(request, &err) : RecycleBinOps::moveToRecycleBin(request, &err)));
+            CHECK(!err.isEmpty());
+            CHECK(rawExists(dir + "/report")); // tệp "hàng xóm" KHÔNG bị xóa thay
+            CHECK(rawExists(dir + "/notes"));
+            CHECK(rawExists(dir + "/report."));
+            CHECK(rawExists(dir + "/notes "));
+        }
+
+        // CleanupExecutor: bị từ chối, báo là mục bị bỏ qua vì lý do an toàn, không tính là đã giải phóng
+        CleanupExecutor executor;
+        executor.setItems({dir + "/report.", dir + "/notes "}, {6000, 17});
+        executor.setPermanentDelete(true);
+        bool success = true;
+        int count = -1;
+        QString note;
+        QObject::connect(&executor, &CleanupExecutor::executionFinished, [&](bool ok, QString n, qint64, int c) {
+            success = ok;
+            note = n;
+            count = c;
+        });
+        executor.start();
+        executor.wait();
+        CHECK(!success && count == 0);
+        CHECK(note.contains(QString::fromUtf8("lý do an toàn")));
+        CHECK(rawExists(dir + "/report") && rawExists(dir + "/notes"));
+
+        // DuplicateFinder: "report." không thể được băm đúng tệp qua Win32 (QFile mở nhầm sang "report") nên
+        // bị loại - nhóm duy nhất hợp lệ không tồn tại ở đây ("report" khác nội dung với "copy").
+        DuplicateFinder finder;
+        QList<DuplicateGroup> groups;
+        bool finished = false;
+        QObject::connect(&finder, &DuplicateFinder::scanFinished, [&](QList<DuplicateGroup> g, qint64, int) {
+            groups = g;
+            finished = true;
+        });
+        finder.setRootPath(dir);
+        finder.setMinSizeBytes(1);
+        finder.startScan();
+        finder.wait();
+        CHECK(finished);
+        CHECK(groups.isEmpty());
+
+        // QTemporaryDir không tự xóa được 2 tên này
+        DeleteFileW(rawPath(dir + "/report.").c_str());
+        DeleteFileW(rawPath(dir + "/notes ").c_str());
+    }
+
+    // ---- Một tệp đang bị khóa/một mục đã mất/một mục lặp không còn chặn các tệp đứng SAU nó ----
+    {
+        QTemporaryDir tmp;
+        CHECK(tmp.isValid());
+        QStringList files;
+        for (int i = 0; i < 6; ++i)
+        {
+            files << tmp.path() + QString("/f%1.tmp").arg(i);
+            writeFile(files.last(), 10);
+        }
+        const HANDLE lock = CreateFileW(rawPath(files[1]).c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+        CHECK(lock != INVALID_HANDLE_VALUE);
+        CHECK(FsSafety::lockedAgainstDelete(files[1]));
+        CHECK(!FsSafety::lockedAgainstDelete(files[2]));
+
+        QString err;
+        const QStringList request = {files[0], files[1], tmp.path() + "/da_mat.tmp", files[2], files[2].toUpper(),
+                                     QDir::toNativeSeparators(files[3]), files[4], files[5]};
+        CHECK(!RecycleBinOps::moveToRecycleBin(request, &err)); // có mục không xóa được -> false + lý do
+        CHECK(!err.isEmpty());
+        CHECK(QFile::exists(files[1]));
+        for (int i : {0, 2, 3, 4, 5})
+            CHECK(!QFile::exists(files[i]));
+        CloseHandle(lock);
+        CHECK(!FsSafety::lockedAgainstDelete(files[1]));
+        CHECK(RecycleBinOps::moveToRecycleBin(request, &err)); // hết khóa: xóa nốt, mục đã mất được bỏ qua
+        CHECK(!QFile::exists(files[1]));
+    }
+
+    // ---- Ký tự đại diện: Shell sẽ xóa MỌI tệp khớp mẫu; FindFirstFile trả về một tệp KHÁC khớp mẫu ----
+    {
+        QTemporaryDir tmp;
+        CHECK(tmp.isValid());
+        writeFile(tmp.path() + "/a1.tmp", 5);
+        writeFile(tmp.path() + "/a2.tmp", 5);
+        CHECK(!FsSafety::existsNoFollow(tmp.path() + "/a*.tmp"));
+        CHECK(!FsSafety::rawInfo(tmp.path() + "/a?.tmp").exists);
+        CHECK(!FsSafety::existsNoFollow(tmp.path() + "/*"));
+        QString err;
+        CHECK(!RecycleBinOps::permanentlyDelete({tmp.path() + "/a*.tmp", tmp.path() + "/a?.tmp", tmp.path() + "/*"}, &err));
+        CHECK(!err.isEmpty());
+        CHECK(QFile::exists(tmp.path() + "/a1.tmp") && QFile::exists(tmp.path() + "/a2.tmp"));
+    }
+
+    // ---- unsafeCleanupRootReason: các cách viết KHÁC của cùng một thư mục được bảo vệ ----
+    {
+        const QStringList prot = {"C:/Users/Ai Do", "C:/Program Files", "C:/Windows"};
+        // QDir::cleanPath để sót "//" sau khi bỏ "." ("C://.//Windows" -> "C://Windows") - từng lọt qua phép so
+        CHECK(!FsSafety::unsafeCleanupRootReason("C://.//Windows", prot).isEmpty());
+        CHECK(!FsSafety::unsafeCleanupRootReason("c:\\\\.\\\\Program Files", prot).isEmpty());
+        CHECK(!FsSafety::unsafeCleanupRootReason("C:///.///", prot).isEmpty()); // gốc ổ đĩa
+        CHECK(!FsSafety::unsafeCleanupRootReason("\\\\?\\C:\\Windows", prot).isEmpty());
+        CHECK(!FsSafety::unsafeCleanupRootReason("//?/C:/Users/Ai Do", prot).isEmpty());
+        CHECK(!FsSafety::unsafeCleanupRootReason("\\\\.\\C:\\Windows\\Temp", prot).isEmpty()); // tiền tố thiết bị
+        CHECK(!FsSafety::unsafeCleanupRootReason("C:/Windows.", prot).isEmpty());             // Win32 bỏ dấu chấm cuối
+        CHECK(!FsSafety::unsafeCleanupRootReason("C:/Users./Ai Do", prot).isEmpty());
+        CHECK(!FsSafety::unsafeCleanupRootReason("\\\\localhost\\C$\\Windows", prot).isEmpty()); // chia sẻ quản trị
+        CHECK(!FsSafety::unsafeCleanupRootReason("\\\\127.0.0.1\\c$", prot).isEmpty());
+        CHECK(!FsSafety::unsafeCleanupRootReason("\\\\may\\ADMIN$\\Temp", prot).isEmpty());
+        CHECK(!FsSafety::unsafeCleanupRootReason("C:/Temp/*", prot).isEmpty());                // ký tự đại diện
+        CHECK(!FsSafety::unsafeCleanupRootReason("C:/Windows::$DATA", prot).isEmpty());        // luồng dữ liệu phụ
+        CHECK(!FsSafety::unsafeCleanupRootReason(QString("C:/Temp") + QChar(0) + "x", prot).isEmpty());
+        // ...mà không chặn nhầm thư mục con hợp lệ viết theo cùng các kiểu đó
+        CHECK(FsSafety::unsafeCleanupRootReason("C://.//Windows//Temp", prot).isEmpty());
+        CHECK(FsSafety::unsafeCleanupRootReason("\\\\?\\C:\\Windows\\Temp", prot).isEmpty());
+        CHECK(FsSafety::unsafeCleanupRootReason("\\\\localhost\\C$\\Windows\\Temp", prot).isEmpty());
+        CHECK(FsSafety::unsafeCleanupRootReason("C:/Windows.old", prot).isEmpty());
+
+        // Tên ngắn 8.3 của một thư mục được bảo vệ THẬT (TEMP của Windows rất hay ở dạng tên ngắn)
+        const QString programFiles = QDir::fromNativeSeparators(qEnvironmentVariable("ProgramFiles"));
+        wchar_t shortBuffer[MAX_PATH] = {};
+        const DWORD shortLen = GetShortPathNameW(QDir::toNativeSeparators(programFiles).toStdWString().c_str(), shortBuffer, MAX_PATH);
+        const QString shortName = QDir::fromNativeSeparators(QString::fromWCharArray(shortBuffer, static_cast<int>(shortLen < MAX_PATH ? shortLen : 0)));
+        if (!shortName.isEmpty() && shortName.compare(programFiles, Qt::CaseInsensitive) != 0)
+        {
+            CHECK(!FsSafety::unsafeCleanupRootReason(shortName, {programFiles}).isEmpty());
+            CHECK(!FsSafety::unsafeCleanupRootReason(programFiles, {shortName}).isEmpty());
+        }
+        else
+        {
+            std::printf("LUU Y: o dia khong co ten ngan 8.3 cho Program Files - bo qua kiem tra ten ngan\n");
+        }
+    }
+
+    // ---- CategoryRegistry: thư mục gốc để ghép là GỐC Ổ ĐĨA -> không sinh "C:/Temp", "C:/Logs"... ----
+    {
+        QTemporaryDir tmp;
+        CHECK(tmp.isValid());
+        CleanupEnvironment env;
+        env.windowsDir = QDir(tmp.path()).rootPath(); // "C:/"
+        env.localAppData = QDir(tmp.path()).rootPath();
+        env.roamingAppData = QDir(tmp.path()).rootPath();
+        for (const CleanupCategory& c : CategoryRegistry::buildCategories(env))
+            CHECK(c.rootPaths.isEmpty());
+        // Môi trường thật: thư mục Windows lấy từ API của Windows, không phụ thuộc biến môi trường WINDIR
+        CHECK(CleanupEnvironment::current().windowsDir.compare(FsSafety::windowsDirectory(), Qt::CaseInsensitive) == 0);
+    }
+
+    // ---- PartitionManager: giá trị không phải số/tràn số/kích thước không đọc được ----
+    {
+        using namespace PartitionManager;
+        SupportedSizeRange range;
+        range.ok = true;
+        range.minBytes = 40000000000LL;
+        range.maxBytes = 99999999488LL;
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        const double inf = std::numeric_limits<double>::infinity();
+        // Ép double -> qint64 ngoài khoảng là hành vi không xác định (thực tế ra INT64_MIN -> bị kẹp về MIN:
+        // "vô cực GB" từng thành lệnh THU NHỎ tối đa)
+        CHECK(internal::clampResizeBytes(inf, range) == range.maxBytes);
+        CHECK(internal::clampResizeBytes(1e300, range) == range.maxBytes);
+        CHECK(internal::clampResizeBytes(-inf, range) == range.minBytes);
+        CHECK(internal::clampResizeBytes(nan, range) == 0);
+        CHECK(internal::clampResizeBytes(50.0, SupportedSizeRange{}) == 0); // khoảng chưa tra -> 0, luôn bị từ chối
+
+        QString err;
+        const auto huge = internal::parsePartitionsJson(R"({"DiskNumber":0,"PartitionNumber":1,"Size":1e300})", &err);
+        CHECK(huge.size() == 1 && huge[0].sizeBytes == std::numeric_limits<qint64>::max());
+        CHECK(!internal::parseSupportedSizeJson(R"({"SizeMin":1e300,"SizeMax":1000})", &err).ok);
+        CHECK(!internal::parseSupportedSizeJson(R"({"SizeMin":-5,"SizeMax":1000})", &err).ok);
+
+        // JSON thiếu trường Size -> kích thước 0; "0 lúc tra == 0 hiện tại" KHÔNG phải là đã đối chiếu
+        const auto noSize = internal::parsePartitionsJson(R"({"DiskNumber":2,"PartitionNumber":1})", &err);
+        CHECK(noSize.size() == 1 && noSize[0].sizeBytes == 0);
+        CHECK(!internal::resizeBlockReason(2, 1, 0, noSize, range, range.minBytes).isEmpty());
+        SupportedSizeRange negativeMin = range;
+        negativeMin.minBytes = -1;
+        PartitionInfo p;
+        p.diskNumber = 0;
+        p.partitionNumber = 2;
+        p.sizeBytes = 90000000000LL;
+        CHECK(!internal::resizeBlockReason(0, 2, 90000000000LL, {p}, negativeMin, 60000000000LL).isEmpty());
+
+        // Ô nhập 2 chữ số thập phân CHƯA được sửa: 500.107.862.016 byte hiện là 465,76 GB; đổi ngược ra byte
+        // lệch ~1,7 MB - từng thành một lệnh Resize-Partition thật dù người dùng không nhập gì.
+        const double gb = 1024.0 * 1024.0 * 1024.0;
+        CHECK(static_cast<qint64>(465.76 * gb) != 500107862016LL);
+        CHECK(internal::isSameSizeAtInputPrecision(465.76, 500107862016LL));
+        CHECK(!internal::isSameSizeAtInputPrecision(465.77, 500107862016LL));
+        CHECK(!internal::isSameSizeAtInputPrecision(465.75, 500107862016LL));
+        CHECK(!internal::isSameSizeAtInputPrecision(nan, 500107862016LL));
     }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);

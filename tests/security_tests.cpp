@@ -3,6 +3,7 @@
 // hosts file từ chuỗi mẫu) tách riêng khỏi phần gọi PowerShell/mở cửa sổ thật, giống mẫu đã dùng cho
 // VpnController/PartitionManager/AdbController.
 #include <QCoreApplication>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QTemporaryDir>
 #include <cstdio>
@@ -547,6 +548,45 @@ int main(int argc, char** argv)
         CHECK(pasteWarnings("a\nb", false).size() == 1);
         CHECK(pasteWarnings("a\nb", false).first().contains("2 dòng"));
         CHECK(pasteWarnings("a\nb", true).size() == 2);
+    }
+
+    // ---- Hồi quy các lỗi tìm thấy khi stress test (xem tests/secdl_stress_tests.cpp) ----
+    {
+        using RL = CommandAnalyzer::RiskLevel;
+        const QString needle = S({"vss", "admin del", "ete sha", "dows /all /quiet"});
+        // Một nửa cặp thay thế mồ côi (UTF-16 không hợp lệ) từng làm MỌI mẫu trả "không khớp" -> báo An toàn.
+        CHECK(CommandAnalyzer::analyze(QString(QChar(0xD83D)) + "\n" + needle).level == RL::Dangerous);
+        CHECK(CommandAnalyzer::analyze(needle + " " + QString(QChar(0xDC00))).level == RL::Dangerous);
+        // Phần đầu của một mẫu lặp lại hàng chục nghìn lần trên một dòng từng mất nhiều giây (thời gian bậc
+        // hai) - nay tuyến tính, và dòng nguy hiểm đứng sau vẫn bị bắt.
+        const QString flood = S({"cu", "rl "}).repeated(60000) + "\n" + needle;
+        QElapsedTimer timer;
+        timer.start();
+        CHECK(CommandAnalyzer::analyze(flood).level == RL::Dangerous);
+        CHECK(timer.elapsed() < 2000);
+        // Hàng trăm nghìn cụm [char] liền nhau vẫn bị bắt (không làm cạn ngăn xếp của bộ máy regex).
+        CHECK(CommandAnalyzer::analyze(QString("[char]65+").repeated(200000)).level == RL::Dangerous);
+    }
+    {
+        // Hosts file xuống dòng thuần '\n': giữ nguyên từng byte phần của người dùng, khối mới cũng dùng '\n'.
+        using namespace HostsBlocklist::internal;
+        QTemporaryDir tmp;
+        CHECK(tmp.isValid());
+        const QString path = tmp.path() + "/hosts-lf";
+        const QByteArray original = "127.0.0.1 localhost\n# ghi chu\n10.0.0.5 nas.local\n";
+        {
+            QFile out(path);
+            CHECK(out.open(QIODevice::WriteOnly) && out.write(original) == original.size());
+        }
+        // Gỡ một tên KHÔNG có trên tệp chưa từng có khối của công cụ: không ghi gì, không tạo bản sao lưu.
+        CHECK(removeDomainFromFile(path, "khong-co.example"));
+        CHECK(!QFile::exists(backupFilePath(path)));
+        CHECK(addDomainToFile(path, "lf.example"));
+        QFile in(path);
+        CHECK(in.open(QIODevice::ReadOnly));
+        const QByteArray after = in.readAll();
+        CHECK(after.startsWith(original) && !after.contains('\r'));
+        CHECK(listBlockedDomainsInFile(path) == QStringList({"lf.example"}));
     }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);

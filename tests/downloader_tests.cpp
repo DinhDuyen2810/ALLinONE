@@ -748,6 +748,24 @@ int main(int argc, char** argv)
         CHECK(resultCount == 3);
     }
 
+    // ---- Hồi quy các lỗi tìm thấy khi stress test (xem tests/secdl_stress_tests.cpp) ----
+    {
+        using namespace FileDownloaderInternal;
+        // Cắt ngắn tên quá dài từng TẠO RA tên thiết bị dành riêng.
+        CHECK(sanitizeFileName("NUL" + QString(150, ' ') + "x") == "_NUL");
+        CHECK(sanitizeFileName("con" + QString(150, ' ') + "x.txt") == "_con.txt");
+        // COM/LPT kèm chữ số mũ (¹ ² ³) cũng là tên dành riêng.
+        CHECK(sanitizeFileName(QString("COM") + QChar(0xB9)) == QString("_COM") + QChar(0xB9));
+        CHECK(sanitizeFileName(QString("lpt") + QChar(0xB3) + ".txt").startsWith('_'));
+        // "nan"/"inf"/số ngoài tầm/số âm = chưa rõ (-1), không phải rác.
+        const auto p = YtDlpDownloadWorkerInternal::parseProgressLine("DLPROG|nan|inf|1e999|-5|9223372036854775808");
+        CHECK(p.ok && p.downloadedBytes == -1 && p.totalBytes == -1 && p.speedBytesPerSec == -1 && p.etaSeconds == -1);
+        QString err;
+        const VideoInfo huge = YtDlpInfoWorkerInternal::parseInfoJson(
+            R"({"title":"x","duration":1e300,"formats":[{"format_id":"1","filesize":1e300}]})", &err);
+        CHECK(err.isEmpty() && huge.formats.size() == 1 && huge.formats[0].approxSizeBytes == -1 && huge.durationSeconds == 0);
+    }
+
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);
     std::printf("\nLUU Y: khong co mang Internet/yt-dlp that trong test nay - YtDlpInfoWorker/YtDlpDownloadWorker\n");
     std::printf("(chay yt-dlp.exe that) can duoc tu kiem tra tay qua giao dien.\n");

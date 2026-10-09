@@ -78,6 +78,11 @@ VpnConnector::VpnConnector(QObject* parent)
 
 VpnConnector::~VpnConnector()
 {
+    // Lưới an toàn cuối: hủy một QThread còn đang chạy là hành vi KHÔNG XÁC ĐỊNH. VpnTab đã hủy + chờ
+    // trước khi tới đây; nơi dùng khác (hoặc đường hủy khác) cũng không được phép làm crash tiến trình.
+    // Sau requestCancel() vòng thăm dò thoát trong ~200ms, cộng tối đa 5 giây chờ gác máy.
+    requestCancel();
+    wait();
     wipe(m_password);
 }
 
@@ -207,6 +212,8 @@ bool VpnConnector::doConnect(QString& password, QString* message)
         {
             const bool callbackIsOurs = g_callbackConn.load() == reinterpret_cast<quintptr>(conn);
             quint32 error = callbackIsOurs ? g_callbackError.load() : 0;
+            if (error == PENDING)
+                error = 0; // xem ghi chú ở dưới (600 = "đang chờ", không phải kết quả)
             bool connected = callbackIsOurs && g_callbackConnected.load();
 
             RASCONNSTATUSW status;
@@ -216,7 +223,10 @@ bool VpnConnector::doConnect(QString& password, QString* message)
             if (statusResult == ERROR_SUCCESS)
             {
                 connected = connected || status.rasconnstate == RASCS_Connected;
-                if (error == 0)
+                // Mã 600 (PENDING, "một thao tác đang chờ") là trạng thái TRUNG GIAN chứ không phải lý do
+                // thất bại - không được coi là lỗi rồi gác máy một phiên đang bắt tay dở. (Phòng ngừa: chưa
+                // quan sát được RAS trả mã này trên máy dev vì không có máy chủ VPN thật để quay số.)
+                if (error == 0 && status.dwError != PENDING)
                     error = status.dwError;
             }
             else if (statusResult == ERROR_INVALID_HANDLE && error == 0 && !connected)

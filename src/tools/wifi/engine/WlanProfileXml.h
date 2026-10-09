@@ -27,6 +27,19 @@ QString build(const QByteArray& ssidBytes, const QString& ssidDisplayName, WifiS
 /// Trả về false nếu XML không hợp lệ hoặc thiếu trường bắt buộc.
 bool parse(const QString& xml, WifiProfile* out);
 
+/// Tên (SSID dạng chuỗi, cũng là tên hồ sơ) có đi NGUYÊN VẸN qua XML hồ sơ và qua tham số chuỗi của WLAN
+/// API không. false khi rỗng hoặc chứa: U+0000 (WLAN API nhận chuỗi kết thúc bằng NUL nên tên bị cắt cụt
+/// tại đó), ký tự xuống dòng CR (bộ đọc XML chuẩn hóa CR thành LF), ký tự điều khiển khác ngoài TAB/LF,
+/// U+FFFE/U+FFFF, surrogate lẻ (XML 1.0 không chở được). Với các tên này, hồ sơ Windows tạo ra sẽ mang
+/// một tên KHÁC tên ta dùng để kết nối/hoàn tác - nên phải từ chối trước khi dựng hồ sơ.
+bool isSafeProfileName(const QString& name);
+
+/// Hồ sơ (XML) có khai báo một SSID mang ĐÚNG các byte ssidBytes không (so theo <SSID><hex>, không theo tên
+/// hồ sơ - tên hồ sơ không buộc trùng SSID: Windows tự đặt "Foo 2" khi đã có hồ sơ "Foo", tệp XML nhập vào
+/// tự đặt tên tùy ý). Dùng để nhận ra hồ sơ trùng TÊN nhưng thuộc mạng KHÁC trước khi ghi đè nó.
+/// Trả true khi XML không đọc được hoặc không có <hex> nào - không đủ căn cứ để nói là "mạng khác".
+bool describesSsid(const QString& xml, const QByteArray& ssidBytes);
+
 /// Chuỗi hex không phân cách, chữ hoa (định dạng Windows dùng cho <hex> SSID/khóa WEP).
 QString toHex(const QByteArray& bytes);
 QByteArray fromHex(const QString& hex);

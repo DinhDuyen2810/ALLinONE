@@ -143,6 +143,13 @@ UpdateInfo parseLatestRelease(const QByteArray& json)
         return hex64.match(hex).hasMatch() ? hex : QString();
     };
 
+    // "size" phải là số nguyên không âm; mọi thứ khác (số âm, phân số, 1e300, chuỗi...) coi là "không biết"
+    // (0). Bản trước ép thẳng double -> qint64: giá trị ngoài miền qint64 là hành vi không xác định, thực tế
+    // cho ra số âm khổng lồ.
+    const auto sizeOf = [](const QJsonObject& asset) -> qint64 {
+        return qMax<qint64>(0, asset.value("size").toInteger(0));
+    };
+
     QString downloadUrl, exeSha, msiUrl, msiSha;
     qint64 size = 0, msiSize = 0;
     const QJsonArray assets = root.value("assets").toArray();
@@ -158,13 +165,13 @@ UpdateInfo parseLatestRelease(const QByteArray& json)
         if (downloadUrl.isEmpty() && name.compare(QStringLiteral("OneForAll_Setup.exe"), Qt::CaseInsensitive) == 0)
         {
             downloadUrl = url;
-            size = static_cast<qint64>(asset.value("size").toDouble());
+            size = sizeOf(asset);
             exeSha = sha256Of(asset);
         }
         else if (msiUrl.isEmpty() && name.compare(QStringLiteral("OneForAll_Setup.msi"), Qt::CaseInsensitive) == 0)
         {
             msiUrl = url;
-            msiSize = static_cast<qint64>(asset.value("size").toDouble());
+            msiSize = sizeOf(asset);
             msiSha = sha256Of(asset);
         }
     }
@@ -185,8 +192,11 @@ UpdateInfo parseLatestRelease(const QByteArray& json)
 bool isTrustedDownloadUrl(const QString& url)
 {
     const QUrl u(url, QUrl::StrictMode);
+    // Cổng: chỉ mặc định (không ghi) hoặc 443 - "https://github.com:8443/..." vẫn mang đúng tên máy nhưng
+    // không phải dịch vụ tải bản phát hành của GitHub.
     return u.isValid() && u.scheme().compare(QStringLiteral("https"), Qt::CaseInsensitive) == 0 &&
-           u.host().compare(QStringLiteral("github.com"), Qt::CaseInsensitive) == 0 && u.userInfo().isEmpty();
+           u.host().compare(QStringLiteral("github.com"), Qt::CaseInsensitive) == 0 && u.userInfo().isEmpty() &&
+           (u.port() == -1 || u.port() == 443);
 }
 
 } // namespace UpdateCheckerInternal

@@ -27,11 +27,12 @@ CleanupEnvironment CleanupEnvironment::current()
 {
     CleanupEnvironment env;
     env.tempDir = absoluteEnvDir("TEMP");
-    // WINDIR hỏng/thiếu: hỏi thẳng Windows (GetWindowsDirectoryW) thay vì đoán "C:/Windows" - máy cài
-    // Windows ở ổ khác sẽ quét nhầm một thư mục không phải của hệ điều hành đang chạy.
-    env.windowsDir = absoluteEnvDir("WINDIR");
+    // Hỏi thẳng Windows (GetWindowsDirectoryW) TRƯỚC, biến môi trường WINDIR chỉ là phương án dự phòng:
+    // biến môi trường do tiến trình cha quyết định - WINDIR trỏ sang "D:/DuLieu" sẽ biến "D:/DuLieu/Temp",
+    // "D:/DuLieu/Logs/*.log"... thành "tệp tạm hệ thống" được tick sẵn. Không đoán "C:/Windows".
+    env.windowsDir = FsSafety::windowsDirectory();
     if (env.windowsDir.isEmpty())
-        env.windowsDir = FsSafety::windowsDirectory();
+        env.windowsDir = absoluteEnvDir("WINDIR");
     env.localAppData = absoluteEnvDir("LOCALAPPDATA");
     env.roamingAppData = absoluteEnvDir("APPDATA");
     env.protectedDirs = FsSafety::systemProtectedDirs();
@@ -101,6 +102,15 @@ QList<CleanupCategory> CategoryRegistry::buildCategories(const CleanupEnvironmen
     if (!env.windowsDir.isEmpty())
         protectedDirs << env.windowsDir;
 
+    // Thư mục gốc để GHÉP đường dẫn hạng mục cũng phải hợp lý: windowsDir là gốc ổ đĩa ("D:/") sẽ sinh ra
+    // "D:/Temp", "D:/Logs" - thư mục dữ liệu bình thường của người dùng chứ không phải của Windows.
+    auto usableBase = [](const QString& dir) {
+        return FsSafety::unsafeCleanupRootReason(dir, {}).isEmpty() ? dir : QString();
+    };
+    const QString windowsDir = usableBase(env.windowsDir);
+    const QString localAppData = usableBase(env.localAppData);
+    const QString roamingAppData = usableBase(env.roamingAppData);
+
     auto add = [&](CleanupCategoryId id, const QString& name, const QString& desc, CleanupRisk risk,
                    const QStringList& roots, const QStringList& patterns = {}, bool scanSub = true,
                    bool keepRoot = true) {
@@ -123,66 +133,66 @@ QList<CleanupCategory> CategoryRegistry::buildCategories(const CleanupEnvironmen
 
     add(CleanupCategoryId::WindowsTemp, "Tệp tạm hệ thống Windows",
        "Tệp tạm do chính Windows tạo ra (cần quyền Administrator để xóa hết).", CleanupRisk::Safe,
-       {under(env.windowsDir, "/Temp")});
+       {under(windowsDir, "/Temp")});
     result.last().minAgeSeconds = kTempMinAgeSeconds;
 
     add(CleanupCategoryId::WindowsUpdateCache, "Bộ nhớ đệm Windows Update",
        "Các gói cập nhật đã tải về và cài đặt xong, Windows Update sẽ tải lại nếu cần.", CleanupRisk::Safe,
-       {under(env.windowsDir, "/SoftwareDistribution/Download")});
+       {under(windowsDir, "/SoftwareDistribution/Download")});
 
     add(CleanupCategoryId::DeliveryOptimization, "Bộ nhớ đệm Delivery Optimization",
        "Bản sao cục bộ của các gói cập nhật dùng để chia sẻ qua mạng LAN/Internet (Windows Update).",
-       CleanupRisk::Safe, {under(env.windowsDir, "/SoftwareDistribution/DeliveryOptimization")});
+       CleanupRisk::Safe, {under(windowsDir, "/SoftwareDistribution/DeliveryOptimization")});
 
     add(CleanupCategoryId::ThumbnailCache, "Bộ nhớ đệm hình thu nhỏ",
        "Ảnh thu nhỏ Windows Explorer lưu lại để hiển thị nhanh - sẽ tự tạo lại khi cần.", CleanupRisk::Safe,
-       {under(env.localAppData, "/Microsoft/Windows/Explorer")}, {"thumbcache_*.db", "iconcache_*.db"}, false, true);
+       {under(localAppData, "/Microsoft/Windows/Explorer")}, {"thumbcache_*.db", "iconcache_*.db"}, false, true);
 
     add(CleanupCategoryId::WindowsErrorReports, "Báo cáo lỗi Windows (WER)",
        "Báo cáo lỗi và tệp kết xuất (dump) Windows thu thập khi ứng dụng/hệ thống gặp sự cố.",
-       CleanupRisk::Safe, {under(env.localAppData, "/Microsoft/Windows/WER/ReportArchive"),
-                          under(env.localAppData, "/Microsoft/Windows/WER/ReportQueue")});
+       CleanupRisk::Safe, {under(localAppData, "/Microsoft/Windows/WER/ReportArchive"),
+                          under(localAppData, "/Microsoft/Windows/WER/ReportQueue")});
 
     add(CleanupCategoryId::MemoryDumps, "Tệp kết xuất bộ nhớ (memory dump)",
        "Tệp dump khi Windows gặp lỗi nghiêm trọng (màn hình xanh) - chỉ hữu ích khi cần chẩn đoán lỗi đó.",
-       CleanupRisk::Safe, {under(env.windowsDir, "/Minidump")}, {"*.dmp"});
+       CleanupRisk::Safe, {under(windowsDir, "/Minidump")}, {"*.dmp"});
 
     add(CleanupCategoryId::Prefetch, "Dữ liệu Prefetch",
        "Windows dùng để tăng tốc khởi động ứng dụng - xóa an toàn nhưng lần mở đầu tiên sau đó có thể chậm hơn một chút.",
-       CleanupRisk::Caution, {under(env.windowsDir, "/Prefetch")}, {"*.pf"});
+       CleanupRisk::Caution, {under(windowsDir, "/Prefetch")}, {"*.pf"});
 
     add(CleanupCategoryId::RecentItems, "Danh sách tệp gần đây",
        "Danh sách lối tắt tới các tệp/thư mục đã mở gần đây (hiện trong menu Start, thanh địa chỉ).",
-       CleanupRisk::Caution, {under(env.roamingAppData, "/Microsoft/Windows/Recent")});
+       CleanupRisk::Caution, {under(roamingAppData, "/Microsoft/Windows/Recent")});
     // Hai thư mục con này giữ các mục người dùng tự GHIM (jump list trên thanh tác vụ, Quick Access) -
     // không phải danh sách "gần đây" Windows tự dựng lại được, xóa đi là mất hẳn các mục ghim.
     result.last().excludeNames = {"AutomaticDestinations", "CustomDestinations"};
 
     add(CleanupCategoryId::SystemLogs, "Tệp nhật ký hệ thống (.log)",
        "Tệp nhật ký văn bản do Windows và trình cài đặt tạo ra.", CleanupRisk::Caution,
-       {under(env.windowsDir, "/Logs"), under(env.windowsDir, "/Temp")}, {"*.log"});
+       {under(windowsDir, "/Logs"), under(windowsDir, "/Temp")}, {"*.log"});
 
     add(CleanupCategoryId::BrowserCacheChrome, "Bộ nhớ đệm Google Chrome",
        "Tệp cache trình duyệt Chrome - trang web sẽ tải lại từ đầu lần truy cập sau.", CleanupRisk::Safe,
-       {under(env.localAppData, "/Google/Chrome/User Data/Default/Cache"),
-        under(env.localAppData, "/Google/Chrome/User Data/Default/Code Cache"),
-        under(env.localAppData, "/Google/Chrome/User Data/Default/GPUCache")});
+       {under(localAppData, "/Google/Chrome/User Data/Default/Cache"),
+        under(localAppData, "/Google/Chrome/User Data/Default/Code Cache"),
+        under(localAppData, "/Google/Chrome/User Data/Default/GPUCache")});
 
     add(CleanupCategoryId::BrowserCacheEdge, "Bộ nhớ đệm Microsoft Edge",
        "Tệp cache trình duyệt Edge - trang web sẽ tải lại từ đầu lần truy cập sau.", CleanupRisk::Safe,
-       {under(env.localAppData, "/Microsoft/Edge/User Data/Default/Cache"),
-        under(env.localAppData, "/Microsoft/Edge/User Data/Default/Code Cache"),
-        under(env.localAppData, "/Microsoft/Edge/User Data/Default/GPUCache")});
+       {under(localAppData, "/Microsoft/Edge/User Data/Default/Cache"),
+        under(localAppData, "/Microsoft/Edge/User Data/Default/Code Cache"),
+        under(localAppData, "/Microsoft/Edge/User Data/Default/GPUCache")});
 
     add(CleanupCategoryId::BrowserCacheFirefox, "Bộ nhớ đệm Firefox",
        "Tệp cache trình duyệt Firefox - trang web sẽ tải lại từ đầu lần truy cập sau.", CleanupRisk::Safe,
-       firefoxCacheDirs(env.roamingAppData));
+       firefoxCacheDirs(roamingAppData));
 
     add(CleanupCategoryId::WindowsOld, "Windows.old (bản Windows cũ)",
        "Toàn bộ hệ điều hành Windows phiên bản trước, Windows giữ lại ~10 ngày sau khi nâng cấp để có thể "
        "khôi phục. XÓA KHÔNG THỂ HOÀN TÁC - chỉ xóa khi chắc chắn không cần quay lại phiên bản cũ.",
-       CleanupRisk::High, {isDriveAbsolute(env.windowsDir) && env.windowsDir.at(1) == QLatin1Char(':')
-                               ? env.windowsDir.left(3) + "Windows.old"
+       CleanupRisk::High, {isDriveAbsolute(windowsDir) && windowsDir.at(1) == QLatin1Char(':')
+                               ? windowsDir.left(3) + "Windows.old"
                                : QString()},
        {}, true, false);
 

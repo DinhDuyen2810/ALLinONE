@@ -4,6 +4,8 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QFile>
+#include <QFileInfo>
 #include <QTemporaryDir>
 #include <cstdio>
 
@@ -166,6 +168,28 @@ int main(int argc, char** argv)
         // Chính tệp test đang chạy so với chính nó (đường dẫn thật, có tồn tại)
         const QString self = QCoreApplication::applicationFilePath();
         CHECK(isSameExecutablePath(self, QDir::toNativeSeparators(self).toUpper()));
+
+        // Hai tệp THẬT khác nhau cùng tên: không bao giờ là một. Cùng một tệp viết theo tên ngắn 8.3 (nếu ổ
+        // chứa thư mục tạm có bật 8.3): là một - so chuỗi thuần bỏ sót trường hợp này.
+        {
+            const QString oursDir = dataDir.path() + "/thu muc ten rat dai cua ta";
+            const QString otherDir = dataDir.path() + "/cong cu khac";
+            CHECK(QDir().mkpath(oursDir) && QDir().mkpath(otherDir));
+            for (const QString& dir : {oursDir, otherDir})
+            {
+                QFile f(dir + "/adb.exe");
+                CHECK(f.open(QIODevice::WriteOnly));
+                f.write("khong phai exe that");
+            }
+            CHECK(!isSameExecutablePath(oursDir + "/adb.exe", otherDir + "/adb.exe"));
+            CHECK(isSameExecutablePath(oursDir + "/adb.exe", oursDir + "/../" + QFileInfo(oursDir).fileName() + "/ADB.EXE"));
+
+            const QString viaShortName = dataDir.path() + "/THUMUC~1/adb.exe"; // tên 8.3 Windows sinh cho oursDir
+            if (QFileInfo::exists(viaShortName))
+                CHECK(isSameExecutablePath(oursDir + "/adb.exe", viaShortName));
+            else
+                std::printf("LUU Y: o dia chua thu muc tam khong sinh ten ngan 8.3 - bo qua ca so ten ngan\n");
+        }
 
         // Không có tiến trình nào mang đường dẫn này -> không dừng gì, không crash. (Tiến trình đang gọi
         // luôn bị loại trừ, nên truyền chính đường dẫn của test cũng không tự dừng mình.)

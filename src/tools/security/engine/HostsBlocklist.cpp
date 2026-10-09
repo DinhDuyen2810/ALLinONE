@@ -124,6 +124,7 @@ struct HostsText
     QString text;     ///< Dòng kết thúc bằng '\n' (đã bỏ '\r')
     bool utf8{true};  ///< false: tệp không phải UTF-8 hợp lệ - đọc/ghi theo Latin-1 để giữ nguyên từng byte
     bool bom{false};
+    bool crlf{true};  ///< false: tệp gốc xuống dòng THUẦN bằng '\n' (không có "\r\n" nào) - ghi lại cũng bằng '\n'
 };
 
 bool readHosts(const QString& path, HostsText* out, QString* error)
@@ -157,6 +158,9 @@ bool readHosts(const QString& path, HostsText* out, QString* error)
         text = QString::fromLatin1(bytes);
         out->utf8 = false;
     }
+    // Tệp hosts do công cụ khác ghi (WSL, Docker, trình quản lý hosts...) có thể xuống dòng kiểu Unix. Trước
+    // đây lần ghi nào cũng đổi MỌI dòng sang "\r\n" - tức sửa cả những dòng không phải của mình.
+    out->crlf = text.contains("\r\n") || !text.contains('\n');
     text.replace("\r\n", "\n");
     out->text = text;
     return true;
@@ -165,7 +169,8 @@ bool readHosts(const QString& path, HostsText* out, QString* error)
 bool writeHosts(const QString& path, const HostsText& hosts, QString* error)
 {
     QString text = hosts.text;
-    text.replace("\n", "\r\n"); // kết thúc dòng chuẩn của hosts file trên Windows
+    if (hosts.crlf)
+        text.replace("\n", "\r\n"); // kết thúc dòng chuẩn của hosts file trên Windows
     QByteArray bytes = hosts.utf8 ? text.toUtf8() : text.toLatin1();
     if (hosts.bom)
         bytes.prepend(QByteArray::fromHex("efbbbf"));
@@ -340,8 +345,14 @@ bool rewriteFile(const QString& hostsPath, Mutate mutate, QString* error)
     if (!readHosts(hostsPath, &hosts, error))
         return false;
 
-    QStringList domains = parseManagedDomains(hosts.text);
+    const QStringList current = parseManagedDomains(hosts.text);
+    QStringList domains = current;
     mutate(domains);
+    // Danh sách không đổi (thêm tên đã có/gỡ tên không có) thì không ghi gì: so cả nội dung dựng lại như bên
+    // dưới là chưa đủ - bước dựng lại chuẩn hóa dòng trắng cuối tệp, nên gỡ một tên KHÔNG có trong danh sách
+    // trên một hosts file chưa từng có khối của công cụ vẫn ghi đè tệp (và tạo luôn bản sao lưu).
+    if (domains == current)
+        return true;
 
     const QString updated = buildUpdatedHostsContent(hosts.text, domains);
     if (updated == hosts.text)

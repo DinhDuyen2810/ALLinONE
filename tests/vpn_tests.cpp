@@ -306,6 +306,27 @@ int main(int argc, char** argv)
         connector.setConnectTarget(QString(400, 'x'), "u", "p");
         CHECK(runOnce(connector, &ok, &message));
         CHECK(!ok && !message.isEmpty());
+
+        // Hủy đối tượng NGAY sau start(): destructor phải tự hủy + chờ luồng thoát (hủy một QThread còn
+        // đang chạy là hành vi không xác định - trước đây chỉ VpnTab tự lo việc này).
+        for (int i = 0; i < 10; ++i)
+        {
+            auto* shortLived = new VpnConnector;
+            shortLived->setConnectTarget(missing, "u", "p");
+            shortLived->start();
+            delete shortLived;
+        }
+        CHECK(true); // tới được đây = không crash/treo
+    }
+
+    // ---- "%1".."%4" trong tên/địa chỉ không bị QString::arg thay thế chéo sang tham số khác ----
+    {
+        VpnProfile p;
+        p.name = "%2 %3 %4";
+        p.serverAddress = "%1";
+        const QString script = VpnController::internal::buildAddConnectionScript(p);
+        CHECK(script.contains("-Name '%2 %3 %4' -ServerAddress '%1' -TunnelType Ikev2 -AuthenticationMethod Eap"));
+        CHECK(VpnController::internal::buildRemoveConnectionScript("%1%2").contains("-Name '%1%2' -Force"));
     }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);

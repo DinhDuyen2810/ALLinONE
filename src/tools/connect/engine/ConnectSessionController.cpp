@@ -488,6 +488,21 @@ void ConnectSessionController::handlePairRequest(NetworkSession* session, const 
     else if (!ConnectProtocol::isValidPeerId(msg.textB) || msg.textB == m_identity.id)
         rejectReason = "Định danh của máy gửi yêu cầu không hợp lệ.";
 
+    // Hai máy cùng nhập mã cho nhau (mỗi máy vừa tạo mã vừa bấm "Ghép đôi" vào máy kia, hai yêu cầu đi chéo
+    // nhau): nếu cả hai cùng trả lời ngay thì mỗi máy sinh MỘT khóa dài hạn riêng, và mỗi máy kết thúc với
+    // khóa do máy KIA sinh ra (PairAccept tới sau khi đã lưu khóa của mình) - cả hai báo "đã ghép đôi" nhưng
+    // giữ hai khóa khác nhau, không bao giờ bắt tay phiên được. Phá thế đối xứng: máy có id LỚN hơn hoãn
+    // việc trả lời cho tới khi lần ghép đôi đi của chính nó kết thúc (resumeHeldPairRequests()); khi đó thứ
+    // tự ở cả hai máy đều là "khóa của máy id nhỏ trước, khóa của máy id lớn sau" -> cùng giữ một khóa.
+    if (rejectReason.isEmpty() && m_identity.id > msg.textB && outgoingPairingInFlight())
+    {
+        link->pairRequestHeld = true;
+        link->heldPairRequest = msg;
+        link->createdMs = nowMs(); // tính lại hạn chờ từ lúc bắt đầu hoãn
+        return;
+    }
+    link->pairRequestHeld = false;
+
     const QByteArray newLongTermKey = rejectReason.isEmpty() ? CryptoSession::generateRandomKey() : QByteArray();
     if (rejectReason.isEmpty() && newLongTermKey.size() != CryptoSession::kKeyBytes)
         rejectReason = "Không sinh được khóa (lỗi hệ thống).";
@@ -527,6 +542,36 @@ void ConnectSessionController::handlePairRequest(NetworkSession* session, const 
     closeLinkGracefully(session);
     cancelPairingSession(); // mã ghép đôi chỉ dùng một lần
     finalizePairing(remoteId, remoteName, remoteAddress, remoteListenPort, newLongTermKey);
+}
+
+bool ConnectSessionController::outgoingPairingInFlight() const
+{
+    for (auto it = m_links.constBegin(); it != m_links.constEnd(); ++it)
+        if (it->kind == LinkKind::PairInitiator && it->stage != LinkStage::Closing)
+            return true;
+    return false;
+}
+
+void ConnectSessionController::resumeHeldPairRequests()
+{
+    if (outgoingPairingInFlight())
+        return; // người dùng vừa bấm "Ghép đôi" lần nữa - chờ tiếp lần đó
+
+    QList<NetworkSession*> held;
+    for (auto it = m_links.constBegin(); it != m_links.constEnd(); ++it)
+        if (it->pairRequestHeld)
+            held << it.key();
+    for (NetworkSession* s : std::as_const(held))
+    {
+        // Trả lời yêu cầu đầu tiên là dùng xong mã (cancelPairingSession() đóng các yêu cầu đang hoãn còn
+        // lại) - nên phải tra lại sổ ở mỗi vòng.
+        Link* link = linkFor(s);
+        if (!link || !link->pairRequestHeld)
+            continue;
+        const ProtocolMessage request = link->heldPairRequest;
+        link->heldPairRequest = ProtocolMessage();
+        handlePairRequest(s, request);
+    }
 }
 
 void ConnectSessionController::handlePairAccept(NetworkSession* session, const ProtocolMessage& msg)
@@ -621,6 +666,12 @@ void ConnectSessionController::dropLink(NetworkSession* session)
 
     session->abortSession();
     session->deleteLater();
+
+    // Lần ghép đôi đi vừa kết thúc (thành công hay thất bại): tới lượt các yêu cầu ghép đôi ĐẾN đang hoãn.
+    // Ở vòng lặp sự kiện kế tiếp - khi thành công, nơi gọi (handlePairAccept) còn phải lưu khóa vừa nhận
+    // TRƯỚC khi ta sinh khóa mới cho yêu cầu đang hoãn (xem handlePairRequest).
+    if (link.kind == LinkKind::PairInitiator)
+        QMetaObject::invokeMethod(this, [this] { resumeHeldPairRequests(); }, Qt::QueuedConnection);
 
     if (wasRegistered)
     {
@@ -1055,7 +1106,12 @@ bool ConnectSessionController::resolveDuplicateLinks(NetworkSession* session)
         // Kết nối kia là kết nối ưu tiên, kết nối mới thì không, và kết nối kia đã thật sự nối được tới
         // máy đó (qua bước Connecting) -> giữ kết nối kia, bỏ kết nối mới. Mọi trường hợp còn lại: kết nối
         // vừa xác thực xong thắng (vd máy kia khởi động lại và nối lại theo cùng chiều).
-        if (isPreferredDirection(it.value()) && !newPreferred && it->stage != LinkStage::Connecting)
+        // Chỉ kết nối ĐÁNG TIN mới được quyền cản: phiên đã đăng ký, hoặc kết nối do chính ta mở. Một kết
+        // nối ĐẾN còn đang bắt tay chưa chứng minh được gì - id của nó mới chỉ là lời tự khai trong preamble
+        // (SessionHello cũ cũng phát lại được); nếu cho nó cản thì bất kỳ máy nào trong LAN, không cần khóa,
+        // chỉ việc khai id của máy kia rồi nằm im là khiến ta vứt bỏ kết nối thật đã xác thực hai chiều.
+        const bool otherTrusted = it->stage == LinkStage::Established || it->kind == LinkKind::SessionInitiator;
+        if (otherTrusted && isPreferredDirection(it.value()) && !newPreferred && it->stage != LinkStage::Connecting)
         {
             refuseNew = true;
             if (it->stage == LinkStage::Established)

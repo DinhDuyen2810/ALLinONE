@@ -250,7 +250,10 @@ ParsedPayload QRPayload::parse(const QString& content)
             switch (part[0].toUpper().unicode())
             {
                 case 'S': ssid = value; break;
-                case 'P': pass = value; break;
+                // Trường P lặp lại (mã tự dựng/lỗi): giữ giá trị KHÁC RỖNG. Trước đây trường sau luôn thắng -
+                // "P:<mật khẩu>;P:;" cho ra mật khẩu rỗng, secretField = -1, và giao diện (dựa vào secretField
+                // để che) hiện nguyên văn chuỗi gốc CÒN mật khẩu ở ô "nội dung gốc".
+                case 'P': if (!value.isEmpty()) pass = value; break;
                 case 'T': sec = value; break;
                 case 'H': hidden = value; break;
             }

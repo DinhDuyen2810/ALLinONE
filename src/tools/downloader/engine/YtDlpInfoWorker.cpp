@@ -126,9 +126,14 @@ VideoInfo parseInfoJson(const QByteArray& json, QString* error)
         return info;
     }
 
+    // Số lấy từ JSON bên ngoài: ngoài khoảng hợp lý thì coi như không rõ - ép một double ngoài tầm sang số
+    // nguyên (VideoInfo::durationLabel(), approxSizeBytes) là hành vi không xác định.
+    auto sizeOrUnknown = [](double bytes) { return (bytes >= 0.0 && bytes < 9.0e18) ? static_cast<qint64>(bytes) : qint64(-1); };
+
     const QJsonObject o = doc.object();
     info.title = o.value("title").toString();
-    info.durationSeconds = o.value("duration").toDouble();
+    const double duration = o.value("duration").toDouble();
+    info.durationSeconds = (duration > 0.0 && duration < 1.0e9) ? duration : 0.0;
     info.thumbnailUrl = o.value("thumbnail").toString();
 
     for (const QJsonValue& v : o.value("formats").toArray())
@@ -150,9 +155,9 @@ VideoInfo parseInfoJson(const QByteArray& json, QString* error)
         fmt.hasAudio = !acodec.isEmpty() && acodec != "none";
 
         if (f.value("filesize").isDouble())
-            fmt.approxSizeBytes = static_cast<qint64>(f.value("filesize").toDouble());
+            fmt.approxSizeBytes = sizeOrUnknown(f.value("filesize").toDouble());
         else if (f.value("filesize_approx").isDouble())
-            fmt.approxSizeBytes = static_cast<qint64>(f.value("filesize_approx").toDouble());
+            fmt.approxSizeBytes = sizeOrUnknown(f.value("filesize_approx").toDouble());
 
         if (!fmt.formatId.isEmpty())
             info.formats << fmt;

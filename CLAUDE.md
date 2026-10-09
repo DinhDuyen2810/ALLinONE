@@ -75,6 +75,12 @@ build_installer.bat /nopause
 Các bộ test: `qr`, `wifi`, `connect`, `diskcleanup`, `android`, `vpn`, `security`, `downloader` (mỗi bộ có
 `_tests` và `_ui_tests`), `autoclick_tests`, `update_tests`. Chúng là target `EXCLUDE_FROM_ALL`, phải gọi tên.
 
+Năm bộ stress/fuzz (mỗi bộ 2-5 phút, chạy khi máy RẢNH - chúng có ngưỡng thời gian): `core_stress_tests`,
+`qrwifi_stress_tests`, `connect_stress_tests`, `disk_vpn_stress_tests`, `secdl_stress_tests`. Chạy lại bộ của
+phần vừa sửa trước khi commit. Bộ có dựng widget phải chọn nền tảng qua `tests/OffscreenPlatform.h`, KHÔNG
+ép thẳng `QT_QPA_PLATFORM=offscreen` (thư mục `build\` đã windeployqt không có plugin đó - Qt sẽ bật hộp
+thoại lỗi lên màn hình người dùng và treo).
+
 ## Kiến trúc cần nhớ khi sửa
 
 - Mỗi công cụ là một `ITool` (`src/core/Tool.h`) đăng ký trong `MainWindow::registerTools()`; cửa sổ công

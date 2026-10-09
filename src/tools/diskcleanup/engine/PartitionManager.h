@@ -81,7 +81,14 @@ SupportedSizeRange parseSupportedSizeJson(const QByteArray& json, QString* error
 
 /// Đổi giá trị GB người dùng nhập sang byte rồi KẸP vào [minBytes, maxBytes]. Ô nhập chỉ có 2 chữ số
 /// thập phân (bước ~10,7 MB) nên giá trị làm tròn có thể lọt ra ngoài khoảng Windows cho phép vài MB.
+/// Trả về 0 (luôn bị resizeBlockReason() từ chối) nếu khoảng không hợp lệ hoặc sizeGb không phải số.
 qint64 clampResizeBytes(double sizeGb, const SupportedSizeRange& range);
+
+/// true nếu giá trị GB trong ô nhập, ở đúng độ chính xác 2 chữ số thập phân của ô, vẫn CHÍNH LÀ kích thước
+/// hiện tại - tức người dùng chưa đổi gì. Ô nhập hiện kích thước hiện tại đã làm tròn (vd 465,76 GB cho
+/// 500.107.862.016 byte); đổi ngược ra byte lệch vài MB so với kích thước thật, nên chỉ so theo byte sẽ
+/// coi đó là một yêu cầu thu nhỏ/mở rộng vài MB THẬT mà người dùng không hề nhập.
+bool isSameSizeAtInputPrecision(double sizeGb, qint64 currentBytes);
 
 /// Lớp kiểm tra CUỐI CÙNG trước khi chạy Resize-Partition, làm trên dữ liệu VỪA đọc lại từ Windows
 /// (currentPartitions/currentRange), không phải dữ liệu giao diện đang giữ: rỗng nếu được phép chạy,

@@ -38,7 +38,8 @@ int main(int argc, char** argv)
 
     // LƯU Ý AN TOÀN: bộ test này CHỈ gọi các API WLAN đọc (liệt kê adapter/mạng/hồ sơ, trạng thái). Tuyệt
     // đối không gọi connectWithPassword/connectToSavedProfile/disconnect/deleteProfile/importProfileXml/
-    // rollbackProfile - chúng đổi cấu hình WiFi thật của máy đang chạy test.
+    // rollbackProfile - chúng đổi cấu hình WiFi thật của máy đang chạy test. (Ngoại lệ có kiểm soát ở mục 1:
+    // connectWithPassword với GUID adapter KHÔNG hợp lệ, chỉ để kiểm các bước từ chối đứng trước mọi lệnh Wlan*.)
 
     // ---- 0. Logic thuần (không cần phần cứng/mạng) ----
     {
@@ -82,6 +83,27 @@ int main(int argc, char** argv)
 
         if (opened)
         {
+            // Hồi quy: SSID có ký tự điều khiển bị từ chối TRƯỚC mọi thao tác hồ sơ (xem
+            // WlanProfileXml::isSafeProfileName). Ngoại lệ DUY NHẤT của lưu ý an toàn ở trên, và vẫn an toàn:
+            // GUID adapter cố ý không hợp lệ, nên dù kiểm tra tên có hỏng thì lời gọi cũng dừng ở bước đổi
+            // GUID (đứng trước mọi lệnh Wlan*) - không lệnh nào tới được hệ thống.
+            WifiNetwork evil;
+            evil.ssid = QString("Nha") + QChar(0x01);
+            evil.ssidBytes = evil.ssid.toUtf8();
+            evil.security = WifiSecurity::Wpa2Psk;
+            WifiProfileBackup backup;
+            backup.valid = true;
+            QString connectErr;
+            CHECK(!ctrl.connectWithPassword("khong-phai-guid", evil, "matkhau123", WifiSecurity::Wpa2Psk, true, &backup, &connectErr));
+            CHECK(connectErr.contains("ký tự điều khiển"));
+            CHECK(!backup.valid); // không có gì để hoàn tác: chưa hồ sơ nào bị đụng tới
+            WifiNetwork normal;
+            normal.ssid = "OneForAll-khong-ton-tai-7f3a91c2";
+            normal.ssidBytes = normal.ssid.toUtf8();
+            connectErr.clear();
+            CHECK(!ctrl.connectWithPassword("khong-phai-guid", normal, "matkhau123", WifiSecurity::Wpa2Psk, true, &backup, &connectErr));
+            CHECK(connectErr.contains("GUID") && !backup.valid);
+
             QString adaptersErr;
             const auto list = ctrl.adapters(&adaptersErr);
             std::printf("adapters found: %lld\n", static_cast<long long>(list.size()));

@@ -130,6 +130,11 @@ private:
     QColor m_bg{Qt::white};
     QImage m_logo;
 
+    // "Tạo lại mã": nội dung NGUYÊN VĂN khi ô văn bản không hiển thị/trả lại đúng được nó (xem setRawText);
+    // null khi không dùng. m_rawTextShown là thứ ô văn bản đang trả về cho bản nguyên văn đó.
+    QString m_rawText;
+    QString m_rawTextShown;
+
     QRMatrix m_matrix;
     QImage m_image;
     QString m_content;

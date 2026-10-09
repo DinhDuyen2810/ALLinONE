@@ -75,10 +75,39 @@ QString normalizedExecutablePath(const QString& path)
     if (p.startsWith("//?/"))
         p = p.mid(4); // tiền tố đường dẫn dài của Win32 ("\\?\C:\...")
 
-    // Phân giải liên kết tượng trưng/junction/tên ngắn 8.3 khi tệp tồn tại - hai cách viết khác nhau của
-    // cùng một tệp phải so ra bằng nhau.
+    // Phân giải liên kết tượng trưng khi tệp tồn tại. KHÔNG đủ để coi hai cách viết của cùng một tệp là
+    // bằng nhau: canonicalFilePath() giữ nguyên tên ngắn 8.3 ("C:\PROGRA~1\...") - xem isSameFile().
     const QString canonical = QFileInfo(p).canonicalFilePath();
     return QDir::cleanPath(canonical.isEmpty() ? p : canonical);
+}
+
+/// Hai đường dẫn (đều phải mở được) có là CÙNG một tệp vật lý không - so danh tính tệp do hệ thống cấp (số
+/// sê-ri ổ đĩa + chỉ số tệp). Bắt được các cách viết mà so chuỗi bỏ sót: tên ngắn 8.3, junction, ổ `subst`.
+/// Đã xác nhận thật bằng core_stress_tests: so chuỗi coi "...\THUMUC~1\adb.exe" và đường dẫn dài của chính
+/// tệp đó là hai tệp khác nhau - ứng dụng mở qua một đường dẫn ngắn thì daemon adb của nó không bao giờ được
+/// dừng.
+bool isSameFile(const QString& a, const QString& b)
+{
+#ifdef Q_OS_WIN
+    const auto identity = [](const QString& path, BY_HANDLE_FILE_INFORMATION* info) {
+        // Quyền truy cập 0 = chỉ hỏi thông tin: mở được cả tệp exe đang chạy.
+        HANDLE h = CreateFileW(reinterpret_cast<const wchar_t*>(QDir::toNativeSeparators(path).utf16()), 0,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                               FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h == INVALID_HANDLE_VALUE)
+            return false;
+        const bool ok = GetFileInformationByHandle(h, info) != 0;
+        CloseHandle(h);
+        return ok;
+    };
+    BY_HANDLE_FILE_INFORMATION infoA{}, infoB{};
+    return identity(a, &infoA) && identity(b, &infoB) && infoA.dwVolumeSerialNumber == infoB.dwVolumeSerialNumber &&
+           infoA.nFileIndexHigh == infoB.nFileIndexHigh && infoA.nFileIndexLow == infoB.nFileIndexLow;
+#else
+    Q_UNUSED(a);
+    Q_UNUSED(b);
+    return false;
+#endif
 }
 } // namespace
 
@@ -277,7 +306,9 @@ bool isSameExecutablePath(const QString& a, const QString& b)
 {
     if (a.trimmed().isEmpty() || b.trimmed().isEmpty())
         return false;
-    return normalizedExecutablePath(a).compare(normalizedExecutablePath(b), Qt::CaseInsensitive) == 0;
+    const QString normalizedA = normalizedExecutablePath(a);
+    const QString normalizedB = normalizedExecutablePath(b);
+    return normalizedA.compare(normalizedB, Qt::CaseInsensitive) == 0 || isSameFile(normalizedA, normalizedB);
 }
 
 int terminateProcessesByImagePath(const QString& exePath)

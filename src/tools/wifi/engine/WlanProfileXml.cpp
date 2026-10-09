@@ -64,6 +64,61 @@ QByteArray WlanProfileXml::fromHex(const QString& hex)
     return QByteArray::fromHex(hex.toLatin1());
 }
 
+bool WlanProfileXml::isSafeProfileName(const QString& name)
+{
+    if (name.isEmpty())
+        return false;
+    for (qsizetype i = 0; i < name.size(); ++i)
+    {
+        const QChar c = name[i];
+        if (c.isHighSurrogate())
+        {
+            if (i + 1 >= name.size() || !name[i + 1].isLowSurrogate())
+                return false;
+            ++i; // cặp surrogate hợp lệ (emoji...) - bỏ qua nửa sau
+            continue;
+        }
+        if (c.isLowSurrogate())
+            return false;
+        const char16_t u = c.unicode();
+        if (u < 0x20 && u != u'\t' && u != u'\n')
+            return false;
+        if (u == 0xFFFE || u == 0xFFFF)
+            return false;
+    }
+    return true;
+}
+
+bool WlanProfileXml::describesSsid(const QString& xml, const QByteArray& ssidBytes)
+{
+    QXmlStreamReader r(xml);
+    bool inSsid = false;
+    bool sawHex = false;
+    while (!r.atEnd())
+    {
+        r.readNext();
+        if (r.isStartElement())
+        {
+            if (r.name() == QLatin1String("SSID"))
+                inSsid = true;
+            else if (inSsid && r.name() == QLatin1String("hex"))
+            {
+                const QString hex = r.readElementText().trimmed();
+                if (hex.isEmpty())
+                    continue;
+                sawHex = true;
+                if (fromHex(hex) == ssidBytes)
+                    return true; // một hồ sơ có thể liệt kê nhiều SSID - khớp một cái là đủ
+            }
+        }
+        else if (r.isEndElement() && r.name() == QLatin1String("SSID"))
+        {
+            inSsid = false;
+        }
+    }
+    return r.hasError() || !sawHex;
+}
+
 QString WlanProfileXml::build(const QByteArray& ssidBytes, const QString& ssidDisplayName, WifiSecurity security,
                               const QString& password, bool autoConnect, bool nonBroadcast)
 {

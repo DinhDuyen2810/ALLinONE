@@ -16,8 +16,9 @@
 /// trình cài đặt/gỡ cài đặt đụng tới), tự chép sang từ vị trí cũ ở lần chạy đầu.
 namespace AppPaths
 {
-/// Thư mục gốc dữ liệu người dùng (đã tạo sẵn). Thứ tự ưu tiên: setDataDirOverride() (dành cho test) →
-/// biến môi trường ONEFORALL_DATA_DIR → `%LOCALAPPDATA%\OneForAll`.
+/// Thư mục gốc dữ liệu người dùng (đã tạo sẵn), luôn là đường dẫn TUYỆT ĐỐI. Thứ tự ưu tiên:
+/// setDataDirOverride() (dành cho test) → biến môi trường ONEFORALL_DATA_DIR (giá trị tương đối được phân
+/// giải theo thư mục làm việc ở lần đầu dùng tới rồi giữ nguyên) → `%LOCALAPPDATA%\OneForAll`.
 QString dataDir();
 
 /// `dataDir()/profiles` và `dataDir()/logs` (đã tạo sẵn).

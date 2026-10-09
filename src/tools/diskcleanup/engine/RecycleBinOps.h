@@ -23,6 +23,11 @@ struct Status
 /// - và với FOF_NOCONFIRMATION thì làm việc đó KHÔNG HỎI. Nơi gọi PHẢI lọc trước bằng
 /// notRecyclableReason(); hàm này còn đặt thêm FOF_WANTNUKEWARNING làm lớp chặn thứ hai (Windows hỏi
 /// lại trước khi hủy hẳn thay vì âm thầm làm).
+///
+/// Dùng chung cho moveToRecycleBin()/permanentlyDelete(): đường dẫn mà Shell có thể hiểu thành một đối
+/// tượng KHÁC (FsSafety::unsafeShellPathReason) bị từ chối, mục không còn tồn tại/mục lặp bị bỏ qua, và
+/// một mục lỗi (vd tệp đang bị khóa) KHÔNG chặn các mục còn lại. Trả về false + *error nếu có bất kỳ mục
+/// nào bị từ chối hoặc không xóa được - nơi gọi tự kiểm lại mục nào còn trên đĩa để báo số liệu thật.
 bool moveToRecycleBin(const QStringList& paths, QString* error = nullptr);
 
 /// Lý do mục này (kích thước sizeBytes) KHÔNG thể đưa vào Thùng rác một cách khôi phục được; rỗng nếu

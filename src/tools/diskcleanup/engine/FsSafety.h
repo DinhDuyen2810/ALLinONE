@@ -36,6 +36,12 @@ RawInfo rawInfo(const QString& path);
 /// đó nhưng ĐÍCH đã mất).
 bool existsNoFollow(const QString& path);
 
+/// TỆP này hiện không thể bị xóa vì đang bị chương trình khác giữ (không cho chia sẻ quyền xóa), bị khóa
+/// vùng, hoặc người dùng không có quyền xóa. Dùng để bỏ qua trước các tệp đang mở thay vì giao cho Shell:
+/// đo thật cho thấy MỖI lần SHFileOperationW gặp một tệp đang bị khóa mất ~1,2 giây (Shell tự thử lại)
+/// rồi mới báo lỗi. Chỉ có nghĩa với tệp - mở một thư mục luôn được dù bên trong có tệp đang bị khóa.
+bool lockedAgainstDelete(const QString& path);
+
 /// Danh tính tệp vật lý (số sê-ri ổ + chỉ số tệp NTFS): hai đường dẫn cùng danh tính là CÙNG một tệp
 /// trên đĩa (hardlink, hoặc thấy qua junction) - xóa "bản kia" không giải phóng gì hoặc xóa mất tệp.
 struct FileIdentity
@@ -72,5 +78,15 @@ QStringList systemProtectedDirs();
 /// từ chối: rỗng, tương đối/không có ký tự ổ, là gốc ổ đĩa, hoặc trùng/chứa một thư mục được bảo vệ.
 /// Chặn tình huống biến môi trường TEMP/WINDIR bị thiếu hoặc trỏ sai (vd "D:\") biến cả ổ đĩa thành
 /// "tệp tạm an toàn, tick sẵn".
+/// Cũng từ chối các dạng mà Windows hiểu KHÁC với chuỗi được viết: tiền tố thiết bị "\\?\" / "\\.\", tên
+/// kết thúc bằng dấu chấm/khoảng trắng, ký tự đại diện, bí danh chia sẻ quản trị ("\\máy\C$\...") và tên
+/// ngắn 8.3 của một thư mục được bảo vệ.
 QString unsafeCleanupRootReason(const QString& path, const QStringList& protectedDirs);
+
+/// Rỗng nếu 'path' có thể giao cho Windows Shell (SHFileOperationW) mà Shell chắc chắn thao tác trên ĐÚNG
+/// đối tượng đó; ngược lại là lý do từ chối. Gồm mọi điều kiện của unsafeCleanupRootReason(path, {}) cộng
+/// thêm: chuỗi phải bất biến qua phép chuẩn hóa đường dẫn của Win32. Lỗi thật đã xác nhận bằng chạy thử:
+/// yêu cầu xóa "thư mục\tệp." (tên có dấu chấm cuối) làm Shell xóa "thư mục\tệp" - một tệp KHÁC - và báo
+/// thành công. Đường dẫn truyền vào phải đã qua QDir::cleanPath.
+QString unsafeShellPathReason(const QString& path);
 } // namespace FsSafety

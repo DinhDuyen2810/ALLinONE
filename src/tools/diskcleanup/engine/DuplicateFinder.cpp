@@ -120,6 +120,13 @@ void DuplicateFinder::run()
     {
         if (sizeIt.value().size() < 2)
             continue;
+        // Kiểm cờ dừng ở MỖI nhóm kích thước: bước khử trùng theo danh tính bên dưới phải mở từng tệp, một
+        // nhóm hàng chục nghìn tệp cùng cỡ (khối cache) từng chạy hết rồi mới tới chỗ kiểm cờ đầu tiên.
+        if (m_stopRequested)
+        {
+            emit scanStopped();
+            return;
+        }
 
         // Khử trùng theo danh tính tệp vật lý TRƯỚC khi băm: mỗi tệp trên đĩa chỉ được đại diện bởi MỘT
         // đường dẫn. Không lấy được danh tính (không mở được tệp) thì loại luôn - thà bỏ sót một bản
@@ -128,6 +135,13 @@ void DuplicateFinder::run()
         QSet<QPair<quint32, quint64>> seenIdentities;
         for (const Candidate& candidate : sizeIt.value())
         {
+            if (m_stopRequested)
+                break;
+            // Đường dẫn mà Win32 hiểu thành một tệp KHÁC (vd tên có dấu chấm cuối: walkFiles thấy "x/tệp."
+            // qua \\?\ nhưng QFile bên dưới sẽ mở và băm "x/tệp") không thể so nội dung đúng tệp, cũng
+            // không xóa được qua Shell - loại hẳn khỏi kết quả.
+            if (!FsSafety::unsafeShellPathReason(candidate.path).isEmpty())
+                continue;
             FsSafety::FileIdentity id;
             if (!FsSafety::fileIdentity(candidate.path, &id))
                 continue;
@@ -180,6 +194,13 @@ void DuplicateFinder::run()
             wastedTotal += group.wastedBytes();
             allGroups.push_back(group);
         }
+    }
+
+    if (m_stopRequested)
+    {
+        // Bị dừng trong lúc khử trùng nhóm cuối: kết quả CHƯA đủ, không được báo là "quét xong".
+        emit scanStopped();
+        return;
     }
 
     std::sort(allGroups.begin(), allGroups.end(), [](const DuplicateGroup& a, const DuplicateGroup& b) {

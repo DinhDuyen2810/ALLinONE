@@ -4,6 +4,7 @@
 
 #include <QProcess>
 #include <QRegularExpression>
+#include <QStringList>
 
 namespace
 {
@@ -47,16 +48,79 @@ QByteArray stripUtf8Bom(QByteArray data)
     return data;
 }
 
-/// Bỏ khối CLIXML ("#< CLIXML" + một dòng <Objs ...>...</Objs>) nếu còn lọt vào stderr - phần chữ thường
-/// do script tự ghi bằng [Console]::Error.WriteLine() được giữ nguyên.
+/// Giải mã chữ trong một phần tử CLIXML: `_xHHHH_` là một ký tự viết theo mã (vd `_x000D__x000A_` = xuống
+/// dòng), cộng các thực thể XML cơ bản.
+QString decodeCliXmlText(const QString& encoded)
+{
+    static const QRegularExpression escaped(QStringLiteral("_x([0-9A-Fa-f]{4})_"));
+    QString out;
+    qsizetype last = 0;
+    QRegularExpressionMatchIterator it = escaped.globalMatch(encoded);
+    while (it.hasNext())
+    {
+        const QRegularExpressionMatch m = it.next();
+        out += encoded.mid(last, m.capturedStart() - last);
+        out += QChar(static_cast<ushort>(m.captured(1).toUShort(nullptr, 16)));
+        last = m.capturedEnd();
+    }
+    out += encoded.mid(last);
+    out.replace(QStringLiteral("&lt;"), QStringLiteral("<"));
+    out.replace(QStringLiteral("&gt;"), QStringLiteral(">"));
+    out.replace(QStringLiteral("&quot;"), QStringLiteral("\""));
+    out.replace(QStringLiteral("&apos;"), QStringLiteral("'"));
+    out.replace(QStringLiteral("&amp;"), QStringLiteral("&")); // sau cùng: "&amp;lt;" phải ra "&lt;", không ra "<"
+    return out;
+}
+
+/// Thông báo của bản ghi lỗi ĐẦU TIÊN trong một khối CLIXML (các bản ghi sau thường chỉ là hệ quả). Chỉ
+/// giữ phần THÔNG BÁO: bỏ dòng vị trí ("At line:1 char:..."), các dòng trích script bắt đầu bằng '+', và
+/// dừng ở "+ CategoryInfo" - đoạn trích script không giúp gì người dùng mà lại chép nguyên script ra hộp
+/// thoại/log.
+QString firstCliXmlErrorMessage(const QString& block)
+{
+    static const QRegularExpression errorString(QStringLiteral("<S S=\"Error\">(.*?)</S>"),
+                                                QRegularExpression::DotMatchesEverythingOption);
+    QString record;
+    QRegularExpressionMatchIterator it = errorString.globalMatch(block);
+    while (it.hasNext())
+        record += decodeCliXmlText(it.next().captured(1));
+
+    QStringList message;
+    const QStringList lines = record.split(QChar('\n'));
+    for (const QString& rawLine : lines)
+    {
+        const QString line = rawLine.trimmed();
+        if (line.startsWith(QStringLiteral("+ CategoryInfo")))
+            break;
+        if (line.isEmpty() || line.startsWith(QChar('+')) || line.startsWith(QStringLiteral("At line:")))
+            continue;
+        message << line;
+    }
+    return message.join(QChar(' ')).left(600);
+}
+
+/// Chữ thường do script tự ghi bằng [Console]::Error.WriteLine() được giữ nguyên. Khối CLIXML ("#< CLIXML"
+/// + <Objs ...>...</Objs>) thì KHÔNG hiện thô, nhưng cũng không vứt đi: khi chạy bằng -EncodedCommand,
+/// PowerShell ghi mọi lỗi mà script KHÔNG tự bắt (throw, cmdlet lỗi, lỗi cú pháp) ra stderr đúng ở dạng
+/// đó - bỏ cả khối (như bản trước) thì nơi gọi chỉ còn nhận được "PowerShell thoát với mã lỗi 1", mất hẳn
+/// lý do (đã xác nhận thật bằng core_stress_tests). Rút thông báo lỗi đầu tiên ra khỏi khối.
 QString cleanErrorText(const QByteArray& raw)
 {
     QString text = QString::fromUtf8(stripUtf8Bom(raw));
-    text.remove(QStringLiteral("#< CLIXML"));
     static const QRegularExpression objs(QStringLiteral("<Objs\\b.*?</Objs>"),
                                          QRegularExpression::DotMatchesEverythingOption);
+
+    QString fromCliXml;
+    QRegularExpressionMatchIterator it = objs.globalMatch(text);
+    while (it.hasNext() && fromCliXml.isEmpty())
+        fromCliXml = firstCliXmlErrorMessage(it.next().captured(0));
+
+    text.remove(QStringLiteral("#< CLIXML"));
     text.remove(objs);
-    return text.trimmed();
+    text = text.trimmed();
+    if (fromCliXml.isEmpty())
+        return text;
+    return text.isEmpty() ? fromCliXml : text + QChar('\n') + fromCliXml;
 }
 } // namespace
 
