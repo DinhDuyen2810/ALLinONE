@@ -1474,6 +1474,33 @@ gặp ở mã độc mà một app hợp pháp cũng cần tránh để không b
 Bản phát hành KHÔNG cần build lại vì lý do ký số (vẫn chưa ký) - chỉ build lại vì đã thêm metadata phiên
 bản ở trên.
 
+**Quan sát thực tế sau khi phát hành (2026-10-10)**: người dùng tải `OneForAll_Setup.exe` trực tiếp từ
+GitHub Release `v1.19.3` và chạy - KHÔNG hiện cảnh báo SmartScreen nào ("Windows protected your PC"),
+chạy thẳng vào trình cài đặt. Đã kiểm tra THẬT trên máy đó trước khi kết luận gì (không đoán):
+- Máy là **Windows 10 Pro build 19045** - **Smart App Control không tồn tại trên máy này** (tính năng
+  này CHỈ có từ Windows 11 22H2+, xác nhận qua registry `HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy`
+  không có khóa `VerifiedAndReputablePolicyState`). Nghĩa là lớp chặn mạnh nhất chưa từng áp dụng ở đây -
+  KHÔNG phải đã "vượt qua" được Smart App Control.
+- SmartScreen (application-reputation cho file .exe) không bị tắt theo registry/Group Policy trên máy
+  này (`SmartScreenEnabled`, `EnableWebContentEvaluation` đều để mặc định, không có override). Windows
+  Defender Antivirus thật đang chạy bình thường (`RealTimeProtectionEnabled=True`, signature cập nhật
+  cùng ngày).
+- **KHÔNG có cách xác nhận chắc chắn lý do cụ thể** SmartScreen's cloud application-reputation check
+  không cảnh báo lần chạy này - đây là dịch vụ cloud đóng của Microsoft, không công bố thuật toán, và log
+  cục bộ chi tiết (`Microsoft-Windows-SmartScreen/Debug`) không được bật sẵn nên không có bằng chứng nào
+  để đọc lại. Các yếu tố CÓ THỂ đã góp phần (không khẳng định là nguyên nhân duy nhất/đã chứng minh):
+  metadata VERSIONINFO đầy đủ thêm ở trên (Microsoft công khai khuyến nghị điều này để cải thiện uy tín,
+  nhưng không công bố nó đủ để tự tắt cảnh báo), domain `github.com`/`githubusercontent.com` có uy tín cao
+  trong hệ thống SmartScreen, và file hash của `OneForAll_Setup.exe` có thể đã tích lũy uy tín dần qua các
+  lượt tải v1.19.0 → v1.19.3 trước đó.
+- **Giới hạn quan trọng của quan sát này**: chỉ xảy ra trên MỘT máy Windows 10, không có Smart App
+  Control. CHƯA kiểm chứng trên máy Windows 11 có Smart App Control ở chế độ "On" (Enforce) - đó là lớp
+  chặn khác hẳn và mạnh hơn SmartScreen application-reputation. Không suy rộng thành "vấn đề bị chặn đã
+  giải quyết xong" cho mọi máy.
+
+Việc nên làm tiếp (duy trì, không phải sửa thêm): giữ nguyên các yếu tố metadata đã thêm ở trên cho mọi
+bản phát hành sau - xem rule mới trong `CLAUDE.md`.
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
