@@ -42,8 +42,8 @@ public:
     /// Trần khung khi CHƯA có khóa phiên (chưa xác thực): thông điệp bắt tay/ghép đôi rất nhỏ - không để
     /// một kết nối lạ bắt ta đệm hàng MB chỉ bằng cách khai độ dài lớn trong 4 byte đầu.
     static constexpr int kUnauthenticatedMaxFrameBytes = 4 * 1024;
-    /// Trần khung sau khi đã có khóa phiên: đủ cho văn bản clipboard (ConnectProtocol::kMaxClipboardBytes)
-    /// cộng phần đóng gói.
+    /// Trần khung sau khi phiên đã được XÁC NHẬN hai chiều (markPeerAuthenticated()): đủ cho văn bản
+    /// clipboard (ConnectProtocol::kMaxClipboardBytes) cộng phần đóng gói.
     static constexpr int kAuthenticatedMaxFrameBytes = 2 * 1024 * 1024;
     /// Bên kia ngừng đọc (treo/mất mạng chưa phát hiện) mà ta vẫn gửi sự kiện chuột liên tục thì hàng đợi
     /// ghi phình vô hạn - vượt ngưỡng này coi như phiên đã chết, đóng luôn.
@@ -67,9 +67,23 @@ public:
     void setHandshakeKey(const QByteArray& key256bit, const QByteArray& context = QByteArray());
 
     /// Giai đoạn phiên: khóa gửi và khóa nhận KHÁC nhau (xem CryptoSession::deriveSessionKeys), bộ đếm
-    /// hai chiều bắt đầu lại từ 0. Từ đây trần khung nhận nâng lên kAuthenticatedMaxFrameBytes.
+    /// hai chiều bắt đầu lại từ 0. Trần khung VẪN là kUnauthenticatedMaxFrameBytes: có khóa phiên chưa có
+    /// nghĩa là bên kia đã chứng minh được gì (bên nhận kết nối đặt khóa phiên ngay sau SessionHello - một
+    /// lời chào cũ bị phát lại cũng tới được đây).
     void setSessionKeys(const QByteArray& sendKey, const QByteArray& receiveKey);
     bool hasSessionKeys() const { return m_txSession && m_rxSession; }
+
+    /// Bên kia vừa chứng minh được nó giữ khóa phiên của ĐÚNG kết nối này (SessionConfirm hợp lệ, phiên đã
+    /// được đăng ký): chỉ từ đây trần khung mới nâng lên kAuthenticatedMaxFrameBytes. Trước đó, tối đa
+    /// 16 kết nối đang chờ × 2 MiB có thể bị bắt đệm bởi máy chưa xác thực xong. Không có khóa phiên thì
+    /// lời gọi này không có tác dụng; setSessionKeys()/connectToHost()/adoptSocket() đặt lại về "chưa".
+    void markPeerAuthenticated();
+    bool isPeerAuthenticated() const { return m_peerAuthenticated; }
+
+    /// Tạm ngưng/tiếp tục việc TÁCH KHUNG dữ liệu đến (dùng khi khóa bắt tay còn đang được suy ở luồng nền -
+    /// xem ConnectSessionController::onPreamble). Trong lúc ngưng, dữ liệu đến vẫn được nhận nhưng chỉ tới
+    /// đúng một khung của giai đoạn chưa xác thực; nhiều hơn thế thì đóng kết nối.
+    void setReceivePaused(bool paused);
 
     /// false (kèm *error) nếu chưa kết nối, chưa có khóa, hoặc thông điệp vượt trần khung của giai đoạn
     /// hiện tại - trường hợp cuối KHÔNG đóng kết nối và không tiêu tốn bộ đếm (nơi gọi tự bỏ qua).
@@ -102,6 +116,8 @@ private:
     Side m_side{Side::Unknown};
     bool m_expectPreamble{false};
     bool m_closed{false};
+    bool m_peerAuthenticated{false}; // true = trần khung kAuthenticatedMaxFrameBytes (xem markPeerAuthenticated)
+    bool m_receivePaused{false};
 
     std::unique_ptr<CryptoSession> m_handshake; // giai đoạn 2 (dùng chung cho gửi và nhận, phân biệt bằng AAD)
     QByteArray m_handshakeContext;

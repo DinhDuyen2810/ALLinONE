@@ -26,6 +26,7 @@
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryDir>
+#include "TestDataDir.h"
 #include <QTimer>
 #include <QtEndian>
 #include <algorithm>
@@ -658,7 +659,7 @@ int main(int argc, char** argv)
     QGuiApplication app(argc, argv);
 
     // TRƯỚC KHI đụng tới bất kỳ store nào: ép toàn bộ dữ liệu vào thư mục tạm.
-    QTemporaryDir dataDir;
+    TestDataDir dataDir;
     CHECK(dataDir.isValid());
     AppPaths::setDataDirOverride(dataDir.path());
 
@@ -1077,6 +1078,9 @@ int main(int argc, char** argv)
         const QByteArray keyR2I = CryptoSession::generateRandomKey();
         ini.setSessionKeys(keyI2R, keyR2I);
         res.setSessionKeys(keyR2I, keyI2R);
+        // Trần khung 2 MiB chỉ mở sau khi phiên được xác nhận (controller gọi lúc nhận SessionConfirm hợp lệ).
+        ini.markPeerAuthenticated();
+        res.markPeerAuthenticated();
 
         // Mỗi đầu ghi lại: số thứ tự kế tiếp mong đợi, số lần lệch thứ tự, số lần sai nội dung.
         struct Sink
@@ -1267,6 +1271,7 @@ int main(int argc, char** argv)
             lazy.connectToHost(QHostAddress::LocalHost, server3.serverPort());
             CHECK(waitUntil([&] { return adopted3 && lazy.state() == QAbstractSocket::ConnectedState; }));
             sender.setSessionKeys(keyI2R, keyR2I);
+            sender.markPeerAuthenticated(); // như một phiên đã xác nhận - mới gửi được khung lớn
 
             const qint64 memBefore = privateBytes();
             ProtocolMessage chunk;

@@ -16,11 +16,14 @@
 /// An toàn khi ghi (hosts file hỏng = cả máy phân giải tên miền sai):
 ///  - Trước lần ghi ĐẦU TIÊN, chép nguyên bản hosts hiện có ra `hosts.oneforall.bak` cạnh nó (chỉ một
 ///    lần - không ghi đè bản sao lưu đã có, để luôn giữ được trạng thái TRƯỚC khi công cụ này đụng vào).
+///    Tệp đã mang marker của công cụ (vd hosts chưa tồn tại ở lần ghi đầu nên chính công cụ tạo ra nó)
+///    hoặc tệp rỗng (0 byte) thì KHÔNG được sao lưu - đó không phải nội dung có trước công cụ.
 ///  - Ghi nguyên tử qua QSaveFile (ghi ra tệp tạm rồi đổi tên đè lên) - mất điện/đầy đĩa giữa chừng không
 ///    để lại hosts cụt; kết quả ghi/commit được kiểm tra và trả lỗi thật.
 ///  - Giữ nguyên từng byte các dòng không thuộc khối của mình, kể cả khi tệp không phải UTF-8. Kiểu xuống
-///    dòng: tệp thuần "\r\n" hoặc thuần "\n" được ghi lại đúng kiểu đó; tệp LẪN LỘN hai kiểu được đưa cả
-///    về "\r\n". Các dòng trắng ở cuối tệp được gom lại còn một.
+///    dòng: TỪNG dòng không thuộc khối giữ đúng kiểu của nó ("\r\n" hay "\n"), kể cả trong tệp LẪN LỘN hai
+///    kiểu; chỉ các dòng công cụ tự ghi mới theo kiểu chiếm đa số trong tệp (bằng nhau/tệp trống: "\r\n").
+///    Các dòng trắng ở cuối tệp được gom lại còn một.
 namespace HostsBlocklist
 {
 
@@ -58,7 +61,12 @@ QStringList parseManagedDomains(const QString& hostsContent);
 /// chỉ nhận các dòng LIỀN NGAY sau START có đúng dạng "0.0.0.0 <tên miền hợp lệ>" do chính công cụ ghi,
 /// mọi dòng từ dòng đầu tiên không khớp trở đi được giữ nguyên. Trong một khối lành lặn, dòng không
 /// phải "0.0.0.0 ..." (người dùng tự thêm tay) cũng được giữ lại (đưa ra ngoài khối) thay vì bị xóa.
-QString buildUpdatedHostsContent(const QString& existingContent, const QStringList& domains);
+///
+/// 'eol' là kiểu xuống dòng cho các dòng do CÔNG CỤ ghi (marker, "0.0.0.0 ...", dòng trắng ngăn cách, và
+/// phần xuống dòng thêm vào sau một dòng cuối tệp vốn không có). Dòng được giữ lại mang nguyên kiểu xuống
+/// dòng của chính nó ('\r' cuối dòng, nếu có, nằm trong existingContent).
+QString buildUpdatedHostsContent(const QString& existingContent, const QStringList& domains,
+                                 const QString& eol = QStringLiteral("\n"));
 
 /// Đường dẫn hosts file thật trên máy (dò theo biến môi trường SystemRoot, mặc định C:\Windows nếu
 /// không đọc được).

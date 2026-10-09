@@ -11,11 +11,31 @@ CleanupExecutor::CleanupExecutor(QObject* parent)
 {
 }
 
-void CleanupExecutor::setItems(const QStringList& paths, const QList<qint64>& sizes)
+void CleanupExecutor::setItems(const QStringList& paths, const QList<qint64>& sizes, const QList<int>& minAgeSeconds)
 {
     m_paths = paths;
     m_sizes = sizes;
+    m_minAgeSeconds = minAgeSeconds;
 }
+
+namespace
+{
+/// Thời điểm sửa MỚI NHẤT của một mục, tính như CleanupScanner: với thư mục là tệp mới nhất bên trong
+/// (không đi vào junction/symlink thư mục) hoặc chính thư mục đó, cái nào mới hơn.
+qint64 newestWriteTime(const QString& path, const FsSafety::RawInfo& info)
+{
+    qint64 newest = info.lastWriteTime;
+    if (info.isDir)
+    {
+        const std::atomic_bool neverStop{false};
+        FsSafety::walkFiles(path, neverStop, [&newest](const FsSafety::WalkEntry& e) {
+            if (e.lastWriteTime > newest)
+                newest = e.lastWriteTime;
+        });
+    }
+    return newest;
+}
+} // namespace
 
 void CleanupExecutor::run()
 {
@@ -44,6 +64,7 @@ void CleanupExecutor::run()
     int freedCount = 0;
     int refusedCount = 0;
     int notRecyclableCount = 0;
+    int recentCount = 0;
     QString notRecyclableExample;
     for (int i = 0; i < m_paths.size(); ++i)
     {
@@ -71,6 +92,15 @@ void CleanupExecutor::run()
         if (info.isDir && info.isLink)
         {
             ++refusedCount;
+            continue;
+        }
+        // Kiểm lại tuổi NGAY TRƯỚC KHI XÓA (máy quét chỉ lọc tại thời điểm quét): tệp tạm vừa được ghi sau
+        // khi quét nhiều khả năng thuộc một chương trình/trình cài đặt đang chạy - giữ lại.
+        const int minAge = i < m_minAgeSeconds.size() ? m_minAgeSeconds[i] : 0;
+        if (minAge > 0 &&
+            newestWriteTime(path, info) > FsSafety::nowFileTime() - static_cast<qint64>(minAge) * 10000000LL)
+        {
+            ++recentCount;
             continue;
         }
         if (!m_permanent)
@@ -115,7 +145,7 @@ void CleanupExecutor::run()
     // Thành công = có giải phóng được gì đó. Chỉ coi là thất bại thật sự khi KHÔNG có mục nào được giải
     // phóng dù có mục cần xóa - tránh dọa người dùng bằng hộp thoại lỗi đỏ cho một trường hợp thường gặp
     // và vô hại (vài tệp tạm tự mất giữa lúc quét và lúc xóa).
-    const int leftCount = failedCount + refusedCount + notRecyclableCount;
+    const int leftCount = failedCount + refusedCount + notRecyclableCount + recentCount;
     const bool success = freedCount > 0 || leftCount == 0;
     QStringList notes;
     if (failedCount > 0)
@@ -134,6 +164,10 @@ void CleanupExecutor::run()
                      .arg(notRecyclableCount)
                      .arg(notRecyclableExample);
     }
+    if (recentCount > 0)
+        notes << QString("%1 mục được GIỮ LẠI vì vừa được sửa sau khi quét (có thể đang được một chương trình khác "
+                         "sử dụng) - quét lại sau vài phút nếu vẫn muốn dọn.")
+                     .arg(recentCount);
     if (refusedCount > 0)
         notes << QString("%1 mục bị bỏ qua vì lý do an toàn (liên kết thư mục hoặc đường dẫn không hợp lệ).").arg(refusedCount);
 

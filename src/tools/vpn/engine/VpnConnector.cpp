@@ -29,6 +29,10 @@ void wipe(QString& secret)
 std::atomic<quintptr> g_callbackConn{0};
 std::atomic<quint32> g_callbackError{0};
 std::atomic<bool> g_callbackConnected{false};
+std::atomic<bool> g_callbackDisconnected{false};
+
+static_assert(VpnConnector::kRasStateConnected == static_cast<quint32>(RASCS_Connected), "RASCS_Connected");
+static_assert(VpnConnector::kRasStateDisconnected == static_cast<quint32>(RASCS_Disconnected), "RASCS_Disconnected");
 
 VOID WINAPI dialCallback(HRASCONN conn, UINT, RASCONNSTATE state, DWORD error, DWORD)
 {
@@ -37,6 +41,8 @@ VOID WINAPI dialCallback(HRASCONN conn, UINT, RASCONNSTATE state, DWORD error, D
         g_callbackError = error;
     if (state == RASCS_Connected)
         g_callbackConnected = true;
+    else if (state == RASCS_Disconnected)
+        g_callbackDisconnected = true;
 }
 
 /// Gác máy rồi CHỜ tới khi Windows thật sự giải phóng phiên (RasGetConnectStatus trả ERROR_INVALID_HANDLE)
@@ -151,6 +157,47 @@ QString VpnConnector::describeRasError(quint32 code)
                                 : QString("%1 (lỗi %2: %3)").arg(meaning).arg(code).arg(systemText);
 }
 
+VpnConnector::DialOutcome VpnConnector::evaluateDialPoll(const DialPoll& poll, QString* failureMessage)
+{
+    // Mã 600 (PENDING, "một thao tác đang chờ") là trạng thái TRUNG GIAN chứ không phải lý do thất bại -
+    // không được coi là lỗi rồi gác máy một phiên đang bắt tay dở. (Phòng ngừa: chưa quan sát được RAS trả
+    // mã này trên máy dev vì không có máy chủ VPN thật để quay số.)
+    quint32 error = poll.callbackError == PENDING ? 0 : poll.callbackError;
+    bool connected = poll.callbackConnected;
+    bool disconnected = poll.callbackDisconnected;
+
+    if (poll.statusResult == ERROR_SUCCESS)
+    {
+        connected = connected || poll.connState == kRasStateConnected;
+        disconnected = disconnected || poll.connState == kRasStateDisconnected;
+        if (error == 0 && poll.statusError != PENDING)
+            error = poll.statusError;
+    }
+    else if (poll.statusResult == ERROR_INVALID_HANDLE && error == 0 && !connected)
+    {
+        error = poll.statusResult; // phiên đã bị đóng từ phía Windows
+    }
+    // Mọi mã khác (vd không đọc được trạng thái lúc này): không kết luận gì - tiếp tục dựa vào hàm gọi lại,
+    // và giới hạn 45 giây của vòng chờ bảo đảm nó luôn kết thúc.
+
+    if (connected)
+        return DialOutcome::Connected;
+    if (error != 0)
+    {
+        *failureMessage = describeRasError(error);
+        return DialOutcome::Failed;
+    }
+    if (disconnected)
+    {
+        // RASCS_Disconnected là trạng thái KẾT THÚC (cùng nhóm RASCS_DONE với Connected): phiên sẽ không tự
+        // tiến tiếp nữa, chờ thêm chỉ để người dùng nhìn "Đang kết nối..." suốt 45 giây.
+        *failureMessage = "Kết nối VPN đã bị ngắt trước khi hoàn tất và Windows không cho biết mã lỗi (máy chủ từ chối "
+                          "hoặc đường truyền bị cắt giữa lúc bắt tay). Kiểm tra lại địa chỉ máy chủ, tài khoản rồi thử lại.";
+        return DialOutcome::Failed;
+    }
+    return DialOutcome::Pending;
+}
+
 void VpnConnector::run()
 {
     // Lấy mật khẩu ra khỏi đối tượng ngay: từ đây m_password rỗng, bản duy nhất nằm trong biến cục bộ và
@@ -193,6 +240,7 @@ bool VpnConnector::doConnect(QString& password, QString* message)
     g_callbackConn = 0;
     g_callbackError = 0;
     g_callbackConnected = false;
+    g_callbackDisconnected = false;
 
     // Kiểu thông báo 1 (RasDialFunc1) = KHÔNG ĐỒNG BỘ: RasDial trả về ngay, tiến độ/lỗi báo qua hàm gọi
     // lại. Sổ danh bạ nullptr = sổ mặc định của người dùng (nơi Add-VpnConnection tạo kết nối per-user).
@@ -211,40 +259,29 @@ bool VpnConnector::doConnect(QString& password, QString* message)
         while (true)
         {
             const bool callbackIsOurs = g_callbackConn.load() == reinterpret_cast<quintptr>(conn);
-            quint32 error = callbackIsOurs ? g_callbackError.load() : 0;
-            if (error == PENDING)
-                error = 0; // xem ghi chú ở dưới (600 = "đang chờ", không phải kết quả)
-            bool connected = callbackIsOurs && g_callbackConnected.load();
+            DialPoll poll;
+            poll.callbackError = callbackIsOurs ? g_callbackError.load() : 0;
+            poll.callbackConnected = callbackIsOurs && g_callbackConnected.load();
+            poll.callbackDisconnected = callbackIsOurs && g_callbackDisconnected.load();
 
             RASCONNSTATUSW status;
             std::memset(&status, 0, sizeof(status));
             status.dwSize = sizeof(status);
-            const DWORD statusResult = RasGetConnectStatusW(conn, &status);
-            if (statusResult == ERROR_SUCCESS)
-            {
-                connected = connected || status.rasconnstate == RASCS_Connected;
-                // Mã 600 (PENDING, "một thao tác đang chờ") là trạng thái TRUNG GIAN chứ không phải lý do
-                // thất bại - không được coi là lỗi rồi gác máy một phiên đang bắt tay dở. (Phòng ngừa: chưa
-                // quan sát được RAS trả mã này trên máy dev vì không có máy chủ VPN thật để quay số.)
-                if (error == 0 && status.dwError != PENDING)
-                    error = status.dwError;
-            }
-            else if (statusResult == ERROR_INVALID_HANDLE && error == 0 && !connected)
-            {
-                error = statusResult; // phiên đã bị đóng từ phía Windows
-            }
-            // Mọi mã khác (vd không đọc được trạng thái lúc này): không kết luận gì - tiếp tục dựa vào hàm
-            // gọi lại, và giới hạn 45 giây bên dưới bảo đảm vòng lặp luôn kết thúc.
+            poll.statusResult = RasGetConnectStatusW(conn, &status);
+            poll.connState = static_cast<quint32>(status.rasconnstate);
+            poll.statusError = status.dwError;
 
-            if (connected)
+            QString failure;
+            const DialOutcome outcome = evaluateDialPoll(poll, &failure);
+            if (outcome == DialOutcome::Connected)
             {
                 success = true;
                 *message = QString("Đã kết nối \"%1\".").arg(m_connectionName);
                 break;
             }
-            if (error != 0)
+            if (outcome == DialOutcome::Failed)
             {
-                *message = describeRasError(error);
+                *message = failure;
                 break;
             }
             if (m_cancelRequested)

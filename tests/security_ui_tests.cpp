@@ -10,6 +10,7 @@
 #include <QPushButton>
 #include <QTabWidget>
 #include <QTemporaryDir>
+#include "TestDataDir.h"
 #include <cstdio>
 
 #include "core/AppPaths.h"
@@ -30,7 +31,7 @@ int main(int argc, char** argv)
     QApplication app(argc, argv);
 
     // Cửa sổ ghi log khi mở - ép dữ liệu vào thư mục tạm để test không ghi vào log thật của người dùng.
-    QTemporaryDir dataDir;
+    TestDataDir dataDir;
     AppPaths::setDataDirOverride(dataDir.path());
 
     SecurityGatewayWindow win;

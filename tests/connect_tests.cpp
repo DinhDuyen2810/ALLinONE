@@ -18,6 +18,7 @@
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryDir>
+#include "TestDataDir.h"
 #include <QTimer>
 #include <QtEndian>
 #include <cmath>
@@ -181,6 +182,7 @@ struct FakeSessionPeer
             else if (m.type == MessageType::SessionConfirm)
             {
                 established = true;
+                session.markPeerAuthenticated(); // phiên đã xác nhận hai chiều - từ đây mới được khung lớn
             }
             else
             {
@@ -214,7 +216,7 @@ int main(int argc, char** argv)
 
     // TRƯỚC KHI đụng tới bất kỳ store nào: ép toàn bộ dữ liệu vào thư mục tạm - test không được đọc/ghi
     // khóa ghép đôi + danh tính thật của người dùng trên máy đang chạy test.
-    QTemporaryDir dataDir;
+    TestDataDir dataDir;
     CHECK(dataDir.isValid());
     AppPaths::setDataDirOverride(dataDir.path());
 
@@ -688,6 +690,8 @@ int main(int argc, char** argv)
         pair.initiator.setSessionKeys(keyI2R, keyR2I);
         pair.responder.setSessionKeys(keyR2I, keyI2R);
         CHECK(pair.initiator.hasSessionKeys() && pair.responder.hasSessionKeys());
+        pair.initiator.markPeerAuthenticated(); // như sau SessionConfirm hợp lệ - trần khung 2 MiB
+        pair.responder.markPeerAuthenticated();
 
         QList<ProtocolMessage> serverReceived, clientReceived;
         QObject::connect(&pair.responder, &NetworkSession::messageReceived,
@@ -2245,6 +2249,352 @@ int main(int argc, char** argv)
 
         a.stop();
         b.stop();
+    }
+
+    // ==== Hồi quy: ba mục "còn dang dở" của Connect Together (mục 4p) ====
+
+    // ---- (A) Trần khung: có khóa phiên nhưng CHƯA được xác nhận -> vẫn là trần nhỏ (bản trước nâng lên
+    // 2 MiB ngay khi đặt khóa phiên, tức ngay sau SessionHello - 16 kết nối chờ × 2 MiB). ----
+    {
+        LoopPair pair;
+        CHECK(pair.open());
+        const QByteArray keyI2R = CryptoSession::generateRandomKey();
+        const QByteArray keyR2I = CryptoSession::generateRandomKey();
+        pair.initiator.markPeerAuthenticated(); // chưa có khóa phiên: không có tác dụng
+        CHECK(!pair.initiator.isPeerAuthenticated());
+        pair.initiator.setSessionKeys(keyI2R, keyR2I);
+        pair.responder.setSessionKeys(keyR2I, keyI2R);
+        CHECK(!pair.initiator.isPeerAuthenticated() && !pair.responder.isPeerAuthenticated());
+
+        int responderMessages = 0, responderErrors = 0;
+        QObject::connect(&pair.responder, &NetworkSession::messageReceived, [&](ProtocolMessage) { ++responderMessages; });
+        QObject::connect(&pair.responder, &NetworkSession::errorOccurred, [&](QString) { ++responderErrors; });
+
+        // Thông điệp nhỏ (cỡ SessionConfirm) vẫn đi bình thường bằng khóa phiên.
+        QString err;
+        ProtocolMessage smallMsg;
+        smallMsg.type = MessageType::Heartbeat;
+        CHECK(pair.initiator.sendMessage(smallMsg, &err));
+        CHECK(waitUntil([&] { return responderMessages == 1; }));
+
+        // Thông điệp lớn: bị từ chối ngay ở phía GỬI, kết nối còn sống, bộ đếm không lệch.
+        ProtocolMessage bigMsg;
+        bigMsg.type = MessageType::ClipboardText;
+        bigMsg.textA = QString(NetworkSession::kUnauthenticatedMaxFrameBytes, QChar('A')); // ~8 KiB > trần 4 KiB
+        CHECK(!pair.initiator.sendMessage(bigMsg, &err));
+        CHECK(!err.isEmpty());
+        CHECK(pair.initiator.isConnected());
+        CHECK(pair.initiator.sendMessage(smallMsg, &err));
+        CHECK(waitUntil([&] { return responderMessages == 2; }));
+
+        // Bên gửi "xấu" tự nâng trần của mình rồi đẩy khung lớn: bên nhận CHƯA xác nhận phải đóng kết nối
+        // ngay khi thấy độ dài khung, không phát thông điệp nào.
+        pair.initiator.markPeerAuthenticated();
+        CHECK(pair.initiator.isPeerAuthenticated());
+        CHECK(pair.initiator.sendMessage(bigMsg, &err));
+        CHECK(waitUntil([&] { return responderErrors > 0 && !pair.responder.isConnected(); }));
+        CHECK(responderMessages == 2);
+
+        // Khóa phiên mới -> phải được xác nhận lại.
+        pair.initiator.setSessionKeys(keyI2R, keyR2I);
+        CHECK(!pair.initiator.isPeerAuthenticated());
+    }
+
+    // ---- (B) Suy khóa PBKDF2 ở luồng nền + trần khung ở tầng controller. Hai controller THẬT qua loopback;
+    // không hook toàn cục, không khám phá, không clipboard, tiêm input giả. ----
+    {
+        QTemporaryDir tmp;
+        CHECK(tmp.isValid());
+        PeerStore storeA(tmp.filePath("bg_a.json"));
+        PeerStore storeB(tmp.filePath("bg_b.json"));
+        PeerStore storeC(tmp.filePath("bg_c.json"));
+        FakeInjector injectorA, injectorB, injectorC;
+        auto configure = [](ConnectSessionController& c, const QString& id, const QString& name, PeerStore* store,
+                            FakeInjector* injector, int keyDelayMs) {
+            ConnectSessionController::TestConfig cfg;
+            cfg.identity.id = id;
+            cfg.identity.machineName = name;
+            cfg.store = store;
+            cfg.injector = injector;
+            cfg.installGlobalHook = false;
+            cfg.enableDiscovery = false;
+            cfg.enableClipboardSync = false;
+            cfg.usePreferredPort = false;
+            cfg.handshakeTimeoutMs = 8000;
+            cfg.housekeepingIntervalMs = 50;
+            cfg.keyDerivationDelayMs = keyDelayMs;
+            c.configureForTesting(cfg);
+        };
+        // A suy khóa CHẬM (ngủ thêm 1 giây ở luồng nền) để dựng chắc chắn tình huống "kết nối tới trước khóa".
+        ConnectSessionController a, b;
+        configure(a, "aaaa-may-a", "May A", &storeA, &injectorA, 1000);
+        configure(b, "bbbb-may-b", "May B", &storeB, &injectorB, 0);
+        QString err;
+        CHECK(a.start(&err));
+        CHECK(b.start(&err));
+
+        QList<QString> failedA, failedB;
+        int succeededA = 0, succeededB = 0, codeSignalsA = 0, closedSignalsA = 0;
+        QObject::connect(&a, &ConnectSessionController::pairingFailed, [&](QString r) { failedA << r; });
+        QObject::connect(&b, &ConnectSessionController::pairingFailed, [&](QString r) { failedB << r; });
+        QObject::connect(&a, &ConnectSessionController::pairingSucceeded, [&](QString, QString) { ++succeededA; });
+        QObject::connect(&b, &ConnectSessionController::pairingSucceeded, [&](QString, QString) { ++succeededB; });
+        QObject::connect(&a, &ConnectSessionController::pairingCodeGenerated, [&](QString, int) { ++codeSignalsA; });
+        QObject::connect(&a, &ConnectSessionController::pairingSessionClosed, [&] { ++closedSignalsA; });
+        auto settledAB = [&] {
+            return a.isPeerConnected("bbbb-may-b") && b.isPeerConnected("aaaa-may-a") &&
+                   a.pendingLinkCountForTesting() == 0 && b.pendingLinkCountForTesting() == 0;
+        };
+
+        // (B1) beginPairingSession() trả về NGAY kèm mã + tín hiệu như trước; khóa chưa có (đang suy ở luồng
+        //      nền) và vòng lặp sự kiện của luồng này vẫn chạy trong lúc đó (bản trước: đứng 245-500 ms).
+        int ticks = 0;
+        QTimer ticker;
+        QObject::connect(&ticker, &QTimer::timeout, [&] {
+            if (!a.isPairingKeyReadyForTesting())
+                ++ticks;
+        });
+        ticker.start(10);
+        QElapsedTimer beginTimer;
+        beginTimer.start();
+        const QString code1 = a.beginPairingSession();
+        const qint64 beginMs = beginTimer.elapsed();
+        CHECK(PairingCode::isValidFormat(code1));
+        CHECK(codeSignalsA == 1);
+        CHECK(a.isPairingSessionOpen());
+        CHECK(!a.isPairingKeyReadyForTesting());
+
+        // (B2) B nhập mã ngay: kết nối ghép đôi tới A TRƯỚC khi A suy xong khóa -> được giữ chờ (không bị từ
+        //      chối, không tính là một lần nhập sai), rồi ghép đôi thành công khi khóa có.
+        beginTimer.restart();
+        b.connectWithCode(QHostAddress::LocalHost, a.listenPort(), code1);
+        const qint64 connectMs = beginTimer.elapsed();
+        CHECK(b.pendingLinkCountForTesting() == 1); // mục "đang ghép đôi đi" có ngay, dù chưa mở kết nối TCP
+        CHECK(a.pendingLinkCountForTesting() == 0);
+        std::printf("  [PBKDF2 nen] beginPairingSession %lld ms, connectWithCode %lld ms (ban truoc: 245-500 ms moi lan)\n",
+                    static_cast<long long>(beginMs), static_cast<long long>(connectMs));
+        CHECK(waitUntil([&] { return a.pendingLinkCountForTesting() == 1; }, 5000));
+        CHECK(!a.isPairingKeyReadyForTesting());
+        pump(100);
+        CHECK(a.pendingLinkCountForTesting() == 1 && succeededA == 0 && failedA.isEmpty() && failedB.isEmpty());
+        CHECK(waitUntil([&] { return succeededA == 1 && succeededB == 1; }, 8000));
+        ticker.stop();
+        CHECK(ticks >= 5);
+        CHECK(failedA.isEmpty() && failedB.isEmpty());
+        CHECK(!a.isPairingSessionOpen()); // mã dùng một lần, như trước
+        CHECK(storeA.find("bbbb-may-b") != nullptr && storeB.find("aaaa-may-a") != nullptr);
+        if (storeA.find("bbbb-may-b") && storeB.find("aaaa-may-a"))
+            CHECK(storeA.find("bbbb-may-b")->longTermKey == storeB.find("aaaa-may-a")->longTermKey);
+        CHECK(waitUntil(settledAB, 8000));
+
+        // (B3) Hủy mã NGAY trong lúc đang suy khóa: kết quả về sau bị bỏ, mã không tự "mở lại".
+        const int closedBefore = closedSignalsA;
+        a.beginPairingSession();
+        a.cancelPairingSession();
+        CHECK(!a.isPairingSessionOpen());
+        CHECK(closedSignalsA == closedBefore + 1);
+        pump(1800);
+        CHECK(!a.isPairingKeyReadyForTesting() && !a.isPairingSessionOpen());
+
+        // (B4) Tạo mã hai lần liên tiếp: khóa của mã CŨ không được trở thành khóa của mã MỚI.
+        const QString oldCode = a.beginPairingSession();
+        const QString newCode = a.beginPairingSession();
+        CHECK(oldCode != newCode);
+        CHECK(waitUntil([&] { return a.isPairingKeyReadyForTesting(); }, 8000));
+        b.connectWithCode(QHostAddress::LocalHost, a.listenPort(), oldCode);
+        CHECK(waitUntil([&] { return failedB.size() == 1; }, 8000));
+        CHECK(succeededA == 1 && succeededB == 1);
+        CHECK(a.isPairingSessionOpen()); // một lần sai chưa hủy mã
+
+        // (B5) Bấm "Ghép đôi" lần nữa trong lúc lần trước còn đang suy khóa: lần sau THAY lần trước (đúng một
+        //      mục chờ), lần bị thay không báo lỗi gì, lần sau ghép đôi được.
+        CHECK(waitUntil([&] { return b.pendingLinkCountForTesting() == 0; }, 8000));
+        quint16 deadPort = 0;
+        {
+            QTcpServer probe;
+            CHECK(probe.listen(QHostAddress::LocalHost));
+            deadPort = probe.serverPort();
+        }
+        b.connectWithCode(QHostAddress::LocalHost, deadPort, newCode);
+        b.connectWithCode(QHostAddress::LocalHost, a.listenPort(), newCode);
+        CHECK(b.pendingLinkCountForTesting() == 1);
+        CHECK(waitUntil([&] { return succeededA == 2 && succeededB == 2; }, 8000));
+        pump(300);
+        CHECK(failedB.size() == 1 && failedA.isEmpty());
+        CHECK(waitUntil(settledAB, 8000));
+
+        // (B6) stop() rồi HỦY HẲN controller ngay trong lúc đang suy khóa (cả mã đang mở lẫn lần ghép đôi đi):
+        //      không tín hiệu nào phát ra sau đó, không kết nối nào được mở, không đụng tới đối tượng đã hủy.
+        {
+            auto* c = new ConnectSessionController;
+            configure(*c, "cccc-may-c", "May C", &storeC, &injectorC, 300);
+            QList<QString> failedC;
+            int succeededC = 0;
+            QObject::connect(c, &ConnectSessionController::pairingFailed, [&](QString r) { failedC << r; });
+            QObject::connect(c, &ConnectSessionController::pairingSucceeded, [&](QString, QString) { ++succeededC; });
+            CHECK(c->start(&err));
+            c->beginPairingSession();
+            c->connectWithCode(QHostAddress::LocalHost, a.listenPort(), "123456789");
+            CHECK(c->pendingLinkCountForTesting() == 1);
+            c->stop();
+            CHECK(c->pendingLinkCountForTesting() == 0 && !c->isPairingSessionOpen());
+            pump(1200);
+            CHECK(failedC.isEmpty() && succeededC == 0);
+            CHECK(!c->isPairingKeyReadyForTesting() && c->pendingLinkCountForTesting() == 0);
+
+            CHECK(c->start(&err));
+            c->beginPairingSession();
+            c->connectWithCode(QHostAddress::LocalHost, a.listenPort(), "123456789");
+            delete c; // luồng nền còn đang ngủ/suy khóa
+            pump(1200);
+            CHECK(failedC.isEmpty() && succeededC == 0);
+            CHECK(a.pendingLinkCountForTesting() == 0);
+            CHECK(settledAB());
+        }
+
+        // (B7) Trần khung ở tầng controller. Một máy đã ghép đôi GIẢ (có đúng khóa dài hạn) bắt tay tới
+        //      SessionHelloAck rồi KHÔNG gửi SessionConfirm mà khai một khung 1 MiB: A phải đóng ngay khi đọc
+        //      4 byte độ dài (bản trước chấp nhận tới 2 MiB và ngồi đệm cho tới hết hạn bắt tay 8 giây).
+        const QByteArray fakeKey = CryptoSession::generateRandomKey();
+        PairedPeer fakeEntry = makePeer("fake-peer-id-zzz", "May Gia Z", fakeKey, 45678);
+        fakeEntry.autoConnect = false; // máy giả không nghe cổng nào
+        CHECK(storeA.addOrUpdate(fakeEntry));
+        {
+            FakeSessionPeer lazy;
+            lazy.myId = "fake-peer-id-zzz";
+            lazy.peerId = "aaaa-may-a";
+            lazy.longTermKey = fakeKey;
+            lazy.sendConfirm = false;
+            lazy.connectTo(a.listenPort());
+            CHECK(waitUntil([&] { return lazy.gotHelloAck; }));
+            CHECK(!lazy.closed);
+            QTcpSocket* raw = lazy.session.findChild<QTcpSocket*>();
+            CHECK(raw != nullptr);
+            if (raw)
+            {
+                QByteArray prefix(4, '\0');
+                qToBigEndian<quint32>(1024 * 1024, reinterpret_cast<uchar*>(prefix.data()));
+                raw->write(prefix);
+                raw->flush();
+            }
+            CHECK(waitUntil([&] { return lazy.closed; }, 2500));
+            CHECK(!a.isPeerConnected("fake-peer-id-zzz"));
+        }
+        {
+            // Bắt tay ĐỦ (có SessionConfirm): từ đây khung lớn hợp lệ phải được nhận, phiên vẫn sống.
+            FakeSessionPeer good;
+            good.myId = "fake-peer-id-zzz";
+            good.peerId = "aaaa-may-a";
+            good.longTermKey = fakeKey;
+            good.connectTo(a.listenPort());
+            CHECK(waitUntil([&] { return good.established && a.isPeerConnected("fake-peer-id-zzz"); }));
+            ProtocolMessage bigClip;
+            bigClip.type = MessageType::ClipboardText;
+            bigClip.textA = QString(200 * 1024, QChar('c')); // ~400 KiB, vượt xa trần 4 KiB của lúc chưa xác nhận
+            QString sendErr;
+            CHECK(good.session.sendMessage(bigClip, &sendErr));
+            ProtocolMessage ping;
+            ping.type = MessageType::Heartbeat;
+            CHECK(good.session.sendMessage(ping, &sendErr));
+            pump(500);
+            CHECK(!good.closed);
+            CHECK(a.isPeerConnected("fake-peer-id-zzz"));
+        }
+
+        a.stop();
+        b.stop();
+    }
+
+    // ---- (C) PeerStore::save() thất bại phải được báo lên (logMessage -> nhật ký của ConnectWindow) ở các
+    // đường ghép đôi / đổi vị trí / đổi tự kết nối / quên máy. Kho "hỏng" = tệp nằm dưới một đường dẫn mà
+    // thành phần cha là TỆP thường (không tạo được thư mục) - chỉ đụng thư mục tạm của test. ----
+    {
+        QTemporaryDir tmp;
+        CHECK(tmp.isValid());
+        const QString blocker = tmp.filePath("khong_phai_thu_muc");
+        {
+            QFile f(blocker);
+            CHECK(f.open(QIODevice::WriteOnly));
+            f.write("x");
+        }
+        PeerStore badStore(blocker + "/peers.json");
+        PeerStore goodStore(tmp.filePath("tot.json"));
+
+        // Tầng PeerStore: báo false + có lý do; thay đổi trong bộ nhớ vẫn áp dụng. Kho tốt: true, không lý do.
+        const QByteArray anyKey = CryptoSession::generateRandomKey();
+        CHECK(!badStore.addOrUpdate(makePeer("peer-tam", "May Tam", anyKey, 1234)));
+        CHECK(!badStore.lastSaveError().isEmpty());
+        CHECK(badStore.find("peer-tam") != nullptr);
+        CHECK(!badStore.updateEndpoint("peer-tam", "10.1.2.3", 4321, QString()));
+        CHECK(badStore.updateEndpoint("peer-tam", "10.1.2.3", 4321, QString())); // không có gì đổi -> không ghi
+        CHECK(!badStore.remove("peer-tam"));
+        CHECK(badStore.remove("khong-ton-tai")); // không có gì đổi -> không ghi -> không lỗi
+        CHECK(badStore.clear());
+        CHECK(goodStore.addOrUpdate(makePeer("peer-tam", "May Tam", anyKey, 1234)));
+        CHECK(goodStore.lastSaveError().isEmpty());
+        CHECK(goodStore.remove("peer-tam"));
+
+        FakeInjector injectorBad, injectorGood;
+        auto configure = [](ConnectSessionController& c, const QString& id, const QString& name, PeerStore* store,
+                            FakeInjector* injector) {
+            ConnectSessionController::TestConfig cfg;
+            cfg.identity.id = id;
+            cfg.identity.machineName = name;
+            cfg.store = store;
+            cfg.injector = injector;
+            cfg.installGlobalHook = false;
+            cfg.enableDiscovery = false;
+            cfg.enableClipboardSync = false;
+            cfg.usePreferredPort = false;
+            cfg.handshakeTimeoutMs = 8000;
+            cfg.housekeepingIntervalMs = 50;
+            c.configureForTesting(cfg);
+        };
+        ConnectSessionController bad, good;
+        configure(bad, "dddd-may-d", "May D", &badStore, &injectorBad);
+        configure(good, "eeee-may-e", "May E", &goodStore, &injectorGood);
+        QStringList logBad, logGood;
+        QObject::connect(&bad, &ConnectSessionController::logMessage, [&](QString t) { logBad << t; });
+        QObject::connect(&good, &ConnectSessionController::logMessage, [&](QString t) { logGood << t; });
+        auto saveWarnings = [](const QStringList& log, const QString& what) {
+            int n = 0;
+            for (const QString& line : log)
+                if (line.contains(QString::fromUtf8("Không lưu được danh sách máy đã ghép đôi")) && line.contains(what))
+                    ++n;
+            return n;
+        };
+        int okBad = 0, okGood = 0;
+        QObject::connect(&bad, &ConnectSessionController::pairingSucceeded, [&](QString, QString) { ++okBad; });
+        QObject::connect(&good, &ConnectSessionController::pairingSucceeded, [&](QString, QString) { ++okGood; });
+        QString err;
+        CHECK(bad.start(&err));
+        CHECK(good.start(&err));
+
+        // Ghép đôi: vẫn thành công trong phiên làm việc này, nhưng máy có kho hỏng phải được cảnh báo.
+        const QString code = bad.beginPairingSession();
+        good.connectWithCode(QHostAddress::LocalHost, bad.listenPort(), code);
+        CHECK(waitUntil([&] { return okBad == 1 && okGood == 1; }, 8000));
+        CHECK(saveWarnings(logBad, QString::fromUtf8("ghép đôi với May E")) == 1);
+        CHECK(waitUntil([&] { return bad.isPeerConnected("eeee-may-e") && good.isPeerConnected("dddd-may-d"); }, 8000));
+
+        // Đổi vị trí / đổi tự kết nối / quên máy: mỗi lần một cảnh báo, thay đổi trong bộ nhớ vẫn có hiệu lực.
+        bad.setPeerSide("eeee-may-e", ScreenSide::Left);
+        CHECK(saveWarnings(logBad, QString::fromUtf8("đổi vị trí của May E")) == 1);
+        CHECK(badStore.find("eeee-may-e") != nullptr && badStore.find("eeee-may-e")->side == ScreenSide::Left);
+        bad.setPeerAutoConnect("eeee-may-e", false);
+        CHECK(saveWarnings(logBad, QString::fromUtf8("đổi chế độ tự kết nối của May E")) == 1);
+        bad.forgetPeer("eeee-may-e");
+        CHECK(saveWarnings(logBad, QString::fromUtf8("quên máy May E")) == 1);
+        CHECK(badStore.find("eeee-may-e") == nullptr);
+
+        // Kho ghi được: không cảnh báo nào.
+        good.setPeerSide("dddd-may-d", ScreenSide::Right);
+        good.setPeerAutoConnect("dddd-may-d", false);
+        good.forgetPeer("dddd-may-d");
+        CHECK(saveWarnings(logGood, QString()) == 0);
+
+        bad.stop();
+        good.stop();
     }
 
     // ---- Hồi quy: tệp danh tính HỎNG -> danh tính sinh lại phải lưu được xuống đĩa (bản trước còn giữ tệp

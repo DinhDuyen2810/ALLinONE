@@ -6,7 +6,6 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QTimer>
-#include <QUrl>
 
 namespace
 {
@@ -20,7 +19,15 @@ constexpr int kTimeoutMs = 8000;
 PublicIpChecker::PublicIpChecker(QObject* parent)
     : QObject(parent)
     , m_nam(new QNetworkAccessManager(this))
+    , m_url(kIpInfoUrl)
+    , m_timeoutMs(kTimeoutMs)
 {
+}
+
+void PublicIpChecker::setEndpointForTest(const QUrl& url, int timeoutMs)
+{
+    m_url = url;
+    m_timeoutMs = timeoutMs;
 }
 
 void PublicIpChecker::check()
@@ -28,21 +35,25 @@ void PublicIpChecker::check()
     if (m_activeReply)
         return; // đã có yêu cầu đang chạy
 
-    QNetworkRequest req(kIpInfoUrl);
+    QNetworkRequest req(m_url);
     req.setHeader(QNetworkRequest::UserAgentHeader, "OneForAll-VPN-Check/1.0");
-    m_activeReply = m_nam->get(req);
-    QNetworkReply* thisReply = m_activeReply;
+    QNetworkReply* thisReply = m_nam->get(req);
+    m_activeReply = thisReply;
 
-    QTimer::singleShot(kTimeoutMs, this, [this, thisReply]() {
-        if (m_activeReply == thisReply)
-            m_activeReply->abort();
-    });
+    // Bộ hẹn giờ là CON của chính phản hồi này và chỉ nối tới nó: phản hồi xong (deleteLater bên dưới) thì bộ
+    // hẹn giờ bị hủy theo. Trước đây dùng QTimer::singleShot(8 giây) giữ con trỏ thô rồi so
+    // "m_activeReply == thisReply" - phản hồi cũ xong sớm và bị hủy, lần check() kế tiếp có thể được cấp phát
+    // ĐÚNG địa chỉ đó, và bộ hẹn giờ của lần trước hủy nhầm phản hồi MỚI (vừa gửi chưa tới 8 giây).
+    auto* timeout = new QTimer(thisReply);
+    timeout->setSingleShot(true);
+    connect(timeout, &QTimer::timeout, thisReply, &QNetworkReply::abort);
+    timeout->start(m_timeoutMs);
 
-    connect(m_activeReply, &QNetworkReply::finished, this, [this, thisReply]() {
+    connect(thisReply, &QNetworkReply::finished, this, [this, thisReply]() {
+        thisReply->deleteLater();
         if (m_activeReply != thisReply)
             return; // reply cũ đã bị thay bởi một yêu cầu mới hơn - bỏ qua
         m_activeReply = nullptr;
-        thisReply->deleteLater();
 
         if (thisReply->error() != QNetworkReply::NoError)
         {

@@ -41,42 +41,44 @@ PairedPeer* PeerStore::find(const QString& id)
     return nullptr;
 }
 
-void PeerStore::addOrUpdate(const PairedPeer& peer)
+bool PeerStore::addOrUpdate(const PairedPeer& peer)
 {
     if (PairedPeer* existing = find(peer.id))
         *existing = peer;
     else
         m_peers.push_back(peer);
-    save();
+    const bool saved = save();
     emit changed();
+    return saved;
 }
 
-void PeerStore::remove(const QString& id)
+bool PeerStore::remove(const QString& id)
 {
     const int before = m_peers.size();
     m_peers.erase(std::remove_if(m_peers.begin(), m_peers.end(), [&](const PairedPeer& p) { return p.id == id; }),
                  m_peers.end());
-    if (m_peers.size() != before)
-    {
-        save();
-        emit changed();
-    }
+    if (m_peers.size() == before)
+        return true;
+    const bool saved = save();
+    emit changed();
+    return saved;
 }
 
-void PeerStore::clear()
+bool PeerStore::clear()
 {
     if (m_peers.isEmpty())
-        return;
+        return true;
     m_peers.clear();
-    save();
+    const bool saved = save();
     emit changed();
+    return saved;
 }
 
-void PeerStore::updateEndpoint(const QString& id, const QString& address, quint16 listenPort, const QString& machineName)
+bool PeerStore::updateEndpoint(const QString& id, const QString& address, quint16 listenPort, const QString& machineName)
 {
     PairedPeer* p = find(id);
     if (!p)
-        return;
+        return true;
 
     bool dirty = false;
     if (!address.isEmpty() && p->lastAddress != address)
@@ -94,11 +96,11 @@ void PeerStore::updateEndpoint(const QString& id, const QString& address, quint1
         p->machineName = machineName;
         dirty = true;
     }
-    if (dirty)
-    {
-        save();
-        emit changed();
-    }
+    if (!dirty)
+        return true;
+    const bool saved = save();
+    emit changed();
+    return saved;
 }
 
 bool PeerStore::load()
@@ -174,9 +176,11 @@ bool PeerStore::load()
 
 bool PeerStore::save() const
 {
+    m_lastSaveError.clear();
     const QFileInfo info(m_path);
     QDir().mkpath(info.absolutePath());
 
+    QStringList skipped; // máy không bọc được khóa - không được ghi
     QJsonArray arr;
     for (const PairedPeer& p : m_peers)
     {
@@ -187,6 +191,7 @@ bool PeerStore::save() const
         if (protectedKey.isEmpty())
         {
             qWarning("PeerStore: không bảo vệ được khóa của máy \"%s\" - không lưu máy này.", qUtf8Printable(p.machineName));
+            skipped << (p.machineName.isEmpty() ? p.id : p.machineName);
             continue;
         }
 
@@ -211,7 +216,22 @@ bool PeerStore::save() const
     // không bao giờ bị mất sạch (khác QFile::open(Truncate) cũ, xóa nội dung đích NGAY khi mở).
     QSaveFile f(m_path);
     if (!f.open(QIODevice::WriteOnly))
+    {
+        m_lastSaveError = QString("không mở được tệp %1 để ghi (%2)").arg(QDir::toNativeSeparators(m_path), f.errorString());
         return false;
+    }
     f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
-    return f.commit();
+    if (!f.commit())
+    {
+        m_lastSaveError = QString("không ghi được tệp %1 (%2)").arg(QDir::toNativeSeparators(m_path), f.errorString());
+        return false;
+    }
+    if (!skipped.isEmpty())
+    {
+        // Tệp ghi được nhưng thiếu các máy này: với người dùng đó vẫn là "không lưu được" - máy vừa ghép
+        // đôi sẽ biến mất ở lần mở ứng dụng kế tiếp.
+        m_lastSaveError = QString("không bảo vệ được khóa (DPAPI) của: %1").arg(skipped.join(", "));
+        return false;
+    }
+    return true;
 }

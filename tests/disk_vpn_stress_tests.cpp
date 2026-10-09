@@ -28,6 +28,7 @@
 #include <QRegularExpression>
 #include <QSet>
 #include <QTemporaryDir>
+#include "TestDataDir.h"
 #include <QThread>
 #include <algorithm>
 #include <atomic>
@@ -488,7 +489,7 @@ int main(int argc, char** argv)
     QCoreApplication app(argc, argv);
 
     // Mọi tệp dữ liệu của ứng dụng (vpn_profiles.json, log) ghi vào thư mục tạm.
-    QTemporaryDir dataDir;
+    TestDataDir dataDir;
     AppPaths::setDataDirOverride(dataDir.path());
 
     const quint64 seed = argc > 1 ? QString(argv[1]).toULongLong() : 20261009ULL;

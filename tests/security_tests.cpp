@@ -588,6 +588,75 @@ int main(int argc, char** argv)
         CHECK(after.startsWith(original) && !after.contains('\r'));
         CHECK(listBlockedDomainsInFile(path) == QStringList({"lf.example"}));
     }
+    {
+        // Hồi quy: hosts LẪN LỘN "\r\n" và "\n" từng bị đưa cả về "\r\n" - tức sửa những dòng không phải của
+        // công cụ. Nay từng dòng của người dùng giữ đúng kiểu của nó; chỉ dòng công cụ ghi theo kiểu đa số.
+        using namespace HostsBlocklist::internal;
+        QTemporaryDir tmp;
+        CHECK(tmp.isValid());
+        auto readBytes = [](const QString& p) {
+            QFile f(p);
+            return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+        };
+        auto writeBytes = [](const QString& p, const QByteArray& data) {
+            QFile f(p);
+            return f.open(QIODevice::WriteOnly | QIODevice::Truncate) && f.write(data) == data.size();
+        };
+
+        // Đa số "\r\n" (3 dòng) so với "\n" (2 dòng)
+        const QString mixed = tmp.path() + "/hosts-lan-lon";
+        const QByteArray original = "127.0.0.1 localhost\r\n# dong kieu unix\n10.0.0.5 nas.local\r\n10.0.0.6 in.local\n# cuoi\r\n";
+        CHECK(writeBytes(mixed, original));
+        CHECK(addDomainToFile(mixed, "lan-lon.example"));
+        const QByteArray afterAdd = readBytes(mixed);
+        CHECK(afterAdd.startsWith(original)); // từng byte của người dùng còn nguyên, kể cả 2 dòng "\n"
+        CHECK(afterAdd.contains("0.0.0.0 lan-lon.example\r\n"));
+        CHECK(afterAdd.endsWith((kMarkerEnd + "\r\n").toUtf8()));
+        CHECK(!afterAdd.contains("\r\r"));
+        CHECK(readBytes(backupFilePath(mixed)) == original);
+        CHECK(addDomainToFile(mixed, "thu-hai.example"));
+        CHECK(readBytes(mixed).startsWith(original));
+        CHECK(listBlockedDomainsInFile(mixed) == QStringList({"lan-lon.example", "thu-hai.example"}));
+        CHECK(removeDomainFromFile(mixed, "lan-lon.example") && removeDomainFromFile(mixed, "thu-hai.example"));
+        CHECK(readBytes(mixed).startsWith(original));
+        CHECK(!readBytes(mixed).contains("OneForAll"));
+
+        // Đa số "\n": dòng công cụ ghi dùng "\n", dòng "\r\n" duy nhất của người dùng vẫn là "\r\n"
+        const QString mostlyLf = tmp.path() + "/hosts-da-so-lf";
+        const QByteArray lfOriginal = "127.0.0.1 localhost\n10.0.0.5 nas.local\r\n# ghi chu\n";
+        CHECK(writeBytes(mostlyLf, lfOriginal));
+        CHECK(addDomainToFile(mostlyLf, "x.example"));
+        const QByteArray lfAfter = readBytes(mostlyLf);
+        CHECK(lfAfter.startsWith(lfOriginal));
+        CHECK(lfAfter.contains("0.0.0.0 x.example\n") && !lfAfter.contains("0.0.0.0 x.example\r\n"));
+        CHECK(lfAfter.count("\r\n") == 1);
+
+        // Dòng cuối tệp KHÔNG có xuống dòng: phần xuống dòng thêm vào là của công cụ -> theo kiểu đa số
+        const QString noEol = tmp.path() + "/hosts-khong-xuong-dong-cuoi";
+        const QByteArray noEolOriginal = "127.0.0.1 localhost\r\n10.0.0.5 nas.local";
+        CHECK(writeBytes(noEol, noEolOriginal));
+        CHECK(addDomainToFile(noEol, "y.example"));
+        CHECK(readBytes(noEol).startsWith(noEolOriginal + "\r\n\r\n" + kMarkerStart.toUtf8() + "\r\n"));
+
+        // Thuần chuỗi: tham số eol chỉ áp cho dòng của công cụ; mặc định ("\n") như trước
+        CHECK(buildUpdatedHostsContent("a\r\nb\nc", {"x.com"}, "\r\n") ==
+              "a\r\nb\nc\r\n\r\n" + kMarkerStart + "\r\n0.0.0.0 x.com\r\n" + kMarkerEnd + "\r\n");
+        CHECK(buildUpdatedHostsContent("a\r\nb\n", {"x.com"}, "\r\n") ==
+              "a\r\nb\n\r\n" + kMarkerStart + "\r\n0.0.0.0 x.com\r\n" + kMarkerEnd + "\r\n");
+        CHECK(buildUpdatedHostsContent("a\nb", {"x.com"}) == "a\nb\n\n" + kMarkerStart + "\n0.0.0.0 x.com\n" + kMarkerEnd + "\n");
+
+        // Hồi quy: hosts CHƯA tồn tại ở lần ghi đầu -> lần ghi thứ hai từng tạo bản .bak chứa chính khối của
+        // công cụ. Bản sao lưu chỉ được là nội dung có TRƯỚC khi công cụ đụng tới.
+        const QString fresh = tmp.path() + "/hosts-chua-co";
+        CHECK(addDomainToFile(fresh, "mot.example"));
+        CHECK(!QFile::exists(backupFilePath(fresh)));
+        CHECK(addDomainToFile(fresh, "hai.example"));
+        CHECK(!QFile::exists(backupFilePath(fresh)));
+        CHECK(removeDomainFromFile(fresh, "mot.example") && removeDomainFromFile(fresh, "hai.example"));
+        CHECK(addDomainToFile(fresh, "ba.example")); // tệp lúc này rỗng - vẫn không có gì đáng sao lưu
+        CHECK(!QFile::exists(backupFilePath(fresh)));
+        CHECK(listBlockedDomainsInFile(fresh) == QStringList({"ba.example"}));
+    }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);
     std::printf("\nLUU Y: khong co Windows Defender/hosts file THAT trong test nay - cac ham goi\n");

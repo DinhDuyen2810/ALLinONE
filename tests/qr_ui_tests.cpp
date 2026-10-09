@@ -16,6 +16,7 @@
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTemporaryDir>
+#include "TestDataDir.h"
 #include <cstdio>
 
 #include "core/AppPaths.h"
@@ -46,7 +47,7 @@ int main(int argc, char** argv)
 {
     QApplication app(argc, argv);
 
-    QTemporaryDir tmp;
+    TestDataDir tmp;
     CHECK(tmp.isValid());
     // PHẢI đứng trước mọi lời gọi tới QRHistoryStore/Logger: ép toàn bộ dữ liệu vào thư mục tạm để bộ
     // test không đọc/ghi/xóa lịch sử QR + log thật của người dùng trên máy đang chạy test.
@@ -401,6 +402,83 @@ int main(int argc, char** argv)
         store.load();
         store.clear();
         CHECK(store.lastSaveOk());
+    }
+
+    // ---- 9c2. Hai bản ứng dụng cùng ghi MỘT tệp lịch sử: không bản nào xóa mất mục của bản kia ----
+    // Hai đối tượng kho trỏ chung một tệp tạm đóng vai hai tiến trình. Trước đây mỗi bản ghi lại cả tệp từ
+    // danh sách trong bộ nhớ của riêng nó -> bản ghi sau xóa sạch mục bản kia vừa thêm.
+    {
+        const QString shared = tmp.filePath("shared-history.json");
+        auto contents = [](const QRHistoryStore& s) {
+            QStringList out;
+            for (const QRHistoryEntry& e : s.entries())
+                out << e.content;
+            return out;
+        };
+
+        QRHistoryStore a(shared), b(shared); // cả hai nạp lúc tệp chưa tồn tại
+        a.add("generate", "Văn bản", "A-1");
+        b.add("scan", "URL", "https://b.example/1");
+        a.add("generate", "Văn bản", "A-2 dai hon");
+        b.add("scan", "URL", "https://b.example/2/abc");
+        CHECK(a.lastSaveOk() && b.lastSaveOk());
+        {
+            QRHistoryStore onDisk(shared);
+            CHECK(contents(onDisk) == QStringList({"https://b.example/2/abc", "A-2 dai hon", "https://b.example/1", "A-1"}));
+        }
+        CHECK(contents(b).size() == 4);
+        CHECK(contents(a) == QStringList({"A-2 dai hon", "https://b.example/1", "A-1"})); // A chưa ghi lại -> chưa thấy mục mới nhất của B
+
+        // Xóa theo vị trí người dùng ĐANG THẤY ở A (hàng 0 = "A-2 dai hon") dù trên đĩa hàng 0 đã là mục của B.
+        a.removeAt(0);
+        CHECK(contents(a) == QStringList({"https://b.example/2/abc", "https://b.example/1", "A-1"}));
+
+        // Mục B xóa không bị A "hồi sinh" ở lần ghi sau.
+        b.removeAt(3); // hàng "A-1" trong danh sách B đang thấy (4 mục)
+        CHECK(contents(b) == QStringList({"https://b.example/2/abc", "https://b.example/1"}));
+        a.add("generate", "Văn bản", "A-3");
+        CHECK(contents(a) == QStringList({"A-3", "https://b.example/2/abc", "https://b.example/1"}));
+
+        // Vẫn không ghi trùng liền kề, kể cả khi mục trên cùng là của bản kia.
+        b.add("generate", "Văn bản", "A-3");
+        CHECK(contents(b) == QStringList({"A-3", "https://b.example/2/abc", "https://b.example/1"}));
+
+        // Vẫn giới hạn 300 mục sau khi gộp; mục mới nhất của CẢ HAI bản đều còn.
+        for (int i = 0; i < 200; ++i)
+        {
+            a.add("scan", "t", QString("a-%1").arg(i));
+            b.add("scan", "t", QString("b-%1").arg(i));
+        }
+        {
+            QRHistoryStore onDisk(shared);
+            const QStringList all = contents(onDisk);
+            CHECK(all.size() == 300);
+            CHECK(all.value(0) == "b-199" && all.value(1) == "a-199" && all.value(2) == "b-198");
+            int fromA = 0, fromB = 0;
+            for (const QString& c : all)
+            {
+                fromA += c.startsWith("a-") ? 1 : 0;
+                fromB += c.startsWith("b-") ? 1 : 0;
+            }
+            CHECK(fromA == 150 && fromB == 150);
+        }
+        CHECK(b.entries().size() == 300 && a.entries().size() <= 300);
+
+        // "Xóa toàn bộ" xóa cả mục của bản kia; bản kia ghi tiếp thì bắt đầu lại từ tệp trống.
+        a.clear();
+        b.add("scan", "t", "sau khi xoa");
+        CHECK(contents(b) == QStringList({"sau khi xoa"}));
+
+        // Tệp bị bản kia ghi HỎNG giữa chừng: được đổi tên .bak, danh sách đang có của bản này không mất.
+        {
+            QFile f(shared);
+            CHECK(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            f.write("{ \"entries\": [ hong");
+        }
+        b.add("scan", "t", "sau khi hong");
+        CHECK(b.lastSaveOk());
+        CHECK(contents(b) == QStringList({"sau khi hong", "sau khi xoa"}));
+        CHECK(QFile::exists(shared + ".bak"));
     }
 
     // ---- 9d. Lớp phủ chụp màn hình: đóng kiểu nào cũng báo cho nơi gọi đúng MỘT lần ----

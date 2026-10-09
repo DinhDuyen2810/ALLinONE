@@ -38,6 +38,7 @@
 #include <QSpinBox>
 #include <QTableWidget>
 #include <QTemporaryDir>
+#include "TestDataDir.h"
 #include <QThread>
 #include <QTimer>
 #include <QUrl>
@@ -2804,6 +2805,125 @@ void checkUpdateProgressDialogHide()
     g_autoDismissDialogs = true;
 }
 
+// Tệp log không mở được (lỗi tạm thời) phải được thử mở lại có giới hạn tần suất - trước đây mở thất bại lúc
+// khởi tạo là tắt log tệp cho cả phiên. Kèm closeFiles()/reopenFiles() dành cho test (xem tests/TestDataDir.h).
+void checkLoggerReopen(const QString& mainOverride)
+{
+    std::printf("[logger] thu mo lai tep log sau loi tam thoi\n");
+    QTemporaryDir blocked;
+    CHECK(blocked.isValid());
+    const QString appLog = blocked.path() + "/logs/app.log";
+    // "Lỗi tạm thời" dựng bằng một THƯ MỤC trùng tên tệp log: mở tệp chắc chắn thất bại cho tới khi gỡ nó đi.
+    CHECK(QDir().mkpath(appLog));
+    AppPaths::setDataDirOverride(blocked.path());
+    Logger::instance().reopenFiles();
+
+    const int every = Logger::kReopenRetryEveryCalls;
+    for (int i = 0; i < every * 3; ++i) // 3 lượt thử mở lại, đều thất bại: không crash, không treo
+        Logger::instance().info("Core", "dong-bi-mat");
+    CHECK(QFileInfo(appLog).isDir());
+
+    CHECK(QDir().rmdir(appLog)); // lỗi tạm thời đã hết
+    for (int i = 0; i < every - 1; ++i)
+        Logger::instance().info("Core", "chua-toi-luot-thu");
+    CHECK(!QFileInfo::exists(appLog)); // chưa tới lượt thử: không gọi hệ thống cho từng dòng log
+    Logger::instance().warning("Core", "da-mo-lai"); // lần thứ `every`: mở lại được, Warning ghi + flush ngay
+    CHECK(QFileInfo(appLog).isFile());
+    {
+        QFile f(appLog);
+        CHECK(f.open(QIODevice::ReadOnly));
+        const QByteArray content = f.readAll();
+        CHECK(content.contains("da-mo-lai"));
+        CHECK(!content.contains("dong-bi-mat") && !content.contains("chua-toi-luot-thu"));
+    }
+
+    // closeFiles(): đóng THẬT (Windows cho xóa tệp), không ghi nữa và không tự mở lại.
+    Logger::instance().closeFiles();
+    CHECK(QFile::remove(appLog));
+    for (int i = 0; i < every * 2 + 5; ++i)
+        Logger::instance().warning("AutoClick", "sau-khi-dong");
+    CHECK(!QFileInfo::exists(appLog));
+
+    AppPaths::setDataDirOverride(mainOverride);
+    Logger::instance().reopenFiles();
+    Logger::instance().warning("Core", "tro-lai-thu-muc-chinh");
+    CHECK(QFileInfo(mainOverride + "/logs/app.log").size() > 0);
+    CHECK(QDir(blocked.path()).removeRecursively()); // không còn tệp nào bị Logger giữ trong thư mục cũ
+}
+
+// Hủy/hết giờ phải dừng cả tiến trình do script sinh ra, không chỉ powershell.exe (trước đây tiến trình con
+// mồ côi chạy tiếp ngầm). Tiến trình con ở đây vô hại: ping vòng lặp nội bộ, tự thoát sau ~100 giây.
+void checkPowerShellKillsDescendants()
+{
+    std::printf("[powershell] huy/het gio dung ca tien trinh chau\n");
+    for (int mode = 0; mode < 2; ++mode) // 0 = hủy bằng cờ, 1 = hết thời gian chờ
+    {
+        QTemporaryDir tmp;
+        CHECK(tmp.isValid());
+        const QString marker = QDir::toNativeSeparators(tmp.path() + "/child.pid");
+        const QString script =
+            QString("$p = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\\PING.EXE') "
+                    "-ArgumentList '-n','100','127.0.0.1' -WindowStyle Hidden -PassThru; "
+                    "[IO.File]::WriteAllText('%1', [string]$p.Id); Start-Sleep -Seconds 100")
+                .arg(PowerShellRunner::quoteLiteral(marker));
+
+        std::atomic_bool cancel{false};
+        std::atomic_bool done{false};
+        std::atomic_bool aliveBefore{false};
+        std::atomic<HANDLE> child{nullptr};
+        // Luồng theo dõi: chờ script ghi PID của tiến trình con, giữ một handle tới nó (handle giữ đúng tiến
+        // trình đó dù PID có bị tái sử dụng), xác nhận nó ĐANG chạy, rồi (chế độ 0) mới bật cờ hủy.
+        std::thread watcher([&]() {
+            QElapsedTimer t;
+            t.start();
+            while (!done.load() && t.elapsed() < 60000)
+            {
+                QFile f(marker);
+                const DWORD pid = f.open(QIODevice::ReadOnly) ? QString::fromLatin1(f.readAll()).trimmed().toULong() : 0;
+                if (pid != 0)
+                {
+                    HANDLE h = OpenProcess(SYNCHRONIZE | PROCESS_TERMINATE, FALSE, pid);
+                    if (h)
+                    {
+                        aliveBefore = WaitForSingleObject(h, 0) == WAIT_TIMEOUT;
+                        child = h;
+                    }
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+            if (mode == 0)
+                cancel = true;
+        });
+
+        QElapsedTimer timer;
+        timer.start();
+        bool ok = true;
+        QString error;
+        PowerShellRunner::runCancelable(script, mode == 0 ? &cancel : nullptr, &ok, &error, mode == 0 ? 100000 : 20000);
+        const qint64 elapsed = timer.elapsed();
+        done = true;
+        watcher.join();
+
+        CHECK(!ok);
+        CHECK(error == QString::fromUtf8(mode == 0 ? "Đã hủy." : "Hết thời gian chờ PowerShell"));
+        HANDLE h = child.load();
+        CHECK(h != nullptr);       // script đã kịp sinh tiến trình con trước khi bị dừng
+        CHECK(aliveBefore.load()); // và nó đang chạy thật ngay trước lúc hủy
+        bool childGone = false;
+        if (h)
+        {
+            childGone = WaitForSingleObject(h, 5000) == WAIT_OBJECT_0;
+            CHECK(childGone);
+            if (!childGone)
+                TerminateProcess(h, 1); // dọn, không để ping chạy tiếp sau bộ test
+            CloseHandle(h);
+        }
+        std::printf("  %s: tra ve sau %lld ms, tien trinh con %s\n", mode == 0 ? "huy" : "het gio",
+                    static_cast<long long>(elapsed), !h ? "KHONG THAY" : (childGone ? "da dung" : "VAN CHAY"));
+    }
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -2816,7 +2936,7 @@ int main(int argc, char** argv)
     QApplication app(argc, argv);
     QApplication::setQuitOnLastWindowClosed(false); // đóng cửa sổ cuối cùng giữa chừng không được kết thúc bộ test
 
-    QTemporaryDir dataDir;
+    TestDataDir dataDir;
     CHECK(dataDir.isValid());
     const QString mainOverride = dataDir.path();
     AppPaths::setDataDirOverride(mainOverride); // TRƯỚC mọi thứ đụng Logger/tệp hồ sơ
@@ -2855,6 +2975,8 @@ int main(int argc, char** argv)
 
     if (wanted("logger"))
         stressLogger();
+    if (wanted("logger"))
+        checkLoggerReopen(mainOverride);
     if (wanted("apppaths"))
     {
         stressAppPathsThreads(mainOverride);
@@ -2865,6 +2987,7 @@ int main(int argc, char** argv)
         stressPowerShellOutput();
         stressPowerShellQuoting();
         stressPowerShellConcurrency();
+        checkPowerShellKillsDescendants();
     }
     if (wanted("process"))
         stressWinProcessTree();

@@ -36,6 +36,7 @@ void NetworkSession::setSessionKeys(const QByteArray& sendKey, const QByteArray&
 {
     if (sendKey.size() != CryptoSession::kKeyBytes || receiveKey.size() != CryptoSession::kKeyBytes)
     {
+        m_peerAuthenticated = false;
         m_txSession.reset();
         m_rxSession.reset();
         return;
@@ -44,9 +45,27 @@ void NetworkSession::setSessionKeys(const QByteArray& sendKey, const QByteArray&
     m_rxSession = std::make_unique<CryptoSession>(receiveKey);
     m_txCounter = 0;
     m_rxCounter = 0;
+    m_peerAuthenticated = false; // khóa mới -> phải được xác nhận lại rồi mới nâng trần khung
     // Khóa bắt tay (khóa dài hạn/khóa mã ghép đôi) không còn cần cho kết nối này nữa - bỏ ngay để mọi
     // gói về sau BẮT BUỘC đi qua khóa phiên + bộ đếm.
     m_handshake.reset();
+}
+
+void NetworkSession::markPeerAuthenticated()
+{
+    if (hasSessionKeys())
+        m_peerAuthenticated = true;
+}
+
+void NetworkSession::setReceivePaused(bool paused)
+{
+    if (m_receivePaused == paused)
+        return;
+    m_receivePaused = paused;
+    // Tiếp tục: phần đã đến trong lúc ngưng nằm sẵn trong bộ đệm, không có readyRead nào báo lại - tự xử lý
+    // ở vòng lặp sự kiện kế tiếp (sau khi nơi gọi đặt xong khóa/trạng thái của mình).
+    if (!paused)
+        QMetaObject::invokeMethod(this, [this] { processBuffer(); }, Qt::QueuedConnection);
 }
 
 QByteArray NetworkSession::handshakeAad(Side sender) const
@@ -77,6 +96,8 @@ void NetworkSession::connectToHost(const QHostAddress& address, quint16 port)
     m_side = Side::Initiator;
     m_expectPreamble = false; // preamble chỉ đi một chiều: bên mở kết nối gửi, bên nhận đọc
     m_closed = false;
+    m_peerAuthenticated = false;
+    m_receivePaused = false;
     m_recvBuffer.clear();
     m_socket = new QTcpSocket(this);
     wireSocket();
@@ -94,6 +115,8 @@ void NetworkSession::adoptSocket(QTcpSocket* socket, bool expectPreamble)
     m_side = Side::Responder;
     m_expectPreamble = expectPreamble;
     m_closed = false;
+    m_peerAuthenticated = false;
+    m_receivePaused = false;
     m_recvBuffer.clear();
     m_socket = socket;
     m_socket->setParent(this);
@@ -142,7 +165,7 @@ bool NetworkSession::sendMessage(const ProtocolMessage& msg, QString* error)
     // chối gửi ở đây (không đụng tới bộ đếm, phiên vẫn dùng tiếp được) còn hơn làm rớt cả phiên.
     const QByteArray plain = msg.toBytes();
     const qint64 packetSize = plain.size() + CryptoSession::kTagBytes + (sessionMode ? 0 : CryptoSession::kNonceBytes);
-    const qint64 limit = sessionMode ? kAuthenticatedMaxFrameBytes : kUnauthenticatedMaxFrameBytes;
+    const qint64 limit = (sessionMode && m_peerAuthenticated) ? kAuthenticatedMaxFrameBytes : kUnauthenticatedMaxFrameBytes;
     if (packetSize > limit)
     {
         if (error) *error = QString("Thông điệp quá lớn (%1 byte, tối đa %2).").arg(packetSize).arg(limit);
@@ -198,16 +221,33 @@ void NetworkSession::processBuffer()
         return;
     m_recvBuffer += m_socket->readAll();
 
+    if (m_receivePaused)
+    {
+        // Đang chờ khóa: chưa tách khung nào, nhưng cũng không đệm vô hạn - bên kia hợp lệ chỉ gửi đúng MỘT
+        // khung nhỏ (PairRequest) rồi chờ trả lời. Độ dài khai sai, hoặc gửi nhiều hơn một khung: đóng luôn.
+        if (m_recvBuffer.size() >= kLengthPrefixBytes)
+        {
+            const quint32 frameLen = qFromBigEndian<quint32>(reinterpret_cast<const uchar*>(m_recvBuffer.constData()));
+            if (frameLen == 0 || frameLen > static_cast<quint32>(kUnauthenticatedMaxFrameBytes) ||
+                m_recvBuffer.size() > kLengthPrefixBytes + static_cast<int>(frameLen))
+                failAndClose("Gói tin không hợp lệ trong lúc chờ khóa mã hóa - đóng kết nối.");
+        }
+        return;
+    }
+
     // Kiểm m_closed ở MỖI vòng: nơi nhận tín hiệu (ConnectSessionController) có thể đóng kết nối ngay
     // trong lúc xử lý một thông điệp - các khung còn lại trong bộ đệm khi đó phải bị bỏ, không xử lý tiếp.
-    while (!m_closed)
+    while (!m_closed && !m_receivePaused)
     {
         if (m_recvBuffer.size() < kLengthPrefixBytes)
             return;
 
         const bool sessionMode = m_rxSession && m_rxSession->isValid();
-        const quint32 limit = m_expectPreamble ? kMaxPreambleBytes
-                                               : (sessionMode ? kAuthenticatedMaxFrameBytes : kUnauthenticatedMaxFrameBytes);
+        // Trần lớn chỉ áp dụng khi phiên đã được xác nhận (markPeerAuthenticated) - có khóa phiên thôi chưa đủ.
+        const quint32 limit = m_expectPreamble
+                                  ? kMaxPreambleBytes
+                                  : ((sessionMode && m_peerAuthenticated) ? kAuthenticatedMaxFrameBytes
+                                                                          : kUnauthenticatedMaxFrameBytes);
         const quint32 frameLen = qFromBigEndian<quint32>(reinterpret_cast<const uchar*>(m_recvBuffer.constData()));
         if (frameLen == 0 || frameLen > limit)
         {

@@ -5,6 +5,7 @@
 #include <QApplication>
 #include <QTabWidget>
 #include <QTemporaryDir>
+#include "TestDataDir.h"
 #include <QThread>
 #include <cstdio>
 
@@ -26,7 +27,7 @@ int main(int argc, char** argv)
     // TRƯỚC KHI dựng cửa sổ (nó khởi tạo LocalIdentityStore/PeerStore/Logger): ép dữ liệu vào thư mục tạm -
     // test không được đọc/ghi danh tính + khóa ghép đôi thật của người dùng, cũng không tự kết nối tới các
     // máy họ đã ghép đôi.
-    QTemporaryDir dataDir;
+    TestDataDir dataDir;
     CHECK(dataDir.isValid());
     AppPaths::setDataDirOverride(dataDir.path());
 

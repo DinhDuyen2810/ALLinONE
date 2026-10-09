@@ -16,6 +16,7 @@
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTemporaryDir>
+#include "TestDataDir.h"
 #include <QTreeWidget>
 #include <cstdio>
 
@@ -39,7 +40,7 @@ int main(int argc, char** argv)
     QApplication app(argc, argv);
 
     // Log của ứng dụng (Logger) ghi vào thư mục tạm - KHÔNG đụng dữ liệu thật của người dùng.
-    QTemporaryDir dataDir;
+    TestDataDir dataDir;
     AppPaths::setDataDirOverride(dataDir.path());
 
     DiskCleanupWindow win;

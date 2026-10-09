@@ -95,6 +95,31 @@ bool walkDirectory(const QString& dir, const std::atomic_bool& stopFlag,
             return false;
     return true;
 }
+
+/// Danh tính + "có phải gốc ổ đĩa không" của THƯ MỤC mà đường dẫn này thật sự dẫn tới - đi theo junction/
+/// symlink/điểm gắn ổ đĩa ở BẤT KỲ thành phần nào của đường dẫn (không đặt FILE_FLAG_OPEN_REPARSE_POINT).
+/// false nếu không mở được hoặc đích không phải thư mục. Chỉ đọc siêu dữ liệu (quyền truy cập 0).
+bool resolvedDirectory(const QString& path, FsSafety::FileIdentity* id, bool* volumeRoot)
+{
+    const HANDLE h = CreateFileW(toExtendedPath(path).c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                 nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (h == INVALID_HANDLE_VALUE)
+        return false;
+    BY_HANDLE_FILE_INFORMATION info;
+    const bool ok = GetFileInformationByHandle(h, &info) != 0 && (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    if (ok)
+    {
+        id->volumeSerial = info.dwVolumeSerialNumber;
+        id->fileIndex = (static_cast<quint64>(info.nFileIndexHigh) << 32) | static_cast<quint64>(info.nFileIndexLow);
+        // VOLUME_NAME_NONE: đường dẫn của ĐÍCH tính từ gốc ổ đĩa chứa nó - đúng một dấu "\" khi đích LÀ gốc
+        // ổ đĩa. (Bộ đệm nhỏ: đường dẫn dài hơn thì hàm trả về độ dài cần có, luôn > 1.)
+        wchar_t buffer[8] = {};
+        const DWORD len = GetFinalPathNameByHandleW(h, buffer, 8, FILE_NAME_NORMALIZED | VOLUME_NAME_NONE);
+        *volumeRoot = (len == 1 && buffer[0] == L'\\');
+    }
+    CloseHandle(h);
+    return ok;
+}
 #endif
 
 QString normalized(const QString& path)
@@ -368,7 +393,65 @@ QString unsafeCleanupRootReason(const QString& path, const QStringList& protecte
         if (prot.startsWith(withSlash, Qt::CaseInsensitive))
             return "chứa thư mục được bảo vệ: " + prot;
     }
+
+#ifdef Q_OS_WIN
+    // So thêm theo DANH TÍNH VẬT LÝ (số sê-ri ổ + chỉ số tệp): mọi phép so ở trên chỉ nhìn CHUỖI, nên một
+    // junction/symlink thư mục "D:/x/lien-ket" trỏ vào C:\Windows, vào hồ sơ người dùng hay vào gốc ổ đĩa
+    // (hoặc một đường dẫn đi XUYÊN qua liên kết như "C:/Documents and Settings/<tên>") vẫn lọt qua - dọn
+    // "nội dung bên trong" nó chính là dọn thư mục được bảo vệ. Chỉ làm với THƯ MỤC đang tồn tại trên ổ cục
+    // bộ: tệp thường không thể trùng danh tính với một thư mục, còn mở đường dẫn mạng có thể treo nhiều giây
+    // khi máy chủ không trả lời (phần chuỗi ở trên vẫn áp cho chúng).
+    if (driveForm.match(p + "/").hasMatch())
+    {
+        const DWORD attributes = GetFileAttributesW(toExtendedPath(p).c_str());
+        FsSafety::FileIdentity target;
+        bool targetIsVolumeRoot = false;
+        if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0 &&
+            resolvedDirectory(p, &target, &targetIsVolumeRoot))
+        {
+            if (targetIsVolumeRoot)
+                return "trỏ tới thư mục gốc của một ổ đĩa (qua liên kết thư mục)";
+
+            // Mỗi thư mục được bảo vệ VÀ từng thư mục cha của nó (đích là cha = đích CHỨA thư mục được bảo vệ).
+            QStringList checked;
+            for (const QString& raw : protectedDirs)
+            {
+                const QString prot = expandShortNames(normalized(raw));
+                if (!driveForm.match(prot + "/").hasMatch())
+                    continue; // rỗng hoặc đường dẫn mạng - không mở
+                QString dir = prot;
+                while (dir.size() > 3 && !checked.contains(dir, Qt::CaseInsensitive))
+                {
+                    checked << dir;
+                    FsSafety::FileIdentity id;
+                    bool isRoot = false;
+                    if (resolvedDirectory(dir, &id, &isRoot) && id == target)
+                    {
+                        return (dir == prot ? "trỏ tới thư mục được bảo vệ (qua liên kết thư mục): "
+                                            : "trỏ tới thư mục chứa thư mục được bảo vệ (qua liên kết thư mục): ") + prot;
+                    }
+                    const int slash = dir.lastIndexOf(QLatin1Char('/'));
+                    if (slash <= 2)
+                        break; // tới gốc ổ đĩa - đã xét ở trên
+                    dir.truncate(slash);
+                }
+            }
+        }
+    }
+#endif
     return {};
+}
+
+bool resolvesToVolumeRoot(const QString& path)
+{
+#ifdef Q_OS_WIN
+    FileIdentity id;
+    bool volumeRoot = false;
+    return resolvedDirectory(path, &id, &volumeRoot) && volumeRoot;
+#else
+    Q_UNUSED(path);
+    return false;
+#endif
 }
 
 QString unsafeShellPathReason(const QString& path)

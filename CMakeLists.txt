@@ -54,7 +54,8 @@ add_library(core_shared STATIC
     src/core/PowerShellRunner.cpp
 )
 target_include_directories(core_shared PUBLIC src)
-target_link_libraries(core_shared PUBLIC Qt6::Core advapi32 shell32)
+# winprocess_core: PowerShellRunner dừng cả tiến trình cháu của script khi hủy/hết giờ (WinProcessTree).
+target_link_libraries(core_shared PUBLIC Qt6::Core winprocess_core advapi32 shell32)
 
 # ---- InputController (SendInput/SetCursorPos) - dùng chung cho Auto Click (ActionRunner) và Security
 # Gateway (CommandLauncher gửi Ctrl+V). Trước đây liệt kê trùng trong security_core và SOURCES của exe.
@@ -281,6 +282,8 @@ add_library(android_core STATIC
     src/tools/android/engine/AdbController.cpp
     src/tools/android/engine/AdbDeviceLister.h
     src/tools/android/engine/AdbDeviceLister.cpp
+    src/tools/android/engine/AdbPairer.h
+    src/tools/android/engine/AdbPairer.cpp
     src/tools/android/engine/ScrcpyLauncher.h
     src/tools/android/engine/ScrcpyLauncher.cpp
 )

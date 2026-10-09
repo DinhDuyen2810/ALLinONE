@@ -13,6 +13,7 @@
 #include <QSpinBox>
 #include <QTableWidget>
 #include <QTemporaryDir>
+#include "TestDataDir.h"
 #include <climits>
 #include <cstdio>
 
@@ -60,7 +61,7 @@ int main(int argc, char** argv)
 {
     QApplication app(argc, argv);
 
-    QTemporaryDir dataDir;
+    TestDataDir dataDir;
     CHECK(dataDir.isValid());
     AppPaths::setDataDirOverride(dataDir.path()); // TRƯỚC mọi thứ đụng Logger/tệp hồ sơ
 

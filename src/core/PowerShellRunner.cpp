@@ -1,6 +1,7 @@
 #include "PowerShellRunner.h"
 
 #include "core/AppPaths.h"
+#include "core/WinProcessTree.h"
 
 #include <QProcess>
 #include <QRegularExpression>
@@ -167,8 +168,15 @@ QByteArray runCancelable(const QString& script, const std::atomic_bool* cancelFl
 
     if (!finished)
     {
+        // Hủy/hết giờ: kill() (TerminateProcess) chỉ dừng ĐÚNG powershell.exe - mọi tiến trình script đã
+        // sinh ra (Start-Process, exe ngoài đang chạy dở, conhost.exe...) sẽ mồ côi và chạy tiếp ngầm. Lấy
+        // danh sách hậu duệ TRƯỚC khi kill - lúc PID của powershell.exe còn chắc chắn là của ta (xem ghi chú
+        // thứ tự trong WinProcessTree.h) - rồi dừng từng cái SAU khi powershell.exe đã thoát, để nó không
+        // kịp sinh thêm tiến trình mới giữa hai bước. Cùng mẫu với ScrcpyLauncher::stop().
+        const std::vector<qint64> descendants = WinProcessTree::findDescendants(proc.processId());
         proc.kill();
         proc.waitForFinished(2000);
+        WinProcessTree::terminateProcessList(descendants);
         if (error) *error = canceled ? "Đã hủy." : "Hết thời gian chờ PowerShell";
         return stripUtf8Bom(proc.readAllStandardOutput());
     }

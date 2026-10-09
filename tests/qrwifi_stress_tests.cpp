@@ -43,6 +43,7 @@
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryDir>
+#include "TestDataDir.h"
 #include <QTimer>
 #include <QTransform>
 #include <cstdio>
@@ -2215,7 +2216,7 @@ int main(int argc, char** argv)
 
     // PHẢI đứng trước mọi lời gọi tới QRHistoryStore/Logger: ép toàn bộ dữ liệu vào thư mục tạm để bộ test
     // không đọc/ghi/xóa lịch sử QR + log thật của người dùng trên máy đang chạy test.
-    QTemporaryDir tmp;
+    TestDataDir tmp;
     CHECK(tmp.isValid());
     AppPaths::setDataDirOverride(tmp.path());
     CHECK(QRHistoryStore::instance().filePath().startsWith(QDir(tmp.path()).absolutePath()));

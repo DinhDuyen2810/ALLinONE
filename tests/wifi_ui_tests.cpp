@@ -8,6 +8,7 @@
 #include <QPushButton>
 #include <QTabWidget>
 #include <QTemporaryDir>
+#include "TestDataDir.h"
 #include <cstdio>
 
 #include "core/AppPaths.h"
@@ -32,7 +33,7 @@ int main(int argc, char** argv)
 
     // PHẢI đứng trước mọi thứ đụng tới Logger (WifiWindow ghi log lúc mở): ép dữ liệu vào thư mục tạm để
     // bộ test không ghi vào log/hồ sơ thật của người dùng.
-    QTemporaryDir dataDir;
+    TestDataDir dataDir;
     CHECK(dataDir.isValid());
     AppPaths::setDataDirOverride(dataDir.path());
 

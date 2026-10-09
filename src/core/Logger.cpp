@@ -35,16 +35,50 @@ Logger::Logger()
     // Đường dẫn tuyệt đối trong thư mục dữ liệu người dùng (xem AppPaths.h) - trước đây là "logs/..."
     // tương đối theo CWD, không ghi được khi cài vào Program Files hoặc khi CWD không phải thư mục exe.
     m_appLogFile.setFileName(AppPaths::logFile("app.log"));
-    rotateIfTooLarge(m_appLogFile);
-    // Không mở được log (đĩa đầy, thư mục bị khóa...) KHÔNG được làm ứng dụng dừng - log() tự bỏ qua tệp
-    // chưa mở; chỉ báo ra kênh debug để còn dấu vết.
-    if (!m_appLogFile.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text))
+    // Không mở được log (đĩa đầy, thư mục bị khóa...) KHÔNG được làm ứng dụng dừng - log() bỏ qua tệp chưa
+    // mở và thử mở lại định kỳ (kReopenRetryEveryCalls); chỉ báo ra kênh debug để còn dấu vết.
+    if (!openLogFile(m_appLogFile))
         qWarning("Logger: không mở được %s", qUtf8Printable(m_appLogFile.fileName()));
 
     m_autoclickLogFile.setFileName(AppPaths::logFile("autoclick.log"));
-    rotateIfTooLarge(m_autoclickLogFile);
-    if (!m_autoclickLogFile.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text))
+    if (!openLogFile(m_autoclickLogFile))
         qWarning("Logger: không mở được %s", qUtf8Printable(m_autoclickLogFile.fileName()));
+}
+
+bool Logger::openLogFile(QFile& file)
+{
+    rotateIfTooLarge(file);
+    return file.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text);
+}
+
+void Logger::closeFiles()
+{
+    QMutexLocker locker(&m_mutex);
+    m_closedOnPurpose = true;
+    if (m_appLogFile.isOpen())
+        m_appLogFile.close();
+    if (m_autoclickLogFile.isOpen())
+        m_autoclickLogFile.close();
+}
+
+void Logger::reopenFiles()
+{
+    // Lấy đường dẫn TRƯỚC khi khóa m_mutex - không gọi sang AppPaths trong lúc đang giữ khóa của Logger.
+    const QString appPath = AppPaths::logFile("app.log");
+    const QString autoclickPath = AppPaths::logFile("autoclick.log");
+
+    QMutexLocker locker(&m_mutex);
+    if (m_appLogFile.isOpen())
+        m_appLogFile.close();
+    if (m_autoclickLogFile.isOpen())
+        m_autoclickLogFile.close();
+    m_closedOnPurpose = false;
+    m_appSkippedWrites = 0;
+    m_autoclickSkippedWrites = 0;
+    m_appLogFile.setFileName(appPath);
+    openLogFile(m_appLogFile);
+    m_autoclickLogFile.setFileName(autoclickPath);
+    openLogFile(m_autoclickLogFile);
 }
 
 Logger::~Logger()
@@ -100,15 +134,24 @@ void Logger::log(LogLevel level, const QString& module, const QString& message)
     if (checkRotate)
         m_callsSinceRotateCheck = 0;
 
-    auto writeTo = [&](QFile& file) {
+    auto writeTo = [&](QFile& file, int& skippedWrites) {
         if (!file.isOpen())
-            return;
-
-        if (checkRotate && file.size() > kMaxLogFileBytes)
+        {
+            // Tệp đang không mở được (lỗi lúc khởi tạo hoặc sau khi xoay vòng). Trước đây bỏ qua MÃI MÃI -
+            // một lỗi tạm thời (phần mềm diệt virus giữ tệp, đĩa đầy rồi được dọn) tắt log cả phiên. Nay
+            // thử mở lại, nhưng chỉ sau mỗi kReopenRetryEveryCalls lần ghi bị bỏ qua để lỗi kéo dài không
+            // tốn một lần gọi hệ thống thất bại cho từng dòng log. closeFiles() (test) thì không mở lại.
+            if (m_closedOnPurpose || ++skippedWrites < kReopenRetryEveryCalls)
+                return;
+            skippedWrites = 0;
+            if (!openLogFile(file))
+                return;
+        }
+        else if (checkRotate && file.size() > kMaxLogFileBytes)
         {
             file.close();
-            rotateIfTooLarge(file);
-            file.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text);
+            if (!openLogFile(file)) // mở lại sau xoay vòng thất bại: bỏ dòng này, lần sau thử lại như trên
+                return;
         }
 
         QTextStream stream(&file);
@@ -117,9 +160,9 @@ void Logger::log(LogLevel level, const QString& module, const QString& message)
             file.flush();
     };
 
-    writeTo(m_appLogFile);
+    writeTo(m_appLogFile, m_appSkippedWrites);
     if (module.compare("AutoClick", Qt::CaseInsensitive) == 0)
-        writeTo(m_autoclickLogFile);
+        writeTo(m_autoclickLogFile, m_autoclickSkippedWrites);
 }
 
 void Logger::info(const QString& module, const QString& message)

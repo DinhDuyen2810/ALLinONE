@@ -14,6 +14,7 @@
 #include <QPushButton>
 #include <QTableWidget>
 #include <QTemporaryDir>
+#include "TestDataDir.h"
 #include <QTimer>
 #include <cstdio>
 
@@ -23,6 +24,7 @@
 #include "tools/android/WirelessPairDialog.h"
 #include "tools/android/engine/AdbController.h"
 #include "tools/android/engine/AdbDeviceLister.h"
+#include "tools/android/engine/AdbPairer.h"
 
 static int g_fail = 0, g_pass = 0;
 #define CHECK(cond)                                                            \
@@ -36,7 +38,7 @@ int main(int argc, char** argv)
     QApplication app(argc, argv);
 
     // Cửa sổ ghi log lúc mở (Logger) - ép dữ liệu vào thư mục tạm, không đụng %LOCALAPPDATA%\OneForAll thật.
-    QTemporaryDir dataDir;
+    TestDataDir dataDir;
     AppPaths::setDataDirOverride(dataDir.path());
 
     // ---- Hộp thoại ghép đôi: chỉ đóng (Accepted) khi IP:Cổng + mã 6 số đúng định dạng ----
@@ -72,6 +74,23 @@ int main(int argc, char** argv)
     CHECK(refreshTimer != nullptr);
     if (refreshTimer)
         CHECK(!refreshTimer->isActive()); // chưa hiện -> chưa chạy
+
+    // Ghép đôi không dây chạy BẤT ĐỒNG BỘ qua AdbPairer (không còn gọi AdbController::pairWireless() đồng bộ
+    // trên luồng giao diện); lúc mới dựng không có lệnh nào đang chạy và nút ghép đôi không bị khóa oan
+    // (nút chỉ tắt khi thiếu adb.exe/scrcpy.exe đóng gói kèm).
+    auto* pairer = win.findChild<AdbPairer*>("adbPairer");
+    CHECK(pairer != nullptr);
+    if (pairer)
+        CHECK(!pairer->isBusy());
+    {
+        QPushButton* pairBtn = nullptr;
+        for (QPushButton* b : win.findChildren<QPushButton*>())
+            if (b->text().contains(QString::fromUtf8("Ghép đôi không dây")))
+                pairBtn = b;
+        CHECK(pairBtn != nullptr);
+        if (pairBtn)
+            CHECK(pairBtn->isEnabled() == AdbController::isBundleAvailable());
+    }
 
     QElapsedTimer showTimer;
     showTimer.start();

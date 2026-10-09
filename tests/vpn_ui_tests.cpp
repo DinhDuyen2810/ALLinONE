@@ -10,6 +10,7 @@
 #include <QPushButton>
 #include <QTableWidget>
 #include <QTemporaryDir>
+#include "TestDataDir.h"
 #include <cstdio>
 
 #include "core/AppPaths.h"
@@ -30,7 +31,7 @@ int main(int argc, char** argv)
     QApplication app(argc, argv);
 
     // Log + vpn_profiles.json ghi vào thư mục tạm - KHÔNG đụng dữ liệu thật của người dùng.
-    QTemporaryDir dataDir;
+    TestDataDir dataDir;
     AppPaths::setDataDirOverride(dataDir.path());
 
     VpnControlWindow win;

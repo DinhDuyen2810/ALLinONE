@@ -7,11 +7,13 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QTemporaryDir>
+#include "TestDataDir.h"
 #include <cstdio>
 
 #include "core/AppPaths.h"
 #include "tools/android/engine/AdbController.h"
 #include "tools/android/engine/AdbDeviceLister.h"
+#include "tools/android/engine/AdbPairer.h"
 #include "tools/android/engine/ScrcpyLauncher.h"
 
 static int g_fail = 0, g_pass = 0;
@@ -26,7 +28,7 @@ int main(int argc, char** argv)
     QCoreApplication app(argc, argv);
 
     // Không để bất cứ thứ gì trong test đọc/ghi dữ liệu thật của người dùng (%LOCALAPPDATA%\OneForAll).
-    QTemporaryDir dataDir;
+    TestDataDir dataDir;
     AppPaths::setDataDirOverride(dataDir.path());
 
     // ---- AdbController::internal::parseDevicesOutput: dữ liệu mẫu dựng sẵn (không gọi adb thật) ----
@@ -321,6 +323,63 @@ int main(int argc, char** argv)
         const bool available = AdbController::isBundleAvailable(&missing);
         CHECK(available == (!adbPath.isEmpty() && !scrcpyPath.isEmpty()));
         CHECK(true); // tới được đây tức là không crash
+    }
+
+    // ---- interpretPairResult: diễn giải kết quả `adb pair` (thuần, không gọi adb) ----
+    {
+        using AdbController::internal::interpretPairResult;
+        QString e;
+        CHECK(interpretPairResult(true, 0, "Successfully paired to 192.168.1.23:41234 [guid=adb-R58M-abc]\r\n", "", &e));
+        // adb trả mã thoát 0 cả khi sai mã - phải đọc nội dung
+        CHECK(!interpretPairResult(true, 0, "Failed: Wrong password or connection was dropped.\r\n", "", &e));
+        CHECK(e == "Failed: Wrong password or connection was dropped.");
+        CHECK(!interpretPairResult(true, 0, "", "  \r\n", &e));
+        CHECK(e.startsWith(QString::fromUtf8("Ghép đôi thất bại")));
+        CHECK(!interpretPairResult(true, 1, "", "error: unknown host service\r\n", &e));
+        CHECK(e == "error: unknown host service");
+        CHECK(!interpretPairResult(true, 1, "Successfully paired", "", &e)); // mã thoát khác 0: không tin stdout
+        CHECK(e == QString::fromUtf8("adb thoát với mã lỗi 1"));
+        CHECK(!interpretPairResult(false, 0, "Successfully paired", "", &e)); // adb crash/bị kill
+        CHECK(interpretPairResult(true, 0, "", "successfully PAIRED to x", nullptr)); // nằm ở stderr, error = nullptr
+        CHECK(!interpretPairResult(true, 0, "", "", nullptr));
+    }
+
+    // ---- AdbPairer (bất đồng bộ): lỗi định dạng/thiếu adb báo NGAY qua tín hiệu, không chạy tiến trình nào ----
+    {
+        AdbPairer pairer;
+        int calls = 0;
+        bool lastOk = true;
+        QString lastError;
+        QObject::connect(&pairer, &AdbPairer::finished, &pairer, [&](bool ok, const QString& error) {
+            ++calls;
+            lastOk = ok;
+            lastError = error;
+        });
+        CHECK(!pairer.isBusy());
+        pairer.cancel(); // không có gì đang chạy: không crash, không phát tín hiệu
+        CHECK(calls == 0);
+
+        CHECK(pairer.pair("--help", "123456")); // chuỗi bắt đầu bằng '-' không bao giờ tới được adb
+        CHECK(calls == 1 && !lastOk && lastError.contains(QString::fromUtf8("IP:Cổng")));
+        CHECK(pairer.pair("192.168.1.23:41234\n", "123456"));
+        CHECK(calls == 2 && !lastOk);
+        CHECK(pairer.pair("192.168.1.23:41234", "12345"));
+        CHECK(calls == 3 && !lastOk && lastError.contains(QString::fromUtf8("6 chữ số")));
+        CHECK(pairer.pair("192.168.1.23:41234", "-12345"));
+        CHECK(calls == 4 && !lastOk);
+        CHECK(!pairer.isBusy());
+
+        // KHÔNG BAO GIỜ chạy `adb pair` thật trong test: chỉ đi tiếp khi không có adb.exe cạnh file test.
+        if (AdbController::adbExecutablePath().isEmpty())
+        {
+            CHECK(pairer.pair("192.168.1.23:41234", "123456"));
+            CHECK(calls == 5 && !lastOk && lastError.contains("adb.exe"));
+            CHECK(!pairer.isBusy());
+        }
+        else
+        {
+            std::printf("  (co adb.exe canh file test - bo qua duong loi 'khong tim thay adb.exe' cua AdbPairer)\n");
+        }
     }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);

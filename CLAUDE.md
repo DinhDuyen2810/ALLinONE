@@ -54,7 +54,9 @@ qua SignPath trong CI khi chứng chỉ được cấp.
 
 Test tự động không được: đổi kích thước phân vùng, sửa file hosts thật, `Set-MpPreference`, kết nối VPN
 thật, đổi cấu hình WiFi của máy, tiêm chuột/phím thật, xóa gì ngoài thư mục tạm do test tự tạo. Test đụng
-tới dữ liệu người dùng phải gọi `AppPaths::setDataDirOverride(<thư mục tạm>)` ngay đầu `main`.
+tới dữ liệu người dùng phải dùng `TestDataDir` (`tests/TestDataDir.h`) ngay đầu `main`: nó tạo thư mục tạm, gọi
+`AppPaths::setDataDirOverride()` và đóng tệp log trước khi xóa - `QTemporaryDir` trần sẽ để sót thư mục trong
+`%TEMP%` vì `Logger` giữ tệp log mở trong đó.
 
 ## Lệnh
 

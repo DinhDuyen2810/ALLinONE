@@ -8,6 +8,9 @@
 #include <QRect>
 #include <QSet>
 #include <QString>
+#include <atomic>
+#include <functional>
+#include <memory>
 
 #include "InputInjector.h"
 #include "LocalIdentityStore.h"
@@ -55,7 +58,8 @@ struct DiscoveredPeer
  *
  * GIAO THỨC (phiên bản 2 - ConnectProtocol::kVersion). "I" = bên mở kết nối TCP, "R" = bên nhận:
  *
- *   Ghép đôi (K_code = PBKDF2 từ mã 9 số, tính MỘT LẦN mỗi mã):
+ *   Ghép đôi (K_code = PBKDF2 từ mã 9 số, tính MỘT LẦN mỗi mã, ở LUỒNG NỀN - 100k vòng tốn 245-500 ms mà
+ *   luồng của controller cũng là luồng phục vụ hook chuột/bàn phím cấp thấp; xem deriveKeyInBackground):
  *     I -> R  preamble{v, Pairing, idI}                    (không mã hóa)
  *     I -> R  PairRequest{tên, id, v, cổng nghe}           [K_code, nonce ngẫu nhiên, AAD chiều I]
  *     R -> I  PairAccept{tên, id, khóa dài hạn, cổng nghe} [K_code, nonce ngẫu nhiên, AAD chiều R]
@@ -101,6 +105,7 @@ public:
         bool usePreferredPort{true};
         int handshakeTimeoutMs{0};        // 0 = mặc định
         int housekeepingIntervalMs{0};    // 0 = mặc định
+        int keyDerivationDelayMs{0};      // > 0: luồng nền ngủ thêm ngần này trước khi suy khóa (dựng kịch bản đua)
     };
     void configureForTesting(const TestConfig& config);
 
@@ -140,6 +145,8 @@ public:
     bool isHookActive() const;
     InputHook* hookForTesting() const { return m_hook; }
     int pendingLinkCountForTesting() const;
+    /// K_code của mã đang mở đã suy xong chưa (việc suy khóa chạy ở luồng nền, kết quả về qua vòng lặp sự kiện).
+    bool isPairingKeyReadyForTesting() const { return !m_pairingKey.isEmpty(); }
     /// Tương đương việc bộ dò biên vừa thấy chuột chạm biên 'localSide' có máy peerId - đi đúng đường
     /// activateControlling() thật, chỉ bỏ qua khâu đọc vị trí chuột.
     bool requestControlForTesting(const QString& peerId, ScreenSide localSide);
@@ -156,6 +163,10 @@ signals:
     void logMessage(QString text);
 
 private:
+    /// Cờ hủy của MỘT lần suy khóa ở luồng nền (mỗi lần một cờ mới - không dùng lại).
+    using KeyCancelFlag = std::shared_ptr<std::atomic_bool>;
+    struct KeyDeriveGuard;
+
     enum class LinkKind
     {
         Incoming,         // vừa accept(), chưa đọc preamble nên chưa biết là ghép đôi hay phiên
@@ -166,8 +177,10 @@ private:
     };
     enum class LinkStage
     {
+        DerivingKey,      // PairInitiator: K_code đang được suy ở luồng nền, CHƯA mở kết nối TCP
         Connecting,       // chờ TCP nối xong
         AwaitPreamble,
+        AwaitPairingKey,  // PairResponder: đã nhận preamble nhưng K_code của mã đang mở chưa suy xong (tạm ngưng đọc)
         AwaitPairRequest,
         AwaitPairAccept,
         AwaitHello,
@@ -183,6 +196,9 @@ private:
         LinkStage stage{LinkStage::Connecting};
         QString peerId;          // phiên: id máy kia (do preamble khai, chỉ đáng tin sau Established)
         QByteArray baseKey;      // khóa bắt tay: K_code (ghép đôi) hoặc khóa dài hạn (phiên)
+        quint64 keyJob{0};       // DerivingKey: số hiệu lần suy khóa đang chờ (kết quả mang số khác thì bỏ)
+        KeyCancelFlag keyCancel; // DerivingKey: cờ hủy của lần suy khóa đó
+        QByteArray preamble;     // AwaitPairingKey: preamble đã nhận, để đặt khóa bắt tay khi K_code suy xong
         QByteArray nonceI;
         QByteArray nonceR;
         QHostAddress remoteAddress;
@@ -228,6 +244,10 @@ private:
     bool outgoingPairingInFlight() const;
     void resumeHeldPairRequests();
     void registerPairingFailure();
+    KeyCancelFlag deriveKeyInBackground(const QString& normalizedCode, std::function<void(const QByteArray&)> onDone);
+    void abandonPairingKeyJob();
+    void onPairingKeyDerived(quint64 job, const QByteArray& key);
+    void onOutgoingKeyDerived(NetworkSession* session, quint64 job, const QByteArray& key);
     void finalizePairing(const QString& peerId, const QString& machineName, const QHostAddress& addr, quint16 port,
                          const QByteArray& longTermKey);
 
@@ -261,6 +281,7 @@ private:
     int handshakeTimeoutMs() const;
 
     PeerStore& store() const;
+    void reportStoreSaveResult(bool saved, const QString& what);
     qint64 nowMs() const { return m_clock.elapsed(); }
 
     bool m_running{false};
@@ -274,6 +295,7 @@ private:
     bool m_usePreferredPort{true};
     int m_handshakeTimeoutMs{0};
     int m_housekeepingIntervalMs{0};
+    int m_keyDerivationDelayMs{0};
     QElapsedTimer m_clock;
 
     QTcpServer* m_server{nullptr};
@@ -287,6 +309,11 @@ private:
 
     QString m_pairingCode;     // mã 9 số đang mở chờ (rỗng = không mở)
     QByteArray m_pairingKey;   // K_code của mã đang mở - tính MỘT LẦN lúc sinh mã, không tính lại mỗi kết nối
+                               // (rỗng trong lúc luồng nền còn đang suy - xem m_pairingKeyJob)
+    quint64 m_pairingKeyJob{0};          // != 0: K_code của mã đang mở còn đang được suy ở luồng nền
+    KeyCancelFlag m_pairingKeyCancel;    // cờ hủy của lần suy đó
+    quint64 m_keyJobCounter{0};          // cấp số hiệu cho mọi lần suy khóa (ghép đôi đến lẫn đi)
+    std::shared_ptr<KeyDeriveGuard> m_keyGuard; // cầu nối an toàn giữa luồng nền và controller (xem .cpp)
     int m_pairingSecondsLeft{0};
     int m_pairingFailures{0};  // số lần giải mã thất bại bằng K_code kể từ khi sinh mã
 

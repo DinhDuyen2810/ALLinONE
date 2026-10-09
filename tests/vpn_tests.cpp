@@ -4,12 +4,21 @@
 #include <QCoreApplication>
 #include <QFile>
 #include <QTemporaryDir>
+#include "TestDataDir.h"
 #include <cstdio>
 
 #include "core/AppPaths.h"
 #include "core/PowerShellRunner.h"
+#include "tools/vpn/engine/PublicIpChecker.h"
 #include "tools/vpn/engine/VpnConnector.h"
 #include "tools/vpn/engine/VpnController.h"
+
+#include <QElapsedTimer>
+#include <QEventLoop>
+#include <QNetworkProxyFactory>
+#include <QTcpServer>
+#include <QTcpSocket>
+#include <QTimer>
 
 static int g_fail = 0, g_pass = 0;
 #define CHECK(cond)                                                            \
@@ -23,7 +32,7 @@ int main(int argc, char** argv)
     QCoreApplication app(argc, argv);
 
     // Mọi tệp dữ liệu (vpn_profiles.json) ghi vào thư mục tạm - KHÔNG đụng dữ liệu thật của người dùng.
-    QTemporaryDir dataDir;
+    TestDataDir dataDir;
     AppPaths::setDataDirOverride(dataDir.path());
 
     // ---- VpnController::internal::parseConnectionsJson: dữ liệu mẫu dựng sẵn (không gọi PowerShell) ----
@@ -245,6 +254,160 @@ int main(int argc, char** argv)
         CHECK(VpnConnector::describeRasError(809).contains("809"));
         CHECK(!VpnConnector::describeRasError(999999).isEmpty());
         std::printf("describeRasError(623) = %s\n", qPrintable(notFound));
+    }
+
+    // ---- VpnConnector::evaluateDialPoll: quyết định của vòng chờ quay số (thuần, không gọi RAS) ----
+    {
+        using Outcome = VpnConnector::DialOutcome;
+        using Poll = VpnConnector::DialPoll;
+        QString msg;
+
+        Poll poll; // đang quay số, chưa có kết quả gì
+        CHECK(VpnConnector::evaluateDialPoll(poll, &msg) == Outcome::Pending);
+        CHECK(msg.isEmpty());
+
+        // Hồi quy: RASCS_Disconnected KHÔNG kèm mã lỗi từng bị bỏ qua -> vòng chờ đứng tới hết 45 giây.
+        poll = Poll{};
+        poll.connState = VpnConnector::kRasStateDisconnected;
+        CHECK(VpnConnector::evaluateDialPoll(poll, &msg) == Outcome::Failed);
+        CHECK(msg.contains(QString::fromUtf8("đã bị ngắt trước khi hoàn tất")));
+        std::printf("Disconnected khong ma loi -> '%s'\n", qPrintable(msg));
+        // ...kể cả khi chỉ hàm gọi lại báo, còn trạng thái lúc này không đọc được
+        poll = Poll{};
+        poll.callbackDisconnected = true;
+        poll.statusResult = 31; // ERROR_GEN_FAILURE
+        msg.clear();
+        CHECK(VpnConnector::evaluateDialPoll(poll, &msg) == Outcome::Failed && !msg.isEmpty());
+
+        // Có mã lỗi thì vẫn báo theo MÃ LỖI (rõ hơn thông báo chung)
+        poll = Poll{};
+        poll.connState = VpnConnector::kRasStateDisconnected;
+        poll.statusError = 691;
+        CHECK(VpnConnector::evaluateDialPoll(poll, &msg) == Outcome::Failed && msg.contains("691"));
+        poll = Poll{};
+        poll.callbackDisconnected = true;
+        poll.callbackError = 809;
+        CHECK(VpnConnector::evaluateDialPoll(poll, &msg) == Outcome::Failed && msg.contains("809"));
+
+        // Mã 600 (đang chờ) không phải lỗi; trạng thái không đọc được thì không kết luận gì từ nó
+        poll = Poll{};
+        poll.callbackError = 600;
+        poll.statusError = 600;
+        CHECK(VpnConnector::evaluateDialPoll(poll, &msg) == Outcome::Pending);
+        poll = Poll{};
+        poll.statusResult = 31;
+        poll.connState = VpnConnector::kRasStateDisconnected; // rác - statusResult != 0
+        CHECK(VpnConnector::evaluateDialPoll(poll, &msg) == Outcome::Pending);
+
+        // Đã kết nối luôn thắng; phiên bị Windows đóng (ERROR_INVALID_HANDLE = 6) là thất bại
+        poll = Poll{};
+        poll.connState = VpnConnector::kRasStateConnected;
+        CHECK(VpnConnector::evaluateDialPoll(poll, &msg) == Outcome::Connected);
+        poll = Poll{};
+        poll.callbackConnected = true;
+        poll.statusResult = 6;
+        CHECK(VpnConnector::evaluateDialPoll(poll, &msg) == Outcome::Connected);
+        poll = Poll{};
+        poll.statusResult = 6;
+        CHECK(VpnConnector::evaluateDialPoll(poll, &msg) == Outcome::Failed);
+    }
+
+    // ---- PublicIpChecker: máy chủ HTTP GIẢ trên 127.0.0.1 (không gọi ra Internet) ----
+    {
+        QNetworkProxyFactory::setUseSystemConfiguration(false); // không đẩy yêu cầu tới 127.0.0.1 qua proxy của máy
+
+        QTcpServer server;
+        CHECK(server.listen(QHostAddress::LocalHost, 0));
+        int answerDelayMs = 0; // < 0: không bao giờ trả lời
+        int requests = 0;
+        QObject::connect(&server, &QTcpServer::newConnection, [&] {
+            while (QTcpSocket* socket = server.nextPendingConnection())
+            {
+                QObject::connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+                QObject::connect(socket, &QTcpSocket::readyRead, socket, [socket, &answerDelayMs, &requests] {
+                    if (socket->property("answered").toBool() || !socket->peek(65536).contains("\r\n\r\n"))
+                        return;
+                    socket->setProperty("answered", true);
+                    ++requests;
+                    if (answerDelayMs < 0)
+                        return;
+                    QTimer::singleShot(answerDelayMs, socket, [socket] {
+                        const QByteArray body = R"({"success":true,"ip":"203.0.113.7","country":"Testland","city":"Thu"})";
+                        socket->write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: " +
+                                      QByteArray::number(body.size()) + "\r\n\r\n" + body);
+                        socket->disconnectFromHost();
+                    });
+                });
+            }
+        });
+
+        // Chạy một lần check(); trả về thời gian (ms) tới khi có kết quả/lỗi, -1 nếu quá 'waitMs' không có gì.
+        auto runCheck = [](PublicIpChecker& checker, int waitMs, QString* ip, QString* error) -> qint64 {
+            ip->clear();
+            error->clear();
+            QEventLoop loop;
+            bool done = false;
+            const auto c1 = QObject::connect(&checker, &PublicIpChecker::result, &loop, [&](PublicIpInfo info) {
+                *ip = info.ip;
+                done = true;
+                loop.quit();
+            });
+            const auto c2 = QObject::connect(&checker, &PublicIpChecker::errorOccurred, &loop, [&](QString message) {
+                *error = message;
+                done = true;
+                loop.quit();
+            });
+            QTimer::singleShot(waitMs, &loop, &QEventLoop::quit);
+            QElapsedTimer timer;
+            timer.start();
+            checker.check();
+            loop.exec();
+            QObject::disconnect(c1);
+            QObject::disconnect(c2);
+            return done ? timer.elapsed() : -1;
+        };
+        auto idle = [](int ms) {
+            QEventLoop loop;
+            QTimer::singleShot(ms, &loop, &QEventLoop::quit);
+            loop.exec();
+        };
+
+        const QUrl url(QString("http://127.0.0.1:%1/").arg(server.serverPort()));
+        QString ip, error;
+        {
+            // Hồi quy: bộ hẹn giờ của một phản hồi ĐÃ XONG không được hủy phản hồi của lần check() sau. Lần 1
+            // xong ngay; lần 2 gửi ở ~1,0 giây và được trả lời ở ~1,9 giây - bộ hẹn giờ 1,5 giây của LẦN 1 nổ
+            // đúng lúc lần 2 đang chờ (trước đây nó hủy nhầm khi phản hồi mới được cấp phát trùng địa chỉ cũ).
+            PublicIpChecker checker;
+            checker.setEndpointForTest(url, 1500);
+            for (int round = 0; round < 2; ++round)
+            {
+                answerDelayMs = 0;
+                CHECK(runCheck(checker, 5000, &ip, &error) >= 0);
+                CHECK(ip == "203.0.113.7" && error.isEmpty());
+                idle(1000);
+                answerDelayMs = 900;
+                const qint64 took = runCheck(checker, 5000, &ip, &error);
+                CHECK(took >= 800);
+                CHECK(ip == "203.0.113.7");
+                CHECK(error.isEmpty());
+                idle(700); // qua hẳn mốc 1,5 giây của mọi bộ hẹn giờ cũ trước vòng kế tiếp
+            }
+        }
+        {
+            // Thời gian chờ vẫn hoạt động: máy chủ im lặng -> báo lỗi sau ~0,4 giây, và lần sau vẫn dùng được.
+            PublicIpChecker checker;
+            checker.setEndpointForTest(url, 400);
+            answerDelayMs = -1;
+            const qint64 took = runCheck(checker, 5000, &ip, &error);
+            CHECK(took >= 300 && took < 3000);
+            CHECK(ip.isEmpty() && !error.isEmpty());
+            answerDelayMs = 0;
+            CHECK(runCheck(checker, 5000, &ip, &error) >= 0);
+            CHECK(ip == "203.0.113.7" && error.isEmpty());
+        }
+        CHECK(requests == 6);
+        std::printf("PublicIpChecker: %d yeu cau toi may chu gia 127.0.0.1\n", requests);
     }
 
     // ---- VpnConnector qua RAS API - lời gọi THẬT nhưng AN TOÀN: tên hồ sơ KHÔNG tồn tại ----

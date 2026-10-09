@@ -81,7 +81,14 @@ QStringList systemProtectedDirs();
 /// Cũng từ chối các dạng mà Windows hiểu KHÁC với chuỗi được viết: tiền tố thiết bị "\\?\" / "\\.\", tên
 /// kết thúc bằng dấu chấm/khoảng trắng, ký tự đại diện, bí danh chia sẻ quản trị ("\\máy\C$\...") và tên
 /// ngắn 8.3 của một thư mục được bảo vệ.
+/// Với thư mục ĐANG TỒN TẠI trên ổ cục bộ còn so theo danh tính vật lý (xem FileIdentity): junction/symlink
+/// thư mục - hoặc đường dẫn đi xuyên qua một liên kết - dẫn tới gốc ổ đĩa, tới một thư mục được bảo vệ hay
+/// tới thư mục cha của nó cũng bị từ chối, dù chuỗi đường dẫn trông hoàn toàn khác.
 QString unsafeCleanupRootReason(const QString& path, const QStringList& protectedDirs);
+
+/// Thư mục mà đường dẫn này THẬT SỰ dẫn tới (đi theo junction/symlink/điểm gắn ổ đĩa) có phải GỐC của một
+/// ổ đĩa không. false nếu không mở được hoặc không phải thư mục. Chỉ đọc siêu dữ liệu.
+bool resolvesToVolumeRoot(const QString& path);
 
 /// Rỗng nếu 'path' có thể giao cho Windows Shell (SHFileOperationW) mà Shell chắc chắn thao tác trên ĐÚNG
 /// đối tượng đó; ngược lại là lý do từ chối. Gồm mọi điều kiện của unsafeCleanupRootReason(path, {}) cộng

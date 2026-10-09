@@ -188,14 +188,9 @@ bool pairWireless(const QString& ipAndPairPort, const QString& pairingCode, QStr
     bool ok = false;
     QString err;
     const QString out = runAdb({"pair", ipAndPairPort, pairingCode}, &ok, error, 20000, &err);
-    // adb in kết quả pair/connect ra stdout nhưng lý do thất bại có thể nằm ở stderr - đọc cả hai.
-    const QString all = out + err;
-    if (ok && !all.contains("Successfully paired", Qt::CaseInsensitive))
-    {
-        // adb trả về exitCode 0 ngay cả khi ghép đôi thất bại (vd sai mã) - phải tự đọc nội dung.
-        ok = false;
-        if (error) *error = all.trimmed().isEmpty() ? "Ghép đôi thất bại - kiểm tra lại địa chỉ và mã." : all.trimmed();
-    }
+    // runAdb đã báo lỗi khởi chạy/hết giờ/mã thoát khác 0; còn lại (mã thoát 0) phải tự đọc nội dung.
+    if (ok)
+        ok = internal::interpretPairResult(true, 0, out, err, error);
     return ok;
 }
 
@@ -252,6 +247,26 @@ bool isKnownDeviceState(const QString& state)
         "sideload", "bootloader",   "host",    "rescue",      "detached",   "unknown",
     };
     return states.contains(state);
+}
+
+bool interpretPairResult(bool normalExit, int exitCode, const QString& stdOut, const QString& stdErr, QString* error)
+{
+    if (!normalExit || exitCode != 0)
+    {
+        if (error)
+            *error = !stdErr.trimmed().isEmpty() ? stdErr.trimmed() : QString("adb thoát với mã lỗi %1").arg(exitCode);
+        return false;
+    }
+
+    // adb in kết quả pair ra stdout nhưng lý do thất bại có thể nằm ở stderr - đọc cả hai.
+    const QString all = stdOut + stdErr;
+    if (!all.contains("Successfully paired", Qt::CaseInsensitive))
+    {
+        // adb trả về exitCode 0 ngay cả khi ghép đôi thất bại (vd sai mã) - phải tự đọc nội dung.
+        if (error) *error = all.trimmed().isEmpty() ? "Ghép đôi thất bại - kiểm tra lại địa chỉ và mã." : all.trimmed();
+        return false;
+    }
+    return true;
 }
 
 QList<AndroidDeviceInfo> parseDevicesOutput(const QString& output)

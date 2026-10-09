@@ -1323,6 +1323,63 @@ mọi thao tác tệp nằm trong thư mục tạm):
   trong stress (chúng quét WiFi, mở camera, gọi Defender).
 - Mọi mục "CHƯA kiểm chứng được trên máy dev" của mục 4o vẫn nguyên.
 
+## 4q. Hoàn thiện các mục còn dang dở của 4p + dọn rác sau stress test (2026-10-09, v1.19.2)
+Yêu cầu người dùng (sau khi khởi động lại máy): kiểm hai tiến trình `powershell.exe` kẹt đã mất chưa, xóa
+rác liên quan, hoàn thiện những gì còn phải hoàn thiện rồi push.
+
+**Sau khi khởi động lại**: hai tiến trình kẹt (mục 4p) đã mất, không còn tiến trình test/adb/OneForAll mồ
+côi nào. `core_stress_tests` chạy lại 2 lần trên máy vừa khởi động: phần PowerShell ổn định (30/30 lượt hủy
+đúng hạn) - củng cố kết luận ở 4p rằng hai lần fail trước là do máy, không phải runner.
+
+**Rác đã dọn** (khoảng 1,4 GB): 227 thư mục tạm `<tên test>-XXXXXX` trong `%TEMP%`, bản staging cũ trong
+`%TEMP%`, thư mục build tạm của các phiên rà soát, và đúng 2.409 tệp do bộ test Disk Cleanup đưa vào Thùng
+rác (lọc theo vị trí gốc nằm trong thư mục tạm của test; các mục khác trong Thùng rác không bị đụng tới).
+
+**Nguyên nhân test để sót thư mục tạm - đã sửa tận gốc**: `Logger` là singleton sống lâu hơn `main()` và giữ
+hai tệp log mở NGAY TRONG thư mục tạm (do `AppPaths::setDataDirOverride`), nên `QTemporaryDir` không xóa nổi
+thư mục của chính nó. Thêm `tests/TestDataDir.h` (đóng log rồi mới xóa, có thử lại ngắn) và dùng ở 19 tệp
+test; `Logger` có thêm `closeFiles()`/`reopenFiles()`. Sau toàn bộ lượt chạy: 0 thư mục mới trong `%TEMP%`.
+
+**Các mục "Còn dang dở" của 4p nay đã làm**
+- **Connect Together**: suy khóa từ mã ghép đôi (PBKDF2, 245-500 ms) chuyển sang luồng nền (`QThreadPool`)
+  - tạo mã/nhập mã không còn làm đứng luồng giao diện, vốn cũng là luồng phục vụ hook chuột/bàn phím; kết
+  nối ghép đôi tới trước khi có khóa được giữ chờ thay vì bị từ chối; hủy/hết hạn/đổi mã/`stop()` giữa chừng
+  đều bỏ kết quả cũ. Trần khung 2 MiB chỉ mở sau khi phiên được xác nhận bằng `SessionConfirm` (trước đó 4
+  KiB). Lỗi lưu `PeerStore` hiện cảnh báo trong nhật ký ở ghép đôi/đổi vị trí/đổi tự kết nối/quên máy.
+- **Lõi**: `PowerShellRunner` khi hủy/hết giờ dừng cả tiến trình do script sinh ra (lấy hậu duệ TRƯỚC khi
+  kill - đã test thật với một `PING.EXE` con); `Logger` tự thử mở lại tệp log sau lỗi tạm thời.
+- **Android**: `adb pair` chạy bất đồng bộ (`AdbPairer`, cùng mẫu `AdbDeviceLister`) - không còn đứng giao
+  diện tới ~25 giây; hủy khi đóng cửa sổ/thoát.
+- **Disk Cleanup**: junction/symlink thư mục dẫn tới thư mục được bảo vệ, thư mục cha của nó hoặc gốc ổ đĩa
+  bị từ chối theo danh tính tệp vật lý (trước chỉ so chuỗi); tuổi tệp tạm được kiểm lại ngay trước khi xóa.
+- **VPN**: timer hết giờ của `PublicIpChecker` gắn với đúng phản hồi; `RASCS_Disconnected` không kèm mã lỗi
+  kết thúc ngay thay vì chờ hết 45 giây.
+- **Security Gateway (hosts)**: tệp lẫn lộn CRLF/LF giữ nguyên kiểu xuống dòng của TỪNG dòng không thuộc
+  khối của công cụ; không tạo `.bak` từ tệp do chính công cụ tạo ra.
+- **QR**: hai bản ứng dụng chạy cùng lúc không còn ghi đè lịch sử của nhau (nạp lại + gộp trước khi ghi);
+  ghi lịch sử thử lại khi bước đổi tên đè thất bại thoáng qua (xem dưới).
+
+**Lỗi ghi lịch sử QR thoáng qua - tìm ra khi tích hợp**: `qrwifi_stress_tests` fail 2 lần khi thư mục tạm
+nằm trong cây repo (khoảng 20/20.000 lần `QSaveFile::commit()` thất bại, lần ghi kế tiếp lại thành công)
+nhưng pass với `%TEMP%` hệ thống. `QRHistoryStore::save()` nay thử lại tối đa 5 lần; chạy lại ĐÚNG kịch bản đã fail (thư mục tạm trong repo) 2 lần: 760.577/0 và 760.130/0. Tiến trình nào giữ tệp lúc đổi tên (trình quét virus, bộ theo dõi tệp của trình soạn thảo...) CHƯA xác định - đây là suy luận từ triệu chứng.
+
+**Kiểm thử**: Build sạch toàn bộ sau khi khởi động lại máy: 18 bộ test thường **3217 kiểm tra, 0 lỗi**; 5 bộ stress đều pass - `core_stress_tests` 550/0, `qrwifi_stress_tests` 759.439/0, `disk_vpn_stress_tests` 7320/0, `secdl_stress_tests` 1.875.637/0, `connect_stress_tests` 386/0.
+
+**Vẫn còn dang dở / chưa kiểm chứng**
+- Mọi thứ cần thiết bị/môi trường thật như đã liệt kê ở 4o và 4p (hai máy LAN, hook thật, WiFi/VPN thật,
+  đổi phân vùng thật, điện thoại Android, tự cập nhật đầu-cuối).
+- Connect Together: thiết kế mã 9 số → khóa (mục 6); server nghe trên mọi card mạng; lưới 3 máy và fuzz
+  `PeerDiscovery` chưa có kịch bản; thoát ứng dụng đúng lúc đang suy khóa chưa đo.
+- Security/Downloader: trang 10 MB mất ~3 giây phân tích trên luồng giao diện; các lệnh Defender ngắn còn
+  chạy đồng bộ; timeout 30 giây và đường "máy chủ ép trả bản nén" chưa có kịch bản.
+- QR: `QRWindow` tạo/hủy 100 lần tăng khoảng 10 MB bộ nhớ, chưa tìm ra chỗ rò; hai lần ghi lịch sử cùng
+  mili-giây cùng kích thước từ hai tiến trình sẽ không được phát hiện để gộp.
+- Lõi: script PowerShell dài hơn khoảng 12.000 ký tự không khởi chạy được (báo lỗi ngay); chưa dựng cửa sổ
+  của bảy công cụ còn lại trong stress.
+- `qr_ui_tests` chạy từ `build\` vẫn để sót MỘT thư mục tạm mỗi lần (17 bộ còn lại không sót) - chưa rõ thứ gì
+  còn giữ tệp lúc thoát.
+- 24 tệp `.exe` kiểm tra thủ công cũ trong `build\` (từ các phiên trước, không còn mã nguồn) chưa xóa.
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
@@ -1421,11 +1478,11 @@ bằng tay mỗi khi đổi phiên bản (hiện khớp `README.md`), không t�
   trên mạng tin cậy; thiết kế lại (trao đổi khóa có xác thực) là việc riêng, chưa làm.
 - Connect Together: server lắng nghe trên mọi card mạng (`AnyIPv4`); bố cục nhiều màn hình không chữ nhật
   chưa xử lý; chưa từng chạy thử trên hai máy thật (xem mục 4o).
-- Các mục "Còn dang dở" của đợt rà soát lần hai: xem cuối mục 4p.
+- Các mục còn dang dở sau hai đợt rà soát: xem cuối mục 4q (4q đã xử lý phần lớn danh sách ở cuối mục 4p).
 - Auto Click: Pause/Resume có ở tầng runner nhưng chưa có nút trên UI; chưa có checkbox bật/tắt từng hành
   động (trường `enabled` chỉ đọc từ JSON, nay được giữ nguyên khi lưu); nội dung "Gõ văn bản" lưu dạng chữ
   thường trong hồ sơ; HUD né sai trên nhiều màn hình khác DPI.
-- Android: `adb pair` vẫn chạy đồng bộ trên luồng giao diện (có thể đứng tới ~25 giây); sau khi ghép đôi
+- Android: sau khi ghép đôi
   không dây chưa có bước `adb connect`; hai bản ứng dụng chạy cùng lúc dùng chung một daemon adb.
 - Security Gateway: các lệnh Defender ngắn vẫn chạy đồng bộ trên luồng giao diện (đứng 1-3 giây khi mở cửa sổ
   hoặc bật/tắt); hủy quét chỉ dừng `powershell.exe`, chưa chắc dừng lần quét bên trong dịch vụ Defender;
@@ -1469,6 +1526,7 @@ Quy tắc đứng nằm ở `CLAUDE.md` (gốc dự án). Tóm tắt - mỗi l�
 | 2026-10-08 | Android: `adb.exe` không dừng dù đã đóng ứng dụng; đổi icon ứng dụng sang `icon/App.png` | Người dùng báo `adb.exe` (từ `One for ALL\scrcpy`) còn chạy dù đã đóng ứng dụng - dựng lại được bằng cách soi tiến trình thật đang chạy (bắt được một `adb.exe` mồ côi từ phiên test trước, xác nhận lỗi có thật). **2 nguyên nhân gốc cộng hưởng, đã sửa cả hai** (xem 4g để biết chi tiết đầy đủ): (1) `AndroidControlWindow` thiếu `closeEvent` (khác mọi cửa sổ tool khác có tiến trình nền) nên bấm X chỉ ẨN cửa sổ, không hủy `DevicesTab`/`ScrcpyLauncher`, destructor (vốn đã có `stop()` đúng) không bao giờ chạy - thêm `closeEvent` gọi `DevicesTab::stopActiveSession()` (hàm mới, dùng chung nút Dừng/destructor/closeEvent/`aboutToQuit`); (2) `ScrcpyLauncher::stop()` chỉ dừng đúng tiến trình `scrcpy.exe`, không đụng tới `adb.exe shell ...` là tiến trình CON của nó (Windows không đệ quy dừng cây tiến trình như Linux) - thêm `terminateProcessTree()` (quét `CreateToolhelp32Snapshot` + BFS tìm hậu duệ PID rồi `TerminateProcess` từng cái), gọi sau mỗi lần `stop()` chủ động và khi scrcpy thoát không bình thường. Xác nhận thật bằng cách tìm và tự tay dừng đúng tiến trình `adb.exe` mồ côi phát hiện được trên máy build trước khi commit. **Icon ứng dụng:** dựng lại `assets/app_icon.ico` (icon file .exe - Explorer/Taskbar/shortcut/installer) từ `icon/App.png` thay vì `icon/autoclicker.jpg`, dùng đúng thuật toán `IconHelper::makeBadgedPixmap` (nền trắng bo góc + viền mảnh, giữ tỉ lệ bo góc/đệm cho mọi kích thước 16-256px vì không có script dựng icon sẵn trong repo, viết tay bằng Pillow); icon cửa sổ chính lúc chạy (`MainWindow::setWindowIcon`) cũng đổi sang `:/icons/App.png` (thêm vào `resources.qrc`) - các icon riêng từng tool trong sidebar (wifi.png, vpn.jpg, autoclicker.jpg...) giữ nguyên, không đổi. |
 | 2026-10-09 | Rà soát toàn bộ + sửa lỗi tiềm ẩn (v1.19.0) | Đọc từng dòng toàn bộ dự án rồi sửa theo từng công cụ - chi tiết đầy đủ ở mục 4o. Nặng nhất: Connect Together chưa từng chuyển được quyền điều khiển (bên nhận bỏ qua handoff) và có thể khóa chuột/phím khi rớt kết nối; Disk Cleanup có thể đổi kích thước nhầm phân vùng khi đổi dòng chọn; cờ hủy VPN/quét Defender không được đặt lại; chèn lệnh PowerShell qua dấu nháy Unicode; tự cập nhật không mở lại ứng dụng và cài nhầm bản `.exe` lên bản `.msi`; bộ cài có thể đóng gói dữ liệu cá nhân của máy dev; bước robocopy của CI sẽ bị tính là thất bại. Dữ liệu người dùng chuyển sang `%LOCALAPPDATA%\OneForAll`. Thêm `CLAUDE.md` (quy tắc đứng). Build sạch toàn bộ + 18 bộ test (qr, wifi, connect, diskcleanup, android, vpn, security, downloader - mỗi bộ `_tests` và `_ui_tests` - cùng `update_tests` và `autoclick_tests` mới): **2717 kiểm tra đều pass, 0 lỗi** (trước đợt này khoảng 1170). |
 | 2026-10-09 | Rà soát độc lập lần hai + stress test (v1.19.1) | Năm người đọc độc lập rà lại từng nhóm công cụ và viết năm bộ stress/fuzz mới (`core`, `qrwifi`, `connect`, `disk_vpn`, `secdl`) - chi tiết ở mục 4p. Lỗi nặng nhất tìm thêm: Disk Cleanup xóa nhầm tệp bên cạnh khi tên có dấu chấm/khoảng trắng cuối hoặc ký tự đại diện; `CommandAnalyzer` treo với lệnh dài (regex bậc hai) và báo "An toàn" sai với ký tự UTF-16 hỏng; Connect Together hai máy cùng nhập mã cho nhau giữ hai khóa khác nhau; Downloader báo "Hoàn tất" với tệp cụt; WiFi ghi đè nhầm hồ sơ khi SSID có ký tự điều khiển; `AppPaths` xóa nhầm tệp đang dùng với đường dẫn tương đối/8.3/junction; phím dừng Ctrl+Alt+F8 không đăng ký được khi bị chương trình khác giữ (thêm tổ hợp dự phòng). Xóa `NEW_SESSION_SETUP.md` (ghi chú bàn giao phiên cũ, đã thay bằng `CLAUDE.md`). Build sạch toàn bộ trên máy rảnh: 18 bộ test thường **2967 kiểm tra, 0 lỗi**; 5 bộ stress đều pass - `core_stress_tests` 525/0 (95 s), `qrwifi_stress_tests` 759.893/0 (290 s), `disk_vpn_stress_tests` 7320/0 (162 s), `secdl_stress_tests` 1.876.772/0 (123 s), `connect_stress_tests` 386/0 (135 s). |
+| 2026-10-09 | Hoàn thiện mục dang dở + dọn rác (v1.19.2) | Sau khi khởi động lại máy: xác nhận hai tiến trình PowerShell kẹt đã mất, dọn ~1,4 GB rác của các lượt test (thư mục tạm, 2.409 tệp test trong Thùng rác). Hoàn thiện danh sách còn dang dở của 4p - chi tiết ở mục 4q: Connect Together suy khóa ở luồng nền + trần khung sau xác thực + báo lỗi lưu; `PowerShellRunner` dừng cả tiến trình cháu; `Logger` tự mở lại; `adb pair` bất đồng bộ; Disk Cleanup nhận ra junction tới thư mục được bảo vệ + kiểm lại tuổi tệp lúc xóa; hai lỗi VPN; hosts giữ kiểu xuống dòng từng dòng; lịch sử QR gộp giữa hai bản ứng dụng + thử lại khi ghi; test không còn để sót thư mục tạm (`tests/TestDataDir.h`). Build sạch toàn bộ sau khi khởi động lại máy: 18 bộ test thường **3217 kiểm tra, 0 lỗi**; 5 bộ stress đều pass - `core_stress_tests` 550/0, `qrwifi_stress_tests` 759.439/0, `disk_vpn_stress_tests` 7320/0, `secdl_stress_tests` 1.875.637/0, `connect_stress_tests` 386/0. |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `

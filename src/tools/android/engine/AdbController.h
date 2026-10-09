@@ -59,6 +59,11 @@ namespace internal
 QList<AndroidDeviceInfo> parseDevicesOutput(const QString& output);
 bool isKnownDeviceState(const QString& state);
 
+/// Diễn giải kết quả của một lần `adb pair` ĐÃ CHẠY XONG (dùng chung cho pairWireless() đồng bộ và AdbPairer
+/// bất đồng bộ). adb trả mã thoát 0 ngay cả khi ghép đôi thất bại (vd sai mã) - phải tự tìm "Successfully
+/// paired" trong stdout+stderr. Thất bại thì *error là lý do để hiện cho người dùng.
+bool interpretPairResult(bool normalExit, int exitCode, const QString& stdOut, const QString& stdErr, QString* error);
+
 /// Hai đường dẫn có trỏ tới CÙNG một tệp thực thi không (không phân biệt hoa/thường, kiểu dấu gạch,
 /// tiền tố "\\?\"; khi cả hai tệp tồn tại thì so thêm danh tính tệp vật lý - tên ngắn 8.3, liên kết,
 /// junction đều ra đúng).

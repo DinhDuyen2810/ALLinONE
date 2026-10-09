@@ -22,7 +22,11 @@ public:
     explicit CleanupExecutor(QObject* parent = nullptr);
 
     /// 'paths' và 'sizes' tương ứng theo chỉ số (sizes[i] là kích thước ghi nhận lúc quét của paths[i]).
-    void setItems(const QStringList& paths, const QList<qint64>& sizes);
+    /// 'minAgeSeconds' (tùy chọn, cùng chỉ số): tuổi tối thiểu của mục theo hạng mục của nó
+    /// (CleanupCategory::minAgeSeconds; 0/thiếu = không giới hạn). Bộ lọc "vừa sửa gần đây" của máy quét chỉ
+    /// đúng tại THỜI ĐIỂM QUÉT - người dùng có thể bấm Dọn dẹp nhiều phút sau, khi một chương trình đã ghi
+    /// tiếp vào tệp tạm đó. Mục có giới hạn được kiểm lại ngay trước khi xóa; mục vừa được sửa thì GIỮ LẠI.
+    void setItems(const QStringList& paths, const QList<qint64>& sizes, const QList<int>& minAgeSeconds = {});
     void setPermanentDelete(bool permanent) { m_permanent = permanent; }
 
 signals:
@@ -38,5 +42,6 @@ protected:
 private:
     QStringList m_paths;
     QList<qint64> m_sizes;
+    QList<int> m_minAgeSeconds;
     bool m_permanent{false};
 };

@@ -14,6 +14,7 @@
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTemporaryDir>
+#include "TestDataDir.h"
 #include <QTimer>
 #include <cstdio>
 
@@ -33,7 +34,7 @@ int main(int argc, char** argv)
     QApplication app(argc, argv);
 
     // Cửa sổ ghi log khi mở - ép dữ liệu vào thư mục tạm để test không ghi vào log thật của người dùng.
-    QTemporaryDir dataDir;
+    TestDataDir dataDir;
     AppPaths::setDataDirOverride(dataDir.path());
 
     DownloaderWindow win;

@@ -23,6 +23,7 @@
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryDir>
+#include "TestDataDir.h"
 #include <QTimer>
 #include <QUrl>
 #include <cstdio>
@@ -2231,7 +2232,7 @@ int main(int argc, char** argv)
     QCoreApplication app(argc, argv);
     std::setvbuf(stdout, nullptr, _IONBF, 0);
 
-    QTemporaryDir tmp;
+    TestDataDir tmp;
     if (!tmp.isValid())
     {
         std::printf("Khong tao duoc thu muc tam\n");

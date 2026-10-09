@@ -6,6 +6,7 @@
 #include "model/AndroidDeviceInfo.h"
 
 class AdbDeviceLister;
+class AdbPairer;
 class QCheckBox;
 class QComboBox;
 class QHideEvent;
@@ -50,6 +51,7 @@ private slots:
     void onAutoRefreshTick();
     void onDevicesListed(const QList<AndroidDeviceInfo>& devices, const QString& error);
     void onPairClicked();
+    void onPairFinished(bool ok, const QString& error);
     void onSwitchToWirelessClicked();
     void onControlClicked();
     void onStopClicked();
@@ -96,6 +98,7 @@ private:
 
     ScrcpyLauncher* m_launcher{nullptr};
     AdbDeviceLister* m_lister{nullptr};
+    AdbPairer* m_pairer{nullptr};
     QTimer* m_autoRefreshTimer{nullptr};
     QList<AndroidDeviceInfo> m_devices;
 

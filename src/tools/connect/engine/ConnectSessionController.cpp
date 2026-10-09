@@ -11,10 +11,14 @@
 #include <QClipboard>
 #include <QDateTime>
 #include <QGuiApplication>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QScreen>
 #include <QSet>
 #include <QTcpServer>
 #include <QTcpSocket>
+#include <QThread>
+#include <QThreadPool>
 #include <QTimer>
 #include <algorithm>
 #include <limits>
@@ -67,11 +71,24 @@ QString sanitizeRemoteText(const QString& text, int maxChars)
 }
 } // namespace
 
+/// Luồng nền suy khóa KHÔNG được chạm vào controller (có thể đã bị hủy trong 245-500 ms đó). Nó chỉ giữ
+/// đối tượng này (shared_ptr - sống lâu hơn cả hai bên): suy xong thì khóa mutex, và CHỈ khi 'owner' còn
+/// khác null mới gửi kết quả về luồng của controller qua một sự kiện xếp hàng. Hàm hủy của controller đặt
+/// owner = null dưới cùng mutex đó, nên không có khe hở "vừa kiểm xong thì đối tượng bị hủy"; sự kiện đã
+/// xếp hàng cho một QObject bị hủy thì Qt tự bỏ.
+struct ConnectSessionController::KeyDeriveGuard
+{
+    QMutex mutex;
+    ConnectSessionController* owner{nullptr};
+};
+
 ConnectSessionController::ConnectSessionController(QObject* parent)
     : QObject(parent)
     , m_identity(LocalIdentityStore::instance().identity())
     , m_injector(&m_realInjector)
+    , m_keyGuard(std::make_shared<KeyDeriveGuard>())
 {
+    m_keyGuard->owner = this;
     m_clock.start();
 }
 
@@ -80,6 +97,15 @@ ConnectSessionController::~ConnectSessionController()
     // Đang bị hủy: không phát thêm tín hiệu nào (nơi nhận - các tab của ConnectWindow - sẽ gọi ngược lại
     // vào một đối tượng đang hủy dở). Việc dừng êm khi người dùng đóng cửa sổ đã do closeEvent() lo.
     blockSignals(true);
+    {
+        // Từ đây luồng nền suy khóa (nếu còn đang chạy) không gửi kết quả về đối tượng này nữa.
+        QMutexLocker locker(&m_keyGuard->mutex);
+        m_keyGuard->owner = nullptr;
+    }
+    abandonPairingKeyJob();
+    for (auto it = m_links.constBegin(); it != m_links.constEnd(); ++it)
+        if (it->keyCancel)
+            it->keyCancel->store(true);
     stop();
 }
 
@@ -97,11 +123,24 @@ void ConnectSessionController::configureForTesting(const TestConfig& config)
     m_usePreferredPort = config.usePreferredPort;
     m_handshakeTimeoutMs = config.handshakeTimeoutMs;
     m_housekeepingIntervalMs = config.housekeepingIntervalMs;
+    m_keyDerivationDelayMs = config.keyDerivationDelayMs;
 }
 
 PeerStore& ConnectSessionController::store() const
 {
     return m_store ? *m_store : PeerStore::instance();
+}
+
+void ConnectSessionController::reportStoreSaveResult(bool saved, const QString& what)
+{
+    if (saved)
+        return;
+    // Thay đổi đã có hiệu lực trong phiên làm việc này nhưng KHÔNG nằm trên đĩa: lần mở ứng dụng kế tiếp sẽ
+    // thấy lại trạng thái cũ (máy vừa ghép đôi biến mất, máy vừa "quên" - cùng khóa của nó - quay lại). Phải
+    // cho người dùng biết, không được im lặng.
+    emit logMessage(QString("⚠ Không lưu được danh sách máy đã ghép đôi khi %1: %2. Thay đổi này chỉ có hiệu lực "
+                            "tới khi đóng ứng dụng - lần mở sau sẽ trở lại như cũ.")
+                        .arg(what, store().lastSaveError()));
 }
 
 int ConnectSessionController::handshakeTimeoutMs() const
@@ -248,6 +287,7 @@ void ConnectSessionController::stop()
     m_pairingCode.clear();
     m_pairingKey.clear();
     m_pairingFailures = 0;
+    abandonPairingKeyJob(); // khóa của mã vừa đóng còn đang suy ở luồng nền: kết quả về sau sẽ bị bỏ
 
     if (m_server)
     {
@@ -265,6 +305,8 @@ void ConnectSessionController::stop()
     {
         NetworkSession* session = it.key();
         QObject::disconnect(session, nullptr, this, nullptr);
+        if (it->keyCancel)
+            it->keyCancel->store(true); // lần ghép đôi đi còn đang suy khóa - kết quả về sau không còn mục nào để nhận
         if (it->stage == LinkStage::Established)
         {
             // Báo cho máy kia biết ta chủ động dừng (nó dọn phiên ngay, khỏi chờ hết hạn Heartbeat).
@@ -333,10 +375,15 @@ QString ConnectSessionController::beginPairingSession()
     cancelPairingSession();
 
     m_pairingCode = PairingCode::generate();
-    // PBKDF2 100k vòng tốn ~0,1 giây - tính MỘT LẦN ở đây, không tính lại cho từng kết nối đến (bản 1
+    // PBKDF2 100k vòng tốn 245-500 ms - tính MỘT LẦN cho mỗi mã, không tính lại cho từng kết nối đến (bản 1
     // tính lại mỗi kết nối ngay trên luồng giao diện: chỉ cần mở dồn dập kết nối là treo cả ứng dụng lẫn
-    // hook chuột/bàn phím toàn cục).
-    m_pairingKey = CryptoSession::deriveKeyFromPairingCode(m_pairingCode);
+    // hook chuột/bàn phím toàn cục), và tính ở LUỒNG NỀN: luồng này còn phải phục vụ hook cấp thấp - đứng
+    // nửa giây là chuột/bàn phím của cả máy khựng theo. Mã được hiển thị ngay; kết nối ghép đôi tới trước
+    // khi khóa suy xong được giữ lại chờ (onPreamble -> AwaitPairingKey) chứ không bị từ chối.
+    const quint64 job = ++m_keyJobCounter;
+    m_pairingKeyJob = job;
+    m_pairingKeyCancel =
+        deriveKeyInBackground(m_pairingCode, [this, job](const QByteArray& key) { onPairingKeyDerived(job, key); });
     m_pairingSecondsLeft = PairingCode::kExpirySeconds;
     m_pairingFailures = 0;
 
@@ -360,11 +407,13 @@ void ConnectSessionController::cancelPairingSession()
     m_pairingCode.clear();
     m_pairingKey.clear();
     m_pairingFailures = 0;
+    abandonPairingKeyJob(); // hủy/hết hạn/đổi mã ngay trong lúc đang suy khóa: kết quả về sau sẽ bị bỏ
     if (m_pairingTimer)
         m_pairingTimer->stop();
 
-    // Kết nối ghép đôi đang chờ PairRequest vẫn giữ khóa của mã vừa đóng - đóng luôn (kết nối đang ở bước
-    // Closing là kết nối vừa ghép đôi XONG, để yên cho nó gửi nốt PairAccept).
+    // Kết nối ghép đôi đang chờ PairRequest (hoặc đang chờ khóa của mã vừa đóng suy xong) vẫn gắn với mã
+    // vừa đóng - đóng luôn (kết nối đang ở bước Closing là kết nối vừa ghép đôi XONG, để yên cho nó gửi nốt
+    // PairAccept).
     QList<NetworkSession*> stale;
     for (auto it = m_links.constBegin(); it != m_links.constEnd(); ++it)
         if (it->kind == LinkKind::PairResponder && it->stage != LinkStage::Closing)
@@ -374,6 +423,100 @@ void ConnectSessionController::cancelPairingSession()
 
     if (wasOpen)
         emit pairingSessionClosed();
+}
+
+ConnectSessionController::KeyCancelFlag ConnectSessionController::deriveKeyInBackground(
+    const QString& normalizedCode, std::function<void(const QByteArray&)> onDone)
+{
+    // Mỗi lần suy khóa một cờ hủy MỚI. PBKDF2 đang chạy thì không ngắt giữa chừng được, nhưng việc còn nằm
+    // trong hàng đợi của bể luồng (bấm tạo mã/ghép đôi dồn dập) thấy cờ là bỏ luôn, không đốt CPU vô ích.
+    auto cancelled = std::make_shared<std::atomic_bool>(false);
+    const std::shared_ptr<KeyDeriveGuard> guard = m_keyGuard;
+    const int delayMs = m_keyDerivationDelayMs;
+    QThreadPool::globalInstance()->start([guard, cancelled, normalizedCode, delayMs, onDone = std::move(onDone)]() {
+        if (delayMs > 0)
+            QThread::msleep(static_cast<unsigned long>(delayMs));
+        if (cancelled->load())
+            return;
+        const QByteArray key = CryptoSession::deriveKeyFromPairingCode(normalizedCode);
+        if (cancelled->load())
+            return;
+        QMutexLocker locker(&guard->mutex);
+        if (guard->owner)
+            QMetaObject::invokeMethod(guard->owner, [onDone, key] { onDone(key); }, Qt::QueuedConnection);
+    });
+    return cancelled;
+}
+
+void ConnectSessionController::abandonPairingKeyJob()
+{
+    m_pairingKeyJob = 0;
+    if (m_pairingKeyCancel)
+    {
+        m_pairingKeyCancel->store(true);
+        m_pairingKeyCancel.reset();
+    }
+}
+
+void ConnectSessionController::onPairingKeyDerived(quint64 job, const QByteArray& key)
+{
+    // Kết quả của một mã đã bị hủy/hết hạn/thay bằng mã khác, hoặc controller đã stop() - bỏ. Không bao giờ
+    // để khóa của mã CŨ trở thành khóa của mã đang mở.
+    if (job == 0 || job != m_pairingKeyJob)
+        return;
+    m_pairingKeyJob = 0;
+    m_pairingKeyCancel.reset();
+
+    if (key.size() != CryptoSession::kKeyBytes)
+    {
+        cancelPairingSession(); // đóng luôn mã (kèm các kết nối đang chờ khóa) - mã không có khóa thì vô dụng
+        emit logMessage("⚠ Không suy được khóa từ mã ghép đôi (lỗi hệ thống) - đã đóng mã, hãy tạo mã mới.");
+        return;
+    }
+    m_pairingKey = key;
+
+    // Các kết nối ghép đôi đã tới trong lúc chờ khóa: đặt khóa bắt tay rồi cho đọc tiếp (PairRequest của
+    // chúng thường đã nằm sẵn trong bộ đệm).
+    QList<NetworkSession*> parked;
+    for (auto it = m_links.constBegin(); it != m_links.constEnd(); ++it)
+        if (it->kind == LinkKind::PairResponder && it->stage == LinkStage::AwaitPairingKey)
+            parked << it.key();
+    for (NetworkSession* s : std::as_const(parked))
+    {
+        Link* link = linkFor(s);
+        if (!link)
+            continue;
+        link->stage = LinkStage::AwaitPairRequest;
+        link->baseKey = m_pairingKey;
+        link->createdMs = link->lastRxMs = nowMs(); // hạn bắt tay tính từ lúc có khóa, không tính thời gian suy khóa
+        const QByteArray preamble = link->preamble;
+        link->preamble.clear();
+        s->setHandshakeKey(m_pairingKey, preamble);
+        s->setReceivePaused(false);
+    }
+}
+
+void ConnectSessionController::onOutgoingKeyDerived(NetworkSession* session, quint64 job, const QByteArray& key)
+{
+    // 'session' chỉ dùng làm khóa tra sổ, không được chạm vào trước khi tra: lần ghép đôi đó có thể đã bị
+    // thay/hủy (bấm "Ghép đôi" lần nữa, stop()) trong lúc suy khóa và đối tượng đã bị hủy. Số hiệu 'job'
+    // chặn cả trường hợp một NetworkSession mới được cấp phát trùng đúng địa chỉ cũ.
+    Link* link = linkFor(session);
+    if (!link || job == 0 || link->keyJob != job || link->stage != LinkStage::DerivingKey)
+        return;
+    link->keyCancel.reset();
+
+    if (!m_running || key.size() != CryptoSession::kKeyBytes)
+    {
+        failPairing(session, "Không suy được khóa từ mã ghép đôi (lỗi hệ thống).");
+        return;
+    }
+    link->baseKey = key;
+    link->stage = LinkStage::Connecting;
+    link->createdMs = link->lastRxMs = nowMs(); // hạn bắt tay tính từ lúc bắt đầu nối, như trước
+    const QHostAddress address = link->remoteAddress;
+    const quint16 port = link->remoteListenPort;
+    session->connectToHost(address, port);
 }
 
 void ConnectSessionController::onPairingTimerTick()
@@ -450,17 +593,23 @@ void ConnectSessionController::connectWithCode(const QHostAddress& address, quin
     for (NetworkSession* s : std::as_const(previous))
         dropLink(s);
 
+    // K_code suy ở luồng nền (245-500 ms - xem beginPairingSession). Mục trong sổ được tạo NGAY để mọi quy
+    // tắc sẵn có vẫn đúng trong lúc chờ: "đang có một lần ghép đôi đi" (outgoingPairingInFlight - hoãn
+    // PairRequest đi chéo), bấm lần nữa thay cho lần đang dở, stop() dọn sạch. Kết nối TCP chỉ mở khi có
+    // khóa (onOutgoingKeyDerived), nên máy kia vẫn thấy đúng trình tự cũ: nối xong là có preamble + PairRequest.
     auto* session = new NetworkSession(this);
     Link link;
     link.kind = LinkKind::PairInitiator;
-    link.stage = LinkStage::Connecting;
-    link.baseKey = CryptoSession::deriveKeyFromPairingCode(normalized);
+    link.stage = LinkStage::DerivingKey;
     link.remoteAddress = address;
     link.remoteListenPort = port;
     link.createdMs = link.lastRxMs = nowMs();
+    const quint64 job = ++m_keyJobCounter;
+    link.keyJob = job;
+    link.keyCancel = deriveKeyInBackground(
+        normalized, [this, session, job](const QByteArray& key) { onOutgoingKeyDerived(session, job, key); });
     m_links.insert(session, link);
     wireSession(session);
-    session->connectToHost(address, port);
 }
 
 void ConnectSessionController::failPairing(NetworkSession* session, const QString& reason)
@@ -616,10 +765,11 @@ void ConnectSessionController::finalizePairing(const QString& peerId, const QStr
     if (const PairedPeer* existing = store().find(peerId))
         p.side = existing->side; // giữ lại vị trí đã xếp nếu ghép đôi lại
 
-    store().addOrUpdate(p);
+    const bool saved = store().addOrUpdate(p);
     emit pairedPeersChanged();
     emit pairingSucceeded(peerId, machineName);
     emit logMessage("✓ Đã ghép đôi với " + machineName);
+    reportStoreSaveResult(saved, "ghép đôi với " + machineName);
 
     // Mở phiên ngay (cả hai máy cùng làm - quy tắc phân xử kết nối chéo lo phần trùng), không chờ quảng bá.
     QTimer::singleShot(300, this, [this, peerId] { attemptReconnect(peerId, QHostAddress(), 0, false); });
@@ -659,6 +809,8 @@ void ConnectSessionController::dropLink(NetworkSession* session)
     const Link link = it.value();
     m_links.erase(it);
     QObject::disconnect(session, nullptr, this, nullptr);
+    if (link.keyCancel)
+        link.keyCancel->store(true); // còn đang suy khóa cho kết nối này - không cần nữa
 
     const bool wasRegistered = link.stage == LinkStage::Established && m_sessions.value(link.peerId) == session;
     if (wasRegistered)
@@ -895,6 +1047,18 @@ void ConnectSessionController::onPreamble(NetworkSession* session, const QByteAr
 
     if (purpose == ConnectProtocol::LinkPurpose::Pairing)
     {
+        if (m_pairingKey.isEmpty() && m_pairingKeyJob != 0)
+        {
+            // Có mã đang mở nhưng K_code của nó còn đang được suy ở luồng nền (máy kia nhập mã rất nhanh,
+            // hoặc là kịch bản tự động): giữ kết nối lại, tạm ngưng đọc (PairRequest theo ngay sau preamble
+            // mà ta chưa có khóa để giải mã); onPairingKeyDerived() đặt khóa rồi cho đọc tiếp. Vẫn tính vào
+            // trần kMaxPendingIncoming và bị cancelPairingSession() đóng như mọi kết nối PairResponder khác.
+            link->kind = LinkKind::PairResponder;
+            link->stage = LinkStage::AwaitPairingKey;
+            link->preamble = preamble;
+            session->setReceivePaused(true);
+            return;
+        }
         if (m_pairingKey.isEmpty())
         {
             dropLink(session); // không có phiên chờ ghép đôi nào đang mở - từ chối an toàn
@@ -983,8 +1147,10 @@ void ConnectSessionController::onMessage(NetworkSession* session, const Protocol
             break;
         }
 
+        case LinkStage::DerivingKey:
         case LinkStage::Connecting:
         case LinkStage::AwaitPreamble:
+        case LinkStage::AwaitPairingKey:
         case LinkStage::Closing:
             break; // không chờ gì ở các bước này - bỏ qua
     }
@@ -1203,6 +1369,10 @@ void ConnectSessionController::handleSessionConfirm(NetworkSession* session, con
 
     m_sessions.insert(peerId, session);
     m_reconnect.remove(peerId);
+    // Chỉ BÂY GIỜ (đã có SessionConfirm hợp lệ, phiên đã đăng ký) mới nâng trần khung lên 2 MiB cho
+    // clipboard. SessionConfirm của máy kia luôn đi TRƯỚC mọi thông điệp lớn của nó, nên không có khung hợp
+    // lệ nào bị từ chối oan.
+    session->markPeerAuthenticated();
 
     // Chỉ BÂY GIỜ mới ghi địa chỉ/cổng/tên vào PeerStore - sau khi máy kia chứng minh được danh tính. Gói
     // quảng bá UDP (không xác thực) không bao giờ được ghi đè các giá trị này.
@@ -1786,6 +1956,9 @@ void ConnectSessionController::onHousekeepingTick()
             continue;
         }
 
+        if (link->stage == LinkStage::DerivingKey)
+            continue; // chưa mở kết nối - hạn bắt tay tính từ lúc có khóa (onOutgoingKeyDerived đặt lại mốc)
+
         const qint64 limit = link->stage == LinkStage::Closing ? qint64(kClosingGraceMs) : qint64(handshakeTimeoutMs());
         if (now - link->createdMs <= limit)
             continue;
@@ -1963,8 +2136,9 @@ void ConnectSessionController::setPeerSide(const QString& peerId, ScreenSide sid
     {
         PairedPeer updated = *p;
         updated.side = side;
-        store().addOrUpdate(updated);
+        const bool saved = store().addOrUpdate(updated);
         emit pairedPeersChanged();
+        reportStoreSaveResult(saved, "đổi vị trí của " + peerDisplayName(peerId));
     }
 }
 
@@ -1974,8 +2148,9 @@ void ConnectSessionController::setPeerAutoConnect(const QString& peerId, bool au
     {
         PairedPeer updated = *p;
         updated.autoConnect = autoConnect;
-        store().addOrUpdate(updated);
+        const bool saved = store().addOrUpdate(updated);
         emit pairedPeersChanged();
+        reportStoreSaveResult(saved, "đổi chế độ tự kết nối của " + peerDisplayName(peerId));
         if (autoConnect)
         {
             m_reconnect.remove(peerId);
@@ -1990,8 +2165,10 @@ void ConnectSessionController::forgetPeer(const QString& peerId)
     // vai trò về Idle + tắt hook (bản 1 gỡ khỏi m_sessions trước nên nhánh đặt lại vai trò không chạy).
     dropLinksForPeer(peerId);
     m_reconnect.remove(peerId);
-    store().remove(peerId);
+    const QString name = peerDisplayName(peerId); // lấy tên TRƯỚC khi gỡ khỏi kho
+    const bool saved = store().remove(peerId);
     emit pairedPeersChanged();
+    reportStoreSaveResult(saved, "quên máy " + name);
 }
 
 QList<DiscoveredPeer> ConnectSessionController::discoveredPeers() const

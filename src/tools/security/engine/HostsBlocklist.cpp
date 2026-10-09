@@ -54,8 +54,12 @@ bool isOwnFormatLine(const QString& rawLine, QString* domain)
 
 struct SplitResult
 {
-    QStringList kept;    ///< Mọi dòng KHÔNG thuộc khối của công cụ - giữ nguyên văn
+    QStringList kept;    ///< Mọi dòng KHÔNG thuộc khối của công cụ - giữ nguyên văn (kể cả '\r' cuối dòng nếu có)
     QStringList domains; ///< Tên miền đang nằm trong khối (chữ thường, không trùng)
+    /// Chỉ số trong 'kept' của dòng CUỐI tệp khi nó không kết thúc bằng '\n' (tệp không có xuống dòng cuối);
+    /// -1 nếu dòng đó không được giữ. Mọi dòng khác trong 'kept' đều từng có '\n' đứng sau.
+    int unterminatedKept{-1};
+    bool hasMarker{false}; ///< Có ít nhất một dòng marker START/END - tệp ĐÃ từng được công cụ ghi
 };
 
 SplitResult splitManagedBlock(const QString& content)
@@ -74,12 +78,18 @@ SplitResult splitManagedBlock(const QString& content)
     {
         const QString trimmed = lines[i].trimmed();
         if (trimmed == kMarkerEnd)
+        {
+            r.hasMarker = true;
             continue; // marker END lạc (không có START đi trước) - bỏ riêng dòng marker
+        }
         if (trimmed != kMarkerStart)
         {
+            if (i == lines.size() - 1)
+                r.unterminatedKept = r.kept.size();
             r.kept << lines[i];
             continue;
         }
+        r.hasMarker = true;
 
         // Tìm marker END của khối này (dừng nếu gặp một START khác trước - khối trước coi như hỏng).
         int end = -1;
@@ -121,10 +131,11 @@ SplitResult splitManagedBlock(const QString& content)
 /// Nội dung hosts đã giải mã + cách mã hóa lại để ghi ra ĐÚNG như cũ.
 struct HostsText
 {
-    QString text;     ///< Dòng kết thúc bằng '\n' (đã bỏ '\r')
+    QString text;     ///< NGUYÊN VĂN, kể cả kiểu xuống dòng của từng dòng ("\r\n" hay "\n")
     bool utf8{true};  ///< false: tệp không phải UTF-8 hợp lệ - đọc/ghi theo Latin-1 để giữ nguyên từng byte
     bool bom{false};
-    bool crlf{true};  ///< false: tệp gốc xuống dòng THUẦN bằng '\n' (không có "\r\n" nào) - ghi lại cũng bằng '\n'
+    bool crlf{true};  ///< Kiểu xuống dòng CHIẾM ĐA SỐ trong tệp - chỉ dùng cho các dòng do công cụ tự ghi
+    bool existed{false}; ///< Tệp có trên đĩa lúc đọc
 };
 
 bool readHosts(const QString& path, HostsText* out, QString* error)
@@ -138,6 +149,7 @@ bool readHosts(const QString& path, HostsText* out, QString* error)
         if (error) *error = "Không đọc được hosts file (" + f.errorString() + ").";
         return false;
     }
+    out->existed = true;
     QByteArray bytes = f.readAll();
     f.close();
 
@@ -158,20 +170,22 @@ bool readHosts(const QString& path, HostsText* out, QString* error)
         text = QString::fromLatin1(bytes);
         out->utf8 = false;
     }
-    // Tệp hosts do công cụ khác ghi (WSL, Docker, trình quản lý hosts...) có thể xuống dòng kiểu Unix. Trước
-    // đây lần ghi nào cũng đổi MỌI dòng sang "\r\n" - tức sửa cả những dòng không phải của mình.
-    out->crlf = text.contains("\r\n") || !text.contains('\n');
-    text.replace("\r\n", "\n");
+    // Tệp hosts do công cụ khác ghi (WSL, Docker, trình quản lý hosts...) có thể xuống dòng kiểu Unix, hoặc
+    // LẪN LỘN hai kiểu. Văn bản được giữ NGUYÊN (không đổi "\r\n" thành "\n" rồi đổi ngược lại khi ghi như
+    // trước - cách đó đưa cả tệp lẫn lộn về "\r\n", tức sửa những dòng không phải của mình): '\r' cuối dòng
+    // đi theo từng dòng qua splitManagedBlock. Chỉ các dòng công cụ TỰ GHI mới theo kiểu chiếm đa số
+    // (bằng nhau, hoặc tệp chưa có dòng nào: "\r\n" - chuẩn của hosts file trên Windows).
+    const qsizetype crlfCount = text.count(QLatin1String("\r\n"));
+    const qsizetype lfOnlyCount = text.count(QLatin1Char('\n')) - crlfCount;
+    out->crlf = crlfCount >= lfOnlyCount;
     out->text = text;
     return true;
 }
 
-bool writeHosts(const QString& path, const HostsText& hosts, QString* error)
+/// 'backupFirst': chép nguyên bản tệp hiện có ra tệp sao lưu trước khi ghi (nơi gọi quyết định - xem rewriteFile).
+bool writeHosts(const QString& path, const HostsText& hosts, bool backupFirst, QString* error)
 {
-    QString text = hosts.text;
-    if (hosts.crlf)
-        text.replace("\n", "\r\n"); // kết thúc dòng chuẩn của hosts file trên Windows
-    QByteArray bytes = hosts.utf8 ? text.toUtf8() : text.toLatin1();
+    QByteArray bytes = hosts.utf8 ? hosts.text.toUtf8() : hosts.text.toLatin1();
     if (hosts.bom)
         bytes.prepend(QByteArray::fromHex("efbbbf"));
 
@@ -179,7 +193,7 @@ bool writeHosts(const QString& path, const HostsText& hosts, QString* error)
     // etc bị khóa tạo tệp mới trong khi hosts vẫn ghi được) - khi đó QSaveFile bên dưới cũng phải ghi
     // trực tiếp; đây là trường hợp hiếm, đã ghi nhận.
     const QString backup = internal::backupFilePath(path);
-    if (QFile::exists(path) && !QFile::exists(backup))
+    if (backupFirst && QFile::exists(path) && !QFile::exists(backup))
         QFile::copy(path, backup);
 
     QSaveFile f(path);
@@ -293,18 +307,26 @@ QStringList parseManagedDomains(const QString& hostsContent)
     return splitManagedBlock(hostsContent).domains;
 }
 
-QString buildUpdatedHostsContent(const QString& existingContent, const QStringList& domains)
+QString buildUpdatedHostsContent(const QString& existingContent, const QStringList& domains, const QString& eol)
 {
     // Loại bỏ khối cũ (nếu có) - giữ nguyên MỌI dòng khác người dùng/chương trình khác đã có.
-    QStringList kept = splitManagedBlock(existingContent).kept;
+    const SplitResult split = splitManagedBlock(existingContent);
+    QStringList kept = split.kept;
 
     // Bỏ các dòng trắng thừa ở cuối trước khi nối thêm khối mới, tránh nội dung phình to dần qua mỗi lần lưu.
     while (!kept.isEmpty() && kept.last().trimmed().isEmpty())
         kept.removeLast();
 
+    // Mỗi dòng được giữ mang theo '\r' của chính nó (nếu có) nên nối bằng '\n' là trả lại ĐÚNG kiểu xuống
+    // dòng của từng dòng. Riêng dòng cuối: giữ kiểu cũ của nó; nếu nó vốn KHÔNG có xuống dòng (cuối tệp) thì
+    // phần xuống dòng thêm vào là của công cụ -> theo 'eol'. Dòng trắng ngăn cách cũng là của công cụ.
     QString result = kept.join('\n');
     if (!result.isEmpty())
-        result += "\n\n";
+    {
+        const bool lastHadNoNewline = split.unterminatedKept == kept.size() - 1;
+        result += (lastHadNoNewline && !result.endsWith(QLatin1Char('\r'))) ? eol : QStringLiteral("\n");
+        result += eol;
+    }
 
     // Mỗi tên miền MỘT dòng; bỏ qua mục rỗng/chứa khoảng trắng/ghi chú - không để một mục hỏng chèn thêm
     // dòng hay tên khác vào hosts file.
@@ -319,10 +341,10 @@ QString buildUpdatedHostsContent(const QString& existingContent, const QStringLi
 
     if (!lines.isEmpty())
     {
-        result += kMarkerStart + "\n";
+        result += kMarkerStart + eol;
         for (const QString& d : lines)
-            result += QStringLiteral("0.0.0.0 %1\n").arg(d);
-        result += kMarkerEnd + "\n";
+            result += QStringLiteral("0.0.0.0 %1").arg(d) + eol;
+        result += kMarkerEnd + eol;
     }
     return result;
 }
@@ -354,11 +376,19 @@ bool rewriteFile(const QString& hostsPath, Mutate mutate, QString* error)
     if (domains == current)
         return true;
 
-    const QString updated = buildUpdatedHostsContent(hosts.text, domains);
+    const QString updated =
+        buildUpdatedHostsContent(hosts.text, domains, hosts.crlf ? QStringLiteral("\r\n") : QStringLiteral("\n"));
     if (updated == hosts.text)
         return true; // không có gì đổi - không đụng vào hosts file
+
+    // Bản sao lưu phải là nội dung có TRƯỚC khi công cụ đụng tới. Tệp đã mang marker của công cụ thì không
+    // còn là nội dung đó: khi hosts CHƯA tồn tại ở lần ghi đầu (không có gì để sao lưu), lần ghi thứ hai từng
+    // "sao lưu" chính tệp do công cụ vừa tạo - một bản .bak chỉ chứa khối chặn, khôi phục nó là vô nghĩa.
+    // Tệp RỖNG (0 byte - vd tệp do công cụ tạo, sau khi gỡ hết tên miền) cũng không có gì để sao lưu.
+    const bool emptyFile = hosts.text.isEmpty() && !hosts.bom;
+    const bool backupFirst = hosts.existed && !emptyFile && !splitManagedBlock(hosts.text).hasMarker;
     hosts.text = updated;
-    return writeHosts(hostsPath, hosts, error);
+    return writeHosts(hostsPath, hosts, backupFirst, error);
 }
 } // namespace
 

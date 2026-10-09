@@ -4,6 +4,7 @@
 // (an toàn, có thể khôi phục từ Thùng rác) - không bao giờ gọi RecycleBinOps::empty() (sẽ xóa vĩnh
 // viễn TOÀN BỘ Thùng rác thật của người dùng, kể cả các mục không liên quan tới test).
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDir>
 #include <QEventLoop>
 #include <QFile>
@@ -1405,6 +1406,121 @@ int main(int argc, char** argv)
         CHECK(!internal::isSameSizeAtInputPrecision(465.77, 500107862016LL));
         CHECK(!internal::isSameSizeAtInputPrecision(465.75, 500107862016LL));
         CHECK(!internal::isSameSizeAtInputPrecision(nan, 500107862016LL));
+    }
+
+    // ---- Hồi quy: junction trỏ vào thư mục ĐƯỢC BẢO VỆ phải bị nhận ra theo danh tính vật lý ----
+    // Trước đây unsafeCleanupRootReason chỉ so CHUỖI: "…/rac/toi-baove" trông chẳng liên quan gì tới thư mục
+    // được bảo vệ nên được nhận làm thư mục rác. "Thư mục được bảo vệ" ở đây là GIẢ LẬP, nằm trong thư mục tạm.
+    {
+        QTemporaryDir tmp;
+        CHECK(tmp.isValid());
+        QDir root(tmp.path());
+        root.mkpath("baove/trong/chau");
+        root.mkpath("khac");
+        root.mkpath("rac");
+        writeFile(tmp.path() + "/baove/trong/quy.bin", 1234);
+        const QString prot = tmp.path() + "/baove/trong";
+        const QString jProt = tmp.path() + "/rac/toi-baove";  // -> chính thư mục được bảo vệ
+        const QString jParent = tmp.path() + "/rac/toi-cha";  // -> thư mục CHA của nó (chứa thư mục được bảo vệ)
+        const QString jChild = tmp.path() + "/rac/toi-chau";  // -> thư mục CON của nó (hợp lệ, như C:/Windows/Temp)
+        const QString jOther = tmp.path() + "/rac/toi-khac";  // -> thư mục không liên quan
+        const bool made = makeJunction(jProt, prot) && makeJunction(jParent, tmp.path() + "/baove") &&
+                          makeJunction(jChild, prot + "/chau") && makeJunction(jOther, tmp.path() + "/khac");
+        if (!made)
+            std::printf("LUU Y: khong tao duoc junction (mklink /J) - bo qua kiem tra junction toi thu muc duoc bao ve\n");
+        else
+        {
+            CHECK(!FsSafety::unsafeCleanupRootReason(jProt, {prot}).isEmpty());
+            CHECK(!FsSafety::unsafeCleanupRootReason(jParent, {prot}).isEmpty());
+            CHECK(FsSafety::unsafeCleanupRootReason(jChild, {prot}).isEmpty());
+            CHECK(FsSafety::unsafeCleanupRootReason(jOther, {prot}).isEmpty());
+            CHECK(FsSafety::unsafeCleanupRootReason(tmp.path() + "/rac", {prot}).isEmpty()); // thư mục thường
+            CHECK(FsSafety::unsafeCleanupRootReason(jProt, {}).isEmpty()); // không có gì được bảo vệ để trùng
+            // Đường dẫn đi XUYÊN qua một liên kết: "<junction tới cha>/trong" chính là thư mục được bảo vệ
+            // (không đặt tên thư mục là "con": đó là tên thiết bị dành riêng của Windows, không tạo được)
+            CHECK(!FsSafety::unsafeCleanupRootReason(jParent + "/trong", {prot}).isEmpty());
+            CHECK(FsSafety::unsafeCleanupRootReason(jParent + "/trong/chau", {prot}).isEmpty());
+            std::printf("junction -> thu muc duoc bao ve: %s\n", qPrintable(FsSafety::unsafeCleanupRootReason(jProt, {prot})));
+
+            // CategoryRegistry: TEMP là junction tới thư mục được bảo vệ -> hạng mục "Tệp tạm" không khả dụng
+            auto userTempRoots = [](const CleanupEnvironment& env) {
+                for (const CleanupCategory& c : CategoryRegistry::buildCategories(env))
+                    if (c.id == CleanupCategoryId::UserTemp)
+                        return c.rootPaths;
+                return QStringList{"<khong co hang muc>"};
+            };
+            CleanupEnvironment env;
+            env.protectedDirs = {prot};
+            env.tempDir = jProt;
+            CHECK(userTempRoots(env).isEmpty());
+            env.tempDir = jOther;
+            CHECK(userTempRoots(env).size() == 1);
+        }
+        // Gỡ CHÍNH các junction (rmdir chỉ gỡ liên kết, không đi vào đích) trước khi thư mục tạm bị dọn.
+        for (const QString& j : {jProt, jParent, jChild, jOther})
+            if (FsSafety::existsNoFollow(j))
+                CHECK(QDir().rmdir(j) && !FsSafety::existsNoFollow(j));
+        CHECK(QFile::exists(tmp.path() + "/baove/trong/quy.bin")); // đích còn nguyên
+        CHECK(QDir(prot + "/chau").exists());
+
+        // Phép nhận "đích là GỐC Ổ ĐĨA" (dùng cho junction/điểm gắn trỏ vào gốc ổ) - kiểm trên đường dẫn thật,
+        // KHÔNG tạo junction nào trỏ ra ngoài thư mục tạm.
+        CHECK(FsSafety::resolvesToVolumeRoot(QDir(tmp.path()).rootPath()));
+        CHECK(!FsSafety::resolvesToVolumeRoot(tmp.path()));
+        CHECK(!FsSafety::resolvesToVolumeRoot(tmp.path() + "/baove/trong/quy.bin"));
+        CHECK(!FsSafety::resolvesToVolumeRoot(tmp.path() + "/khong-ton-tai"));
+    }
+
+    // ---- Hồi quy: tuổi tệp tạm được kiểm LẠI ngay trước khi xóa, không chỉ lúc quét ----
+    {
+        QTemporaryDir tmp;
+        CHECK(tmp.isValid());
+        const QString fresh = tmp.path() + "/vua-sua.tmp";       // được ghi SAU lúc quét (thời điểm sửa = bây giờ)
+        const QString old = tmp.path() + "/cu.tmp";              // sửa lần cuối 1 giờ trước
+        const QString freshDir = tmp.path() + "/thu-muc-dang-dung";
+        const QString noLimit = tmp.path() + "/khong-gioi-han.log"; // hạng mục không đặt tuổi tối thiểu
+        writeFile(fresh, 10);
+        writeFile(old, 20);
+        QDir(tmp.path()).mkpath("thu-muc-dang-dung");
+        writeFile(freshDir + "/dang-ghi.dat", 30);
+        writeFile(noLimit, 40);
+        {
+            QFile f(old);
+            CHECK(f.open(QIODevice::ReadWrite));
+            CHECK(f.setFileTime(QDateTime::currentDateTime().addSecs(-3600), QFileDevice::FileModificationTime));
+        }
+
+        CleanupExecutor executor;
+        executor.setItems({fresh, old, freshDir, noLimit}, {10, 20, 30, 40}, {300, 300, 300, 0});
+        executor.setPermanentDelete(true); // tệp của chính test trong thư mục tạm - không đưa rác vào Thùng rác
+        bool success = false;
+        qint64 freed = -1;
+        int count = -1;
+        QString note;
+        QObject::connect(&executor, &CleanupExecutor::executionFinished, [&](bool ok, QString n, qint64 bytes, int cnt) {
+            success = ok;
+            note = n;
+            freed = bytes;
+            count = cnt;
+        });
+        executor.start();
+        executor.wait();
+        CHECK(success);
+        CHECK(count == 2);
+        CHECK(freed == 60);
+        CHECK(note.contains(QString::fromUtf8("2 mục được GIỮ LẠI")));
+        CHECK(FsSafety::existsNoFollow(fresh));
+        CHECK(FsSafety::existsNoFollow(freshDir + "/dang-ghi.dat"));
+        CHECK(!FsSafety::existsNoFollow(old));
+        CHECK(!FsSafety::existsNoFollow(noLimit));
+
+        // Không truyền tuổi tối thiểu (mọi nơi gọi cũ): hành vi như trước - xóa cả mục vừa sửa.
+        CleanupExecutor plain;
+        plain.setItems({fresh}, {10});
+        plain.setPermanentDelete(true);
+        plain.start();
+        plain.wait();
+        CHECK(!FsSafety::existsNoFollow(fresh));
     }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);

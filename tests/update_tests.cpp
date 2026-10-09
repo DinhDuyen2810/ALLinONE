@@ -12,6 +12,7 @@
 
 #include <QFile>
 #include <QTemporaryDir>
+#include "TestDataDir.h"
 
 static int g_fail = 0, g_pass = 0;
 #define CHECK(cond)                                                            \
@@ -25,7 +26,7 @@ int main(int argc, char** argv)
     QCoreApplication app(argc, argv);
 
     // update_core dùng Logger - ép dữ liệu vào thư mục tạm để test không ghi log vào dữ liệu thật.
-    QTemporaryDir dataDir;
+    TestDataDir dataDir;
     AppPaths::setDataDirOverride(dataDir.path());
 
     using UpdateCheckerInternal::compareVersions;

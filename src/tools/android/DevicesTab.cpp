@@ -4,6 +4,7 @@
 #include "WirelessPairDialog.h"
 #include "engine/AdbController.h"
 #include "engine/AdbDeviceLister.h"
+#include "engine/AdbPairer.h"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -55,6 +56,11 @@ DevicesTab::DevicesTab(QWidget* parent)
     // (đồng bộ) trên luồng giao diện nữa.
     m_lister = new AdbDeviceLister(this);
     connect(m_lister, &AdbDeviceLister::listed, this, &DevicesTab::onDevicesListed);
+
+    // Ghép đôi không dây cũng BẤT ĐỒNG BỘ (xem AdbPairer.h): `adb pair` có thể chờ tới 20 giây.
+    m_pairer = new AdbPairer(this);
+    m_pairer->setObjectName("adbPairer");
+    connect(m_pairer, &AdbPairer::finished, this, &DevicesTab::onPairFinished);
 
     updateBundleBanner();
 
@@ -109,6 +115,14 @@ void DevicesTab::stopBackgroundWork()
     stopActiveSession();
     if (m_lister)
         m_lister->cancel();
+    if (m_pairer && m_pairer->isBusy())
+    {
+        // Đóng cửa sổ/thoát ứng dụng giữa lúc đang ghép đôi: hủy lệnh `adb pair` (cancel() không phát
+        // finished()) và tự mở khóa nút để lần mở cửa sổ sau còn bấm được.
+        m_pairer->cancel();
+        m_pairBtn->setEnabled(AdbController::isBundleAvailable());
+        m_statusLabel->setText("Đã hủy ghép đôi (cửa sổ đã đóng).");
+    }
     AdbController::stopBundledAdbServer();
 }
 
@@ -398,12 +412,23 @@ void DevicesTab::onPairClicked()
         return;
     }
 
-    m_statusLabel->setText("⏳ Đang ghép đôi...");
-    QString error;
-    if (!AdbController::pairWireless(ipPort, code, &error))
+    // BẤT ĐỒNG BỘ: trước đây gọi AdbController::pairWireless() ngay tại đây, đứng cả ứng dụng tới ~25 giây.
+    // Khóa nút TRƯỚC khi gọi (pair() có thể phát finished() ngay trong lời gọi khi sai định dạng/thiếu adb,
+    // và onPairFinished() mở khóa lại); kết quả tới onPairFinished().
+    if (m_pairer->isBusy())
+        return; // không chồng lệnh - nút đã bị khóa, đây chỉ là lưới an toàn
+    m_pairBtn->setEnabled(false);
+    m_statusLabel->setText("⏳ Đang ghép đôi (tối đa khoảng 20 giây)...");
+    m_pairer->pair(ipPort, code);
+}
+
+void DevicesTab::onPairFinished(bool ok, const QString& error)
+{
+    m_pairBtn->setEnabled(AdbController::isBundleAvailable());
+    if (!ok)
     {
-        showPlainMessage(this, QMessageBox::Critical, "Ghép đôi thất bại", error);
         m_statusLabel->setText("⚠ Ghép đôi thất bại: " + error);
+        showPlainMessage(this, QMessageBox::Critical, "Ghép đôi thất bại", error);
         return;
     }
 

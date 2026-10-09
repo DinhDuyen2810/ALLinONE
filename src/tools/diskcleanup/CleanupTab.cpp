@@ -354,6 +354,7 @@ void CleanupTab::onCleanClicked()
 
     QStringList paths;
     QList<qint64> sizes;
+    QList<int> minAges;
     QStringList categoryNames;
     qint64 total = 0;
     bool includesHighRisk = false;
@@ -380,6 +381,7 @@ void CleanupTab::onCleanClicked()
         {
             paths << item.path;
             sizes << item.sizeBytes;
+            minAges << cat.minAgeSeconds; // được kiểm LẠI ngay trước khi xóa (xem CleanupExecutor::setItems)
             total += item.sizeBytes;
         }
     }
@@ -414,7 +416,7 @@ void CleanupTab::onCleanClicked()
     m_progressBar->setVisible(true);
     m_statusLabel->setText("⏳ Đang dọn dẹp...");
 
-    m_executor->setItems(paths, sizes);
+    m_executor->setItems(paths, sizes, minAges);
     m_executor->setPermanentDelete(permanent);
     m_executor->start(QThread::LowPriority);
 }
