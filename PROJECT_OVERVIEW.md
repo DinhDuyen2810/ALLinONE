@@ -1292,8 +1292,13 @@ mọi thao tác tệp nằm trong thư mục tạm):
 **Stress test CHƯA ổn định - nêu rõ**
 - `core_stress_tests`: trong lúc bốn phiên khác cùng tải máy, 2/5 lượt chạy đầy đủ fail ở phần PowerShell
   thật (một lệnh in 5 MB hết hạn 120 giây; một lần hủy `runCancelable` trả về trễ hơn 25 giây và còn một
-  `powershell.exe` con sống sau 5 giây). Không tái hiện ở các lượt sau khi máy rảnh, nhưng CHƯA xác định
-  được là lỗi của runner hay của máy quá tải.
+  `powershell.exe` con sống sau 5 giây). Không tái hiện ở các lượt sau khi máy rảnh (lượt tích hợp cuối:
+  525/0 trong 95 giây). **Bằng chứng tìm được sau đó nghiêng về phía máy, không phải runner**: hai tiến trình
+  `powershell.exe` sót lại từ các lượt fail (script `Start-Sleep -Seconds 120`, tạo lúc 12:02 và 13:54) vẫn
+  còn sống hàng giờ sau với 0 giây CPU, 1 luồng ở trạng thái chờ `Executive`, và KHÔNG dừng được cả bằng
+  `Stop-Process -Force` - tức chúng kẹt trong nhân Windows ngay từ lúc khởi tạo (chưa kịp nạp .NET), nên
+  lệnh `kill()` của runner có được gọi cũng không có tác dụng. Nguyên nhân gốc (phần mềm bảo mật/driver chặn
+  lúc tạo tiến trình khi máy quá tải?) CHƯA xác định; các tiến trình này chỉ mất khi khởi động lại máy.
 - Lỗi do chính bộ test (đã sửa test, không phải lỗi sản phẩm): ngưỡng thời gian quá chặt khi máy bận, trọng
   tài của test sai, và hai bộ có giao diện ép `QT_QPA_PLATFORM=offscreen` trong thư mục đã `windeployqt`
   (chỉ có `qwindows.dll`) khiến Qt bật hộp thoại lỗi lên màn hình và treo - nay tự tìm plugin offscreen
