@@ -520,6 +520,18 @@ set(SOURCES
 
 add_executable(OneForAll WIN32 ${SOURCES})
 
+# assets/app_icon.rc #include "core/Version.h" (khối VERSIONINFO - xem ghi chú trong chính tệp .rc) - CMake/
+# Ninja KHÔNG tự dò phụ thuộc #include bên trong tệp .rc như vẫn làm cho .cpp/.h, nên đổi nội dung
+# generated/core/Version.h (vd bump VERSION rồi chạy lại cmake để configure_file sinh lại header - KHÔNG
+# đổi chính app_icon.rc) không khiến Ninja biên dịch lại app_icon.rc.obj: bản .exe link ra số phiên bản CŨ
+# trong VERSIONINFO dù APP_VERSION runtime (hiển thị trong app/log) đã đúng số mới - ĐÃ XÁC NHẬN THẬT khi
+# tăng VERSION từ 1.19.2 lên 1.19.3 rồi build_installer.bat: OneForAll.exe chạy lên đúng "v1.19.3" trong
+# log nhưng (Get-Item OneForAll.exe).VersionInfo.FileVersionRaw vẫn báo "1.19.2.0" - đúng kiểu lỗi "giá trị
+# tĩnh trôi dần không ai hay" mà dự án đã nhiều lần gặp phải ở nơi khác (xem PROJECT_OVERVIEW.md mục 4l).
+# OBJECT_DEPENDS khai một cạnh phụ thuộc TƯỜNG MINH cho Ninja: Version.h mới hơn rc.obj thì rc.obj bị biên
+# dịch lại, không cần CMake tự phân tích nội dung #include của .rc.
+set_source_files_properties(assets/app_icon.rc PROPERTIES OBJECT_DEPENDS ${CMAKE_BINARY_DIR}/generated/core/Version.h)
+
 target_include_directories(OneForAll PRIVATE
     src
     ${CMAKE_BINARY_DIR}/generated

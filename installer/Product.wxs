@@ -52,7 +52,14 @@
     <Icon Id="AppIcon.ico" SourceFile="..\assets\app_icon.ico" />
     <Property Id="ARPPRODUCTICON" Value="AppIcon.ico" />
     <Property Id="ARPURLINFOABOUT" Value="https://github.com/DinhDuyen2810/ALLinONE" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/DinhDuyen2810/ALLinONE/issues" />
+    <Property Id="ARPCONTACT" Value="DinhDuyen2810" />
     <Property Id="ARPNOREPAIR" Value="1" />
+    <!-- Comments trong SummaryInformation của gói MSI (xem được qua chuột phải .msi > Thuộc tính) - cùng
+         lý do với VERSIONINFO của app_icon.rc/VersionInfo* của OneForAll.iss: một gói .msi "vô danh"
+         ngoài tên sản phẩm là một tín hiệu heuristic bất lợi cho SmartScreen/AV, dữ liệu thêm ở đây là
+         thật, đúng, không giả mạo. -->
+    <Property Id="ARPCOMMENTS" Value="One for ALL - Bo cong cu da nang desktop. Ma nguon mo (MIT): https://github.com/DinhDuyen2810/ALLinONE" />
 
     <!-- Cài vào LocalAppDataFolder (per-user, giống {autopf} của bản .exe khi không có quyền Admin) -
          KHÔNG dùng ProgramFilesFolder vì đó luôn cần quyền Administrator cho MSI, khác .exe linh hoạt

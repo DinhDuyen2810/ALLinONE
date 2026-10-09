@@ -23,6 +23,17 @@
 #define MyAppExeName "OneForAll.exe"
 #define MyAppURL "https://github.com/DinhDuyen2810/ALLinONE"
 
+; VersionInfoVersion bên dưới đòi ĐÚNG 4 phần số "X.X.X.X" (0-65535 mỗi phần) - MyAppVersion chỉ có 3
+; phần ("1.19.2") nên tự thêm ".0"; nếu còn hậu tố kiểu semver ("0.0.0-dev", "1.16.5-hotfix") thì cắt bỏ
+; từ dấu "-" trở đi trước khi thêm, để ISCC không từ chối biên dịch vì ký tự không phải số.
+#define MyAppVersionDashPos Pos("-", MyAppVersion)
+#if MyAppVersionDashPos > 0
+  #define MyAppVersionNumeric Copy(MyAppVersion, 1, MyAppVersionDashPos - 1)
+#else
+  #define MyAppVersionNumeric MyAppVersion
+#endif
+#define MyAppVersionInfo MyAppVersionNumeric + ".0"
+
 [Setup]
 AppId={{C82B22A6-50DC-4B99-A2A4-056B0A66BE55}
 AppName={#MyAppName}
@@ -47,6 +58,19 @@ OutputDir=..\dist
 OutputBaseFilename=OneForAll_Setup
 SetupIconFile=..\assets\app_icon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
+; Thẻ căn cước Win32 cho CHÍNH tệp OneForAll_Setup.exe (khác VERSIONINFO của assets/app_icon.rc - đó là
+; cho OneForAll.exe bên trong). Cùng lý do với app_icon.rc: tệp cài đặt .exe vô danh (mọi trường rỗng,
+; xác nhận thật qua Get-Item .VersionInfo trước khi thêm khối này) là một tín hiệu khiến hệ thống chấm
+; điểm heuristic của SmartScreen/AV xếp hạng rủi ro cao hơn mức cần, không giúp hết cảnh báo "chưa ký số"
+; nhưng là dữ liệu thật, đúng, không giả mạo.
+VersionInfoCompany=DinhDuyen2810
+VersionInfoDescription=One for ALL - Trinh cai dat
+VersionInfoProductName={#MyAppName}
+VersionInfoProductTextVersion={#MyAppVersion}
+VersionInfoVersion={#MyAppVersionInfo}
+VersionInfoCopyright=Copyright (c) 2026 DinhDuyen2810. MIT License.
+AppPublisher=DinhDuyen2810
+AppCopyright=Copyright (c) 2026 DinhDuyen2810. MIT License.
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern

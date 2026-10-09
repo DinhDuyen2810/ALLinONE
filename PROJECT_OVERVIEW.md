@@ -979,14 +979,15 @@ Release bị bỏ qua có chủ đích vì không phải lượt đẩy tag), si
 gần khớp bản dựng cục bộ, chênh lệch nhỏ do khác bản vá Qt) làm artifact tải lại được từ chính trang
 GitHub Actions. Đã kiểm tra đường tạo Release tự động khi đẩy tag thật (xem bảng changelog bên dưới).
 
-**Việc còn lại - thuộc về người dùng (chủ dự án), không thể tự động hóa**: nộp đơn xin SignPath (biểu
-mẫu tại signpath.org/apply, hoặc OSS Request Form gửi email - cần xác minh danh tính người duy trì dự án,
-không phải việc một công cụ tự động làm thay được). Thông tin đã chuẩn bị sẵn: Project Name "One for
-ALL", Repository URL/Homepage `https://github.com/DinhDuyen2810/ALLinONE`, Download URL trang Releases,
-Privacy Policy URL `PRIVACY.md` (mới thêm, trung thực đối chiếu đúng hành vi code), Maintainer Type
-"Individual", Build System "GitHub Actions" (`.github/workflows/build-installer.yml`). **Lưu ý trung
-thực**: SignPath có yêu cầu "uy tín nhất định" cho dự án - đây là dự án MỚI, có thể bị từ chối ở lần nộp
-đầu, không phải kết quả chắc chắn dù đã đáp ứng đủ điều kiện kỹ thuật.
+**Kết quả nộp đơn SignPath Foundation (2026-10-09): BỊ TỪ CHỐI.** Đơn đã nộp đủ hồ sơ kỹ thuật (Project
+Name "One for ALL", Repository/Homepage, Download URL trang Releases, `PRIVACY.md`, Maintainer Type
+"Individual", Build System "GitHub Actions"). Email trả lời của SignPath nêu đúng lý do đã lường trước ở
+đoạn trên: chương trình Foundation dành cho dự án đã có "tín hiệu uy tín công khai" bên ngoài (sao
+GitHub/fork/người đóng góp, bài viết độc lập, thảo luận trên Reddit/Stack Overflow/YouTube, hoặc đơn vị
+bảo trợ) - KHÔNG phải đánh giá chất lượng code. Dự án này còn mới nên chưa có đủ các tín hiệu đó. SignPath
+mời nộp lại khi dự án được biết đến rộng hơn; họ cũng có gói trả phí riêng (`docs.signpath.io/change-
+subscription`) nhưng vẫn cần tự mua chứng chỉ, không giải quyết gốc vấn đề chi phí - chưa theo hướng này.
+Xem mục 4r để biết hướng tiếp theo (Microsoft Store, miễn phí, không có yêu cầu "uy tín" như SignPath).
 
 ## 4n. Bộ cài đặt .msi (WiX Toolset) + zip cho cả hai định dạng (2026-10-09)
 Yêu cầu người dùng: thêm quy tắc MỚI - từ nay MỖI LẦN sửa code đều phải tự dựng lại ĐỦ BỐN file phát hành
@@ -1380,6 +1381,99 @@ nhưng pass với `%TEMP%` hệ thống. `QRHistoryStore::save()` nay thử lạ
   còn giữ tệp lúc thoát.
 - 24 tệp `.exe` kiểm tra thủ công cũ trong `build\` (từ các phiên trước, không còn mã nguồn) chưa xóa.
 
+## 4r. SignPath bị từ chối - rà mã nguồn giảm rủi ro bị gắn cờ + hướng tiếp theo (2026-10-09, v1.19.3)
+Yêu cầu người dùng sau khi nhận email từ chối của SignPath (mục 4m): "sửa mã nguồn đảm bảo không bị
+block/gắn cờ nữa", "rà lại mã nguồn". Đã làm rõ với người dùng TRƯỚC khi sửa: cảnh báo "chưa ký số" của
+SmartScreen/Smart App Control **không nằm trong mã nguồn** và **không có dòng code nào xóa được nó** - chỉ
+ký số (chứng chỉ trả phí hoặc SignPath, cả hai hiện chưa có) hoặc phát hành qua Microsoft Store mới hết
+hẳn. Phần RÀ ĐƯỢC THẬT trong mã nguồn là những yếu tố khiến hệ thống chấm điểm HEURISTIC (không dựa chữ ký
+mã độc cụ thể mà dựa đặc điểm tổng thể của tệp) xếp hạng rủi ro cao hơn mức cần thiết - đã sửa phần này.
+
+**Đã sửa - metadata phiên bản Win32 (trước đây HOÀN TOÀN RỖNG, xác nhận thật qua
+`(Get-Item ...).VersionInfo` trước khi sửa: mọi trường kể cả FileVersionRaw dạng số đều rỗng/0.0.0.0)**:
+- `assets/app_icon.rc`: thêm khối `VERSIONINFO` cho `OneForAll.exe` (CompanyName/ProductName/FileVersion/
+  ProductVersion/FileDescription/LegalCopyright/Comments), đọc số phiên bản từ `generated/core/Version.h`
+  (chính tệp sinh từ `VERSION` ở gốc dự án qua `configure_file` - không chép tay, không lệch số như các
+  nơi khác trong dự án từng gặp phải, xem mục 4k).
+- **Lỗi thật gặp khi viết khối này, đã xác nhận bằng cách tự kiểm `VersionInfo` sau mỗi lần sửa (không chỉ
+  tin biên dịch thành công)**: dùng tên tượng trưng `VS_VERSION_INFO VERSIONINFO` làm ID tài nguyên mà
+  KHÔNG `#include <winver.h>` (macro định nghĩa giá trị thật của nó là số 1) khiến `windres` hiểu nhầm
+  thành một resource mang TÊN chuỗi "VS_VERSION_INFO" thay vì ID số 1 kiểu `RT_VERSION` chuẩn - biên dịch
+  và link hoàn toàn không báo lỗi, `.rsrc` vẫn chứa đủ dữ liệu (xác nhận bằng cách dò chuỗi UTF-16 "Compa-
+  nyName" trực tiếp trong file nhị phân), nhưng `GetFileVersionInfo()` của Win32 (nền của `.VersionInfo`
+  trong PowerShell/Explorer/Properties) không tìm thấy gì. Sửa bằng cách dùng thẳng số `1 VERSIONINFO`.
+- `installer/OneForAll.iss`: thêm `VersionInfoCompany/Description/ProductName/Version/Copyright`,
+  `AppPublisher`, `AppCopyright` cho CHÍNH tệp `OneForAll_Setup.exe` (khác khối trên - đó là cho
+  `OneForAll.exe` bên trong). `VersionInfoVersion` của Inno Setup đòi đúng 4 phần số "X.X.X.X" trong khi
+  `VERSION` chỉ có 3 phần - thêm xử lý tiền xử lý (ISPP) tự cắt hậu tố kiểu semver (nếu có, vd
+  "0.0.0-dev") rồi thêm ".0".
+- `installer/Product.wxs`: thêm `ARPHELPLINK`, `ARPCONTACT`, `ARPCOMMENTS` cho gói `.msi` (xem được qua
+  chuột phải file > Thuộc tính, và trong "Apps & features" của Windows).
+- **Đã xác nhận THẬT**: build lại `OneForAll.exe` - `VersionInfo.FileVersionRaw`/`ProductVersionRaw` ra
+  đúng "1.19.2.0", `CompanyName`/`ProductName`/`FileDescription`/`LegalCopyright` đúng như đã viết,
+  `Language` ra "Vietnamese (Vietnam)" (trước khi sửa: TẤT CẢ rỗng).
+- **Lỗi build thật thứ hai, phát hiện NGAY TRONG đợt này khi tăng `VERSION` lên 1.19.3 để phát hành**:
+  Ninja không tự dò phụ thuộc `#include` bên trong tệp `.rc` như vẫn làm cho `.cpp`/`.h` - đổi nội dung
+  `generated/core/Version.h` (chạy lại `cmake` sau khi sửa `VERSION`, KHÔNG đổi chính `app_icon.rc`) không
+  khiến `app_icon.rc.obj` được biên dịch lại. Hậu quả xác nhận thật: `OneForAll.exe` chạy lên đúng
+  "v1.19.3" trong log (đọc `APP_VERSION` lúc runtime) nhưng `VersionInfo.FileVersionRaw` của CHÍNH file đó
+  vẫn báo "1.19.2.0" - đúng kiểu lỗi "giá trị tĩnh trôi dần không ai hay" dự án đã gặp nhiều lần ở nơi khác
+  (mục 4l). Sửa bằng `set_source_files_properties(assets/app_icon.rc PROPERTIES OBJECT_DEPENDS
+  .../generated/core/Version.h)` trong `CMakeLists.txt` - khai cạnh phụ thuộc tường minh cho Ninja. Xác
+  nhận lại: build sau khi sửa biên dịch lại đúng `app_icon.rc.obj`, `VersionInfo.FileVersionRaw` ra đúng
+  "1.19.3.0".
+
+**Đã rà, XÁC NHẬN KHÔNG có (không phải "đã sửa" vì không có gì để sửa) - những đặc điểm hành vi thường
+gặp ở mã độc mà một app hợp pháp cũng cần tránh để không bị chấm điểm heuristic oan**:
+- Không có khóa registry `...\CurrentVersion\Run` hay cách tự khởi động cùng Windows nào (đã `grep` toàn
+  bộ `src/` xác nhận).
+- Không có cài đặt dịch vụ Windows (`CreateService`/`SERVICE_AUTO_START`).
+- Nâng quyền DUY NHẤT qua `ShellExecuteW` verb `"runas"` (hộp thoại UAC chuẩn, người dùng tự xác nhận) -
+  không có kỹ thuật bỏ qua UAC nào.
+- `UpdateInstaller` (mục 4o) đã có sẵn: chỉ nhận URL `https://github.com/...`, đối chiếu SHA-256 với
+  `digest` GitHub công bố trước khi chạy, chờ đúng tiến trình ứng dụng thoát rồi mới cài - không "tải về
+  rồi chạy ngay không kiểm tra gì" kiểu dropper.
+
+**CÓ CHỦ Ý KHÔNG sửa - ranh giới đã nêu rõ với người dùng, không phải bỏ sót**:
+- `src/core/PowerShellRunner.cpp` gọi `powershell.exe -ExecutionPolicy Bypass -EncodedCommand <base64>`
+  (dùng cho Disk Cleanup/VPN/Security Gateway). Đây ĐÚNG LÀ một mẫu hành vi dòng lệnh hay bị EDR/AV để ý
+  (MITRE ATT&CK T1059.001: PowerShell với tham số bypass + lệnh mã hóa). Lý do kỹ thuật dùng
+  `-EncodedCommand` đã được thử nghiệm và ghi lại ngay trong code (`-Command -` qua stdin từng chạy im
+  lặng không làm gì với script nhiều dòng; ghi file `.ps1` tạm từng bị phần mềm diệt virus khóa file giữa
+  chừng - xem chú thích gốc trong file). KHÔNG đổi cơ chế này chỉ để né heuristic của AV - đó là kỹ thuật
+  né tránh phát hiện (evasion), và việc "giấu" hành vi gọi PowerShell của một tính năng hợp pháp không
+  giải quyết được gì ngoài việc làm code khó đọc hơn.
+- `src/tools/security/engine/CommandAnalyzer.cpp` (bộ phân tích lệnh của Security Gateway) chứa nhiều
+  chuỗi/regex nhận diện tên công cụ tấn công đã biết (Mimikatz, PowerSploit, Invoke-ReflectivePEInjection,
+  AmsiUtils...) và kỹ thuật tấn công (xóa shadow copy, tắt Defender, reverse shell...). Đã đọc lại toàn bộ
+  422 dòng: đây CHỈ LÀ các mẫu REGEX dùng để NHẬN DIỆN (giống cách mọi phần mềm diệt virus/EDR thật lưu
+  tên họ mã độc trong chính binary của nó), KHÔNG chứa payload/shellcode/mã khai thác thật nào có thể tự
+  chạy được - rủi ro AV heuristic ở đây thấp, không phải nguồn gốc của lần Windows Defender cách ly
+  `tests/security_tests.cpp` trước đó (mục 4p; nguyên nhân thật là các chuỗi lệnh ransomware MẪU dạng
+  một-dòng-hoàn-chỉnh dùng làm dữ liệu test, đã sửa bằng cách ghép chuỗi lúc chạy, và các target test này
+  vốn `EXCLUDE_FROM_ALL` nên không bao giờ nằm trong `OneForAll.exe`/bộ cài đặt phát hành). Không sửa gì
+  thêm ở đây.
+
+**Hướng tiếp theo cho việc hết hẳn cảnh báo (người dùng quyết định, không tự làm thay được)**:
+1. **Microsoft Store (đề xuất, miễn phí)**: từ 10/9/2025 Microsoft mở đăng ký nhà phát triển CÁ NHÂN miễn
+   phí toàn cầu (`storedeveloper.microsoft.com`, xác minh bằng giấy tờ tùy thân + ảnh selfie, không cần
+   thẻ tín dụng). App Win32 .exe/.msi có sẵn nộp được KHÔNG cần sửa code, qua một trong hai đường: đóng
+   gói lại thành MSIX (Microsoft tự ký lại gói, không cần mua chứng chỉ) hoặc nộp thẳng installer .exe/.msi
+   hiện có (vẫn phải tự ký bằng chứng chỉ chain tới gốc tin cậy của Microsoft cho đường này - không giải
+   quyết được vấn đề chi phí). Đường MSIX là hướng đáng làm nhất. Rủi ro CHƯA kiểm chứng: Store có thể từ
+   chối vì tab tải video (yt-dlp) đụng chính sách; các tính năng cần quyền Administrator (sửa hosts, đổi
+   phân vùng, Defender) có thể bị gói MSIX giới hạn - cần thử mới biết chắc.
+2. **Mua chứng chỉ ký số trả phí** (vd Certum OV/Open Source, ~50-300 USD/năm) - vẫn phải tích lũy uy tín
+   SmartScreen vài tuần đầu dù đã ký, không còn được "uy tín ngay" như EV trước đây (Microsoft đã đổi
+   chính sách này).
+3. **SignPath trả phí** (`docs.signpath.io/change-subscription`) - vẫn cần chứng chỉ riêng, không miễn phí
+   như chương trình Foundation đã bị từ chối.
+4. Nộp lại đơn SignPath Foundation sau khi dự án có thêm tín hiệu uy tín công khai (sao GitHub, bài viết,
+   thảo luận độc lập) - không có mốc thời gian cụ thể.
+
+Bản phát hành KHÔNG cần build lại vì lý do ký số (vẫn chưa ký) - chỉ build lại vì đã thêm metadata phiên
+bản ở trên.
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
@@ -1491,7 +1585,9 @@ bằng tay mỗi khi đổi phiên bản (hiện khớp `README.md`), không t�
 - WiFi: hồ sơ mới luôn đặt tên theo SSID kể cả khi hồ sơ cũ có tên khác.
 - Tự cập nhật: nếu người dùng mở hai cửa sổ ứng dụng cùng lúc, trình cài đặt `.exe` im lặng có thể tự hủy
   (thấy bản còn lại đang chạy) - ứng dụng vẫn mở lại và hỏi cập nhật lần sau.
-- File cài đặt chưa ký số (đang chờ SignPath, mục 4m).
+- File cài đặt chưa ký số - SignPath Foundation đã từ chối (mục 4m); hướng tiếp theo ở mục 4r (Microsoft
+  Store là lựa chọn chính, miễn phí). Đã thêm metadata phiên bản Win32 (mục 4r) để giảm rủi ro bị hệ thống
+  chấm điểm heuristic xếp hạng sai, nhưng KHÔNG xóa được cảnh báo "chưa ký số" - chỉ ký số/Store mới hết.
 
 ## 7. Quy trình làm việc
 Quy tắc đứng nằm ở `CLAUDE.md` (gốc dự án). Tóm tắt - mỗi lần sửa code: build exe + chạy test liên quan → `build_installer.bat /nopause` (đủ 4 file: `setup.exe`, `setup.msi`, zip của cả hai) → cập nhật file này (mục 3-6 nếu cấu trúc/hành vi đổi) cùng bảng lịch sử bên dưới và `README.md` → commit → push → kiểm lượt chạy CI.
@@ -1527,6 +1623,7 @@ Quy tắc đứng nằm ở `CLAUDE.md` (gốc dự án). Tóm tắt - mỗi l�
 | 2026-10-09 | Rà soát toàn bộ + sửa lỗi tiềm ẩn (v1.19.0) | Đọc từng dòng toàn bộ dự án rồi sửa theo từng công cụ - chi tiết đầy đủ ở mục 4o. Nặng nhất: Connect Together chưa từng chuyển được quyền điều khiển (bên nhận bỏ qua handoff) và có thể khóa chuột/phím khi rớt kết nối; Disk Cleanup có thể đổi kích thước nhầm phân vùng khi đổi dòng chọn; cờ hủy VPN/quét Defender không được đặt lại; chèn lệnh PowerShell qua dấu nháy Unicode; tự cập nhật không mở lại ứng dụng và cài nhầm bản `.exe` lên bản `.msi`; bộ cài có thể đóng gói dữ liệu cá nhân của máy dev; bước robocopy của CI sẽ bị tính là thất bại. Dữ liệu người dùng chuyển sang `%LOCALAPPDATA%\OneForAll`. Thêm `CLAUDE.md` (quy tắc đứng). Build sạch toàn bộ + 18 bộ test (qr, wifi, connect, diskcleanup, android, vpn, security, downloader - mỗi bộ `_tests` và `_ui_tests` - cùng `update_tests` và `autoclick_tests` mới): **2717 kiểm tra đều pass, 0 lỗi** (trước đợt này khoảng 1170). |
 | 2026-10-09 | Rà soát độc lập lần hai + stress test (v1.19.1) | Năm người đọc độc lập rà lại từng nhóm công cụ và viết năm bộ stress/fuzz mới (`core`, `qrwifi`, `connect`, `disk_vpn`, `secdl`) - chi tiết ở mục 4p. Lỗi nặng nhất tìm thêm: Disk Cleanup xóa nhầm tệp bên cạnh khi tên có dấu chấm/khoảng trắng cuối hoặc ký tự đại diện; `CommandAnalyzer` treo với lệnh dài (regex bậc hai) và báo "An toàn" sai với ký tự UTF-16 hỏng; Connect Together hai máy cùng nhập mã cho nhau giữ hai khóa khác nhau; Downloader báo "Hoàn tất" với tệp cụt; WiFi ghi đè nhầm hồ sơ khi SSID có ký tự điều khiển; `AppPaths` xóa nhầm tệp đang dùng với đường dẫn tương đối/8.3/junction; phím dừng Ctrl+Alt+F8 không đăng ký được khi bị chương trình khác giữ (thêm tổ hợp dự phòng). Xóa `NEW_SESSION_SETUP.md` (ghi chú bàn giao phiên cũ, đã thay bằng `CLAUDE.md`). Build sạch toàn bộ trên máy rảnh: 18 bộ test thường **2967 kiểm tra, 0 lỗi**; 5 bộ stress đều pass - `core_stress_tests` 525/0 (95 s), `qrwifi_stress_tests` 759.893/0 (290 s), `disk_vpn_stress_tests` 7320/0 (162 s), `secdl_stress_tests` 1.876.772/0 (123 s), `connect_stress_tests` 386/0 (135 s). |
 | 2026-10-09 | Hoàn thiện mục dang dở + dọn rác (v1.19.2) | Sau khi khởi động lại máy: xác nhận hai tiến trình PowerShell kẹt đã mất, dọn ~1,4 GB rác của các lượt test (thư mục tạm, 2.409 tệp test trong Thùng rác). Hoàn thiện danh sách còn dang dở của 4p - chi tiết ở mục 4q: Connect Together suy khóa ở luồng nền + trần khung sau xác thực + báo lỗi lưu; `PowerShellRunner` dừng cả tiến trình cháu; `Logger` tự mở lại; `adb pair` bất đồng bộ; Disk Cleanup nhận ra junction tới thư mục được bảo vệ + kiểm lại tuổi tệp lúc xóa; hai lỗi VPN; hosts giữ kiểu xuống dòng từng dòng; lịch sử QR gộp giữa hai bản ứng dụng + thử lại khi ghi; test không còn để sót thư mục tạm (`tests/TestDataDir.h`). Build sạch toàn bộ sau khi khởi động lại máy: 18 bộ test thường **3217 kiểm tra, 0 lỗi**; 5 bộ stress đều pass - `core_stress_tests` 550/0, `qrwifi_stress_tests` 759.439/0, `disk_vpn_stress_tests` 7320/0, `secdl_stress_tests` 1.875.637/0, `connect_stress_tests` 386/0. |
+| 2026-10-09 | SignPath từ chối - rà giảm rủi ro bị gắn cờ + metadata Win32 (v1.19.3) | SignPath Foundation từ chối cấp chứng chỉ (lý do: chưa đủ tín hiệu uy tín công khai, không phải chất lượng code) - chi tiết, nguyên văn lý do và hướng tiếp theo (Microsoft Store miễn phí là lựa chọn chính) ở mục 4r. Theo yêu cầu người dùng "rà mã nguồn đảm bảo không bị block": làm rõ trước là cảnh báo SmartScreen không nằm trong mã nguồn và không sửa code xóa được. Phần sửa được thật: thêm `VERSIONINFO` (Company/Product/Version/Copyright/Description) cho `OneForAll.exe` (trước đó RỖNG HOÀN TOÀN - xác nhận thật qua `VersionInfo` trước/sau khi sửa), cho `OneForAll_Setup.exe` và thuộc tính ARP của `OneForAll_Setup.msi`. Lỗi thật gặp khi viết: dùng tên `VS_VERSION_INFO` làm ID tài nguyên mà không `#include <winver.h>` khiến windres hiểu nhầm thành resource TÊN thay vì ID số 1, biên dịch không báo lỗi nhưng `GetFileVersionInfo` không tìm thấy gì - sửa bằng ID số `1` trực tiếp. Rà xác nhận KHÔNG có registry tự khởi động/cài service/bỏ qua UAC. Có chủ đích KHÔNG đổi cách gọi PowerShell hay các mẫu trong `CommandAnalyzer` để né AV - đó là evasion, ngoài ranh giới cho phép. Quét Defender thật trên `dist\` sau build: sạch. Build lại toàn bộ: 18 bộ test thường **3213 kiểm tra, 0 lỗi**. |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `

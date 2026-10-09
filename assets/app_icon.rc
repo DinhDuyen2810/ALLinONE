@@ -3,3 +3,58 @@
 // Dựng từ icon/App.png theo đúng thuật toán IconHelper::makeBadgedPixmap (nền trắng bo góc + viền mảnh)
 // để đồng nhất với icon MainWindow dùng khi chạy - xem assets/app_icon.ico.
 IDI_ICON1 ICON "app_icon.ico"
+
+// Khối VERSIONINFO - "thẻ căn cước" Win32 chuẩn của file .exe (Company/Product/Version/Copyright...),
+// xem được qua Explorer > chuột phải > Thuộc tính > tab Chi tiết. Trước v1.20.0 khối này KHÔNG tồn tại:
+// OneForAll.exe hiện ra như một tệp hoàn toàn vô danh (mọi trường rỗng) - cùng với việc chưa ký số, đây
+// là một tín hiệu khiến SmartScreen/Smart App Control và nhiều engine AV theo kiểu heuristic (không dựa
+// chữ ký mã độc cụ thể mà chấm điểm theo đặc điểm tổng thể của tệp) xếp hạng rủi ro cao hơn mức cần thiết
+// - một tệp .exe "không có danh tính" giống đặc điểm thường thấy ở phần mềm độc hại cố tình không để lại
+// dấu vết, hơn là phần mềm hợp pháp. Thêm khối này KHÔNG làm hết cảnh báo "chưa ký số" (chỉ ký số/
+// Microsoft Store mới làm được - xem PROJECT_OVERVIEW.md mục 4m/4r), nhưng là một tín hiệu thật, đúng,
+// không giả mạo, giúp các hệ thống chấm điểm có thêm dữ liệu hợp lệ để đánh giá đúng hơn.
+//
+// APP_VERSION_MAJOR/MINOR/PATCH đọc từ generated/core/Version.h (configure_file từ file VERSION ở gốc dự
+// án - nguồn DUY NHẤT cho version, xem CMakeLists.txt) qua bộ tiền xử lý C chuẩn mà windres chạy trước khi
+// phân tích cú pháp .rc - không chép tay số phiên bản ở đây để tránh lệch với VERSION như các nơi khác
+// trong dự án từng gặp phải (xem PROJECT_OVERVIEW.md mục 4k).
+#include "core/Version.h"
+
+#define APP_VERSIONINFO_STR APP_VERSION "\0"
+
+// ID tài nguyên PHẢI là số nguyên 1 (giá trị thật của macro VS_VERSION_INFO trong winver.h) - dùng thẳng
+// tên macro mà không #include <winver.h> khiến windres hiểu nhầm thành một resource TÊN "VS_VERSION_INFO"
+// thay vì ID=1 kiểu RT_VERSION chuẩn: biên dịch không báo lỗi, .rsrc vẫn chứa đủ dữ liệu, nhưng
+// GetFileVersionInfo() của Win32 (và PowerShell `(Get-Item ...).VersionInfo`) không tìm thấy gì - đã xác
+// nhận thật: tất cả trường (kể cả FileVersionRaw dạng số) đều trả về rỗng/0.0.0.0 cho tới khi sửa thành 1.
+1 VERSIONINFO
+ FILEVERSION APP_VERSION_MAJOR,APP_VERSION_MINOR,APP_VERSION_PATCH,0
+ PRODUCTVERSION APP_VERSION_MAJOR,APP_VERSION_MINOR,APP_VERSION_PATCH,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS 0x40004L
+ FILETYPE 0x1L
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "042a04b0"
+        BEGIN
+            VALUE "CompanyName", "DinhDuyen2810"
+            VALUE "FileDescription", "One for ALL - Bo cong cu da nang desktop (Auto Click, QR, WiFi, VPN, Disk Cleanup...)"
+            VALUE "FileVersion", APP_VERSIONINFO_STR
+            VALUE "InternalName", "OneForAll.exe"
+            VALUE "LegalCopyright", "Copyright (c) 2026 DinhDuyen2810. MIT License."
+            VALUE "OriginalFilename", "OneForAll.exe"
+            VALUE "ProductName", "One for ALL"
+            VALUE "ProductVersion", APP_VERSIONINFO_STR
+            VALUE "Comments", "https://github.com/DinhDuyen2810/ALLinONE"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        // 0x042a = tiếng Việt (giao diện ứng dụng), 0x04b0 = Unicode (1200 dạng thập lục phân) - khớp
+        // đúng khối StringFileInfo "042a04b0" ở trên theo chuẩn mã hóa langID+codepage của Win32.
+        VALUE "Translation", 0x042a, 0x04b0
+    END
+END
