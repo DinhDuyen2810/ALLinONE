@@ -2,6 +2,8 @@
 
 #include <QWidget>
 
+class QCheckBox;
+class QLabel;
 class QPushButton;
 class QTableWidget;
 
@@ -33,4 +35,6 @@ private:
     QPushButton* m_recreateBtn{nullptr};
     QPushButton* m_deleteBtn{nullptr};
     QPushButton* m_clearBtn{nullptr};
+    QCheckBox* m_revealCheck{nullptr}; // mặc định TẮT: mật khẩu WiFi trong bảng/tooltip hiện thành ••••••••
+    QLabel* m_warning{nullptr};        // báo khi ghi tệp lịch sử thất bại
 };

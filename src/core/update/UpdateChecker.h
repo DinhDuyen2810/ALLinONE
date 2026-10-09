@@ -13,6 +13,14 @@ struct UpdateInfo
     QString downloadUrl;   ///< URL tải thẳng OneForAll_Setup.exe (asset đính kèm bản phát hành)
     QString releaseNotes;  ///< Nội dung mô tả bản phát hành (Markdown thô từ GitHub, hiển thị thô cũng đọc được)
     qint64 downloadSize{0}; ///< Byte - 0 nếu GitHub không trả kích thước
+    QString sha256;        ///< SHA-256 (hex thường) của OneForAll_Setup.exe theo trường "digest" của GitHub - rỗng nếu API không trả
+
+    // Bản .msi (tùy chọn - rỗng nếu bản phát hành không đính kèm). Máy cài bằng .msi PHẢI cập nhật bằng
+    // .msi: chạy OneForAll_Setup.exe (Inno Setup) trên một bản cài MSI sẽ cài THÊM một bản thứ hai vào
+    // thư mục khác thay vì nâng cấp bản đang chạy - xem UpdateInstaller::detectInstallKind().
+    QString msiUrl;
+    qint64 msiSize{0};
+    QString msiSha256;
 };
 
 /// Hỏi GitHub Releases API (repo mã nguồn chính của dự án) xem có bản mới hơn phiên bản đang chạy hay
@@ -56,4 +64,9 @@ int compareVersions(const QString& a, const QString& b);
 /// dung mô tả. Trả về UpdateInfo rỗng (version.isEmpty()) nếu JSON không đúng cấu trúc mong đợi hoặc bản
 /// phát hành không đính kèm đúng tên asset này - coi như không có gì để tự cập nhật.
 UpdateInfo parseLatestRelease(const QByteArray& json);
+
+/// URL tải bản cập nhật có đáng tin không: BẮT BUỘC https và host đúng "github.com" (dạng
+/// browser_download_url của GitHub Releases). Tệp tải về sẽ được CHẠY trên máy người dùng - không nhận
+/// http thường hay host lạ dù JSON nói gì.
+bool isTrustedDownloadUrl(const QString& url);
 }

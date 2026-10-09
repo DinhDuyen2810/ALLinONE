@@ -4,11 +4,14 @@
 #include <windows.h>
 #include <thread>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <vector>
 
 namespace
 {
+using Clock = std::chrono::steady_clock;
+
 bool isExtendedKey(int vk)
 {
     switch (vk)
@@ -34,11 +37,65 @@ INPUT makeKeyInput(int vk, bool keyUp)
         in.ki.dwFlags |= KEYEVENTF_KEYUP;
     return in;
 }
+
+bool stopRequested(const std::atomic_bool* stopFlag)
+{
+    return stopFlag && stopFlag->load();
+}
+
+/// Ngủ tới MỐC THỜI GIAN `deadline` theo từng lát ngắn (tối đa 50ms), kiểm tra cờ dừng giữa các lát - trả
+/// về false nếu bị yêu cầu dừng giữa chừng. Hai lỗi thật của cách ngủ cũ (`sleep_for(cả khoảng)` một lần):
+///  - KHÔNG NGẮT ĐƯỢC: gõ 2 ký tự trong 60 giây = mỗi ký tự ngủ liền 30 giây, cuộn 1 nấc với thời lượng
+///    1 giờ = ngủ liền 1 giờ - bấm Dừng/đóng cửa sổ không có tác dụng cho tới khi ngủ xong.
+///  - TRÔI THỜI GIAN: cộng dồn nhiều lần Sleep(n) (mỗi lần Windows đều ngủ DƯ tới ~15ms theo độ phân giải
+///    timer mặc định) làm thời lượng thật dài hơn cấu hình; ngủ theo mốc tuyệt đối thì sai số không cộng dồn.
+bool sleepUntil(Clock::time_point deadline, const std::atomic_bool* stopFlag)
+{
+    constexpr auto kSlice = std::chrono::milliseconds(50);
+    for (;;)
+    {
+        if (stopRequested(stopFlag))
+            return false;
+        const auto now = Clock::now();
+        if (now >= deadline)
+            return true;
+        std::this_thread::sleep_for(std::min<Clock::duration>(kSlice, deadline - now));
+    }
+}
+
+bool sleepFor(std::chrono::milliseconds duration, const std::atomic_bool* stopFlag)
+{
+    return sleepUntil(Clock::now() + duration, stopFlag);
+}
+}
+
+void InputController::noteError(const char* what)
+{
+    if (!m_lastError.isEmpty())
+        return; // chỉ giữ lỗi ĐẦU TIÊN - các lỗi sau thường chỉ là hệ quả của nó
+
+    const DWORD code = GetLastError();
+    m_lastError = QString("%1 bị Windows từ chối (mã lỗi %2)").arg(QString::fromUtf8(what)).arg(code);
+    if (code == ERROR_ACCESS_DENIED)
+        m_lastError += " - cửa sổ đích có thể đang chạy với quyền Administrator, hoặc máy đang ở màn hình "
+                       "khóa/hộp thoại UAC";
+}
+
+bool InputController::sendInputs(void* inputs, unsigned int count, const char* what)
+{
+    SetLastError(0);
+    const UINT sent = SendInput(count, static_cast<INPUT*>(inputs), sizeof(INPUT));
+    if (sent == count)
+        return true;
+    noteError(what);
+    return false;
 }
 
 void InputController::moveMouse(int x, int y)
 {
-    SetCursorPos(x, y);
+    SetLastError(0);
+    if (!SetCursorPos(x, y))
+        noteError("Di chuyển chuột (SetCursorPos)");
 }
 
 void InputController::mouseDown(MouseButtonType button)
@@ -59,7 +116,7 @@ void InputController::mouseDown(MouseButtonType button)
             break;
     }
 
-    SendInput(1, &input, sizeof(INPUT));
+    sendInputs(&input, 1, "Nhấn nút chuột (SendInput)");
 }
 
 void InputController::mouseUp(MouseButtonType button)
@@ -80,7 +137,7 @@ void InputController::mouseUp(MouseButtonType button)
             break;
     }
 
-    SendInput(1, &input, sizeof(INPUT));
+    sendInputs(&input, 1, "Nhả nút chuột (SendInput)");
 }
 
 void InputController::click(MouseButtonType button)
@@ -100,10 +157,13 @@ void InputController::drag(int startX, int startY, int endX, int endY, std::chro
     int stepInterval = 20; // 20ms per step
     int steps = std::max(1, totalMs / stepInterval);
 
+    // Mốc thời gian của từng bước tính từ lúc BẮT ĐẦU kéo (không cộng dồn sleep 20ms mỗi bước) để tổng
+    // thời gian kéo đúng bằng thời lượng đã cấu hình - xem sleepUntil().
+    const auto dragStart = Clock::now();
     bool stopped = false;
     for (int i = 1; i <= steps; ++i)
     {
-        if (stopFlag && stopFlag->load())
+        if (stopRequested(stopFlag))
         {
             stopped = true;
             break;
@@ -114,7 +174,12 @@ void InputController::drag(int startX, int startY, int endX, int endY, std::chro
         int currentY = startY + static_cast<int>((endY - startY) * t);
         moveMouse(currentX, currentY);
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(stepInterval));
+        const auto stepDeadline = dragStart + std::chrono::milliseconds(static_cast<long long>(totalMs) * i / steps);
+        if (!sleepUntil(stepDeadline, stopFlag))
+        {
+            stopped = true;
+            break;
+        }
     }
 
     if (!stopped)
@@ -122,6 +187,7 @@ void InputController::drag(int startX, int startY, int endX, int endY, std::chro
         moveMouse(endX, endY);
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
+    // LUÔN nhả nút chuột kể cả khi bị dừng giữa chừng - không để nút trái "kẹt" ở trạng thái nhấn.
     mouseUp(MouseButtonType::Left);
 }
 
@@ -131,26 +197,16 @@ void InputController::hold(int x, int y, MouseButtonType button, std::chrono::mi
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
     mouseDown(button);
 
-    int remainingMs = static_cast<int>(duration.count());
-    int interval = 50;
+    sleepFor(duration, stopFlag);
 
-    while (remainingMs > 0)
-    {
-        if (stopFlag && stopFlag->load())
-            break;
-
-        int sleepTime = std::min(interval, remainingMs);
-        std::this_thread::sleep_for(std::chrono::milliseconds(sleepTime));
-        remainingMs -= sleepTime;
-    }
-
+    // LUÔN nhả nút chuột kể cả khi bị dừng giữa chừng.
     mouseUp(button);
 }
 
 void InputController::pressKey(int keyCode)
 {
     INPUT inputs[2] = { makeKeyInput(keyCode, false), makeKeyInput(keyCode, true) };
-    SendInput(2, inputs, sizeof(INPUT));
+    sendInputs(inputs, 2, "Nhấn phím (SendInput)");
 }
 
 void InputController::hotkey(bool ctrl, bool alt, bool shift, bool win, int keyCode)
@@ -172,9 +228,11 @@ void InputController::hotkey(bool ctrl, bool alt, bool shift, bool win, int keyC
     for (auto it = mods.rbegin(); it != mods.rend(); ++it)
         upInputs.push_back(makeKeyInput(*it, true));
 
-    SendInput(static_cast<UINT>(downInputs.size()), downInputs.data(), sizeof(INPUT));
+    sendInputs(downInputs.data(), static_cast<UINT>(downInputs.size()), "Nhấn tổ hợp phím (SendInput)");
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    SendInput(static_cast<UINT>(upInputs.size()), upInputs.data(), sizeof(INPUT));
+    // Vẫn gửi lệnh NHẢ kể cả khi lệnh nhấn ở trên báo lỗi - SendInput có thể đã chèn được một phần (vd
+    // chỉ các phím bổ trợ), không nhả thì Ctrl/Alt/Shift/Win kẹt ở trạng thái nhấn.
+    sendInputs(upInputs.data(), static_cast<UINT>(upInputs.size()), "Nhả tổ hợp phím (SendInput)");
 }
 
 void InputController::typeText(const std::string& text, TextTypeMode mode, std::chrono::milliseconds duration, const std::atomic_bool* stopFlag)
@@ -197,9 +255,13 @@ void InputController::typeText(const std::string& text, TextTypeMode mode, std::
         if (charDelay <= 0) charDelay = 10;
     }
 
+    // Mốc thời gian của ký tự kế tiếp cộng dồn từ lúc BẮT ĐẦU gõ (không phải "ngủ charDelay sau mỗi ký
+    // tự") - vừa ngắt được giữa chừng, vừa không trôi thời gian, xem sleepUntil().
+    auto nextCharAt = Clock::now();
+
     for (wchar_t ch : wstr)
     {
-        if (stopFlag && stopFlag->load())
+        if (stopRequested(stopFlag))
             break;
 
         if (ch == 13) // CR
@@ -207,25 +269,31 @@ void InputController::typeText(const std::string& text, TextTypeMode mode, std::
         if (ch == 10 || ch == 9) // LF -> Enter, TAB -> Tab
         {
             pressKey(ch == 10 ? VK_RETURN : VK_TAB);
-            if (charDelay > 0)
-                std::this_thread::sleep_for(std::chrono::milliseconds(charDelay));
-            continue;
+        }
+        else
+        {
+            INPUT inputs[2] = {0};
+            inputs[0].type = INPUT_KEYBOARD;
+            inputs[0].ki.wScan = ch;
+            inputs[0].ki.dwFlags = KEYEVENTF_UNICODE;
+
+            inputs[1].type = INPUT_KEYBOARD;
+            inputs[1].ki.wScan = ch;
+            inputs[1].ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+
+            sendInputs(inputs, 2, "Gõ ký tự (SendInput)");
         }
 
-        INPUT inputs[2] = {0};
-        inputs[0].type = INPUT_KEYBOARD;
-        inputs[0].ki.wScan = ch;
-        inputs[0].ki.dwFlags = KEYEVENTF_UNICODE;
-
-        inputs[1].type = INPUT_KEYBOARD;
-        inputs[1].ki.wScan = ch;
-        inputs[1].ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
-
-        SendInput(2, inputs, sizeof(INPUT));
+        // Windows đã từ chối thì các ký tự sau cũng sẽ bị từ chối y hệt - dừng luôn thay vì "gõ" tiếp
+        // vào hư không cho hết chuỗi.
+        if (hasError())
+            break;
 
         if (charDelay > 0)
         {
-            std::this_thread::sleep_for(std::chrono::milliseconds(charDelay));
+            nextCharAt += std::chrono::milliseconds(charDelay);
+            if (!sleepUntil(nextCharAt, stopFlag))
+                break;
         }
     }
 }
@@ -240,9 +308,11 @@ void InputController::scroll(ScrollDirection direction, int amount, std::chrono:
         if (stepDuration <= 0) stepDuration = 10;
     }
 
+    auto nextStepAt = Clock::now(); // mốc cộng dồn từ lúc bắt đầu cuộn - xem typeText()
+
     for (int i = 0; i < wheelClicks; ++i)
     {
-        if (stopFlag && stopFlag->load())
+        if (stopRequested(stopFlag))
             break;
 
         INPUT input = {0};
@@ -268,11 +338,14 @@ void InputController::scroll(ScrollDirection direction, int amount, std::chrono:
                 break;
         }
 
-        SendInput(1, &input, sizeof(INPUT));
+        if (!sendInputs(&input, 1, "Cuộn chuột (SendInput)"))
+            break;
 
         if (stepDuration > 0)
         {
-            std::this_thread::sleep_for(std::chrono::milliseconds(stepDuration));
+            nextStepAt += std::chrono::milliseconds(stepDuration);
+            if (!sleepUntil(nextStepAt, stopFlag))
+                break;
         }
     }
 }

@@ -12,6 +12,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QSignalBlocker>
 #include <QSpinBox>
 #include <QTableWidget>
 #include <QTableWidgetItem>
@@ -233,19 +234,38 @@ void PairingTab::onDiscoveredChanged()
 void PairingTab::reloadDiscoveredTable()
 {
     const auto peers = m_controller->discoveredPeers();
+
+    // Giữ lại dòng đang chọn (theo địa chỉ + cổng) qua lần dựng lại bảng.
+    QString selectedKey;
+    if (QTableWidgetItem* current = m_discoveredTable->item(m_discoveredTable->currentRow(), 0))
+        selectedKey = current->data(Qt::UserRole).toString() + ":" + current->data(Qt::UserRole + 1).toString();
+    int rowToSelect = -1;
+
+    // Chặn tín hiệu trong lúc dựng lại: việc bảng tự đổi dòng chọn không được ghi đè ô địa chỉ/cổng mà
+    // người dùng đang gõ tay bên dưới.
+    const QSignalBlocker blocker(m_discoveredTable);
     m_discoveredTable->setRowCount(peers.size());
     for (int i = 0; i < peers.size(); ++i)
     {
         const auto& p = peers[i];
         auto* nameItem = new QTableWidgetItem(p.machineName.isEmpty() ? "(không tên)" : p.machineName);
         auto* addrItem = new QTableWidgetItem(p.address.toString());
-        auto* statusItem = new QTableWidgetItem(p.alreadyPaired ? "Đã ghép đôi" : "Chưa ghép đôi");
+        // Máy tự khai dùng phiên bản giao thức khác: nói rõ ngay ở đây, khỏi để người dùng thử ghép đôi rồi
+        // nhận về một lỗi kết nối khó hiểu.
+        auto* statusItem = new QTableWidgetItem(!p.compatible ? "Khác phiên bản - cần cập nhật"
+                                                              : (p.alreadyPaired ? "Đã ghép đôi" : "Chưa ghép đôi"));
         nameItem->setData(Qt::UserRole, p.address.toString());
         nameItem->setData(Qt::UserRole + 1, p.port);
         m_discoveredTable->setItem(i, 0, nameItem);
         m_discoveredTable->setItem(i, 1, addrItem);
         m_discoveredTable->setItem(i, 2, statusItem);
+        if (!selectedKey.isEmpty() && selectedKey == p.address.toString() + ":" + QString::number(p.port))
+            rowToSelect = i;
     }
+    if (rowToSelect >= 0)
+        m_discoveredTable->selectRow(rowToSelect);
+    else
+        m_discoveredTable->clearSelection();
 }
 
 void PairingTab::onDiscoveredSelectionChanged()

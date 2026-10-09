@@ -1,6 +1,7 @@
 #include "LargeFileScanner.h"
 
-#include <QDirIterator>
+#include "FsSafety.h"
+
 #include <algorithm>
 
 LargeFileScanner::LargeFileScanner(QObject* parent)
@@ -10,8 +11,9 @@ LargeFileScanner::LargeFileScanner(QObject* parent)
 
 LargeFileScanner::~LargeFileScanner()
 {
+    // Chờ KHÔNG giới hạn - xem CleanupScanner::~CleanupScanner (cờ dừng được kiểm tra ở từng mục).
     requestStop();
-    wait(5000);
+    wait();
 }
 
 void LargeFileScanner::requestStop()
@@ -19,41 +21,41 @@ void LargeFileScanner::requestStop()
     m_stopRequested = true;
 }
 
+void LargeFileScanner::startScan(QThread::Priority priority)
+{
+    if (isRunning())
+        return;
+    m_stopRequested = false;
+    start(priority);
+}
+
 void LargeFileScanner::run()
 {
-    m_stopRequested = false;
     QList<LargeFileEntry> results;
 
     if (!m_rootPath.isEmpty())
     {
-        QDirIterator it(m_rootPath, QDir::Files | QDir::System | QDir::Hidden | QDir::NoSymLinks,
-                        QDirIterator::Subdirectories);
         qint64 scanned = 0;
-        while (it.hasNext())
-        {
-            const QFileInfo info = it.nextFileInfo(); // phải gọi trước: filePath()/fileInfo() chỉ phản ánh đúng mục VỪA next() xong
-            if (info.size() >= m_minSizeBytes)
+        // FsSafety::walkFiles: không đi vào junction/symlink thư mục, bỏ qua lối tắt - kết quả chỉ gồm
+        // tệp THẬT nằm trong cây thư mục đã chọn (một junction trỏ sang ổ khác từng có thể đưa tệp ở nơi
+        // hoàn toàn khác vào danh sách "xóa vào Thùng rác").
+        FsSafety::walkFiles(m_rootPath, m_stopRequested, [&](const FsSafety::WalkEntry& file) {
+            if (file.sizeBytes >= m_minSizeBytes)
             {
                 LargeFileEntry e;
-                e.path = info.absoluteFilePath();
-                e.sizeBytes = info.size();
-                e.lastModified = info.lastModified();
+                e.path = file.path;
+                e.sizeBytes = file.sizeBytes;
+                // FILETIME (100ns từ 1601-01-01 UTC) -> QDateTime giờ địa phương.
+                e.lastModified = QDateTime::fromMSecsSinceEpoch(file.lastWriteTime / 10000 - 11644473600000LL);
                 results.push_back(e);
             }
 
-            // Cứ mỗi 200 tệp thì kiểm tra dừng + báo tiến độ (kèm đường dẫn hiện tại) - quét cả ổ đĩa
-            // hệ thống có thể gặp hàng trăm nghìn tệp nên cần phản hồi đủ dày để người dùng thấy ứng
-            // dụng vẫn đang chạy, không bị tưởng nhầm là treo ("Không phản hồi").
+            // Cứ mỗi 200 tệp thì báo tiến độ (kèm đường dẫn hiện tại) - quét cả ổ đĩa hệ thống có thể gặp
+            // hàng trăm nghìn tệp nên cần phản hồi đủ dày để người dùng thấy ứng dụng vẫn đang chạy,
+            // không bị tưởng nhầm là treo ("Không phản hồi").
             if ((++scanned % 200) == 0)
-            {
-                if (m_stopRequested)
-                {
-                    emit scanStopped();
-                    return;
-                }
-                emit progressTick(scanned, info.absoluteFilePath());
-            }
-        }
+                emit progressTick(scanned, file.path);
+        });
     }
 
     if (m_stopRequested)

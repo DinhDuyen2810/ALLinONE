@@ -22,11 +22,20 @@ class DefenderScanWorker : public QThread
 public:
     explicit DefenderScanWorker(QObject* parent = nullptr);
 
+    /// Gọi TRƯỚC start() cho mỗi lần quét. Đồng thời xóa cờ hủy của lần quét trước - đối tượng này được
+    /// TÁI DÙNG cho mọi lần quét, nếu không xóa thì chỉ cần hủy một lần là mọi lần quét sau đều bị dừng
+    /// ngay sau ~200ms và báo "Đã hủy" (lỗi thật tìm thấy khi rà soát). Xóa ở đây (luồng giao diện, trước
+    /// khi luồng quét chạy) chứ không phải đầu run(): xóa trong run() có thể nuốt mất một requestCancel()
+    /// gọi ngay sau start() nhưng trước khi run() kịp bắt đầu.
     void setScan(DefenderController::ScanType type, const QString& customPath = QString());
 
-    /// Yêu cầu dừng quét sớm - an toàn (tương đương bấm "Hủy" trên Windows Security, Defender tự dừng
-    /// gọn). Gọi xong vẫn phải wait() để chắc chắn luồng đã thoát hẳn trước khi hủy đối tượng này.
+    /// Yêu cầu dừng chờ sớm: tiến trình powershell.exe đang gọi Start-MpScan bị kết thúc và run() thoát
+    /// trong vòng ~200ms. Gọi xong vẫn phải wait() để chắc chắn luồng đã thoát hẳn trước khi hủy đối
+    /// tượng này. LƯU Ý: việc quét thật do dịch vụ Windows Defender thực hiện, không phải powershell.exe -
+    /// CHƯA xác nhận được trên máy thật rằng kết thúc powershell.exe cũng dừng luôn lượt quét trong dịch
+    /// vụ; Defender có thể vẫn quét tiếp trong nền cho tới khi xong (vô hại, chỉ tốn CPU).
     void requestCancel() { m_cancelRequested = true; }
+    bool isCancelRequested() const { return m_cancelRequested.load(); }
 
 signals:
     /// Đổi tên khỏi `finished` - trùng tín hiệu có sẵn của QThread (cùng bài học đã áp dụng cho

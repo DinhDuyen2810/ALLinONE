@@ -5,8 +5,11 @@
 #include "engine/ScrcpyLauncher.h"
 #include "model/AndroidDeviceInfo.h"
 
+class AdbDeviceLister;
 class QCheckBox;
 class QComboBox;
+class QHideEvent;
+class QShowEvent;
 class QLabel;
 class QLineEdit;
 class QPushButton;
@@ -32,9 +35,20 @@ public:
     /// vô thời hạn dù đã "đóng" cửa sổ, xem AndroidControlWindow.cpp).
     void stopActiveSession();
 
+    /// Dừng MỌI việc nền của tab: phiên scrcpy, timer tự làm mới, lệnh `adb devices` đang chạy dở, và
+    /// daemon adb đóng gói kèm (xem AdbController::stopBundledAdbServer() - daemon đó sống sót sau khi
+    /// ứng dụng thoát và khóa tệp adb.exe, cản trình cài đặt bản cập nhật). Gọi khi đóng cửa sổ Android
+    /// Phone Control và khi ứng dụng thoát; mở lại cửa sổ (showEvent) thì mọi thứ tự chạy lại.
+    void stopBackgroundWork();
+
+protected:
+    void showEvent(QShowEvent* event) override;
+    void hideEvent(QHideEvent* event) override;
+
 private slots:
     void onRefreshClicked();
     void onAutoRefreshTick();
+    void onDevicesListed(const QList<AndroidDeviceInfo>& devices, const QString& error);
     void onPairClicked();
     void onSwitchToWirelessClicked();
     void onControlClicked();
@@ -51,6 +65,10 @@ private:
     void reloadDevices();
     void updateBundleBanner();
     ScrcpyOptions collectOptions() const;
+    /// Chốt đường dẫn tệp ghi hình cho phiên sắp chạy (tên mặc định kèm dấu thời gian MỚI cho mỗi phiên;
+    /// tệp người dùng tự chọn mà đã tồn tại thì hỏi trước khi ghi đè). Trả về false = người dùng hủy.
+    bool prepareRecordPath(ScrcpyOptions& options);
+    static QString defaultRecordPath();
     const AndroidDeviceInfo* selectedDevice() const;
 
     QLabel* m_bundleBanner{nullptr};
@@ -77,6 +95,13 @@ private:
     QPushButton* m_stopBtn{nullptr};
 
     ScrcpyLauncher* m_launcher{nullptr};
+    AdbDeviceLister* m_lister{nullptr};
     QTimer* m_autoRefreshTimer{nullptr};
     QList<AndroidDeviceInfo> m_devices;
+
+    bool m_backgroundAllowed{false};    // true chỉ khi tab đang hiện - cấm gọi adb khi cửa sổ đã ẩn/đang thoát
+    bool m_manualRefreshPending{false}; // người dùng vừa bấm "Làm mới" - lần liệt kê kế tiếp phải báo kết quả
+    QString m_lastListStatus;           // dòng trạng thái của lần liệt kê trước, xem onDevicesListed()
+    bool m_recordPathIsAuto{false};     // ô đường dẫn ghi hình đang là tên mặc định tự sinh
+    bool m_recordOverwriteConfirmed{false}; // người dùng vừa đồng ý ghi đè trong hộp thoại "Chọn..."
 };

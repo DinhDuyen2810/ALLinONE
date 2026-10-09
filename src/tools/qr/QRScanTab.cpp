@@ -7,6 +7,7 @@
 
 #include <QApplication>
 #include <QCamera>
+#include <QCheckBox>
 #include <QClipboard>
 #include <QComboBox>
 #include <QDesktopServices>
@@ -87,6 +88,9 @@ void QRScanTab::buildUi()
 
     m_view = new QRImageView(this);
     connect(m_view, &QRImageView::imageDropped, this, [this](const QImage& img, const QString& name) {
+        // Như "Mở ảnh"/"Dán ảnh": dừng camera trước, nếu không khung hình kế tiếp sẽ đè ngay lên ảnh
+        // vừa thả trong khi bảng kết quả vẫn là của ảnh đó.
+        stopCamera();
         scanImage(img, name);
     });
     body->addWidget(m_view, 5);
@@ -108,10 +112,12 @@ void QRScanTab::buildUi()
     connect(m_resultList, &QListWidget::currentRowChanged, this, &QRScanTab::onResultSelected);
 
     m_typeLabel = new QLabel(right);
+    m_typeLabel->setTextFormat(Qt::PlainText);
     m_typeLabel->setStyleSheet("color: #1a7f37; font-weight: bold; font-size: 13px;");
     rl->addWidget(m_typeLabel);
 
     m_fieldTable = new QTableWidget(0, 2, right);
+    m_fieldTable->setObjectName("fieldTable");
     m_fieldTable->setHorizontalHeaderLabels({"Trường", "Giá trị"});
     m_fieldTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     m_fieldTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
@@ -124,11 +130,21 @@ void QRScanTab::buildUi()
     m_fieldTable->setMaximumHeight(150);
     rl->addWidget(m_fieldTable);
 
+    // Mật khẩu WiFi trong mã quét được mặc định bị che ở bảng trường, ô "nội dung gốc" và danh sách kết
+    // quả (người đứng cạnh/đang chia sẻ màn hình không nên thấy ngay). "Sao chép"/"Lưu .txt"/"Tạo lại mã"
+    // vẫn dùng nội dung thật vì đó là hành động người dùng chủ động yêu cầu.
+    m_revealCheck = new QCheckBox("👁 Hiện mật khẩu", right);
+    m_revealCheck->setObjectName("revealCheck");
+    m_revealCheck->setVisible(false);
+    rl->addWidget(m_revealCheck);
+    connect(m_revealCheck, &QCheckBox::toggled, this, [this](bool) { showResult(m_resultList->currentRow()); });
+
     auto* rawLabel = new QLabel("NỘI DUNG GỐC", right);
     rawLabel->setStyleSheet("color: #0969da; font-size: 11px; font-weight: bold; letter-spacing: 1.5px;");
     rl->addWidget(rawLabel);
 
     m_rawText = new QPlainTextEdit(right);
+    m_rawText->setObjectName("rawText");
     m_rawText->setReadOnly(true);
     m_rawText->setStyleSheet(QRUi::inputStyle());
     rl->addWidget(m_rawText, 1);
@@ -164,6 +180,8 @@ void QRScanTab::buildUi()
     root->addLayout(body, 1);
 
     m_status = new QLabel(this);
+    // Dòng trạng thái chứa tên tệp/nguồn do bên ngoài đặt - luôn hiện nguyên văn, không tự dựng HTML.
+    m_status->setTextFormat(Qt::PlainText);
     m_status->setStyleSheet("background-color: #ffffff; color: #57606a; border: 1px solid #d0d7de; border-radius: 8px; padding: 6px 10px; font-size: 12px;");
     root->addWidget(m_status);
     setStatus("Chọn một nguồn ảnh để quét mã QR.");
@@ -193,6 +211,11 @@ void QRScanTab::clearResults()
     m_fieldTable->setRowCount(0);
     m_rawText->clear();
     m_typeLabel->clear();
+    {
+        QSignalBlocker blocker(m_revealCheck);
+        m_revealCheck->setChecked(false); // mỗi lần quét mới lại che mật khẩu
+    }
+    m_revealCheck->setVisible(false);
     for (QPushButton* b : {m_copyBtn, m_actionBtn, m_saveBtn, m_recreateBtn})
         b->setEnabled(false);
     m_actionBtn->setText("Mở");
@@ -210,6 +233,11 @@ int QRScanTab::scanImage(const QImage& image, const QString& sourceName)
     const QList<QRDecoded> found = QRCodec::decode(image);
     QApplication::restoreOverrideCursor();
 
+    return presentResults(image, found, sourceName);
+}
+
+int QRScanTab::presentResults(const QImage& image, const QList<QRDecoded>& found, const QString& sourceName)
+{
     clearResults();
     m_view->setImage(image);
 
@@ -230,7 +258,7 @@ int QRScanTab::scanImage(const QImage& image, const QString& sourceName)
 
     for (int i = 0; i < found.size(); ++i)
     {
-        QString snippet = found[i].text.simplified();
+        QString snippet = QRPayload::maskSecrets(found[i].text).simplified();
         if (snippet.size() > 60)
             snippet = snippet.left(60) + "…";
         m_resultList->addItem(QString("%1. [%2] %3").arg(i + 1).arg(m_parsed[i].typeName, snippet));
@@ -258,15 +286,20 @@ void QRScanTab::showResult(int index)
     m_typeLabel->setText(QString("%1  •  QR v%2  •  %3  •  sửa lỗi %4")
                              .arg(p.typeName).arg(d.version).arg(d.format, QRCodec::eccName(d.ecc)));
 
+    const bool hasSecret = p.secretField >= 0 && p.secretField < p.fields.size();
+    const bool reveal = m_revealCheck->isChecked();
+    m_revealCheck->setVisible(hasSecret);
+
     m_fieldTable->setRowCount(p.fields.size());
     for (int i = 0; i < p.fields.size(); ++i)
     {
+        const bool masked = hasSecret && i == p.secretField && !reveal;
         m_fieldTable->setItem(i, 0, new QTableWidgetItem(p.fields[i].first));
-        m_fieldTable->setItem(i, 1, new QTableWidgetItem(p.fields[i].second));
+        m_fieldTable->setItem(i, 1, new QTableWidgetItem(masked ? QRPayload::secretMask() : p.fields[i].second));
     }
     m_fieldTable->resizeRowsToContents();
 
-    m_rawText->setPlainText(d.text);
+    m_rawText->setPlainText(hasSecret && !reveal ? QRPayload::maskSecrets(d.text) : d.text);
 
     m_copyBtn->setEnabled(true);
     m_saveBtn->setEnabled(true);
@@ -292,9 +325,14 @@ void QRScanTab::openAction()
 
     const QString url = m_parsed[row].actionUrl;
     // Cảnh báo trước khi mở liên kết lạ (mã QR có thể dẫn tới trang độc hại)
-    if (QMessageBox::question(this, "Mở liên kết",
-                              "Chỉ mở nếu bạn tin tưởng nguồn mã QR này.\n\n" + url + "\n\nTiếp tục?",
-                              QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+    // URL lấy từ mã QR là dữ liệu không tin cậy: ép hộp thoại hiện NGUYÊN VĂN (Qt::PlainText) để người
+    // dùng thấy đúng địa chỉ sẽ mở, không phụ thuộc việc Qt có đoán chuỗi là rich text hay không.
+    QMessageBox box(QMessageBox::Question, "Mở liên kết",
+                    "Chỉ mở nếu bạn tin tưởng nguồn mã QR này.\n\n" + url + "\n\nTiếp tục?",
+                    QMessageBox::Yes | QMessageBox::No, this);
+    box.setTextFormat(Qt::PlainText);
+    box.setDefaultButton(QMessageBox::No);
+    if (box.exec() != QMessageBox::Yes)
         return;
 
     if (!QDesktopServices::openUrl(QUrl::fromUserInput(url)))
@@ -371,20 +409,25 @@ void QRScanTab::captureScreen()
 {
     stopCamera();
     QWidget* top = window();
+    // Nhớ trạng thái cửa sổ để hiện lại ĐÚNG như cũ: showNormal() cố định từng làm cửa sổ đang phóng to
+    // (maximize) bị thu về kích thước thường sau mỗi lần chụp.
+    const Qt::WindowStates previousState = top->windowState() & ~Qt::WindowMinimized;
     top->hide();
 
-    QTimer::singleShot(250, this, [this, top] {
-        auto* overlay = new ScreenSnipOverlay();
-        connect(overlay, &ScreenSnipOverlay::captured, this, [this, top](const QImage& img) {
-            top->showNormal();
+    QTimer::singleShot(250, this, [this, top, previousState] {
+        auto restoreWindow = [top, previousState] {
+            top->setWindowState(previousState);
+            top->show();
             top->raise();
             top->activateWindow();
+        };
+        auto* overlay = new ScreenSnipOverlay();
+        connect(overlay, &ScreenSnipOverlay::captured, this, [this, restoreWindow](const QImage& img) {
+            restoreWindow();
             scanImage(img, "vùng màn hình");
         });
-        connect(overlay, &ScreenSnipOverlay::cancelled, this, [this, top] {
-            top->showNormal();
-            top->raise();
-            top->activateWindow();
+        connect(overlay, &ScreenSnipOverlay::cancelled, this, [this, restoreWindow] {
+            restoreWindow();
             setStatus("Đã hủy chụp màn hình.");
         });
         overlay->show();
@@ -436,7 +479,10 @@ void QRScanTab::toggleCamera(bool on)
         return;
     }
 
-    stopCamera();
+    // releaseCamera(), KHÔNG phải stopCamera(): stopCamera() còn bỏ chọn nút Camera - gọi nó ở đây (nút
+    // vừa được bấm = đang "checked") làm nút bật ra ngay trong khi camera vẫn khởi động, lần bấm kế tiếp
+    // lại phát toggled(true) và chỉ khởi động lại camera, tức KHÔNG CÒN CÁCH NÀO tắt camera bằng nút.
+    releaseCamera();
     clearResults();
 
     QCameraDevice chosen;
@@ -471,6 +517,11 @@ void QRScanTab::stopCamera()
         QSignalBlocker b(m_cameraBtn);
         m_cameraBtn->setChecked(false);
     }
+    releaseCamera();
+}
+
+void QRScanTab::releaseCamera()
+{
     if (!m_camera)
         return;
 
@@ -508,12 +559,21 @@ void QRScanTab::onVideoFrame(const QVideoFrame& frame)
     QImage work = img;
     if (std::max(work.width(), work.height()) > 960)
         work = work.scaled(960, 960, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-    const QList<QRDecoded> found = QRCodec::decode(work);
+    QList<QRDecoded> found = QRCodec::decode(work);
     m_decodingFrame = false;
 
     if (!found.isEmpty())
     {
+        // Dùng CHÍNH kết quả vừa giải mã. Trước đây gọi scanImage(img) giải mã LẠI khung hình gốc (kích
+        // thước khác ảnh thu nhỏ vừa đọc được) sau khi đã dừng camera - lần hai không đọc ra thì báo
+        // "Không tìm thấy mã QR" dù vừa tìm thấy. Chỉ cần quy đổi tọa độ 4 góc về khung hình gốc.
+        const double fx = work.width() > 0 ? static_cast<double>(img.width()) / work.width() : 1.0;
+        const double fy = work.height() > 0 ? static_cast<double>(img.height()) / work.height() : 1.0;
+        for (QRDecoded& d : found)
+            for (QPoint& pt : d.corners)
+                pt = QPoint(qRound(pt.x() * fx), qRound(pt.y() * fy));
+
         stopCamera();
-        scanImage(img, "camera");
+        presentResults(img, found, "camera");
     }
 }

@@ -4,6 +4,7 @@
 #include <QFormLayout>
 #include <QLabel>
 #include <QGroupBox>
+#include <QHideEvent>
 #include <QScrollArea>
 
 struct KeyInfo
@@ -502,12 +503,70 @@ QWidget* ActionEditorWidget::createScrollPage()
 void ActionEditorWidget::onTypeChanged(int index)
 {
     m_pagesStack->setCurrentIndex(index);
+    // Rời trang "Phím tắt" thì không còn gì để bắt nữa - xem cancelHotkeyCapture().
+    if (index != static_cast<int>(ActionType::Hotkey))
+        cancelHotkeyCapture();
+}
+
+void ActionEditorWidget::cancelHotkeyCapture()
+{
+    // Hook bàn phím của HotkeyCapture NUỐT MỌI PHÍM trên toàn hệ thống trong lúc đang bắt. Trước đây chỉ
+    // có Esc/hết 20 giây mới gỡ nó: bấm "Bắt tổ hợp phím" rồi chọn hàng khác, đóng hay thu nhỏ cửa sổ thì
+    // bàn phím cả máy vẫn "chết" tới hết 20 giây, và tổ hợp bắt được sau đó lại điền vào một hành động
+    // KHÁC với hành động lúc bấm nút.
+    if (m_hotkeyCapture && m_hotkeyCapture->isCapturing())
+        m_hotkeyCapture->cancelCapture();
+}
+
+void ActionEditorWidget::hideEvent(QHideEvent* event)
+{
+    cancelHotkeyCapture(); // đóng/ẩn/thu nhỏ cửa sổ Auto Click
+    QWidget::hideEvent(event);
+}
+
+namespace
+{
+// Vai trò dữ liệu đánh dấu mục TẠM "(phím khác: ...)" trong combo phím và giữ tên phím gốc của nó.
+constexpr int kCustomKeyNameRole = Qt::UserRole + 1;
+}
+
+void ActionEditorWidget::selectKeyInCombo(QComboBox* combo, int vkCode, const QString& keyName)
+{
+    // Bỏ mục tạm của hành động nạp trước đó (nếu có) - mỗi lúc chỉ có tối đa một mục tạm.
+    for (int i = combo->count() - 1; i >= 0; --i)
+    {
+        if (combo->itemData(i, kCustomKeyNameRole).isValid())
+            combo->removeItem(i);
+    }
+
+    int idx = combo->findData(vkCode);
+    if (idx < 0)
+    {
+        // Phím nằm NGOÀI danh sách hỗ trợ sẵn (hồ sơ nhập từ tệp JSON, vd phím số/numpad). Trước đây
+        // combo cứ giữ nguyên lựa chọn của hành động xem trước đó, nên bấm "Lưu hành động" là âm thầm
+        // đổi phím của hành động này thành phím kia. Thêm một mục tạm mang đúng mã + tên gốc để Lưu mà
+        // không đụng tới combo thì phím giữ nguyên.
+        const QString shown = keyName.isEmpty() ? QString("mã %1").arg(vkCode) : keyName;
+        combo->addItem(QString("(phím khác: %1)").arg(shown), vkCode);
+        idx = combo->count() - 1;
+        combo->setItemData(idx, keyName, kCustomKeyNameRole);
+    }
+    combo->setCurrentIndex(idx);
+}
+
+QString ActionEditorWidget::keyNameFromCombo(const QComboBox* combo)
+{
+    const QVariant custom = combo->currentData(kCustomKeyNameRole);
+    return custom.isValid() ? custom.toString() : combo->currentText();
 }
 
 void ActionEditorWidget::setAction(const Action& action, int actionIndex)
 {
+    cancelHotkeyCapture(); // đang chờ bắt tổ hợp phím cho hành động CŨ thì hủy, không điền nhầm sang hành động mới
+
     m_loadingAction = true; // chặn markDirty() trong lúc TỰ nạp giá trị dưới đây
     m_currentIndex = actionIndex;
+    m_loadedEnabled = action.enabled;
     m_typeCombo->setCurrentIndex(static_cast<int>(action.type));
     m_pagesStack->setCurrentIndex(static_cast<int>(action.type));
 
@@ -536,11 +595,9 @@ void ActionEditorWidget::setAction(const Action& action, int actionIndex)
     m_shiftCheck->setChecked(action.modShift);
     m_winCheck->setChecked(action.modWin);
 
-    int hotkeyIdx = m_hotkeyKeyCombo->findData(action.keyCode);
-    if (hotkeyIdx >= 0) m_hotkeyKeyCombo->setCurrentIndex(hotkeyIdx);
-
-    int keyPressIdx = m_keyPressCombo->findData(action.keyCode);
-    if (keyPressIdx >= 0) m_keyPressCombo->setCurrentIndex(keyPressIdx);
+    const QString keyName = QString::fromStdString(action.keyName);
+    selectKeyInCombo(m_hotkeyKeyCombo, action.keyCode, keyName);
+    selectKeyInCombo(m_keyPressCombo, action.keyCode, keyName);
 
     m_scrollDirectionCombo->setCurrentIndex(static_cast<int>(action.scrollDirection));
     m_scrollAmountSpin->setValue(action.scrollAmount);
@@ -557,6 +614,10 @@ Action ActionEditorWidget::getAction() const
 {
     Action act;
     act.type = static_cast<ActionType>(m_typeCombo->currentIndex());
+    // Editor không có ô nào cho `enabled` - phải giữ nguyên giá trị của hành động đang sửa. Trước đây
+    // Action mới tạo ở trên luôn mang enabled=true, nên "Lưu hành động" âm thầm BẬT LẠI một hành động đã
+    // tắt trong hồ sơ.
+    act.enabled = m_loadedEnabled;
 
     act.waitBefore = std::chrono::milliseconds(m_waitBeforeSpin->value());
     act.waitAfter = std::chrono::milliseconds(m_waitAfterSpin->value());
@@ -586,12 +647,12 @@ Action ActionEditorWidget::getAction() const
     act.modShift = m_shiftCheck->isChecked();
     act.modWin = m_winCheck->isChecked();
     act.keyCode = m_hotkeyKeyCombo->currentData().toInt();
-    act.keyName = m_hotkeyKeyCombo->currentText().toStdString();
+    act.keyName = keyNameFromCombo(m_hotkeyKeyCombo).toStdString();
 
     if (act.type == ActionType::KeyPress)
     {
         act.keyCode = m_keyPressCombo->currentData().toInt();
-        act.keyName = m_keyPressCombo->currentText().toStdString();
+        act.keyName = keyNameFromCombo(m_keyPressCombo).toStdString();
     }
 
     act.scrollDirection = static_cast<ScrollDirection>(m_scrollDirectionCombo->currentIndex());

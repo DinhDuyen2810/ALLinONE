@@ -9,7 +9,10 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QTabWidget>
+#include <QTemporaryDir>
 #include <cstdio>
+
+#include "core/AppPaths.h"
 
 #include "tools/security/SecurityGatewayWindow.h"
 #include "tools/security/engine/DefenderController.h"
@@ -25,6 +28,10 @@ static int g_fail = 0, g_pass = 0;
 int main(int argc, char** argv)
 {
     QApplication app(argc, argv);
+
+    // Cửa sổ ghi log khi mở - ép dữ liệu vào thư mục tạm để test không ghi vào log thật của người dùng.
+    QTemporaryDir dataDir;
+    AppPaths::setDataDirOverride(dataDir.path());
 
     SecurityGatewayWindow win;
     win.setAttribute(Qt::WA_DontShowOnScreen, true);

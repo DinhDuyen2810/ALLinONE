@@ -158,12 +158,7 @@ void ActionListWidget::setActions(const std::vector<Action>& actions)
         int row = m_table->rowCount();
         m_table->insertRow(row);
 
-        const bool dirty = (static_cast<int>(i) == m_dirtyRow);
-        QString idxText = QString("%1").arg(i + 1, 2, 10, QChar('0'));
-        if (dirty)
-            idxText += " *";
-
-        auto* itemIdx = new QTableWidgetItem(idxText);
+        auto* itemIdx = new QTableWidgetItem();
         auto* itemType = new QTableWidgetItem(act.typeName());
         auto* itemDesc = new QTableWidgetItem(act.description());
         auto* itemBefore = new QTableWidgetItem(QString("%1 ms").arg(act.waitBefore.count()));
@@ -178,12 +173,6 @@ void ActionListWidget::setActions(const std::vector<Action>& actions)
         {
             itemDur->setToolTip(QString("Thời lượng thao tác: %1 ms").arg(act.duration.count()));
         }
-        if (dirty)
-        {
-            itemIdx->setToolTip("Có thay đổi CHƯA LƯU - bấm \"Lưu hành động (Apply)\" ở panel bên phải để lưu lại");
-            itemIdx->setForeground(QColor("#9a6700"));
-        }
-
         itemIdx->setTextAlignment(Qt::AlignCenter);
         itemType->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
         itemBefore->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
@@ -196,6 +185,7 @@ void ActionListWidget::setActions(const std::vector<Action>& actions)
         m_table->setItem(row, 3, itemBefore);
         m_table->setItem(row, 4, itemAfter);
         m_table->setItem(row, 5, itemDur);
+        refreshIndexCell(row); // chữ/màu cột số thứ tự (kèm dấu "*" chưa lưu, "▶" đang chạy)
     }
 
     if (currentRow >= 0 && currentRow < m_table->rowCount())
@@ -233,29 +223,47 @@ void ActionListWidget::setRowDirty(int row, bool dirty)
     // Chỉ cập nhật lại CỘT SỐ của (tối đa) 2 hàng liên quan thay vì vẽ lại cả bảng - rẻ hơn nhiều vì
     // onPositionCaptured/các trường trong ActionEditorWidget có thể gọi hàm này liên tục khi người dùng
     // đang gõ/chỉnh từng ký tự.
-    auto refreshIndexCell = [this](int r) {
-        if (r < 0 || r >= m_table->rowCount())
-            return;
-        auto* item = m_table->item(r, 0);
-        if (!item)
-            return;
-        QString text = QString("%1").arg(r + 1, 2, 10, QChar('0'));
-        if (r == m_dirtyRow)
-        {
-            text += " *";
-            item->setToolTip("Có thay đổi CHƯA LƯU - bấm \"Lưu hành động (Apply)\" ở panel bên phải để lưu lại");
-            item->setForeground(QColor("#9a6700"));
-        }
-        else
-        {
-            item->setToolTip(QString());
-            item->setForeground(m_table->palette().text());
-        }
-        item->setText(text);
-    };
-
     refreshIndexCell(oldDirtyRow);
     refreshIndexCell(newDirtyRow);
+}
+
+void ActionListWidget::setRunningRow(int row)
+{
+    if (row == m_runningRow)
+        return;
+
+    const int oldRunningRow = m_runningRow;
+    m_runningRow = row;
+    refreshIndexCell(oldRunningRow);
+    refreshIndexCell(m_runningRow);
+}
+
+void ActionListWidget::refreshIndexCell(int r)
+{
+    if (r < 0 || r >= m_table->rowCount())
+        return;
+    auto* item = m_table->item(r, 0);
+    if (!item)
+        return;
+
+    QString text = QString("%1").arg(r + 1, 2, 10, QChar('0'));
+    QString toolTip;
+    QBrush foreground = m_table->palette().text();
+    if (r == m_runningRow)
+    {
+        text.prepend("▶ ");
+        toolTip = "Hành động đang được thực thi";
+        foreground = QColor("#1f883d");
+    }
+    if (r == m_dirtyRow)
+    {
+        text += " *";
+        toolTip = "Có thay đổi CHƯA LƯU - bấm \"Lưu hành động (Apply)\" ở panel bên phải để lưu lại";
+        foreground = QColor("#9a6700");
+    }
+    item->setText(text);
+    item->setToolTip(toolTip);
+    item->setForeground(foreground);
 }
 
 void ActionListWidget::onCustomContextMenuRequested(const QPoint& pos)

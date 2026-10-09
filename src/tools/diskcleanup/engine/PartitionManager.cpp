@@ -70,7 +70,12 @@ bool resizePartition(int diskNumber, int partitionNumber, qint64 newSizeBytes, Q
 {
     bool ok = false;
     QString runErr;
-    runPowerShell(internal::buildResizeScript(diskNumber, partitionNumber, newSizeBytes), &ok, &runErr, 180000 /* 3 phút - co giãn ổ lớn có thể lâu */);
+    // KHÔNG đặt giới hạn thời gian thực tế cho thao tác này: PowerShellRunner sẽ kill() powershell.exe
+    // khi hết thời gian chờ, mà thu nhỏ một ổ lớn/chậm (Windows phải di chuyển dữ liệu) có thể mất rất
+    // lâu - giới hạn 3 phút trước đây vừa báo "thất bại" sai, vừa cắt ngang một thao tác đĩa đang chạy.
+    // 7 ngày: đủ dài để coi như vô hạn, vẫn nằm trong kiểu int của tham số (đơn vị ms).
+    constexpr int kNoPracticalTimeoutMs = 7 * 24 * 60 * 60 * 1000;
+    runPowerShell(internal::buildResizeScript(diskNumber, partitionNumber, newSizeBytes), &ok, &runErr, kNoPracticalTimeoutMs);
     if (!ok && error)
         *error = runErr;
     return ok;
@@ -218,6 +223,45 @@ SupportedSizeRange parseSupportedSizeJson(const QByteArray& json, QString* error
     if (!range.ok && error)
         *error = "Kích thước cho phép không hợp lệ";
     return range;
+}
+
+qint64 clampResizeBytes(double sizeGb, const SupportedSizeRange& range)
+{
+    const qint64 bytes = static_cast<qint64>(sizeGb * 1024.0 * 1024.0 * 1024.0);
+    return qBound(range.minBytes, bytes, range.maxBytes);
+}
+
+QString resizeBlockReason(int diskNumber, int partitionNumber, qint64 sizeAtQueryBytes,
+                          const QList<PartitionInfo>& currentPartitions, const SupportedSizeRange& currentRange,
+                          qint64 newSizeBytes)
+{
+    if (diskNumber < 0 || partitionNumber < 0)
+        return "Chưa xác định được phân vùng cần đổi kích thước.";
+
+    const PartitionInfo* current = nullptr;
+    for (const PartitionInfo& p : currentPartitions)
+    {
+        if (p.diskNumber == diskNumber && p.partitionNumber == partitionNumber)
+        {
+            current = &p;
+            break;
+        }
+    }
+    if (!current)
+        return "Không còn thấy phân vùng này trên máy - danh sách đĩa đã thay đổi. Hãy bấm Làm mới và thử lại.";
+    if (current->sizeBytes != sizeAtQueryBytes)
+        return "Kích thước hiện tại của phân vùng đã khác lúc tra (danh sách đĩa/phân vùng đã thay đổi). Hãy "
+               "bấm Làm mới, chọn lại phân vùng và tra lại kích thước.";
+    if (!currentRange.ok || currentRange.maxBytes < currentRange.minBytes)
+        return "Không xác nhận lại được khoảng kích thước Windows cho phép.";
+    if (newSizeBytes <= 0 || newSizeBytes < currentRange.minBytes || newSizeBytes > currentRange.maxBytes)
+        return QString("Kích thước mới (%1 byte) nằm ngoài khoảng Windows cho phép (%2 - %3 byte).")
+            .arg(newSizeBytes)
+            .arg(currentRange.minBytes)
+            .arg(currentRange.maxBytes);
+    if (newSizeBytes == current->sizeBytes)
+        return "Kích thước mới bằng kích thước hiện tại - không có gì để đổi.";
+    return {};
 }
 
 } // namespace internal

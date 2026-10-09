@@ -12,6 +12,8 @@
 #include <QComboBox>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QShowEvent>
+#include <QSignalBlocker>
 #include <QTabWidget>
 #include <QVBoxLayout>
 
@@ -72,6 +74,45 @@ void WifiWindow::closeEvent(QCloseEvent* event)
     event->accept();
 }
 
+void WifiWindow::showEvent(QShowEvent* event)
+{
+    QWidget::showEvent(event);
+    if (event->spontaneous())
+        return; // chỉ là khôi phục từ thu nhỏ - không phải mở lại cửa sổ
+
+    if (!m_shownOnce)
+    {
+        // Lần hiện đầu: constructor vừa mở dịch vụ + nạp adapter xong, chỉ còn thiếu polling - buildUi()
+        // gọi onTabChanged(0) TRƯỚC khi có adapter nào (GUID còn rỗng) nên startActivePolling() lúc đó
+        // không làm gì, banner trạng thái đứng yên cho tới khi người dùng đổi tab đi rồi quay lại.
+        m_shownOnce = true;
+        if (m_serviceAvailable && m_tabs->currentIndex() == 0)
+            m_networksTab->startActivePolling();
+        return;
+    }
+
+    // Cửa sổ được TÁI DÙNG sau khi đóng (xem closeEvent): closeEvent đã tắt polling, và danh sách adapter
+    // chỉ được đọc một lần lúc tạo cửa sổ. Không làm lại ở đây thì lần mở sau banner không tự cập nhật,
+    // adapter WiFi cắm thêm không hiện ra, và nếu dịch vụ WLAN chưa chạy ở lần mở đầu thì cửa sổ bị khóa
+    // cho tới khi khởi động lại cả ứng dụng.
+    if (!m_serviceAvailable)
+    {
+        QString openError;
+        m_serviceAvailable = m_controller->open(&openError);
+        if (!m_serviceAvailable)
+        {
+            m_warningLabel->setText("⚠ " + openError);
+            m_warningLabel->setVisible(true);
+            return;
+        }
+        m_adapterCombo->setEnabled(true);
+    }
+
+    reloadAdapters(); // setAdapter() của từng tab tự đọc lại danh sách mạng/hồ sơ
+    if (m_tabs->currentIndex() == 0)
+        m_networksTab->startActivePolling();
+}
+
 void WifiWindow::buildUi()
 {
     auto* root = new QVBoxLayout(this);
@@ -114,9 +155,23 @@ void WifiWindow::reloadAdapters()
 {
     QString error;
     const auto list = m_controller->adapters(&error);
-    m_adapterCombo->clear();
-    for (const WifiAdapterInfo& a : list)
-        m_adapterCombo->addItem(a.description, a.guidString);
+
+    // Giữ adapter đang chọn nếu nó vẫn còn. Chặn tín hiệu trong lúc dựng lại combo rồi gọi
+    // onAdapterChanged() đúng MỘT lần: trước đây addItem() đầu tiên tự phát currentIndexChanged(0) rồi
+    // hàm này lại gọi onAdapterChanged(0) thêm lần nữa - mỗi tab đọc lại toàn bộ danh sách hai lần.
+    const QString previousGuid = m_adapterCombo->currentData().toString();
+    int index = 0;
+    {
+        QSignalBlocker blocker(m_adapterCombo);
+        m_adapterCombo->clear();
+        for (const WifiAdapterInfo& a : list)
+            m_adapterCombo->addItem(a.description, a.guidString);
+        const int previousIndex = previousGuid.isEmpty() ? -1 : m_adapterCombo->findData(previousGuid);
+        if (previousIndex >= 0)
+            index = previousIndex;
+        if (!list.isEmpty())
+            m_adapterCombo->setCurrentIndex(index);
+    }
 
     if (list.isEmpty())
     {
@@ -126,8 +181,9 @@ void WifiWindow::reloadAdapters()
     }
     else
     {
+        m_warningLabel->setVisible(false);
         m_tabs->setEnabled(true);
-        onAdapterChanged(0);
+        onAdapterChanged(index);
     }
 }
 

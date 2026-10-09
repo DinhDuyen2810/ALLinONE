@@ -44,5 +44,13 @@ struct CleanupCategory
     bool scanSubdirectories{true};
     bool keepRootFolder{true}; // true: xóa NỘI DUNG bên trong rootPaths (giữ lại thư mục gốc); false: xóa cả thư mục gốc
 
+    /// Tên mục cấp 1 KHÔNG BAO GIỜ được liệt kê/xóa (so không phân biệt hoa thường) - vd thư mục
+    /// AutomaticDestinations/CustomDestinations trong Recent chứa các mục người dùng đã GHIM (jump list,
+    /// Quick Access), không phải "danh sách gần đây" tự sinh lại được.
+    QStringList excludeNames;
+    /// Bỏ qua mục vừa được sửa trong N giây gần đây (0 = không lọc) - tệp tạm của một trình cài đặt/ứng
+    /// dụng ĐANG chạy thường vừa được ghi xong, xóa đi có thể làm hỏng thao tác đang dở của chương trình đó.
+    int minAgeSeconds{0};
+
     QString displayName() const { return name; }
 };

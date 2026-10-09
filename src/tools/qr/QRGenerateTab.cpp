@@ -105,6 +105,25 @@ QWidget* QRGenerateTab::makeWifiPage()
     m_wifiSsid->setObjectName("wifiSsid");
     m_wifiPass = makeEdit("Mật khẩu", w);
     m_wifiPass->setObjectName("wifiPass");
+    // Che mật khẩu khi gõ (người đứng cạnh/đang chia sẻ màn hình), có nút 👁 để chủ động xem lại.
+    m_wifiPass->setEchoMode(QLineEdit::Password);
+    auto* wifiPassToggle = new QPushButton("👁", w);
+    wifiPassToggle->setObjectName("wifiPassToggle");
+    wifiPassToggle->setCheckable(true);
+    wifiPassToggle->setFixedWidth(36);
+    wifiPassToggle->setCursor(Qt::PointingHandCursor);
+    wifiPassToggle->setToolTip("Hiện/ẩn mật khẩu");
+    wifiPassToggle->setStyleSheet(QRUi::buttonStyle());
+    connect(wifiPassToggle, &QPushButton::toggled, this, [this, wifiPassToggle](bool on) {
+        m_wifiPass->setEchoMode(on ? QLineEdit::Normal : QLineEdit::Password);
+        wifiPassToggle->setText(on ? "🙈" : "👁");
+    });
+    auto* wifiPassRow = new QWidget(w);
+    auto* wifiPassLayout = new QHBoxLayout(wifiPassRow);
+    wifiPassLayout->setContentsMargins(0, 0, 0, 0);
+    wifiPassLayout->setSpacing(6);
+    wifiPassLayout->addWidget(m_wifiPass, 1);
+    wifiPassLayout->addWidget(wifiPassToggle);
     m_wifiSec = new QComboBox(w);
     m_wifiSec->addItem("WPA/WPA2/WPA3", "WPA");
     m_wifiSec->addItem("WEP", "WEP");
@@ -119,7 +138,7 @@ QWidget* QRGenerateTab::makeWifiPage()
     connect(m_wifiHidden, &QCheckBox::toggled, this, &QRGenerateTab::scheduleRefresh);
     f->addRow("SSID:", m_wifiSsid);
     f->addRow("Bảo mật:", m_wifiSec);
-    f->addRow("Mật khẩu:", m_wifiPass);
+    f->addRow("Mật khẩu:", wifiPassRow);
     f->addRow("", m_wifiHidden);
     return w;
 }

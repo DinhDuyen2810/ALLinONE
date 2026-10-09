@@ -1,12 +1,13 @@
 #include "DuplicateFinder.h"
 
+#include "FsSafety.h"
+
 #include <QByteArrayView>
 #include <QCryptographicHash>
-#include <QDir>
-#include <QDirIterator>
 #include <QFile>
-#include <QFileInfo>
 #include <QHash>
+#include <QPair>
+#include <QSet>
 
 #include <algorithm>
 
@@ -46,8 +47,10 @@ DuplicateFinder::DuplicateFinder(QObject* parent)
 
 DuplicateFinder::~DuplicateFinder()
 {
+    // Chờ KHÔNG giới hạn - xem CleanupScanner::~CleanupScanner (cờ dừng được kiểm tra ở từng mục/từng
+    // 4MB khi băm).
     requestStop();
-    wait(5000);
+    wait();
 }
 
 void DuplicateFinder::requestStop()
@@ -55,35 +58,46 @@ void DuplicateFinder::requestStop()
     m_stopRequested = true;
 }
 
+void DuplicateFinder::startScan(QThread::Priority priority)
+{
+    if (isRunning())
+        return;
+    m_stopRequested = false;
+    start(priority);
+}
+
+bool DuplicateFinder::fileUnchanged(const QString& path, qint64 sizeBytes, qint64 lastWriteTime)
+{
+    const FsSafety::RawInfo info = FsSafety::rawInfo(path);
+    return info.exists && !info.isDir && !info.isLink && info.sizeBytes == sizeBytes && info.lastWriteTime == lastWriteTime;
+}
+
+namespace
+{
+struct Candidate
+{
+    QString path;
+    qint64 lastWriteTime{0};
+};
+} // namespace
+
 void DuplicateFinder::run()
 {
-    m_stopRequested = false;
-
-    // Bước 1: liệt kê tệp + nhóm theo kích thước (rẻ, không đọc nội dung). Bỏ qua symlink/lối tắt
-    // để không vô tình đệ quy lạc sang thư mục đích của một lối tắt - xem CleanupScanner.cpp.
-    QHash<qint64, QStringList> bySize;
+    // Bước 1: liệt kê tệp + nhóm theo kích thước (rẻ, không đọc nội dung). FsSafety::walkFiles bỏ qua
+    // symlink/lối tắt và không đi vào junction/symlink thư mục - xem ghi chú ở DuplicateFinder.h.
+    QHash<qint64, QList<Candidate>> bySize;
     qint64 filesScanned = 0;
-    QDirIterator it(m_rootPath, QDir::Files | QDir::System | QDir::Hidden | QDir::NoSymLinks,
-                    QDirIterator::Subdirectories);
-    while (it.hasNext())
+    if (!m_rootPath.isEmpty())
     {
-        it.next();
-        const QFileInfo info = it.fileInfo();
-        const qint64 size = info.size();
-        if (size >= m_minSizeBytes)
-            bySize[size] << info.absoluteFilePath();
+        FsSafety::walkFiles(m_rootPath, m_stopRequested, [&](const FsSafety::WalkEntry& file) {
+            if (file.sizeBytes >= m_minSizeBytes)
+                bySize[file.sizeBytes].push_back({file.path, file.lastWriteTime});
 
-        // Cứ mỗi 200 tệp thì kiểm tra dừng + báo tiến độ (kèm đường dẫn hiện tại) - quét cả ổ đĩa hệ
-        // thống có thể gặp hàng trăm nghìn tệp, cần phản hồi đủ dày để không bị tưởng nhầm là treo.
-        if ((++filesScanned % 200) == 0)
-        {
-            if (m_stopRequested)
-            {
-                emit scanStopped();
-                return;
-            }
-            emit progressTick(filesScanned, 0, info.absoluteFilePath());
-        }
+            // Cứ mỗi 200 tệp thì báo tiến độ (kèm đường dẫn hiện tại) - quét cả ổ đĩa hệ thống có thể gặp
+            // hàng trăm nghìn tệp, cần phản hồi đủ dày để không bị tưởng nhầm là treo.
+            if ((++filesScanned % 200) == 0)
+                emit progressTick(filesScanned, 0, file.path);
+        });
     }
 
     if (m_stopRequested)
@@ -107,9 +121,29 @@ void DuplicateFinder::run()
         if (sizeIt.value().size() < 2)
             continue;
 
-        QHash<QString, QStringList> byHash;
-        for (const QString& path : sizeIt.value())
+        // Khử trùng theo danh tính tệp vật lý TRƯỚC khi băm: mỗi tệp trên đĩa chỉ được đại diện bởi MỘT
+        // đường dẫn. Không lấy được danh tính (không mở được tệp) thì loại luôn - thà bỏ sót một bản
+        // trùng còn hơn đề nghị xóa một tệp chưa chắc là bản sao.
+        QList<Candidate> distinctFiles;
+        QSet<QPair<quint32, quint64>> seenIdentities;
+        for (const Candidate& candidate : sizeIt.value())
         {
+            FsSafety::FileIdentity id;
+            if (!FsSafety::fileIdentity(candidate.path, &id))
+                continue;
+            const QPair<quint32, quint64> key(id.volumeSerial, id.fileIndex);
+            if (seenIdentities.contains(key))
+                continue;
+            seenIdentities.insert(key);
+            distinctFiles.push_back(candidate);
+        }
+        if (distinctFiles.size() < 2)
+            continue;
+
+        QHash<QString, QList<Candidate>> byHash;
+        for (const Candidate& candidate : distinctFiles)
+        {
+            const QString& path = candidate.path;
             if (m_stopRequested)
             {
                 emit scanStopped();
@@ -126,7 +160,7 @@ void DuplicateFinder::run()
             if (!ok)
                 continue; // không đọc được - bỏ qua, không coi là trùng lặp
 
-            byHash[hash] << path;
+            byHash[hash].push_back(candidate);
             if ((++filesHashed & 0x1F) == 0)
                 emit progressTick(filesScanned, filesHashed, path);
         }
@@ -136,7 +170,11 @@ void DuplicateFinder::run()
             if (hashIt.value().size() < 2)
                 continue;
             DuplicateGroup group;
-            group.paths = hashIt.value();
+            for (const Candidate& member : hashIt.value())
+            {
+                group.paths << member.path;
+                group.lastWriteTimes << member.lastWriteTime;
+            }
             group.sizeEachBytes = sizeIt.key();
             group.hashHex = hashIt.key();
             wastedTotal += group.wastedBytes();

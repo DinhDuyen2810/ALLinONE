@@ -16,6 +16,7 @@ struct VpnConnectionStatus
     QString tunnelType;      // chuỗi Windows trả về, vd "Ikev2", "Automatic"...
     QString connectionStatus; // "Connected" / "Disconnected"
     QString countryLabel;     // nhãn tự đặt, rỗng nếu chưa đặt
+    QString username;         // tên đăng nhập đã lưu (điền sẵn lúc kết nối), rỗng nếu chưa lưu - KHÔNG có mật khẩu
 
     bool isConnected() const { return connectionStatus.compare("Connected", Qt::CaseInsensitive) == 0; }
 };
@@ -30,28 +31,44 @@ struct VpnConnectionStatus
  * giống hệt tinh thần đã áp dụng cho WiFi (chỉ quản lý hợp pháp) và Android Control (dùng adb/scrcpy
  * có sẵn, không tự dựng hạ tầng).
  *
- * Mật khẩu KHÔNG được lưu trong `profiles/vpn_profiles.json` của ứng dụng - xem VpnConnector.h.
+ * Mật khẩu KHÔNG được lưu trong `vpn_profiles.json` của ứng dụng (AppPaths::profileFile, tức
+ * %LOCALAPPDATA%\OneForAll\profiles) - tệp đó chỉ giữ nhãn quốc gia + tên đăng nhập. Xem VpnConnector.h.
  */
 namespace VpnController
 {
+/// Thông tin phụ ứng dụng tự lưu cho một tên kết nối (Windows không biết các trường này).
+struct VpnProfileMeta
+{
+    QString countryLabel;
+    QString username; // chỉ để điền sẵn ô "Tên đăng nhập" lúc kết nối - mật khẩu KHÔNG BAO GIỜ được lưu
+};
+
 /// Liệt kê MỌI kết nối VPN Windows đang biết (không chỉ của riêng ứng dụng này) - đã ghép nhãn quốc
-/// gia tự đặt (nếu có) từ profiles/vpn_profiles.json.
+/// gia + tên đăng nhập tự đặt (nếu có) từ vpn_profiles.json.
 QList<VpnConnectionStatus> listConnections(QString* error = nullptr);
 
-/// Thêm một kết nối VPN mới vào Windows (per-user, không cần quyền Administrator) + lưu nhãn quốc gia.
+/// Thêm một kết nối VPN mới vào Windows (per-user, không cần quyền Administrator) + lưu nhãn quốc gia
+/// và tên đăng nhập. Trả về true nếu Windows đã tạo kết nối; khi đó *error (nếu khác rỗng) chỉ là CẢNH
+/// BÁO rằng không lưu được thông tin phụ.
 bool addConnection(const VpnProfile& profile, QString* error = nullptr);
 
-/// Xóa một kết nối VPN khỏi Windows + xóa nhãn quốc gia đã lưu.
+/// Xóa một kết nối VPN khỏi Windows + xóa thông tin phụ đã lưu.
 bool removeConnection(const QString& name, QString* error = nullptr);
 
-/// Chỉ đổi nhãn quốc gia đã lưu (không đụng gì tới kết nối VPN thật trong Windows).
+/// Đọc/ghi thông tin phụ đã lưu (không đụng gì tới kết nối VPN thật trong Windows). Ghi nguyên tử;
+/// trả về false + lý do nếu không ghi được tệp.
+VpnProfileMeta profileMeta(const QString& name);
+bool setProfileMeta(const QString& name, const VpnProfileMeta& meta, QString* error = nullptr);
+
+/// Chỉ đổi nhãn quốc gia đã lưu, giữ nguyên tên đăng nhập.
 void setCountryLabel(const QString& name, const QString& countryLabel);
 
 // ---- Lõi thuần (không gọi PowerShell thật) - tách riêng để kiểm thử được bằng dữ liệu mẫu ----
 namespace internal
 {
 QList<VpnConnectionStatus> parseConnectionsJson(const QByteArray& json, QString* error);
-/// Thoát dấu nháy đơn cho chuỗi chèn vào script PowerShell (chuẩn PowerShell: ' -> '').
+/// Thoát chuỗi để chèn vào giữa '...' trong script PowerShell - lớp bọc của
+/// PowerShellRunner::quoteLiteral (nhân đôi cả ' lẫn các dấu nháy cong U+2018/2019/201A/201B).
 QString escapePsString(const QString& s);
 QString buildAddConnectionScript(const VpnProfile& profile);
 QString buildRemoveConnectionScript(const QString& name);

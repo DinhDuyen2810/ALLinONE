@@ -93,6 +93,7 @@ void ChainListWidget::setChains(const std::vector<ActionChain>& chains)
         QString sub = QString(" (%1 acts)").arg(chain.actions.size());
         auto* item = new QListWidgetItem(title + sub);
         item->setToolTip(title + sub);
+        item->setData(Qt::UserRole, title); // tên gốc cho hộp thoại Đổi tên - xem promptRename()
         m_listWidget->addItem(item);
     }
 
@@ -166,7 +167,10 @@ void ChainListWidget::promptRename(int row)
         return;
 
     bool ok = false;
-    QString oldText = item->text().split(" (").first();
+    // Lấy tên gốc đã lưu kèm mục, KHÔNG tách ngược từ chữ hiển thị "<tên> (N acts)": tách tại " (" đầu
+    // tiên cắt cụt mọi tên có sẵn ngoặc đơn - vd chuỗi nhân bản "Đăng nhập (Copy)" hiện ra ô đổi tên chỉ
+    // còn "Đăng nhập".
+    QString oldText = item->data(Qt::UserRole).toString();
     QString newName = QInputDialog::getText(this, "Đổi tên chuỗi", "Tên chuỗi mới:", QLineEdit::Normal, oldText, &ok);
     if (ok && !newName.trimmed().isEmpty())
     {

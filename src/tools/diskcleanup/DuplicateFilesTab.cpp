@@ -2,8 +2,10 @@
 
 #include "DiskCleanupWindow.h"
 #include "DiskUiStyle.h"
+#include "engine/FsSafety.h"
 #include "engine/RecycleBinOps.h"
 
+#include <QDir>
 #include <QFileDialog>
 #include <QFont>
 #include <QHBoxLayout>
@@ -15,6 +17,11 @@
 #include <QSpinBox>
 #include <QTreeWidget>
 #include <QVBoxLayout>
+
+namespace
+{
+constexpr int kLastWriteRole = Qt::UserRole + 1;
+} // namespace
 
 DuplicateFilesTab::DuplicateFilesTab(QWidget* parent)
     : QWidget(parent)
@@ -184,7 +191,7 @@ void DuplicateFilesTab::onScanClicked()
     m_finder->setMinSizeBytes(static_cast<qint64>(m_minSizeSpin->value()) * 1024);
     // Ưu tiên thấp: hash SHA-256 nội dung tệp trên cả thư mục lớn là CPU/I-O nặng - nhường CPU cho
     // luồng giao diện để cửa sổ không bao giờ bị Windows báo "Không phản hồi" dù quét lâu.
-    m_finder->start(QThread::LowPriority);
+    m_finder->startScan(QThread::LowPriority);
 }
 
 void DuplicateFilesTab::onStopClicked()
@@ -224,6 +231,8 @@ void DuplicateFilesTab::addGroupToTree(const DuplicateGroup& group)
         child->setTextAlignment(1, Qt::AlignRight | Qt::AlignVCenter);
         child->setData(0, Qt::UserRole, group.paths[i]);         // đường dẫn thật, không lẫn hậu tố hiển thị
         child->setData(1, Qt::UserRole, group.sizeEachBytes);    // kích thước thô (byte), không lẫn chuỗi đã định dạng
+        // Thời điểm sửa cuối LÚC QUÉT - để kiểm lại ngay trước khi xóa rằng tệp chưa bị sửa từ đó tới giờ.
+        child->setData(0, kLastWriteRole, group.lastWriteTimes.value(i, 0));
         child->setFlags(child->flags() | Qt::ItemIsUserCheckable);
         child->setCheckState(0, keepThisOne ? Qt::Unchecked : Qt::Checked);
     }
@@ -276,6 +285,24 @@ void DuplicateFilesTab::onItemChanged(QTreeWidgetItem* item, int column)
 {
     if (m_updatingTree || column != 0 || item->parent() == nullptr)
         return; // chỉ quan tâm tích/bỏ tích ở các dòng con (từng tệp), không phải dòng nhóm
+
+    // BẮT BUỘC giữ lại ít nhất 1 bản mỗi nhóm: nếu lần tích này khiến MỌI bản trong nhóm đều được chọn
+    // để xóa thì hoàn lại ngay. Trước đây hộp xác nhận chỉ NÓI "mỗi nhóm vẫn giữ lại ít nhất 1 bản" mà
+    // không có gì kiểm tra - tích hết cả nhóm là xóa sạch mọi bản của tệp đó.
+    if (item->checkState(0) == Qt::Checked)
+    {
+        QTreeWidgetItem* group = item->parent();
+        bool anyKept = false;
+        for (int j = 0; j < group->childCount(); ++j)
+            anyKept = anyKept || group->child(j)->checkState(0) != Qt::Checked;
+        if (!anyKept)
+        {
+            m_updatingTree = true;
+            item->setCheckState(0, Qt::Unchecked);
+            m_updatingTree = false;
+            m_statusLabel->setText("⚠ Mỗi nhóm phải giữ lại ít nhất 1 bản - không thể chọn xóa toàn bộ các bản của cùng một tệp.");
+        }
+    }
     updateSelectedSummary();
 }
 
@@ -304,39 +331,112 @@ void DuplicateFilesTab::updateSelectedSummary()
 
 void DuplicateFilesTab::onDeleteSelectedClicked()
 {
+    // Không xóa trong lúc một tab khác đang đổi kích thước phân vùng/dọn dẹp/quét trên cùng ổ đĩa - xem
+    // DiskCleanupWindow::isAnyOtherTabBusy() (trước đây chỉ các nút Quét mới kiểm tra điều này).
+    if (auto* win = qobject_cast<DiskCleanupWindow*>(window()))
+    {
+        if (win->isAnyOtherTabBusy(this))
+        {
+            QMessageBox::warning(this, "Đang có thao tác khác",
+                "Một tab khác trong Disk Cleanup đang quét/dọn dẹp/đổi kích thước phân vùng - vui lòng "
+                "đợi xong để tránh xung đột trên cùng ổ đĩa, rồi thử lại.");
+            return;
+        }
+    }
+
+    // Kết quả "trùng lặp" chỉ đúng tại thời điểm quét. Ngay trước khi xóa, kiểm lại TỪNG NHÓM trên đĩa:
+    //  - phải còn ít nhất 1 bản KHÔNG chọn xóa vẫn tồn tại và chưa bị sửa (bản sẽ giữ lại) - nếu bản giữ
+    //    lại đã mất/đã đổi nội dung thì các bản đang chọn xóa có thể là bản cuối cùng: bỏ qua cả nhóm;
+    //  - từng bản chọn xóa phải còn đúng kích thước + thời điểm sửa như lúc quét, nếu không thì nó không
+    //    còn chắc là bản sao nữa: giữ lại;
+    //  - bản không vào Thùng rác được (quá lớn, ổ không có Thùng rác) cũng giữ lại - Shell sẽ hủy hẳn nó.
     QStringList paths;
     qint64 total = 0;
+    int skippedGroups = 0;
+    int skippedChanged = 0;
+    int skippedNotRecyclable = 0;
     for (int i = 0; i < m_tree->topLevelItemCount(); ++i)
     {
         QTreeWidgetItem* group = m_tree->topLevelItem(i);
+        QList<QTreeWidgetItem*> checked;
+        bool keeperIntact = false;
         for (int j = 0; j < group->childCount(); ++j)
         {
             QTreeWidgetItem* child = group->child(j);
             if (child->checkState(0) == Qt::Checked)
             {
-                paths << child->data(0, Qt::UserRole).toString();
-                total += child->data(1, Qt::UserRole).toLongLong();
+                checked << child;
+                continue;
             }
+            keeperIntact = keeperIntact ||
+                           DuplicateFinder::fileUnchanged(child->data(0, Qt::UserRole).toString(),
+                                                          child->data(1, Qt::UserRole).toLongLong(),
+                                                          child->data(0, kLastWriteRole).toLongLong());
+        }
+        if (checked.isEmpty())
+            continue;
+        if (!keeperIntact)
+        {
+            ++skippedGroups;
+            continue;
+        }
+        for (QTreeWidgetItem* child : checked)
+        {
+            const QString path = child->data(0, Qt::UserRole).toString();
+            const qint64 size = child->data(1, Qt::UserRole).toLongLong();
+            if (!DuplicateFinder::fileUnchanged(path, size, child->data(0, kLastWriteRole).toLongLong()))
+            {
+                ++skippedChanged;
+                continue;
+            }
+            if (!RecycleBinOps::notRecyclableReason(path, size).isEmpty())
+            {
+                ++skippedNotRecyclable;
+                continue;
+            }
+            paths << path;
+            total += size;
         }
     }
+
+    QStringList skippedNotes;
+    if (skippedGroups > 0)
+        skippedNotes << QString("%1 nhóm bị bỏ qua vì bản sẽ giữ lại không còn nguyên vẹn trên đĩa").arg(skippedGroups);
+    if (skippedChanged > 0)
+        skippedNotes << QString("%1 tệp đã thay đổi hoặc không còn kể từ lúc quét").arg(skippedChanged);
+    if (skippedNotRecyclable > 0)
+        skippedNotes << QString("%1 tệp không thể đưa vào Thùng rác để khôi phục").arg(skippedNotRecyclable);
+    const QString skippedText =
+        skippedNotes.isEmpty() ? QString() : ("\n\nĐược GIỮ NGUYÊN, không xóa: " + skippedNotes.join("; ") + ". Hãy quét lại để có kết quả mới.");
+
     if (paths.isEmpty())
+    {
+        if (!skippedText.isEmpty())
+            QMessageBox::warning(this, "Xóa tệp trùng lặp", "Không có tệp nào đủ điều kiện để xóa." + skippedText);
         return;
+    }
 
     if (QMessageBox::question(this, "Xóa tệp trùng lặp",
                               QString("Chuyển %1 tệp (%2) vào Thùng rác?\n\nMỗi nhóm vẫn giữ lại ít nhất 1 bản.")
-                                  .arg(paths.size())
-                                  .arg(DiskUi::formatBytes(total)),
+                                      .arg(paths.size())
+                                      .arg(DiskUi::formatBytes(total)) +
+                                  skippedText,
                               QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
         return;
 
     QString error;
-    if (!RecycleBinOps::moveToRecycleBin(paths, &error))
-    {
-        QMessageBox::critical(this, "Lỗi", "Không xóa được:\n" + error);
-        return;
-    }
+    const bool ok = RecycleBinOps::moveToRecycleBin(paths, &error);
+    int deleted = 0;
+    for (const QString& path : paths)
+        if (!FsSafety::existsNoFollow(path))
+            ++deleted;
 
-    m_statusLabel->setText(QString("✓ Đã chuyển %1 tệp vào Thùng rác.").arg(paths.size()));
-    // Quét lại để làm mới danh sách (các mục đã xóa không còn nữa)
+    if (!ok || deleted < paths.size())
+        QMessageBox::critical(this, "Lỗi",
+            QString("Chỉ chuyển được %1/%2 tệp vào Thùng rác.\n%3").arg(deleted).arg(paths.size()).arg(error));
+
+    m_statusLabel->setText(QString("✓ Đã chuyển %1 tệp vào Thùng rác.").arg(deleted));
+    // Quét lại để làm mới danh sách (các mục đã xóa không còn nữa) - kể cả khi lỗi một phần, để bảng
+    // không còn hiện các tệp đã bị xóa.
     onScanClicked();
 }

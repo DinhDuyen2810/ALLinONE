@@ -29,6 +29,4 @@ private:
     QTableWidget* m_table{nullptr};
     QPushButton* m_forgetBtn{nullptr};
     QLabel* m_hintLabel{nullptr};
-
-    QHash<QString, bool> m_connectionStatus;
 };

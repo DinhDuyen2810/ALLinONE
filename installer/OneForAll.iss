@@ -61,9 +61,13 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 ; Toàn bộ OneForAll_Release\ (exe + DLL Qt + plugin + scrcpy/yt-dlp NẾU có sẵn lúc build cài đặt) - trừ
-; logs\ (tự tạo lại khi chạy) và profiles\qr_history.json (lịch sử quét QR cá nhân, không phải dữ liệu
-; mẫu) - vẫn giữ profiles\default.json (chuỗi Auto Click MẪU có chủ đích, hữu ích cho người dùng mới).
-Source: "..\OneForAll_Release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "logs\*,profiles\qr_history.json"
+; logs\ và TOÀN BỘ profiles\: thư mục profiles\ của bản dev có thể chứa dữ liệu cá nhân của người phát
+; triển (lịch sử QR, khóa ghép đôi Connect Together, nhãn VPN) - trước đây chỉ loại riêng qr_history.json.
+Source: "..\OneForAll_Release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "logs\*,profiles\*"
+; Chuỗi Auto Click MẪU lấy thẳng từ mã nguồn trong Git. Đây chỉ là tệp MẪU cạnh exe: lúc chạy, ứng dụng
+; chép nó sang %LOCALAPPDATA%\OneForAll\profiles\ ở lần đầu rồi chỉ đọc/ghi bản ở đó (xem
+; src\core\AppPaths.h) - cài đè bản mới KHÔNG còn ghi đè chuỗi hành động người dùng đã lưu.
+Source: "..\profiles\default.json"; DestDir: "{app}\profiles"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"

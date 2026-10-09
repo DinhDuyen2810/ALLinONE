@@ -29,7 +29,6 @@ private:
     Logger(const Logger&) = delete;
     Logger& operator=(const Logger&) = delete;
 
-    void ensureLogDir();
     /// Nếu tệp log đã vượt quá kích thước cho phép, đổi tên thành ".1" (ghi đè bản ".1" cũ nếu có) rồi
     /// bắt đầu tệp mới - tránh tệp log phình to không giới hạn khi ứng dụng/một phiên Auto Click chạy
     /// rất lâu (vd 24 giờ liên tục, hàng chục nghìn hành động mỗi phiên).

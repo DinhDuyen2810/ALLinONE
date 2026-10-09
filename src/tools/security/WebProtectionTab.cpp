@@ -82,6 +82,12 @@ void WebProtectionTab::buildUi()
     blockLabel->setStyleSheet("color: #57606a; font-size: 12px; margin-top: 6px;");
     root->addWidget(blockLabel);
 
+    m_blocklistErrorLabel = new QLabel(this);
+    m_blocklistErrorLabel->setWordWrap(true);
+    m_blocklistErrorLabel->setStyleSheet(SecurityUi::bannerStyle("danger"));
+    m_blocklistErrorLabel->setVisible(false);
+    root->addWidget(m_blocklistErrorLabel);
+
     m_domainList = new QListWidget(this);
     m_domainList->setStyleSheet(
         "QListWidget { background-color: #ffffff; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; }");
@@ -91,6 +97,7 @@ void WebProtectionTab::buildUi()
     m_domainEdit = new QLineEdit(this);
     m_domainEdit->setStyleSheet(SecurityUi::inputStyle());
     m_domainEdit->setPlaceholderText("vd: vi-du-doc-hai.com");
+    connect(m_domainEdit, &QLineEdit::returnPressed, this, &WebProtectionTab::onAddDomainClicked);
     addRow->addWidget(m_domainEdit, 1);
     m_addDomainBtn = new QPushButton("+ Thêm", this);
     m_addDomainBtn->setStyleSheet(SecurityUi::buttonStyle());
@@ -140,6 +147,11 @@ void WebProtectionTab::onRelaunchElevatedClicked()
         return;
     }
     qApp->quit();
+}
+
+void WebProtectionTab::setRelaunchAllowed(bool allowed)
+{
+    m_relaunchBtn->setEnabled(allowed);
 }
 
 void WebProtectionTab::onRefreshClicked()
@@ -221,6 +233,10 @@ void WebProtectionTab::refreshBlocklist()
 {
     QString error;
     const auto domains = HostsBlocklist::listBlockedDomains(&error);
+    // Lỗi đọc phải HIỆN RA - danh sách trống mà không kèm lời nào trông y hệt "chưa chặn tên miền nào".
+    m_blocklistErrorLabel->setVisible(!error.isEmpty());
+    if (!error.isEmpty())
+        m_blocklistErrorLabel->setText("⚠ " + error + " Danh sách bên dưới có thể không đúng với thực tế.");
     m_domainList->clear();
     for (const QString& d : domains)
         m_domainList->addItem(d);

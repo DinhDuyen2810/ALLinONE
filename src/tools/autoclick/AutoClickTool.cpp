@@ -18,3 +18,9 @@ QWidget* AutoClickTool::createWindow()
         m_window = new AutoClickWindow();
     return m_window;
 }
+
+void AutoClickTool::stopBackgroundWorkForQuit()
+{
+    if (auto* window = qobject_cast<AutoClickWindow*>(m_window.data()))
+        window->stopForQuit();
+}

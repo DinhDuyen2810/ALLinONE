@@ -18,10 +18,15 @@ public:
     explicit SecurityGatewayWindow(QWidget* parent = nullptr);
     ~SecurityGatewayWindow() override;
 
+    /// Yêu cầu dừng lượt quét mã độc đang chạy (nếu có) - KHÔNG chờ, KHÔNG hộp thoại. Gọi từ
+    /// SecurityGatewayTool::stopBackgroundWorkForQuit() khi ứng dụng sắp thoát qua qApp->quit().
+    void requestCancelScanForQuit();
+
 protected:
     /// Chặn đóng cửa sổ (hỏi xác nhận) nếu đang quét mã độc - tránh hủy QThread đang thực sự chạy
-    /// (hành vi KHÔNG XÁC ĐỊNH theo tài liệu Qt) khi FullScan có thể chạy hàng giờ. Hủy quét ở đây AN
-    /// TOÀN (Defender tự dừng gọn, khác hẳn hủy giữa chừng một thao tác đổi kích thước phân vùng).
+    /// (hành vi KHÔNG XÁC ĐỊNH theo tài liệu Qt) khi FullScan có thể chạy hàng giờ. Dừng chờ ở đây AN
+    /// TOÀN (chỉ kết thúc powershell.exe đang chờ Start-MpScan, không đụng tới dữ liệu - khác hẳn hủy
+    /// giữa chừng một thao tác đổi kích thước phân vùng).
     void closeEvent(QCloseEvent* event) override;
 
 private:

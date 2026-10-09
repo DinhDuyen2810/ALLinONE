@@ -2,9 +2,14 @@
 // kiểm thử lõi THUẦN (phân tích output adb mẫu dựng sẵn, dựng danh sách đối số dòng lệnh scrcpy) tách
 // riêng khỏi phần gọi tiến trình thật, giống mẫu đã dùng cho PartitionManager (parsePartitionsJson).
 #include <QCoreApplication>
+#include <QDir>
+#include <QElapsedTimer>
+#include <QTemporaryDir>
 #include <cstdio>
 
+#include "core/AppPaths.h"
 #include "tools/android/engine/AdbController.h"
+#include "tools/android/engine/AdbDeviceLister.h"
 #include "tools/android/engine/ScrcpyLauncher.h"
 
 static int g_fail = 0, g_pass = 0;
@@ -17,6 +22,10 @@ static int g_fail = 0, g_pass = 0;
 int main(int argc, char** argv)
 {
     QCoreApplication app(argc, argv);
+
+    // Không để bất cứ thứ gì trong test đọc/ghi dữ liệu thật của người dùng (%LOCALAPPDATA%\OneForAll).
+    QTemporaryDir dataDir;
+    AppPaths::setDataDirOverride(dataDir.path());
 
     // ---- AdbController::internal::parseDevicesOutput: dữ liệu mẫu dựng sẵn (không gọi adb thật) ----
     {
@@ -68,6 +77,154 @@ int main(int argc, char** argv)
         CHECK(devices2.size() == 1);
         if (devices2.size() == 1)
             CHECK(devices2[0].serial == "R58M80ABCDE");
+
+        // Dòng CHẨN ĐOÁN/LỖI của adb (thường ở stderr, hoặc lẫn vào stdout) không được thành thiết bị giả:
+        // trước đây mọi dòng có >= 2 từ đều được nhận, "serial" là từ đầu tiên của câu.
+        const QString withNoise =
+            "adb.exe: failed to check server version: cannot connect to daemon\n"
+            "error: cannot connect to daemon at tcp:5037: cannot connect to 127.0.0.1:5037\n"
+            "adb server version (41) doesn't match this client (36); killing...\n"
+            "List of devices attached\n"
+            "R58M80ABCDE            device product:beyond2qlte model:SM_G975N device:beyond2q transport_id:1\n"
+            "192.168.1.50:5555      connecting\n"
+            "ZY22ABCDEF             no permissions (user in plugdev group; are your udev rules wrong?); see [http://developer.android.com/tools/device.html] usb:1-2 transport_id:7\n"
+            "QUAIDI                 trang-thai-la transport_id:9\n";
+        const auto devices3 = AdbController::internal::parseDevicesOutput(withNoise);
+        CHECK(devices3.size() == 3);
+        if (devices3.size() == 3)
+        {
+            CHECK(devices3[0].serial == "R58M80ABCDE" && devices3[0].isReady());
+            CHECK(devices3[1].serial == "192.168.1.50:5555" && devices3[1].state == "connecting");
+            CHECK(devices3[2].serial == "ZY22ABCDEF" && devices3[2].state == "no permissions");
+            CHECK(devices3[2].transportId == "7");
+            CHECK(!devices3[2].isReady());
+        }
+        CHECK(AdbController::internal::isKnownDeviceState("unauthorized"));
+        CHECK(!AdbController::internal::isKnownDeviceState("failed"));
+        CHECK(!AdbController::internal::isKnownDeviceState(""));
+    }
+
+    // ---- Kiểm định dạng IP:Cổng / mã ghép đôi (trở thành đối số dòng lệnh của adb.exe) ----
+    {
+        CHECK(AdbController::isValidIpAndPort("192.168.1.23:41234"));
+        CHECK(AdbController::isValidIpAndPort("10.0.0.5:5555"));
+        CHECK(AdbController::isValidIpAndPort("pixel-7.local:37011"));
+        CHECK(AdbController::isValidIpAndPort("[fe80::1]:5555"));
+        CHECK(AdbController::isValidIpAndPort("192.168.1.23:65535"));
+
+        CHECK(!AdbController::isValidIpAndPort(""));
+        CHECK(!AdbController::isValidIpAndPort("192.168.1.23"));          // thiếu cổng
+        CHECK(!AdbController::isValidIpAndPort("192.168.1.23:"));
+        CHECK(!AdbController::isValidIpAndPort("192.168.1.23:0"));
+        CHECK(!AdbController::isValidIpAndPort("192.168.1.23:65536"));
+        CHECK(!AdbController::isValidIpAndPort("192.168.1.23:12a4"));
+        CHECK(!AdbController::isValidIpAndPort("-s:5555"));               // bắt đầu bằng '-' = tùy chọn adb
+        CHECK(!AdbController::isValidIpAndPort("--help"));
+        CHECK(!AdbController::isValidIpAndPort("-a 192.168.1.23:5555"));
+        CHECK(!AdbController::isValidIpAndPort("192.168.1.23:5555 extra"));
+        CHECK(!AdbController::isValidIpAndPort("192.168.1.23:5555\n-s"));
+        CHECK(!AdbController::isValidIpAndPort(":5555"));
+        CHECK(!AdbController::isValidIpAndPort("192.168.1.23:5555\n")); // '$' khớp cả trước '\n' cuối chuỗi - phải neo bằng \z
+
+        CHECK(AdbController::isValidPairingCode("123456"));
+        CHECK(AdbController::isValidPairingCode("000000"));
+        CHECK(!AdbController::isValidPairingCode("12345"));
+        CHECK(!AdbController::isValidPairingCode("1234567"));
+        CHECK(!AdbController::isValidPairingCode("12345a"));
+        CHECK(!AdbController::isValidPairingCode("-12345"));
+        CHECK(!AdbController::isValidPairingCode(" 123456"));
+        CHECK(!AdbController::isValidPairingCode("123456\n"));
+        CHECK(!AdbController::isValidPairingCode(""));
+
+        // Các hàm gọi adb phải TỪ CHỐI đầu vào sai định dạng trước khi khởi chạy bất kỳ tiến trình nào
+        QString error;
+        CHECK(!AdbController::pairWireless("--help", "123456", &error));
+        CHECK(!error.isEmpty());
+        error.clear();
+        CHECK(!AdbController::pairWireless("192.168.1.23:41234", "-x", &error));
+        CHECK(!error.isEmpty());
+        error.clear();
+        CHECK(!AdbController::connectWireless("-s", &error));
+        CHECK(!error.isEmpty());
+        error.clear();
+        CHECK(!AdbController::disconnectWireless("", &error));
+        CHECK(!error.isEmpty());
+    }
+
+    // ---- So đường dẫn tệp ảnh tiến trình + dừng theo đường dẫn (không đụng adb của công cụ khác) ----
+    {
+        using AdbController::internal::isSameExecutablePath;
+        CHECK(isSameExecutablePath("C:/Apps/OneForAll/scrcpy/adb.exe", "C:\\Apps\\OneForAll\\scrcpy\\adb.exe"));
+        CHECK(isSameExecutablePath("C:/Apps/OneForAll/scrcpy/adb.exe", "c:/apps/oneforall/SCRCPY/ADB.EXE"));
+        CHECK(isSameExecutablePath("C:/Apps/OneForAll/scrcpy/adb.exe", "\\\\?\\C:\\Apps\\OneForAll\\scrcpy\\adb.exe"));
+        CHECK(isSameExecutablePath("C:/Apps/OneForAll/scrcpy/../scrcpy/adb.exe", "C:/Apps/OneForAll/scrcpy/adb.exe"));
+        // Cùng TÊN tệp nhưng khác thư mục = adb của công cụ khác -> KHÔNG được coi là của ta
+        CHECK(!isSameExecutablePath("C:/Apps/OneForAll/scrcpy/adb.exe", "C:/Android/Sdk/platform-tools/adb.exe"));
+        CHECK(!isSameExecutablePath("C:/Apps/OneForAll/scrcpy/adb.exe", ""));
+        CHECK(!isSameExecutablePath("", ""));
+
+        // Chính tệp test đang chạy so với chính nó (đường dẫn thật, có tồn tại)
+        const QString self = QCoreApplication::applicationFilePath();
+        CHECK(isSameExecutablePath(self, QDir::toNativeSeparators(self).toUpper()));
+
+        // Không có tiến trình nào mang đường dẫn này -> không dừng gì, không crash. (Tiến trình đang gọi
+        // luôn bị loại trừ, nên truyền chính đường dẫn của test cũng không tự dừng mình.)
+        CHECK(AdbController::internal::terminateProcessesByImagePath(
+                  dataDir.path() + "/khong-ton-tai/adb.exe") == 0);
+        CHECK(AdbController::internal::terminateProcessesByImagePath(self) == 0);
+        CHECK(AdbController::internal::terminateProcessesByImagePath("") == 0);
+    }
+
+    // ---- AdbDeviceLister: bất đồng bộ, luôn báo kết quả đúng MỘT lần cho mỗi lần refresh() ----
+    {
+        AdbDeviceLister lister;
+        int results = 0;
+        QString lastError;
+        QObject::connect(&lister, &AdbDeviceLister::listed, &app,
+                         [&](const QList<AndroidDeviceInfo>&, const QString& error) {
+                             ++results;
+                             lastError = error;
+                         });
+        CHECK(!lister.isBusy());
+
+        if (AdbController::adbExecutablePath().isEmpty())
+        {
+            // Không có gói adb cạnh file test: báo lỗi rõ ràng (qua tín hiệu), không treo, không crash
+            CHECK(lister.refresh());
+            CHECK(results == 1);
+            CHECK(!lastError.isEmpty());
+            CHECK(!lister.isBusy());
+        }
+        else
+        {
+            // Có adb thật (chỉ đọc - `adb devices -l`): refresh() trả về NGAY (không chặn), lần gọi chồng
+            // bị từ chối, kết quả tới sau qua vòng lặp sự kiện.
+            QElapsedTimer startTimer;
+            startTimer.start();
+            CHECK(lister.refresh());
+            CHECK(startTimer.elapsed() < 2000);
+            CHECK(lister.isBusy());
+            CHECK(!lister.refresh()); // không chồng lệnh
+            QElapsedTimer waitTimer;
+            waitTimer.start();
+            while (results == 0 && waitTimer.elapsed() < 25000)
+                app.processEvents(QEventLoop::AllEvents, 50);
+            CHECK(results == 1);
+            CHECK(!lister.isBusy());
+            std::printf("AdbDeviceLister that: %s\n", lastError.isEmpty() ? "OK" : qPrintable("loi: " + lastError));
+
+            // cancel() giữa chừng: không phát kết quả cho lần bị hủy
+            CHECK(lister.refresh());
+            lister.cancel();
+            app.processEvents();
+            CHECK(results == 1);
+            CHECK(!lister.isBusy());
+
+            // Dọn daemon adb mà chính lần chạy trên đã dựng (đúng tệp adb.exe cạnh file test) - sau đó
+            // không còn tiến trình nào mang đường dẫn đó.
+            AdbController::stopBundledAdbServer();
+            CHECK(AdbController::stopBundledAdbServer() == 0);
+        }
     }
 
     // ---- ScrcpyLauncherInternal::buildArguments: dựng đối số dòng lệnh thuần (không chạy scrcpy thật) ----

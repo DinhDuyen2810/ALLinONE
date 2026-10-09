@@ -2,7 +2,8 @@
 
 #include <QString>
 
-/// Định danh ổn định của máy này, sinh một lần và lưu lại giữa các lần chạy (profiles/connect_identity.json).
+/// Định danh ổn định của máy này, sinh một lần và lưu lại giữa các lần chạy
+/// (<dữ liệu người dùng>/profiles/connect_identity.json - xem core/AppPaths.h).
 struct LocalIdentity
 {
     QString id;
@@ -21,6 +22,6 @@ private:
     LocalIdentityStore();
     void loadOrCreate();
 
-    QString m_path{"profiles/connect_identity.json"};
+    QString m_path;
     LocalIdentity m_identity;
 };

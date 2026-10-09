@@ -27,6 +27,20 @@ QPoint InputInjector::currentCursorPos()
     return QPoint(pt.x, pt.y);
 }
 
+QRect InputInjector::virtualScreenBounds()
+{
+    return QRect(GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN),
+                 GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN));
+}
+
+bool InputInjector::anyMouseButtonDown()
+{
+    for (int vk : {VK_LBUTTON, VK_RBUTTON, VK_MBUTTON, VK_XBUTTON1, VK_XBUTTON2})
+        if (GetAsyncKeyState(vk) & 0x8000)
+            return true;
+    return false;
+}
+
 void InputInjector::mouseButton(int button, bool pressed)
 {
     INPUT input = {0};

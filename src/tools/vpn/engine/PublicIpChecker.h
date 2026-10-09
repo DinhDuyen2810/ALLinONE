@@ -18,8 +18,9 @@ struct PublicIpInfo
 
 /**
  * @brief Tra cứu IP công khai + quốc gia hiện tại qua một dịch vụ "what is my IP" công khai
- * (ipapi.co, không cần khóa API - cùng tinh thần dùng endpoint công khai của Cloudflare mà
- * SpeedTestRunner đã dùng). Chỉ đọc, không gửi gì ngoài 1 yêu cầu GET.
+ * (https://ipwho.is/, không cần khóa API - cùng tinh thần dùng endpoint công khai của Cloudflare mà
+ * SpeedTestRunner đã dùng; ipapi.co từng được thử và bị giới hạn 429, xem PublicIpChecker.cpp). Chỉ đọc,
+ * không gửi gì ngoài 1 yêu cầu GET.
  */
 class PublicIpChecker : public QObject
 {

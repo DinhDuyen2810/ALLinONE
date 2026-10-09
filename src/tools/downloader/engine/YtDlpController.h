@@ -19,4 +19,9 @@ namespace YtDlpController
 QString ytDlpExecutablePath();
 QString ffmpegDirectoryPath(); // thư mục chứa ffmpeg.exe/ffprobe.exe - truyền cho --ffmpeg-location
 bool isBundleAvailable(QString* missingWhat = nullptr);
+
+/// Chỉ nhận địa chỉ http(s):// hợp lệ, không chứa khoảng trắng/ký tự điều khiển. Ô nhập URL là chuỗi tự
+/// do đi thẳng vào dòng lệnh yt-dlp: một "URL" bắt đầu bằng "-" (vd "--config-locations=...", "--exec=...")
+/// sẽ bị yt-dlp hiểu là TÙY CHỌN chứ không phải địa chỉ. Kiểm tra ở cả giao diện lẫn hai worker. Thuần chuỗi.
+bool isSupportedVideoUrl(const QString& url);
 } // namespace YtDlpController

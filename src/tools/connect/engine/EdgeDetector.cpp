@@ -67,3 +67,24 @@ QPoint EdgeDetector::entryPoint(const QRect& localBounds, ScreenSide incomingFro
             return localBounds.center();
     }
 }
+
+QPoint EdgeDetector::returnPoint(const QRect& localBounds, ScreenSide crossedSide, const QPoint& cursor, int inset)
+{
+    if (localBounds.isEmpty())
+        return cursor;
+
+    // Màn hình quá hẹp so với 'inset' (không xảy ra với màn hình thật) thì lùi tối đa tới giữa.
+    const int insetX = std::clamp(inset, 1, std::max(1, localBounds.width() / 2));
+    const int insetY = std::clamp(inset, 1, std::max(1, localBounds.height() / 2));
+    const int x = std::clamp(cursor.x(), localBounds.left(), localBounds.right());
+    const int y = std::clamp(cursor.y(), localBounds.top(), localBounds.bottom());
+
+    switch (crossedSide)
+    {
+        case ScreenSide::Left:   return QPoint(localBounds.left() + insetX, y);
+        case ScreenSide::Right:  return QPoint(localBounds.right() - insetX, y);
+        case ScreenSide::Top:    return QPoint(x, localBounds.top() + insetY);
+        case ScreenSide::Bottom: return QPoint(x, localBounds.bottom() - insetY);
+        default:                 return QPoint(x, y);
+    }
+}

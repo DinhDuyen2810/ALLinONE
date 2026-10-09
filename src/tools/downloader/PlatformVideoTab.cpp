@@ -29,15 +29,29 @@ PlatformVideoTab::PlatformVideoTab(QWidget* parent)
 
 PlatformVideoTab::~PlatformVideoTab()
 {
-    if (m_infoWorker && m_infoWorker->isRunning())
-        m_infoWorker->wait(5000);
-    cancelActiveDownload();
+    // Yêu cầu hủy rồi chờ KHÔNG giới hạn: luồng tự kết thúc yt-dlp.exe và thoát trong vài trăm ms. Trước
+    // đây chỉ wait(5000) trong khi yt-dlp được chờ tới 45 giây - quá 5 giây là hủy một QThread còn đang
+    // chạy (hành vi KHÔNG XÁC ĐỊNH theo tài liệu Qt).
+    if (m_infoWorker)
+    {
+        m_infoWorker->requestCancel();
+        m_infoWorker->wait();
+    }
+    if (m_downloadWorker)
+        m_downloadWorker->cancel();
 }
 
 void PlatformVideoTab::cancelActiveDownload()
 {
+    if (m_infoWorker && m_infoWorker->isRunning())
+        m_infoWorker->requestCancel();
     if (m_downloadWorker)
         m_downloadWorker->cancel();
+}
+
+bool PlatformVideoTab::isDownloading() const
+{
+    return m_downloadWorker && m_downloadWorker->isRunning();
 }
 
 void PlatformVideoTab::buildUi()
@@ -72,6 +86,7 @@ void PlatformVideoTab::buildUi()
     m_urlEdit->setStyleSheet(DownloaderUi::inputStyle());
     m_urlEdit->setPlaceholderText("https://www.youtube.com/watch?v=...");
     connect(m_urlEdit, &QLineEdit::returnPressed, this, &PlatformVideoTab::onFetchInfoClicked);
+    connect(m_urlEdit, &QLineEdit::textChanged, this, &PlatformVideoTab::onUrlTextChanged);
     urlRow->addWidget(m_urlEdit, 1);
     m_fetchBtn = new QPushButton("Lấy thông tin", this);
     m_fetchBtn->setStyleSheet(DownloaderUi::primaryButtonStyle());
@@ -118,6 +133,14 @@ void PlatformVideoTab::buildUi()
     connect(m_downloadBtn, &QPushButton::clicked, this, &PlatformVideoTab::onDownloadClicked);
     root->addWidget(m_downloadBtn);
 
+    // Trước đây cách DUY NHẤT để dừng một lượt tải là đóng cả cửa sổ.
+    m_cancelBtn = new QPushButton("✕ Hủy tải", this);
+    m_cancelBtn->setStyleSheet(DownloaderUi::dangerButtonStyle());
+    m_cancelBtn->setCursor(Qt::PointingHandCursor);
+    m_cancelBtn->setVisible(false);
+    connect(m_cancelBtn, &QPushButton::clicked, this, &PlatformVideoTab::onCancelDownloadClicked);
+    root->addWidget(m_cancelBtn);
+
     m_progressBar = new QProgressBar(this);
     m_progressBar->setRange(0, 100);
     m_progressBar->setVisible(false);
@@ -155,22 +178,54 @@ void PlatformVideoTab::setBusyFetching(bool busy)
 
 void PlatformVideoTab::setBusyDownloading(bool busy)
 {
-    m_downloadBtn->setEnabled(!busy);
-    m_formatCombo->setEnabled(!busy);
+    const bool hasInfo = !m_infoUrl.isEmpty() && m_formatCombo->count() > 0;
+    m_downloadBtn->setEnabled(!busy && hasInfo);
+    m_formatCombo->setEnabled(!busy && hasInfo);
     m_fetchBtn->setEnabled(!busy && YtDlpController::isBundleAvailable());
+    // Khóa cả ô URL: Enter trong ô này chạy "Lấy thông tin", mà lấy thông tin xong lại mở khóa nút Tải
+    // ngay giữa lúc đang tải - bấm tiếp là giết lượt tải đang chạy.
+    m_urlEdit->setEnabled(!busy);
+    m_chooseFolderBtn->setEnabled(!busy);
     m_progressBar->setVisible(busy);
+    m_cancelBtn->setVisible(busy);
+    m_cancelBtn->setEnabled(busy);
+}
+
+void PlatformVideoTab::clearFetchedInfo()
+{
+    m_infoUrl.clear();
+    m_currentInfo = VideoInfo();
+    m_formatCombo->clear();
+    m_formatCombo->setEnabled(false);
+    m_downloadBtn->setEnabled(false);
+}
+
+void PlatformVideoTab::onUrlTextChanged(const QString& text)
+{
+    // Thông tin/định dạng đang hiển thị thuộc về m_infoUrl - ô nhập đổi sang địa chỉ khác thì chúng không
+    // còn đúng nữa: bỏ đi, buộc lấy thông tin lại.
+    if (m_infoUrl.isEmpty() || isDownloading() || text.trimmed() == m_infoUrl)
+        return;
+    clearFetchedInfo();
+    m_titleLabel->setText("Địa chỉ đã thay đổi - bấm \"Lấy thông tin\" lại trước khi tải.");
 }
 
 void PlatformVideoTab::onFetchInfoClicked()
 {
+    if (isDownloading() || m_infoWorker->isRunning())
+        return;
     const QString url = m_urlEdit->text().trimmed();
     if (url.isEmpty())
         return;
+    if (!YtDlpController::isSupportedVideoUrl(url))
+    {
+        m_titleLabel->setText("⚠ Địa chỉ không hợp lệ - hãy dán URL video bắt đầu bằng http:// hoặc https://.");
+        return;
+    }
+    clearFetchedInfo();
+    m_pendingInfoUrl = url;
     setBusyFetching(true);
     m_titleLabel->setText("⏳ Đang lấy thông tin video (có thể mất vài giây)...");
-    m_formatCombo->clear();
-    m_formatCombo->setEnabled(false);
-    m_downloadBtn->setEnabled(false);
 
     m_infoWorker->setUrl(url);
     m_infoWorker->start();
@@ -191,15 +246,27 @@ void PlatformVideoTab::onInfoFetched(bool ok, VideoInfo info, QString error)
 
     m_formatCombo->clear();
     for (const auto& fmt : info.formats)
-        m_formatCombo->addItem(fmt.displayLabel(), fmt.formatId);
-    // Mặc định chọn mục CUỐI (yt-dlp trả formats theo thứ tự xấu nhất -> tốt nhất) - chất lượng tốt nhất trước.
-    if (m_formatCombo->count() > 0)
-        m_formatCombo->setCurrentIndex(m_formatCombo->count() - 1);
-    m_formatCombo->setEnabled(m_formatCombo->count() > 0);
-    m_downloadBtn->setEnabled(m_formatCombo->count() > 0);
-
-    if (info.formats.isEmpty())
+    {
+        if (!fmt.hasVideo && !fmt.hasAudio)
+            continue; // ảnh xem trước (storyboard)... - không phải thứ để tải như video
+        // Dữ liệu của mục = bộ chọn `-f` đầy đủ: định dạng chỉ có hình được ghép kèm âm thanh tốt nhất.
+        const bool videoOnly = fmt.hasVideo && !fmt.hasAudio;
+        m_formatCombo->addItem(fmt.displayLabel() + (videoOnly ? " + ghép âm thanh tốt nhất" : ""),
+                               YtDlpDownloadWorkerInternal::formatSelectorFor(fmt));
+    }
+    if (m_formatCombo->count() == 0)
+    {
         m_titleLabel->setText(m_titleLabel->text() + " - không tìm thấy định dạng nào khả dụng.");
+        return;
+    }
+
+    // Mục đầu + mặc định: để yt-dlp tự chọn (video tốt nhất + âm thanh tốt nhất, tự ghép qua ffmpeg). Trước
+    // đây mặc định là mục CUỐI danh sách - với YouTube thường là một định dạng CHỈ CÓ HÌNH, tải ra không tiếng.
+    m_formatCombo->insertItem(0, "Tự động - chất lượng tốt nhất (video + âm thanh)", QString());
+    m_formatCombo->setCurrentIndex(0);
+    m_infoUrl = m_pendingInfoUrl;
+    m_formatCombo->setEnabled(true);
+    m_downloadBtn->setEnabled(true);
 }
 
 void PlatformVideoTab::onChooseFolderClicked()
@@ -214,20 +281,29 @@ void PlatformVideoTab::onChooseFolderClicked()
 
 void PlatformVideoTab::onDownloadClicked()
 {
-    const QString url = m_urlEdit->text().trimmed();
-    const QString formatId = m_formatCombo->currentData().toString();
-    if (url.isEmpty() || formatId.isEmpty())
+    // Không bao giờ thay/hủy một worker đang chạy; URL lấy từ m_infoUrl (đúng video đã lấy thông tin).
+    if (isDownloading() || m_infoUrl.isEmpty() || m_formatCombo->currentIndex() < 0)
         return;
+    const QString formatSelector = m_formatCombo->currentData().toString(); // rỗng = "Tự động"
+
+    if (m_downloadWorker)
+        m_downloadWorker->deleteLater(); // worker của lượt trước - đã chạy xong
+    m_downloadWorker = new YtDlpDownloadWorker(this);
+    connect(m_downloadWorker, &YtDlpDownloadWorker::progress, this, &PlatformVideoTab::onDownloadProgress);
+    connect(m_downloadWorker, &YtDlpDownloadWorker::finished, this, &PlatformVideoTab::onDownloadFinished);
 
     setBusyDownloading(true);
     m_progressBar->setRange(0, 0);
     m_progressLabel->setText("⏳ Đang tải...");
+    m_downloadWorker->start(m_infoUrl, formatSelector, m_saveFolder);
+}
 
-    delete m_downloadWorker;
-    m_downloadWorker = new YtDlpDownloadWorker(this);
-    connect(m_downloadWorker, &YtDlpDownloadWorker::progress, this, &PlatformVideoTab::onDownloadProgress);
-    connect(m_downloadWorker, &YtDlpDownloadWorker::finished, this, &PlatformVideoTab::onDownloadFinished);
-    m_downloadWorker->start(url, formatId, m_saveFolder);
+void PlatformVideoTab::onCancelDownloadClicked()
+{
+    m_cancelBtn->setEnabled(false);
+    m_progressLabel->setText("⏳ Đang hủy...");
+    if (m_downloadWorker)
+        m_downloadWorker->cancel(); // kết quả báo qua onDownloadFinished() như bình thường
 }
 
 void PlatformVideoTab::onDownloadProgress(qint64 downloaded, qint64 total, qint64 speed, qint64 eta)
@@ -250,10 +326,18 @@ void PlatformVideoTab::onDownloadProgress(qint64 downloaded, qint64 total, qint6
 
 void PlatformVideoTab::onDownloadFinished(bool ok, QString error)
 {
+    if (sender() && sender() != m_downloadWorker)
+        return; // tín hiệu muộn của một worker cũ đã bị thay
+    const bool canceled = m_downloadWorker && m_downloadWorker->wasCanceled();
     setBusyDownloading(false);
     if (ok)
     {
         m_progressLabel->setText("✓ Đã tải xong, lưu tại: " + m_saveFolder);
+    }
+    else if (canceled)
+    {
+        // Chính người dùng bấm Hủy/đóng cửa sổ - không phải lỗi, không hiện hộp cảnh báo "Không tải được".
+        m_progressLabel->setText("Đã hủy tải. Các tệp tải dở (.part/.ytdl) nếu còn trong thư mục lưu có thể xóa đi.");
     }
     else
     {

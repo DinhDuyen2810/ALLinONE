@@ -2,12 +2,15 @@
 
 #include <QWidget>
 
+#include <functional>
+
 #include "engine/PublicIpChecker.h"
 #include "engine/VpnController.h"
 
 class QLabel;
 class QPushButton;
 class QTableWidget;
+class QThread;
 class VpnConnector;
 
 /// Tab chính VPN & Location: quản lý hồ sơ kết nối VPN hệ thống Windows (IKEv2/L2TP/SSTP/PPTP, tích
@@ -33,7 +36,7 @@ public:
     ~VpnTab() override;
 
     bool isBusy() const;
-    /// Hủy giữa chừng (an toàn - kill() rasdial.exe, VPN chỉ có 2 trạng thái "đã nối"/"chưa nối", không
+    /// Hủy giữa chừng (an toàn - gác máy phiên RAS đang quay số, VPN chỉ có 2 trạng thái "đã nối"/"chưa nối", không
     /// có trạng thái dở dang nguy hiểm) rồi CHỜ tới khi luồng thoát hẳn - gọi trước khi đóng cửa sổ (sắp
     /// HỦY đối tượng VpnConnector - bắt buộc phải chờ, hủy QThread đang chạy là hành vi KHÔNG XÁC ĐỊNH).
     void cancelAndWait(int waitMs = 3000);
@@ -43,7 +46,7 @@ public:
     /// KHÁC cancelAndWait(): ở đây KHÔNG có rủi ro "hủy QThread đang chạy" vì không hủy đối tượng gì cả -
     /// tiến trình chỉ sắp thoát hẳn (hệ điều hành thu hồi an toàn MỌI thứ, kể cả thread đang chạy, cùng
     /// lúc khi tiến trình kết thúc) - gọi cancelAndWait() ở đây sẽ SAI: có thể chặn cả ứng dụng (đang cố
-    /// thoát NGAY cho một hành động khác, vd chạy lại với quyền Admin) tới 45 giây chờ rasdial.exe vô ích.
+    /// thoát NGAY cho một hành động khác, vd chạy lại với quyền Admin) tới 45 giây chờ phiên RAS vô ích.
     void requestCancelNoWait();
 
 private slots:
@@ -61,6 +64,12 @@ private slots:
 private:
     void buildUi();
     void reloadConnections();
+    void populateConnections(const QList<VpnConnectionStatus>& connections, const QString& error);
+    /// Chạy một lệnh PowerShell (liệt kê/thêm/xóa hồ sơ) trên luồng nền rồi gọi 'done' trên luồng giao
+    /// diện - các nút bị khóa trong lúc chờ. Mỗi lúc chỉ một việc nền.
+    void runInBackground(const QString& statusText, std::function<void()> work, std::function<void()> done);
+    /// Bật/tắt các nút theo dòng đang chọn + trạng thái bận (đang kết nối/ngắt kết nối hoặc có việc nền).
+    void updateButtons();
     const VpnConnectionStatus* selectedConnection() const;
 
     QTableWidget* m_table{nullptr}; // [Tên][Quốc gia][Giao thức][Trạng thái]
@@ -77,5 +86,9 @@ private:
 
     QList<VpnConnectionStatus> m_connections;
     VpnConnector* m_connector{nullptr};
+    QThread* m_backgroundThread{nullptr};
+    // Tên đăng nhập vừa nhập cho lần kết nối đang chạy - lưu lại (KHÔNG lưu mật khẩu) nếu kết nối thành công.
+    QString m_pendingConnectionName;
+    QString m_pendingUsername;
     PublicIpChecker* m_ipChecker{nullptr};
 };

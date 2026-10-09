@@ -2,6 +2,7 @@
 
 #include <QDialog>
 
+class QLabel;
 class QLineEdit;
 
 /// Hộp thoại "Ghép đôi gỡ lỗi không dây" (Android 11+): nhập địa chỉ IP:Cổng ghép đôi VÀ mã 6 số hiển
@@ -18,7 +19,13 @@ public:
     QString ipAndPort() const;
     QString pairingCode() const;
 
+public slots:
+    /// Chỉ đóng hộp thoại (Accepted) khi IP:Cổng và mã 6 số ĐÚNG ĐỊNH DẠNG - sai thì báo ngay tại chỗ và
+    /// giữ nguyên hộp thoại cho người dùng sửa, thay vì đóng lại rồi mới báo lỗi từ adb.
+    void accept() override;
+
 private:
     QLineEdit* m_ipPortEdit{nullptr};
     QLineEdit* m_codeEdit{nullptr};
+    QLabel* m_errorLabel{nullptr};
 };

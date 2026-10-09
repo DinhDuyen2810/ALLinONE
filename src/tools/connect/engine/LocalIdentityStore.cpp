@@ -1,5 +1,8 @@
 #include "LocalIdentityStore.h"
 
+#include "ProtocolMessage.h"
+#include "core/AppPaths.h"
+
 #include <QDebug>
 #include <QDir>
 #include <QFile>
@@ -17,6 +20,7 @@ LocalIdentityStore& LocalIdentityStore::instance()
 }
 
 LocalIdentityStore::LocalIdentityStore()
+    : m_path(AppPaths::profileFile("connect_identity.json"))
 {
     loadOrCreate();
 }
@@ -37,8 +41,11 @@ void LocalIdentityStore::loadOrCreate()
         {
             const QJsonObject o = doc.object();
             m_identity.id = o.value("id").toString();
-            m_identity.machineName = o.value("machineName").toString();
-            if (!m_identity.id.isEmpty() && !m_identity.machineName.isEmpty())
+            m_identity.machineName = ConnectProtocol::sanitizeMachineName(o.value("machineName").toString());
+            // id đi vào preamble + gói quảng bá của giao thức, nơi máy kia kiểm đúng định dạng này - tệp bị
+            // sửa tay thành id sai định dạng thì sinh lại (đồng nghĩa phải ghép đôi lại) thay vì chạy với
+            // một id mà không máy nào chấp nhận.
+            if (ConnectProtocol::isValidPeerId(m_identity.id))
                 return;
         }
     }
@@ -47,6 +54,7 @@ void LocalIdentityStore::loadOrCreate()
     m_identity.machineName = QHostInfo::localHostName();
     if (m_identity.machineName.isEmpty())
         m_identity.machineName = "May-khong-ten";
+    m_identity.machineName = ConnectProtocol::sanitizeMachineName(m_identity.machineName);
 
     const QFileInfo info(m_path);
     QDir().mkpath(info.absolutePath());

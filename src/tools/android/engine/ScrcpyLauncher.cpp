@@ -42,7 +42,13 @@ bool ScrcpyLauncher::start(const ScrcpyOptions& options, QString* error)
                     // adb.exe con của nó - quét dọn phòng hờ y hệt lý do trong stop() (không tốn gì nếu
                     // không còn tiến trình con nào phải dọn). Thoát BÌNH THƯỜNG thì bỏ qua: scrcpy tự dọn
                     // đúng con của nó trong luồng thoát chuẩn của chính nó.
-                    if (status != QProcess::NormalExit && m_lastPid > 0)
+                    //
+                    // BỎ QUA khi chính stop() vừa buộc dừng (m_stoppedByUs): terminate()/kill() của ta cũng
+                    // cho status != NormalExit, nên trước đây nhánh này chạy cả trong trường hợp đó - quét
+                    // hậu duệ theo m_lastPid SAU KHI scrcpy.exe đã chết, đúng cái rủi ro tái sử dụng PID mà
+                    // stop() đã cố tránh bằng cách chụp danh sách hậu duệ TRƯỚC khi dừng (và stop() cũng đã
+                    // tự dọn danh sách đó rồi).
+                    if (status != QProcess::NormalExit && m_lastPid > 0 && !m_stoppedByUs)
                         WinProcessTree::terminateDescendants(m_lastPid);
                     emit finished(exitCode);
                 });
@@ -53,6 +59,7 @@ bool ScrcpyLauncher::start(const ScrcpyOptions& options, QString* error)
 
     // scrcpy.exe cần adb.exe cùng thư mục (đã đóng gói chung) - không cần set thêm biến môi trường gì,
     // scrcpy tự tìm "adb" cạnh chính nó trước khi tìm trong PATH hệ thống.
+    m_stoppedByUs = false;
     m_process->setProgram(scrcpyPath);
     m_process->setArguments(ScrcpyLauncherInternal::buildArguments(options));
     m_process->start();
@@ -80,6 +87,8 @@ void ScrcpyLauncher::stop()
     const std::vector<qint64> descendants =
         m_lastPid > 0 ? WinProcessTree::findDescendants(m_lastPid) : std::vector<qint64>{};
 
+    // Đặt TRƯỚC terminate(): tín hiệu finished() có thể phát ngay bên trong waitForFinished() dưới đây.
+    m_stoppedByUs = true;
     m_process->terminate();
     if (!m_process->waitForFinished(3000))
         m_process->kill();

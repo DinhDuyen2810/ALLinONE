@@ -3,6 +3,7 @@
 #include "DiskCleanupWindow.h"
 #include "DiskUiStyle.h"
 #include "engine/DiskSpaceInfo.h"
+#include "engine/FsSafety.h"
 #include "engine/RecycleBinOps.h"
 
 #include <QComboBox>
@@ -211,7 +212,7 @@ void LargeFilesTab::onScanClicked()
     m_scanner->setMaxResults(300);
     // Ưu tiên thấp: quét cả ổ đĩa (hàng trăm nghìn tệp) là CPU/I-O nặng - nhường CPU cho luồng giao
     // diện để cửa sổ không bao giờ bị Windows báo "Không phản hồi" dù quét lâu.
-    m_scanner->start(QThread::LowPriority);
+    m_scanner->startScan(QThread::LowPriority);
 }
 
 void LargeFilesTab::onStopClicked()
@@ -280,7 +281,13 @@ void LargeFilesTab::onOpenFolderClicked()
     if (rows.size() != 1 || rows.first().row() >= m_results.size())
         return;
     const QString path = m_results[rows.first().row()].path;
-    QProcess::startDetached("explorer.exe", {"/select,", QDir::toNativeSeparators(path)});
+    // Đường dẫn tuyệt đối tới explorer.exe trong thư mục Windows - không để Windows tự tìm "explorer.exe"
+    // theo thư mục ứng dụng/thư mục làm việc/PATH (một tệp trùng tên đặt cạnh exe sẽ được chạy thay,
+    // đặc biệt nguy hiểm khi ứng dụng đang chạy với quyền Administrator).
+    const QString winDir = FsSafety::windowsDirectory();
+    if (winDir.isEmpty())
+        return;
+    QProcess::startDetached(QDir::toNativeSeparators(winDir + "/explorer.exe"), {"/select,", QDir::toNativeSeparators(path)});
 }
 
 void LargeFilesTab::onDeleteSelectedClicked()
@@ -289,14 +296,47 @@ void LargeFilesTab::onDeleteSelectedClicked()
     if (rows.isEmpty())
         return;
 
+    // Không xóa trong lúc một tab khác đang đổi kích thước phân vùng/dọn dẹp/quét trên cùng ổ đĩa - xem
+    // DiskCleanupWindow::isAnyOtherTabBusy() (trước đây chỉ các nút Quét mới kiểm tra điều này).
+    if (auto* win = qobject_cast<DiskCleanupWindow*>(window()))
+    {
+        if (win->isAnyOtherTabBusy(this))
+        {
+            QMessageBox::warning(this, "Đang có thao tác khác",
+                "Một tab khác trong Disk Cleanup đang quét/dọn dẹp/đổi kích thước phân vùng - vui lòng "
+                "đợi xong để tránh xung đột trên cùng ổ đĩa, rồi thử lại.");
+            return;
+        }
+    }
+
+    // Lọc TRƯỚC các tệp không thể vào Thùng rác (lớn hơn dung lượng Thùng rác của ổ, Thùng rác bị tắt,
+    // ổ mạng/ổ tháo rời): Shell sẽ XÓA VĨNH VIỄN chúng nếu cứ đưa vào - đúng loại tệp mà tab "tệp lớn"
+    // hay gặp nhất, trong khi nút bấm ghi rõ "Xóa vào Thùng rác".
     QStringList paths;
+    QStringList notRecyclable;
     qint64 total = 0;
     for (const QModelIndex& idx : rows)
     {
         if (idx.row() >= m_results.size())
             continue;
-        paths << m_results[idx.row()].path;
-        total += m_results[idx.row()].sizeBytes;
+        const LargeFileEntry& entry = m_results[idx.row()];
+        const QString reason = RecycleBinOps::notRecyclableReason(entry.path, entry.sizeBytes);
+        if (!reason.isEmpty())
+        {
+            notRecyclable << QDir::toNativeSeparators(entry.path) + "\n      (" + reason + ")";
+            continue;
+        }
+        paths << entry.path;
+        total += entry.sizeBytes;
+    }
+
+    if (!notRecyclable.isEmpty())
+    {
+        QMessageBox::warning(this, "Không thể đưa vào Thùng rác",
+            QString("%1 tệp KHÔNG thể đưa vào Thùng rác để khôi phục được nên sẽ được GIỮ NGUYÊN:\n\n  • %2\n\n"
+                    "Nếu thật sự muốn xóa hẳn các tệp này, hãy dùng \"Mở thư mục chứa\" rồi xóa trong Explorer.")
+                .arg(notRecyclable.size())
+                .arg(notRecyclable.mid(0, 8).join("\n  • ") + (notRecyclable.size() > 8 ? "\n  • ..." : "")));
     }
     if (paths.isEmpty())
         return;
@@ -307,22 +347,28 @@ void LargeFilesTab::onDeleteSelectedClicked()
         return;
 
     QString error;
-    if (!RecycleBinOps::moveToRecycleBin(paths, &error))
+    const bool ok = RecycleBinOps::moveToRecycleBin(paths, &error);
+
+    // Dù thành công hay lỗi giữa chừng: gỡ khỏi bảng đúng những tệp THẬT SỰ không còn trên đĩa (kiểm tra
+    // không đi theo liên kết) - trước đây khi có lỗi, hàm thoát sớm và để lại các dòng của tệp đã bị xóa.
+    int removed = 0;
+    for (int row = m_results.size() - 1; row >= 0; --row)
     {
-        QMessageBox::critical(this, "Lỗi", "Không xóa được:\n" + error);
-        return;
+        if (paths.contains(m_results[row].path) && !FsSafety::existsNoFollow(m_results[row].path))
+        {
+            m_table->removeRow(row);
+            m_results.removeAt(row);
+            ++removed;
+        }
     }
 
-    // Xóa các dòng vừa xử lý khỏi bảng + danh sách kết quả, không cần quét lại toàn bộ
-    QList<int> rowIndices;
-    for (const QModelIndex& idx : rows)
-        rowIndices << idx.row();
-    std::sort(rowIndices.begin(), rowIndices.end(), std::greater<int>());
-    for (int row : rowIndices)
+    if (!ok || removed < paths.size())
     {
-        m_table->removeRow(row);
-        if (row < m_results.size())
-            m_results.removeAt(row);
+        m_statusLabel->setText(QString("⚠ Đã chuyển %1/%2 tệp vào Thùng rác.").arg(removed).arg(paths.size()));
+        QMessageBox::critical(this, "Lỗi",
+            QString("Chỉ chuyển được %1/%2 tệp vào Thùng rác.\n%3").arg(removed).arg(paths.size()).arg(error));
+        return;
     }
     m_statusLabel->setText(QString("✓ Đã chuyển %1 tệp vào Thùng rác.").arg(paths.size()));
 }
+

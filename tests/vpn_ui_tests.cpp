@@ -5,10 +5,14 @@
 // vẫn là kết quả HỢP LỆ, không phải lỗi. KHÔNG BAO GIỜ tự động thêm/xóa/kết nối VPN thật trong test -
 // đó là thao tác cần tài khoản VPN thật và cần người dùng tự kiểm tra tay.
 #include <QApplication>
+#include <QElapsedTimer>
 #include <QLabel>
 #include <QPushButton>
 #include <QTableWidget>
+#include <QTemporaryDir>
 #include <cstdio>
+
+#include "core/AppPaths.h"
 
 #include "tools/vpn/VpnControlWindow.h"
 #include "tools/vpn/VpnTab.h"
@@ -25,6 +29,10 @@ int main(int argc, char** argv)
 {
     QApplication app(argc, argv);
 
+    // Log + vpn_profiles.json ghi vào thư mục tạm - KHÔNG đụng dữ liệu thật của người dùng.
+    QTemporaryDir dataDir;
+    AppPaths::setDataDirOverride(dataDir.path());
+
     VpnControlWindow win;
     win.setAttribute(Qt::WA_DontShowOnScreen, true);
     win.show();
@@ -37,6 +45,14 @@ int main(int argc, char** argv)
     {
         auto* table = vpnTab->findChild<QTableWidget*>();
         CHECK(table != nullptr && table->columnCount() == 4);
+
+        // Danh sách hồ sơ nay được đọc trên luồng NỀN (Get-VpnConnection không còn làm đứng giao diện lúc
+        // mở cửa sổ) - bảng bị khóa trong lúc chờ và phải được mở lại khi xong.
+        QElapsedTimer loadTimer;
+        loadTimer.start();
+        while (table && !table->isEnabled() && loadTimer.elapsed() < 60000)
+            app.processEvents(QEventLoop::AllEvents, 50);
+        CHECK(table != nullptr && table->isEnabled());
 
         const auto buttons = vpnTab->findChildren<QPushButton*>();
         CHECK(buttons.size() >= 5); // Làm mới x2, Thêm, Xóa, Kết nối (ít nhất)

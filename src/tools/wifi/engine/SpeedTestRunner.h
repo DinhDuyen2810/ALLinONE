@@ -31,6 +31,19 @@ public:
     void start();
     void stop();
     bool isRunning() const { return m_running; }
+    /// Lần đo gần nhất kết thúc do người dùng bấm dừng (stop()) chứ không phải chạy hết - giao diện dùng để
+    /// KHÔNG hiện "Hoàn tất" cho một phép đo bị bỏ dở. Có giá trị từ lúc finished() phát tới lần start() sau.
+    bool wasStoppedByUser() const { return m_stopRequested; }
+
+    struct PingStats
+    {
+        double minMs{0};
+        double avgMs{0};
+        double maxMs{0};
+        double jitterMs{0}; // trung bình độ lệch giữa hai mẫu liên tiếp
+    };
+    /// Thống kê trên các mẫu ping ĐÃ loại mẫu khởi động (xem kPingWarmupCount trong .cpp). Thuần tính toán.
+    static PingStats computePingStats(const QList<double>& samplesMs);
 
 signals:
     void phaseChanged(QString phase);
@@ -53,6 +66,7 @@ private:
     QNetworkAccessManager* m_nam;
     QNetworkReply* m_activeReply{nullptr};
     QTimer* m_abortTimer{nullptr};
+    QTimer* m_firstByteTimer{nullptr}; // hết giờ chờ byte ĐẦU TIÊN của pha tải xuống/tải lên
 
     bool m_running{false};
     bool m_stopRequested{false};

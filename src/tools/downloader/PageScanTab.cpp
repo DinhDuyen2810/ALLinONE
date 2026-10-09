@@ -115,6 +115,11 @@ void PageScanTab::onScanClicked()
     const QString url = m_urlEdit->text().trimmed();
     if (url.isEmpty())
         return;
+    if (!FileDownloaderInternal::isHttpUrl(url))
+    {
+        m_statusLabel->setText("⚠ Địa chỉ không hợp lệ - chỉ hỗ trợ trang bắt đầu bằng http:// hoặc https://.");
+        return;
+    }
     m_statusLabel->setText("⏳ Đang quét...");
     m_table->setRowCount(0);
     m_links.clear();
@@ -186,19 +191,17 @@ void PageScanTab::onChooseFolderClicked()
 
 QString PageScanTab::suggestedDestPath(const MediaLink& link) const
 {
-    QString name = link.fileName();
-    QString destPath = m_saveFolder + "/" + name;
-    if (QFile::exists(destPath))
-    {
-        const int dot = name.lastIndexOf('.');
-        const QString base = dot >= 0 ? name.left(dot) : name;
-        const QString ext = dot >= 0 ? name.mid(dot) : QString();
-        int counter = 1;
-        do {
-            destPath = QString("%1/%2 (%3)%4").arg(m_saveFolder, base).arg(counter++).arg(ext);
-        } while (QFile::exists(destPath));
-    }
-    return destPath;
+    // Liên kết lấy từ một trang web bất kỳ - tên tệp là dữ liệu KHÔNG tin cậy, phải làm sạch trước khi
+    // ghép vào thư mục lưu (xem FileDownloaderInternal::sanitizeFileName).
+    QString name = FileDownloaderInternal::fileNameFromUrl(link.url);
+    if (name.isEmpty())
+        name = "tep-khong-ten";
+
+    // Một trang thường có nhiều tệp TRÙNG TÊN ở các thư mục khác nhau (vd "thumb.jpg") - phải tính cả các
+    // mục đã nằm trong hàng đợi nhưng chưa tạo tệp trên đĩa, không chỉ QFile::exists().
+    return FileDownloaderInternal::uniqueDestPath(m_saveFolder, name, [this](const QString& path) {
+        return QFile::exists(path) || m_downloader->isDestPathInUse(path);
+    });
 }
 
 void PageScanTab::onDownloadSelectedClicked()

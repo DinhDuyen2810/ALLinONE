@@ -25,4 +25,16 @@ QByteArray run(const QString& script, bool* ok, QString* error = nullptr, int ti
 /// lại không chặn việc đóng cửa sổ giữa chừng.
 QByteArray runCancelable(const QString& script, const std::atomic_bool* cancelFlag, bool* ok,
                          QString* error = nullptr, int timeoutMs = 20000);
+
+/// Thoát một chuỗi để đặt AN TOÀN giữa hai dấu nháy đơn trong script PowerShell ('...'). PowerShell coi
+/// CẢ BỐN ký tự U+2018/U+2019/U+201A/U+201B là dấu nháy đơn y như U+0027 (xem tokenizer của PowerShell,
+/// IsSingleQuote) - chỉ nhân đôi dấu ' ASCII như các bản escapePsString riêng lẻ trước đây để lọt một
+/// tên thư mục/tên kết nối VPN chứa ’ đóng chuỗi sớm và chạy phần còn lại như lệnh (đã xác nhận thật
+/// bằng parser của PowerShell). Mọi nơi dựng script từ chuỗi không tự kiểm soát PHẢI dùng hàm này.
+QString quoteLiteral(const QString& value);
+
+/// Base64(UTF-16LE) của script - giá trị truyền cho `powershell.exe -EncodedCommand`. Dành cho nơi phải
+/// tự khởi chạy powershell.exe TÁCH RỜI (không chờ kết quả) nên không dùng run()/runCancelable() được,
+/// vd tiến trình trợ giúp cài bản cập nhật sau khi ứng dụng đã thoát (UpdateInstaller).
+QString encodedCommand(const QString& script);
 } // namespace PowerShellRunner

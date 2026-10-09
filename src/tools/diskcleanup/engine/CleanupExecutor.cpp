@@ -1,8 +1,10 @@
 #include "CleanupExecutor.h"
 
+#include "FsSafety.h"
 #include "RecycleBinOps.h"
 
-#include <QFileInfo>
+#include <QDir>
+#include <QSet>
 
 CleanupExecutor::CleanupExecutor(QObject* parent)
     : QThread(parent)
@@ -23,38 +25,70 @@ void CleanupExecutor::run()
         return;
     }
 
-    // Bước 1: những mục ĐÃ TỰ BIẾN MẤT từ lúc quét tới giờ (rất thường gặp với tệp tạm/cache - Windows
-    // hoặc ứng dụng khác liên tục tạo/xóa chúng) coi là ĐÃ ĐẠT MỤC TIÊU, không đưa vào yêu cầu xóa (và
-    // không gây SHFileOperationW báo lỗi ERROR_FILE_NOT_FOUND cho CẢ LÔ chỉ vì 1 mục không còn đó).
+    // Bước 1: lọc danh sách trước khi đụng tới đĩa.
+    //  - Mục ĐÃ TỰ BIẾN MẤT từ lúc quét tới giờ (rất thường gặp với tệp tạm/cache - Windows hoặc ứng dụng
+    //    khác liên tục tạo/xóa chúng) coi là ĐÃ ĐẠT MỤC TIÊU, không đưa vào yêu cầu xóa (và không gây
+    //    SHFileOperationW báo lỗi ERROR_FILE_NOT_FOUND cho CẢ LÔ chỉ vì 1 mục không còn đó). Kiểm tra bằng
+    //    FsSafety (không đi theo liên kết): QFileInfo::exists() trả về false cho một lối tắt .lnk CÒN ĐÓ
+    //    nhưng đích đã mất - lối tắt hỏng trong "Tệp gần đây" từng được tính "đã giải phóng" mà không hề xóa.
+    //  - Đường dẫn LẶP (hai hạng mục cùng trỏ vào một thư mục, vd "Tệp tạm hệ thống" và "Tệp nhật ký" đều
+    //    quét %WINDIR%\Temp) chỉ xóa/tính MỘT lần.
+    //  - Đường dẫn rỗng/tương đối/gốc ổ đĩa và junction/symlink THƯ MỤC không bao giờ được xóa từ đây.
+    //  - Chế độ Thùng rác: mục KHÔNG vào Thùng rác được (quá lớn, Thùng rác tắt, ổ không có Thùng rác)
+    //    được GIỮ NGUYÊN - Shell sẽ hủy hẳn chúng nếu cứ đưa vào (xem RecycleBinOps::moveToRecycleBin).
     QStringList toDelete;
     QList<qint64> toDeleteSizes;
+    QSet<QString> seen;
     qint64 freedBytes = 0;
     int freedCount = 0;
+    int refusedCount = 0;
+    int notRecyclableCount = 0;
+    QString notRecyclableExample;
     for (int i = 0; i < m_paths.size(); ++i)
     {
+        const QString path = QDir::cleanPath(m_paths[i]);
+        const QString key = path.toLower();
+        if (seen.contains(key))
+            continue;
+        seen.insert(key);
+
         const qint64 size = i < m_sizes.size() ? m_sizes[i] : 0;
-        if (QFileInfo::exists(m_paths[i]))
+        if (!FsSafety::unsafeCleanupRootReason(path, {}).isEmpty())
         {
-            toDelete << m_paths[i];
-            toDeleteSizes << size;
+            ++refusedCount;
+            continue;
         }
-        else
+        const FsSafety::RawInfo info = FsSafety::rawInfo(path);
+        if (!info.exists)
         {
             freedBytes += size;
             ++freedCount;
+            continue;
         }
-    }
-
-    if (toDelete.isEmpty())
-    {
-        // Mọi mục đều đã tự mất trước khi xóa - vẫn là thành công, không có gì để báo lỗi.
-        emit executionFinished(true, QString(), freedBytes, freedCount);
-        return;
+        if (info.isDir && info.isLink)
+        {
+            ++refusedCount;
+            continue;
+        }
+        if (!m_permanent)
+        {
+            const QString reason = RecycleBinOps::notRecyclableReason(path, size);
+            if (!reason.isEmpty())
+            {
+                ++notRecyclableCount;
+                if (notRecyclableExample.isEmpty())
+                    notRecyclableExample = QDir::toNativeSeparators(path) + " - " + reason;
+                continue;
+            }
+        }
+        toDelete << path;
+        toDeleteSizes << size;
     }
 
     QString error;
-    const bool ok = m_permanent ? RecycleBinOps::permanentlyDelete(toDelete, &error)
-                                : RecycleBinOps::moveToRecycleBin(toDelete, &error);
+    bool ok = true;
+    if (!toDelete.isEmpty())
+        ok = m_permanent ? RecycleBinOps::permanentlyDelete(toDelete, &error) : RecycleBinOps::moveToRecycleBin(toDelete, &error);
 
     // Bước 2: SHFileOperationW không cho biết CHÍNH XÁC mục nào thất bại khi có lỗi giữa chừng (có thể
     // đã xóa được phần lớn trước khi gặp 1 mục lỗi) - kiểm tra lại THẬT xem mục nào không còn tồn tại
@@ -63,7 +97,7 @@ void CleanupExecutor::run()
     int failedCount = 0;
     for (int i = 0; i < toDelete.size(); ++i)
     {
-        if (!QFileInfo::exists(toDelete[i]))
+        if (!FsSafety::existsNoFollow(toDelete[i]))
         {
             freedBytes += toDeleteSizes[i];
             ++freedCount;
@@ -74,17 +108,27 @@ void CleanupExecutor::run()
         }
     }
 
-    // Thành công = có giải phóng được gì đó (hoặc không có gì cần xóa). Chỉ coi là thất bại thật sự
-    // khi KHÔNG có mục nào được giải phóng dù có mục cần xóa - tránh dọa người dùng bằng hộp thoại lỗi
-    // đỏ cho một trường hợp thường gặp và vô hại (vài tệp tạm tự mất giữa lúc quét và lúc xóa).
-    const bool success = freedCount > 0 || toDelete.isEmpty();
-    QString finalNote;
+    // Thành công = có giải phóng được gì đó. Chỉ coi là thất bại thật sự khi KHÔNG có mục nào được giải
+    // phóng dù có mục cần xóa - tránh dọa người dùng bằng hộp thoại lỗi đỏ cho một trường hợp thường gặp
+    // và vô hại (vài tệp tạm tự mất giữa lúc quét và lúc xóa).
+    const int leftCount = failedCount + refusedCount + notRecyclableCount;
+    const bool success = freedCount > 0 || leftCount == 0;
+    QStringList notes;
     if (failedCount > 0)
     {
-        finalNote = !ok && !error.isEmpty()
-                        ? error
-                        : QString("%1 mục không xóa được (có thể đang được chương trình khác sử dụng).").arg(failedCount);
+        notes << (!ok && !error.isEmpty()
+                      ? error
+                      : QString("%1 mục không xóa được (có thể đang được chương trình khác sử dụng).").arg(failedCount));
     }
+    if (notRecyclableCount > 0)
+    {
+        notes << QString("%1 mục được GIỮ NGUYÊN vì không thể đưa vào Thùng rác để khôi phục (vd: %2). Bật "
+                         "\"Xóa vĩnh viễn\" nếu thật sự muốn xóa các mục này.")
+                     .arg(notRecyclableCount)
+                     .arg(notRecyclableExample);
+    }
+    if (refusedCount > 0)
+        notes << QString("%1 mục bị bỏ qua vì lý do an toàn (liên kết thư mục hoặc đường dẫn không hợp lệ).").arg(refusedCount);
 
-    emit executionFinished(success, finalNote, freedBytes, freedCount);
+    emit executionFinished(success, notes.join("\n"), freedBytes, freedCount);
 }

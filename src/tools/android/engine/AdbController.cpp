@@ -6,6 +6,14 @@
 #include <QProcess>
 #include <QRegularExpression>
 
+#ifdef Q_OS_WIN
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <tlhelp32.h>
+
+#include <vector>
+#endif
+
 namespace
 {
 QString bundleDir()
@@ -13,10 +21,15 @@ QString bundleDir()
     return QCoreApplication::applicationDirPath() + "/scrcpy";
 }
 
-/// Chạy adb.exe với các đối số cho trước, trả về (exitCode==0) qua *ok, toàn bộ stdout qua giá trị
-/// trả về. -NoProfile kiểu PowerShell không áp dụng ở đây - adb là một exe thường, không có các vấn đề
-/// CLIXML/stdin phức tạp từng gặp với PowerShell (xem PartitionManager.cpp).
-QString runAdb(const QStringList& args, bool* ok, QString* error, int timeoutMs = 15000)
+/// Chạy adb.exe với các đối số cho trước, trả về (exitCode==0) qua *ok, toàn bộ STDOUT qua giá trị trả
+/// về và STDERR riêng qua *stdErr (nếu cần). -NoProfile kiểu PowerShell không áp dụng ở đây - adb là một
+/// exe thường, không có các vấn đề CLIXML/stdin phức tạp từng gặp với PowerShell (xem PartitionManager.cpp).
+///
+/// KHÔNG ghép stdout+stderr vào một chuỗi như trước: adb in các dòng chẩn đoán ra stderr ("adb.exe:
+/// failed to check server version...", "* daemon not running; starting now...") - ghép chung rồi đưa
+/// cho parseDevicesOutput() thì mỗi dòng đó thành một "thiết bị" giả trong danh sách. Nơi nào cần đọc
+/// cả hai (pair/connect) thì tự ghép.
+QString runAdb(const QStringList& args, bool* ok, QString* error, int timeoutMs = 15000, QString* stdErr = nullptr)
 {
     *ok = false;
     const QString adbPath = AdbController::adbExecutablePath();
@@ -45,6 +58,7 @@ QString runAdb(const QStringList& args, bool* ok, QString* error, int timeoutMs 
 
     const QString out = QString::fromLocal8Bit(proc.readAllStandardOutput());
     const QString err = QString::fromLocal8Bit(proc.readAllStandardError());
+    if (stdErr) *stdErr = err;
     if (proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0)
     {
         if (error) *error = !err.trimmed().isEmpty() ? err.trimmed() : QString("adb thoát với mã lỗi %1").arg(proc.exitCode());
@@ -52,10 +66,19 @@ QString runAdb(const QStringList& args, bool* ok, QString* error, int timeoutMs 
     }
 
     *ok = true;
-    // Một số lệnh adb (pair/connect) in kết quả ra stdout, một số in CẢNH BÁO vô hại ra stderr
-    // ("* daemon not running; starting now..."), nên ghép cả hai để không mất thông tin khi caller cần
-    // đọc nội dung (vd thông báo "Paired with ...").
-    return out + err;
+    return out;
+}
+
+QString normalizedExecutablePath(const QString& path)
+{
+    QString p = QDir::fromNativeSeparators(path.trimmed());
+    if (p.startsWith("//?/"))
+        p = p.mid(4); // tiền tố đường dẫn dài của Win32 ("\\?\C:\...")
+
+    // Phân giải liên kết tượng trưng/junction/tên ngắn 8.3 khi tệp tồn tại - hai cách viết khác nhau của
+    // cùng một tệp phải so ra bằng nhau.
+    const QString canonical = QFileInfo(p).canonicalFilePath();
+    return QDir::cleanPath(canonical.isEmpty() ? p : canonical);
 }
 } // namespace
 
@@ -100,40 +123,107 @@ QList<AndroidDeviceInfo> listDevices(QString* error)
     return internal::parseDevicesOutput(out);
 }
 
+bool isValidIpAndPort(const QString& text)
+{
+    // máy = IPv6 trong ngoặc vuông, hoặc IPv4/tên máy (chữ, số, '.', '-'; bắt đầu và kết thúc bằng chữ/số
+    // - tức KHÔNG bao giờ bắt đầu bằng '-'). Cổng bắt buộc, 1-65535. Neo bằng \A...\z chứ không phải
+    // ^...$: '$' của biểu thức chính quy còn khớp NGAY TRƯỚC một ký tự xuống dòng ở cuối chuỗi.
+    static const QRegularExpression re(
+        QStringLiteral("\\A(?:\\[[0-9A-Fa-f:.]+\\]|[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?):([0-9]{1,5})\\z"));
+    const QRegularExpressionMatch m = re.match(text);
+    if (!m.hasMatch())
+        return false;
+    const int port = m.captured(1).toInt();
+    return port >= 1 && port <= 65535;
+}
+
+bool isValidPairingCode(const QString& text)
+{
+    static const QRegularExpression re(QStringLiteral("\\A[0-9]{6}\\z"));
+    return re.match(text).hasMatch();
+}
+
 bool pairWireless(const QString& ipAndPairPort, const QString& pairingCode, QString* error)
 {
+    if (!isValidIpAndPort(ipAndPairPort))
+    {
+        if (error) *error = "Địa chỉ ghép đôi không hợp lệ - cần dạng IP:Cổng, vd 192.168.1.23:41234.";
+        return false;
+    }
+    if (!isValidPairingCode(pairingCode))
+    {
+        if (error) *error = "Mã ghép đôi không hợp lệ - cần đúng 6 chữ số hiển thị trên điện thoại.";
+        return false;
+    }
+
     bool ok = false;
-    const QString out = runAdb({"pair", ipAndPairPort, pairingCode}, &ok, error, 20000);
-    if (ok && !out.contains("Successfully paired", Qt::CaseInsensitive))
+    QString err;
+    const QString out = runAdb({"pair", ipAndPairPort, pairingCode}, &ok, error, 20000, &err);
+    // adb in kết quả pair/connect ra stdout nhưng lý do thất bại có thể nằm ở stderr - đọc cả hai.
+    const QString all = out + err;
+    if (ok && !all.contains("Successfully paired", Qt::CaseInsensitive))
     {
         // adb trả về exitCode 0 ngay cả khi ghép đôi thất bại (vd sai mã) - phải tự đọc nội dung.
         ok = false;
-        if (error) *error = out.trimmed().isEmpty() ? "Ghép đôi thất bại - kiểm tra lại địa chỉ và mã." : out.trimmed();
+        if (error) *error = all.trimmed().isEmpty() ? "Ghép đôi thất bại - kiểm tra lại địa chỉ và mã." : all.trimmed();
     }
     return ok;
 }
 
 bool connectWireless(const QString& ipAndPort, QString* error)
 {
+    if (!isValidIpAndPort(ipAndPort))
+    {
+        if (error) *error = "Địa chỉ kết nối không hợp lệ - cần dạng IP:Cổng, vd 192.168.1.23:5555.";
+        return false;
+    }
+
     bool ok = false;
-    const QString out = runAdb({"connect", ipAndPort}, &ok, error, 15000);
-    if (ok && !out.contains("connected to", Qt::CaseInsensitive))
+    QString err;
+    const QString out = runAdb({"connect", ipAndPort}, &ok, error, 15000, &err);
+    const QString all = out + err;
+    if (ok && !all.contains("connected to", Qt::CaseInsensitive))
     {
         ok = false;
-        if (error) *error = out.trimmed().isEmpty() ? "Kết nối thất bại." : out.trimmed();
+        if (error) *error = all.trimmed().isEmpty() ? "Kết nối thất bại." : all.trimmed();
     }
     return ok;
 }
 
 bool disconnectWireless(const QString& ipAndPort, QString* error)
 {
+    if (!isValidIpAndPort(ipAndPort))
+    {
+        if (error) *error = "Địa chỉ không hợp lệ - cần dạng IP:Cổng.";
+        return false;
+    }
+
     bool ok = false;
     runAdb({"disconnect", ipAndPort}, &ok, error);
     return ok;
 }
 
+int stopBundledAdbServer()
+{
+    const QString adbPath = adbExecutablePath();
+    if (adbPath.isEmpty())
+        return 0;
+    return internal::terminateProcessesByImagePath(adbPath);
+}
+
 namespace internal
 {
+
+bool isKnownDeviceState(const QString& state)
+{
+    // Các tên trạng thái kết nối adb thật in ra ở cột thứ hai của `adb devices` (adb.cpp,
+    // connection_state_name) + "no permissions" (hai từ, xử lý riêng trong parseDevicesOutput).
+    static const QStringList states = {
+        "device",   "unauthorized", "offline", "authorizing", "connecting", "recovery",
+        "sideload", "bootloader",   "host",    "rescue",      "detached",   "unknown",
+    };
+    return states.contains(state);
+}
 
 QList<AndroidDeviceInfo> parseDevicesOutput(const QString& output)
 {
@@ -152,8 +242,21 @@ QList<AndroidDeviceInfo> parseDevicesOutput(const QString& output)
         AndroidDeviceInfo dev;
         dev.serial = tokens[0];
         dev.state = tokens[1];
+        int firstExtra = 2;
+        if (dev.state == "no" && tokens.size() >= 3 && tokens[2] == "permissions")
+        {
+            dev.state = "no permissions";
+            firstExtra = 3;
+        }
+        else if (!isKnownDeviceState(dev.state))
+        {
+            // KHÔNG phải dòng thiết bị: một dòng thông báo/lỗi bất kỳ ("adb.exe: failed to check server
+            // version", "error: cannot connect to daemon"...) cũng có >= 2 từ - trước đây mỗi dòng như
+            // vậy thành một thiết bị giả với "serial" là từ đầu tiên của câu.
+            continue;
+        }
 
-        for (int i = 2; i < tokens.size(); ++i)
+        for (int i = firstExtra; i < tokens.size(); ++i)
         {
             const int colon = tokens[i].indexOf(':');
             if (colon < 0)
@@ -168,6 +271,69 @@ QList<AndroidDeviceInfo> parseDevicesOutput(const QString& output)
         result << dev;
     }
     return result;
+}
+
+bool isSameExecutablePath(const QString& a, const QString& b)
+{
+    if (a.trimmed().isEmpty() || b.trimmed().isEmpty())
+        return false;
+    return normalizedExecutablePath(a).compare(normalizedExecutablePath(b), Qt::CaseInsensitive) == 0;
+}
+
+int terminateProcessesByImagePath(const QString& exePath)
+{
+    int terminated = 0;
+#ifdef Q_OS_WIN
+    const QString wantedName = QFileInfo(QDir::fromNativeSeparators(exePath)).fileName();
+    if (wantedName.isEmpty())
+        return 0;
+
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE)
+        return 0;
+
+    std::vector<DWORD> candidates; // lọc sơ bộ theo TÊN tệp - rẻ, không cần mở tiến trình
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    if (Process32FirstW(snapshot, &entry))
+    {
+        do
+        {
+            if (entry.th32ProcessID != GetCurrentProcessId() &&
+                QString::fromWCharArray(entry.szExeFile).compare(wantedName, Qt::CaseInsensitive) == 0)
+            {
+                candidates.push_back(entry.th32ProcessID);
+            }
+        } while (Process32NextW(snapshot, &entry));
+    }
+    CloseHandle(snapshot);
+
+    std::vector<wchar_t> buffer(32768);
+    for (const DWORD pid : candidates)
+    {
+        HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid);
+        if (!process)
+            continue; // đã thoát, hoặc thuộc người dùng/mức quyền khác - không phải của ta
+
+        // So ĐƯỜNG DẪN ĐẦY ĐỦ đọc từ chính handle vừa mở (không phải từ snapshot): handle giữ đúng tiến
+        // trình đó dù PID có bị tái sử dụng sau lúc chụp snapshot, và adb.exe của công cụ khác (Android
+        // Studio, platform-tools trong PATH...) có cùng TÊN nhưng khác đường dẫn nên không bao giờ khớp.
+        DWORD length = static_cast<DWORD>(buffer.size());
+        if (QueryFullProcessImageNameW(process, 0, buffer.data(), &length) &&
+            isSameExecutablePath(QString::fromWCharArray(buffer.data(), static_cast<int>(length)), exePath))
+        {
+            if (TerminateProcess(process, 1))
+            {
+                WaitForSingleObject(process, 2000); // chờ thoát hẳn để khóa tệp adb.exe được nhả
+                ++terminated;
+            }
+        }
+        CloseHandle(process);
+    }
+#else
+    Q_UNUSED(exePath);
+#endif
+    return terminated;
 }
 
 } // namespace internal

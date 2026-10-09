@@ -65,12 +65,14 @@ QByteArray WlanProfileXml::fromHex(const QString& hex)
 }
 
 QString WlanProfileXml::build(const QByteArray& ssidBytes, const QString& ssidDisplayName, WifiSecurity security,
-                              const QString& password, bool autoConnect)
+                              const QString& password, bool autoConnect, bool nonBroadcast)
 {
     const AuthEnc ae = authEncFor(security);
-    const bool v3 = (security == WifiSecurity::Wpa3Sae);
-    const QString ns = v3 ? "http://www.microsoft.com/networking/WLAN/profile/v3"
-                          : "http://www.microsoft.com/networking/WLAN/profile/v1";
+    // Phần tử gốc WLANProfile LUÔN ở namespace v1, kể cả hồ sơ WPA3: theo tài liệu "WLAN_profile schema"
+    // của Microsoft ("The WLANProfile element is in the namespace .../WLAN/profile/v1"), WPA3SAE chỉ là
+    // một giá trị mới của <authentication> trong chính schema đó; các namespace v2/v3/v4 chỉ dùng cho vài
+    // phần tử mở rộng riêng lẻ (FIPSMode, transitionMode...). Trước đây hồ sơ WPA3 bị ghi gốc ".../v3".
+    const QString ns = "http://www.microsoft.com/networking/WLAN/profile/v1";
 
     QString xml;
     QXmlStreamWriter w(&xml);
@@ -86,6 +88,8 @@ QString WlanProfileXml::build(const QByteArray& ssidBytes, const QString& ssidDi
     w.writeTextElement("hex", toHex(ssidBytes));
     w.writeTextElement("name", ssidDisplayName);
     w.writeEndElement(); // SSID
+    if (nonBroadcast)
+        w.writeTextElement("nonBroadcast", "true");
     w.writeEndElement(); // SSIDConfig
 
     w.writeTextElement("connectionType", "ESS");
@@ -179,10 +183,17 @@ bool WlanProfileXml::parse(const QString& xml, WifiProfile* out)
     // nhưng là một chuỗi đã mã hóa DPAPI, không phải mật khẩu thật - nhận biết qua <protected>true</protected>.
     // Chỉ coi là mật khẩu thật khi protected rõ ràng là "false".
     const bool isPlaintext = protectedStr.compare("false", Qt::CaseInsensitive) == 0;
+    out->password.clear();
+    out->hasPassword = false;
+    out->keyProtected = false;
     if (!keyMaterial.isEmpty() && isPlaintext)
     {
         out->password = keyMaterial;
         out->hasPassword = true;
+    }
+    else if (!keyMaterial.isEmpty())
+    {
+        out->keyProtected = true;
     }
     out->rawXml = xml;
     return true;

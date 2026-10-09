@@ -14,3 +14,14 @@ ActionChain ActionChain::clone() const
     copy.actions = actions;
     return copy;
 }
+
+std::vector<int> ActionChain::enabledActionIndices() const
+{
+    std::vector<int> indices;
+    for (size_t i = 0; i < actions.size(); ++i)
+    {
+        if (actions[i].enabled)
+            indices.push_back(static_cast<int>(i));
+    }
+    return indices;
+}

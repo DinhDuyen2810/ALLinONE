@@ -11,6 +11,7 @@
 #include <QLabel>
 #include <QMessageBox>
 #include <QPlainTextEdit>
+#include <QShowEvent>
 #include <QTabWidget>
 #include <QTime>
 #include <QVBoxLayout>
@@ -43,22 +44,40 @@ ConnectWindow::ConnectWindow(QWidget* parent)
     connect(m_controller, &ConnectSessionController::pairingFailed, this,
            [this](const QString& reason) { QMessageBox::warning(this, "Ghép đôi thất bại", reason); });
 
+    startController(true);
+
+    Logger::instance().info("Connect", "Mở cửa sổ Connect Together");
+}
+
+ConnectWindow::~ConnectWindow() = default;
+
+void ConnectWindow::startController(bool showErrorDialog)
+{
+    // start() là idempotent (đang chạy thì trả true ngay) - gọi được từ cả constructor lẫn showEvent.
     QString err;
     if (!m_controller->start(&err))
     {
         appendLog("⚠ Không khởi động được Connect Together: " + err);
-        QMessageBox::critical(this, "Lỗi", "Không khởi động được Connect Together:\n" + err);
+        if (showErrorDialog)
+            QMessageBox::critical(this, "Lỗi", "Không khởi động được Connect Together:\n" + err);
     }
 
     m_identityLabel->setText(QString("Tên máy: %1  •  Cổng TCP: %2")
                                  .arg(m_controller->localIdentity().machineName)
                                  .arg(m_controller->listenPort()));
     updateRoleBanner();
-
-    Logger::instance().info("Connect", "Mở cửa sổ Connect Together");
 }
 
-ConnectWindow::~ConnectWindow() = default;
+void ConnectWindow::showEvent(QShowEvent* event)
+{
+    // Cửa sổ này được ConnectTool giữ qua QPointer và TÁI DÙNG ở lần mở sau (không có WA_DeleteOnClose):
+    // closeEvent() đã stop() controller, nên mở lại mà không start() thì cửa sổ hiện ra bình thường nhưng
+    // không nghe cổng, không khám phá, không hook - "chết" cho tới khi khởi động lại cả ứng dụng. Bỏ qua
+    // sự kiện show tự phát của hệ thống (khôi phục từ thu nhỏ) - khi đó controller vẫn đang chạy.
+    QWidget::showEvent(event);
+    if (!event->spontaneous() && !m_controller->isRunning())
+        startController(false);
+}
 
 void ConnectWindow::buildUi()
 {

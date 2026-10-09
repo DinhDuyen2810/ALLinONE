@@ -73,4 +73,8 @@ struct Action
     // Helper functions
     QString typeName() const;
     QString description() const;
+    /// Như description() nhưng AN TOÀN ĐỂ GHI LOG: hành động "Gõ văn bản" chỉ ghi SỐ KÝ TỰ, không ghi
+    /// nội dung - nội dung gõ thường là mật khẩu/mã đăng nhập (xem mục 72 tài liệu thiết kế), trước đây
+    /// bị ghi nguyên văn vào logs/autoclick.log ở MỖI hành động của MỖI vòng lặp.
+    QString logDescription() const;
 };

@@ -1,6 +1,8 @@
 #include "ActionRunner.h"
 #include "core/Logger.h"
-#include <QDateTime>
+
+#include <algorithm>
+#include <chrono>
 
 ActionRunner::ActionRunner(QObject* parent)
     : QThread(parent)
@@ -53,35 +55,50 @@ void ActionRunner::requestResume()
 
 bool ActionRunner::sleepWithCountdown(std::chrono::milliseconds duration, const QString& phase)
 {
-    qint64 totalMs = duration.count();
-    qint64 remaining = totalMs;
-    const int tickInterval = 50; // emit tick every 50ms for smooth UI/overlay countdown
+    using Clock = std::chrono::steady_clock;
+    const qint64 tickInterval = 50; // emit tick every 50ms for smooth UI/overlay countdown
 
-    while (remaining > 0)
+    // Đếm ngược theo MỐC THỜI GIAN tuyệt đối (steady_clock) thay vì trừ dần "50ms danh nghĩa" sau mỗi lần
+    // msleep(50): Windows ngủ DƯ tới ~15ms mỗi lần (độ phân giải timer mặc định), cộng dồn qua hàng trăm
+    // tick làm một lần chờ 5 giây thật ra dài hơn 5 giây thấy rõ - sai số tích lũy theo số vòng lặp.
+    auto deadline = Clock::now() + duration;
+
+    for (;;)
     {
         if (m_stopRequested)
             return false;
 
-        while (m_pauseRequested)
+        if (m_pauseRequested)
         {
-            if (m_stopRequested)
-                return false;
-            msleep(50);
+            // Thời gian tạm dừng không tính vào thời gian chờ - đẩy mốc kết thúc lùi lại đúng bằng
+            // khoảng đã tạm dừng.
+            const auto pausedAt = Clock::now();
+            while (m_pauseRequested)
+            {
+                if (m_stopRequested)
+                    return false;
+                msleep(50);
+            }
+            deadline += Clock::now() - pausedAt;
         }
 
-        emit countdownTick(remaining, phase);
+        const qint64 remaining =
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - Clock::now()).count();
+        if (remaining <= 0)
+            break;
 
-        int sleepTime = std::min(static_cast<qint64>(tickInterval), remaining);
-        msleep(sleepTime);
-        remaining -= sleepTime;
+        emit countdownTick(remaining, phase);
+        msleep(static_cast<unsigned long>(std::min(tickInterval, remaining)));
     }
 
     emit countdownTick(0, phase);
     return true;
 }
 
-void ActionRunner::executeAction(const Action& action)
+bool ActionRunner::executeAction(const Action& action)
 {
+    m_inputController->clearError();
+
     switch (action.type)
     {
         case ActionType::MouseClick:
@@ -114,6 +131,8 @@ void ActionRunner::executeAction(const Action& action)
             m_inputController->scroll(action.scrollDirection, action.scrollAmount, action.duration, &m_stopRequested);
             break;
     }
+
+    return !m_inputController->hasError();
 }
 
 void ActionRunner::run()
@@ -129,15 +148,11 @@ void ActionRunner::run()
     int totalRounds = m_chain.repeatCount;
     int currentRound = 0;
 
-    // Filter enabled actions
-    std::vector<Action> enabledActions;
-    for (const auto& act : m_chain.actions)
-    {
-        if (act.enabled)
-            enabledActions.push_back(act);
-    }
+    // Chỉ chạy các hành động đang bật - giữ CHỈ SỐ GỐC của từng hành động (không chép ra danh sách mới
+    // đánh số lại từ đầu) để báo đúng hàng cho giao diện qua actionStarted(..., sourceIndex).
+    const std::vector<int> enabledIndices = m_chain.enabledActionIndices();
 
-    if (enabledActions.empty())
+    if (enabledIndices.empty())
     {
         m_state = RunnerState::Finished;
         emit stateChanged(RunnerState::Finished);
@@ -145,7 +160,9 @@ void ActionRunner::run()
         return;
     }
 
-    while (true)
+    QString failure; // khác rỗng = Windows từ chối một thao tác, dừng chuỗi (mục 63 thiết kế: On Error = Stop)
+
+    while (failure.isEmpty())
     {
         if (m_stopRequested)
             break;
@@ -156,7 +173,7 @@ void ActionRunner::run()
         currentRound++;
         emit roundStarted(currentRound, totalRounds);
 
-        for (size_t i = 0; i < enabledActions.size(); ++i)
+        for (size_t i = 0; i < enabledIndices.size(); ++i)
         {
             if (m_stopRequested)
                 break;
@@ -170,8 +187,11 @@ void ActionRunner::run()
             if (m_stopRequested)
                 break;
 
-            const auto& act = enabledActions[i];
-            QString nextDesc = (i + 1 < enabledActions.size()) ? enabledActions[i + 1].description() : (currentRound < totalRounds || totalRounds == -1 ? "Next Round" : "End");
+            const int sourceIndex = enabledIndices[i];
+            const auto& act = m_chain.actions[static_cast<size_t>(sourceIndex)];
+            QString nextDesc = (i + 1 < enabledIndices.size())
+                                   ? m_chain.actions[static_cast<size_t>(enabledIndices[i + 1])].description()
+                                   : (currentRound < totalRounds || totalRounds == -1 ? "Next Round" : "End");
 
             int targetX = act.x;
             int targetY = act.y;
@@ -181,15 +201,17 @@ void ActionRunner::run()
                 targetY = act.startY;
             }
 
-            emit actionStarted(currentRound, totalRounds, static_cast<int>(i + 1), static_cast<int>(enabledActions.size()),
-                               act.description(), nextDesc, targetX, targetY);
+            emit actionStarted(currentRound, totalRounds, static_cast<int>(i + 1), static_cast<int>(enabledIndices.size()),
+                               act.description(), nextDesc, targetX, targetY, sourceIndex);
 
+            // logDescription(), KHÔNG phải description(): không ghi nội dung "Gõ văn bản" (thường là mật
+            // khẩu) vào tệp log - xem Action.h.
             Logger::instance().info("AutoClick", QString("Round %1/%2 - Action %3/%4: %5")
                                                     .arg(currentRound)
                                                     .arg(totalRounds > 0 ? QString::number(totalRounds) : "Inf")
                                                     .arg(i + 1)
-                                                    .arg(enabledActions.size())
-                                                    .arg(act.description()));
+                                                    .arg(enabledIndices.size())
+                                                    .arg(act.logDescription()));
 
             // 1. Wait Before
             if (act.waitBefore.count() > 0)
@@ -202,7 +224,13 @@ void ActionRunner::run()
             if (m_stopRequested)
                 break;
 
-            executeAction(act);
+            if (!executeAction(act))
+            {
+                failure = QString("Hành động %1 (%2): %3")
+                              .arg(sourceIndex + 1)
+                              .arg(act.typeName(), m_inputController->lastError());
+                break;
+            }
 
             // 3. Wait After
             if (act.waitAfter.count() > 0)
@@ -215,7 +243,17 @@ void ActionRunner::run()
         }
     }
 
-    if (m_stopRequested)
+    if (!failure.isEmpty())
+    {
+        // Trước đây mọi giá trị trả về của SendInput/SetCursorPos đều bị bỏ qua: chuỗi "chạy" hết các vòng
+        // lặp trong khi không thao tác nào tới được cửa sổ đích, người dùng không biết vì sao.
+        m_state = RunnerState::Error;
+        Logger::instance().error("AutoClick", "Execution aborted: " + failure);
+        emit stateChanged(RunnerState::Error);
+        emit errorOccurred(failure);
+        emit executionStopped();
+    }
+    else if (m_stopRequested)
     {
         m_state = RunnerState::Idle;
         emit stateChanged(RunnerState::Idle);

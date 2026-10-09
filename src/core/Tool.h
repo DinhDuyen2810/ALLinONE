@@ -31,7 +31,7 @@ public:
     /// core/WinProcessTree.h) nếu cửa sổ của tool này đang mở - gọi từ ToolManager::stopAllBackgroundWorkForQuit()
     /// khi ứng dụng sắp thoát theo BẤT KỲ đường nào (qApp->quit() trực tiếp KHÔNG tự gọi closeEvent() của
     /// các cửa sổ khác đang mở - xem ghi chú ở các điểm gọi qApp->quit()). Mặc định không làm gì - chỉ
-    /// ghi đè ở tool có tiến trình ngoài DÀI HẠN (adb.exe/scrcpy.exe, yt-dlp.exe, rasdial.exe...) VÀ có
+    /// ghi đè ở tool có tiến trình ngoài DÀI HẠN (adb.exe/scrcpy.exe, yt-dlp.exe...) hoặc luồng nền chạy lâu VÀ có
     /// cách dừng không cần hộp thoại xác nhận (khác isWindowBusy() bên dưới - dành cho thao tác KHÔNG
     /// được phép bị buộc dừng giữa chừng).
     virtual void stopBackgroundWorkForQuit() {}

@@ -24,6 +24,7 @@ protected:
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
+    void closeEvent(QCloseEvent* event) override;
 
 private:
     struct ScreenShot
@@ -39,5 +40,5 @@ private:
     QPoint m_start;
     QPoint m_current;
     bool m_dragging{false};
-    bool m_done{false};
+    bool m_done{false}; // đã phát captured()/cancelled() rồi - closeEvent() không phát thêm lần nữa
 };

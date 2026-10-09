@@ -3,8 +3,8 @@
 #include <QString>
 
 /// Kiểm tra/khởi chạy lại chính ứng dụng này với quyền Administrator - dùng CHUNG cho mọi module cần
-/// quyền cao hơn (PartitionManager để đổi kích thước phân vùng, VpnController để thêm/xóa kết nối VPN
-/// hệ thống...). Tách riêng khỏi từng module để không lặp lại cùng một đoạn Win32
+/// quyền cao hơn (PartitionManager để đổi kích thước phân vùng, Security Gateway để đổi cấu hình Defender/
+/// ghi hosts file...). Tách riêng khỏi từng module để không lặp lại cùng một đoạn Win32
 /// (OpenProcessToken/GetTokenInformation/ShellExecuteExW) ở nhiều nơi.
 namespace WinElevation
 {

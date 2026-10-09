@@ -68,17 +68,22 @@ if errorlevel 1 goto error
 
 echo.
 echo [3/5] Don sach OneForAll_Release\ de "gat" (heat.exe) dung bo cai dat .msi...
-rem Can mot ban sao RIENG, da loai logs\ va profiles\qr_history.json (giong het quy tac Excludes cua
+rem Can mot ban sao RIENG, da loai logs\ va TOAN BO profiles\ (giong het quy tac Excludes cua
 rem OneForAll.iss) - vi heat.exe khong co co che loai tru theo mau nhu Inno Setup, phai loc truoc roi moi
-rem "gat" thu muc. exit code 1 cua robocopy la BINH THUONG (nghia la da copy file thanh cong), khong phai
-rem loi - chi >=8 moi la loi that su.
+rem "gat" thu muc. Chi DUY NHAT profiles\default.json (chuoi Auto Click mau, lay tu ma nguon trong Git) duoc
+rem dong goi: thu muc profiles\ cua ban dev co the chua lich su QR, khoa ghep doi Connect Together, nhan VPN
+rem ca nhan cua nguoi phat trien - khong bao gio duoc lot vao bo cai dat. exit code 1 cua robocopy la BINH
+rem THUONG (nghia la da copy file thanh cong), khong phai loi - chi >=8 moi la loi that su.
 set "MSI_STAGE=%~dp0obj\msi_stage\OneForAll_Release"
 set "MSI_OBJ=%~dp0obj\msi_obj"
 if exist "%~dp0obj" rmdir /s /q "%~dp0obj"
 mkdir "%MSI_STAGE%" 2>nul
 mkdir "%MSI_OBJ%" 2>nul
-robocopy "%~dp0OneForAll_Release" "%MSI_STAGE%" /E /XD logs /XF qr_history.json /NFL /NDL /NJH /NJS >nul
+robocopy "%~dp0OneForAll_Release" "%MSI_STAGE%" /E /XD logs profiles /NFL /NDL /NJH /NJS >nul
 if errorlevel 8 goto error
+mkdir "%MSI_STAGE%\profiles" 2>nul
+copy /y "%~dp0profiles\default.json" "%MSI_STAGE%\profiles\default.json" >nul
+if errorlevel 1 goto error
 
 echo.
 echo [4/5] Bien dich bo cai dat .msi bang WiX Toolset (heat + candle + light)...

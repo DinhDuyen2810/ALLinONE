@@ -22,4 +22,10 @@ double normalizedPositionAlongEdge(const QPoint& cursor, const QRect& localBound
 /// Điểm đặt con trỏ khi NHẬN quyền điều khiển, đi vào từ 'incomingFromSide' của localBounds, tại vị trí
 /// chuẩn hóa đã nhận được từ máy gửi. Lùi vài pixel vào trong để không lập tức kích hoạt chuyển ngược lại.
 QPoint entryPoint(const QRect& localBounds, ScreenSide incomingFromSide, double normalizedPosition);
+
+/// Điểm đặt lại con trỏ khi LẤY LẠI quyền điều khiển về máy này: giữ nguyên vị trí dọc theo biên đã chạm
+/// ('cursor' - con trỏ vẫn nằm đúng chỗ đã chạm biên suốt lúc điều khiển máy kia) nhưng lùi 'inset' pixel
+/// vào trong. Không làm vậy thì con trỏ vẫn nằm trên biên và lần dò biên kế tiếp (16 ms sau) lập tức trao
+/// quyền điều khiển đi lần nữa - người dùng không bao giờ thật sự quay về được.
+QPoint returnPoint(const QRect& localBounds, ScreenSide crossedSide, const QPoint& cursor, int inset);
 }

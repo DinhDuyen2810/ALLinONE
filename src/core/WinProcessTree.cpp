@@ -6,6 +6,23 @@
 
 #include <utility>
 
+namespace
+{
+/// Thời điểm tạo tiến trình (FILETIME gộp thành 64-bit), 0 nếu không mở/đọc được.
+quint64 processCreationTime(DWORD pid)
+{
+    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!h)
+        return 0;
+    FILETIME created{}, exited{}, kernel{}, user{};
+    quint64 result = 0;
+    if (GetProcessTimes(h, &created, &exited, &kernel, &user))
+        result = (static_cast<quint64>(created.dwHighDateTime) << 32) | created.dwLowDateTime;
+    CloseHandle(h);
+    return result;
+}
+} // namespace
+
 namespace WinProcessTree
 {
 
@@ -44,6 +61,15 @@ std::vector<qint64> findDescendants(qint64 rootPid)
         for (const auto& pair : all)
         {
             if (pair.second != parent)
+                continue;
+            // th32ParentProcessID chỉ là CON SỐ ghi lại lúc tiến trình con ra đời - nếu tiến trình cha
+            // thật đã thoát và Windows cấp lại đúng PID đó cho một tiến trình khác, mọi tiến trình mồ
+            // côi cũ vẫn "trỏ" vào PID này dù không liên quan. Một tiến trình con THẬT không thể ra đời
+            // TRƯỚC cha nó: bỏ qua mọi ứng viên có thời điểm tạo sớm hơn cha. Không đọc được thời điểm
+            // (tiến trình được bảo vệ/đã thoát) thì giữ hành vi cũ, không loại.
+            const quint64 parentCreated = processCreationTime(parent);
+            const quint64 childCreated = processCreationTime(pair.first);
+            if (parentCreated != 0 && childCreated != 0 && childCreated < parentCreated)
                 continue;
             bool already = false;
             for (DWORD pid : toKill)

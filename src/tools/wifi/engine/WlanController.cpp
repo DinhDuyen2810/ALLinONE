@@ -25,6 +25,12 @@
 #ifndef WLAN_AVAILABLE_NETWORK_INCLUDE_ALL_MANUAL_HIDDEN_PROFILES
 #define WLAN_AVAILABLE_NETWORK_INCLUDE_ALL_MANUAL_HIDDEN_PROFILES 0x00000002
 #endif
+#ifndef WLAN_PROFILE_GROUP_POLICY
+#define WLAN_PROFILE_GROUP_POLICY 0x00000001
+#endif
+#ifndef WLAN_PROFILE_USER
+#define WLAN_PROFILE_USER 0x00000002
+#endif
 
 namespace
 {
@@ -66,26 +72,30 @@ QByteArray ssidToBytes(const DOT11_SSID& ssid)
 
 WifiSecurity mapAuth(DOT11_AUTH_ALGORITHM algo, DOT11_CIPHER_ALGORITHM cipher, bool securityEnabled)
 {
-    if (!securityEnabled)
-        return WifiSecurity::Open;
+    // Bảng ánh xạ nằm ở WifiSecurityUtil::fromDot11() (thuần số, kiểm thử được không cần Win32).
+    return WifiSecurityUtil::fromDot11(static_cast<unsigned>(algo), static_cast<unsigned>(cipher), securityEnabled);
+}
 
-    switch (static_cast<int>(algo))
+/// Đọc XML một hồ sơ. Trả mã lỗi Win32 (ERROR_SUCCESS / ERROR_NOT_FOUND / ERROR_ACCESS_DENIED...).
+/// requestFlags: 0 hoặc WLAN_PROFILE_GET_PLAINTEXT_KEY. outFlags nhận cờ loại hồ sơ (USER/GROUP_POLICY).
+DWORD readProfileXml(HANDLE handle, const GUID& guid, const QString& profileName, DWORD requestFlags,
+                     QString* xml, DWORD* outFlags)
+{
+    LPWSTR xmlRaw = nullptr;
+    DWORD flags = requestFlags;
+    DWORD access = 0;
+    const DWORD res = WlanGetProfile(handle, &guid, reinterpret_cast<LPCWSTR>(profileName.utf16()), nullptr,
+                                     &xmlRaw, &flags, &access);
+    if (res == ERROR_SUCCESS && xmlRaw)
     {
-        case DOT11_AUTH_ALGO_80211_OPEN:
-            return cipher == DOT11_CIPHER_ALGO_NONE ? WifiSecurity::Open : WifiSecurity::Wep;
-        case DOT11_AUTH_ALGO_80211_SHARED_KEY:
-            return WifiSecurity::Wep;
-        case DOT11_AUTH_ALGO_WPA:
-        case DOT11_AUTH_ALGO_RSNA:
-            return WifiSecurity::Enterprise;
-        case DOT11_AUTH_ALGO_WPA_PSK:
-            return WifiSecurity::WpaPsk;
-        case DOT11_AUTH_ALGO_RSNA_PSK:
-            return WifiSecurity::Wpa2Psk;
-        default:
-            // Giá trị >7 (chưa có tên trong header MinGW này) thường là WPA3-SAE trên Windows mới.
-            return static_cast<int>(algo) > DOT11_AUTH_ALGO_RSNA_PSK ? WifiSecurity::Wpa3Sae : WifiSecurity::Unknown;
+        if (xml)
+            *xml = QString::fromWCharArray(xmlRaw);
+        if (outFlags)
+            *outFlags = flags;
     }
+    if (xmlRaw)
+        WlanFreeMemory(xmlRaw);
+    return res;
 }
 
 QString phyTypeName(DOT11_PHY_TYPE t)
@@ -246,35 +256,15 @@ QList<WifiNetwork> WlanController::availableNetworks(const QString& adapterGuid,
         w.hasProfile = (n.dwFlags & WLAN_AVAILABLE_NETWORK_HAS_PROFILE) != 0;
         w.profileName = QString::fromWCharArray(n.strProfileName);
         w.numberOfBssids = static_cast<int>(n.uNumberOfBssids);
-        // Mạng ẩn (quảng bá SSID trống) có thể lặp nhiều lần rỗng; vẫn giữ lại để người dùng
-        // nhận ra "Mạng ẩn" nếu có hồ sơ khớp, nhưng gắn tên hiển thị dễ đọc.
-        if (w.ssid.isEmpty())
-            w.ssid = w.hasProfile ? QString("(Mạng ẩn - hồ sơ: %1)").arg(w.profileName) : "(Mạng ẩn)";
+        // Mạng ẩn (quảng bá SSID trống): vẫn giữ lại để người dùng nhận ra, nhưng ssid để RỖNG + cờ hidden
+        // - tên trang trí "(Mạng ẩn)" chỉ do WifiNetwork::displayName() sinh ra lúc hiển thị.
+        w.hidden = w.ssid.isEmpty();
         result.push_back(w);
     }
     WlanFreeMemory(list);
 
-    // Gộp các mục trùng SSID (nhiều BSSID của cùng 1 AP) lấy tín hiệu mạnh nhất, giữ cờ đã kết nối/có hồ sơ.
-    QList<WifiNetwork> merged;
-    for (const WifiNetwork& w : result)
-    {
-        bool found = false;
-        for (WifiNetwork& m : merged)
-        {
-            if (m.ssid == w.ssid && m.security == w.security)
-            {
-                m.signalQuality = std::max(m.signalQuality, w.signalQuality);
-                m.connected = m.connected || w.connected;
-                m.hasProfile = m.hasProfile || w.hasProfile;
-                m.numberOfBssids += w.numberOfBssids;
-                found = true;
-                break;
-            }
-        }
-        if (!found)
-            merged.push_back(w);
-    }
-    return merged;
+    // Gộp các mục trùng SSID (nhiều BSSID của cùng 1 AP, mục có/không gắn hồ sơ).
+    return WifiNetworkUtil::mergeDuplicates(result);
 }
 
 QList<WifiProfile> WlanController::profiles(const QString& adapterGuid, bool withPlaintextPassword, QString* error) const
@@ -330,7 +320,11 @@ QList<WifiProfile> WlanController::profiles(const QString& adapterGuid, bool wit
             p.name = name;
             p.ssid = name;
         }
-        p.passwordAccessDenied = deniedPassword;
+        // Không đủ quyền đọc mật khẩu dạng chữ có HAI biểu hiện: WlanGetProfile trả ERROR_ACCESS_DENIED,
+        // hoặc (thường gặp hơn) vẫn trả THÀNH CÔNG nhưng <keyMaterial> ở dạng mã hóa (<protected>true).
+        // Trước đây chỉ nhận biết trường hợp đầu, nên ở trường hợp sau giao diện cứ hiện "••••••••" dù đã
+        // tick "Hiện mật khẩu", không một lời giải thích.
+        p.passwordAccessDenied = deniedPassword || (withPlaintextPassword && p.keyProtected);
         result.push_back(p);
     }
     WlanFreeMemory(list);
@@ -359,7 +353,16 @@ bool WlanController::deleteProfile(const QString& adapterGuid, const QString& pr
     return true;
 }
 
-QString WlanController::exportProfileXml(const QString& adapterGuid, const QString& profileName, QString* error) const
+bool WlanController::hasProfile(const QString& adapterGuid, const QString& profileName) const
+{
+    GUID guid{};
+    if (!m_handle || !stringToGuid(adapterGuid, &guid))
+        return false;
+    return readProfileXml(static_cast<HANDLE>(m_handle), guid, profileName, 0, nullptr, nullptr) == ERROR_SUCCESS;
+}
+
+QString WlanController::exportProfileXml(const QString& adapterGuid, const QString& profileName,
+                                         bool includePlaintextKey, QString* error) const
 {
     if (!ensureOpen(m_handle, error))
         return QString();
@@ -371,27 +374,27 @@ QString WlanController::exportProfileXml(const QString& adapterGuid, const QStri
         return QString();
     }
 
-    LPWSTR xmlRaw = nullptr;
-    DWORD flags = WLAN_PROFILE_GET_PLAINTEXT_KEY;
-    DWORD access = 0;
-    DWORD res = WlanGetProfile(static_cast<HANDLE>(m_handle), &guid, reinterpret_cast<LPCWSTR>(profileName.utf16()),
-                               nullptr, &xmlRaw, &flags, &access);
-    if (res == ERROR_ACCESS_DENIED)
-    {
-        flags = 0;
-        res = WlanGetProfile(static_cast<HANDLE>(m_handle), &guid, reinterpret_cast<LPCWSTR>(profileName.utf16()),
-                             nullptr, &xmlRaw, &flags, &access);
-        if (res == ERROR_SUCCESS)
-            setErr(error, "Đã xuất nhưng KHÔNG kèm mật khẩu (cần chạy với quyền Administrator để xuất mật khẩu).");
-    }
+    const HANDLE handle = static_cast<HANDLE>(m_handle);
+    QString xml;
+    DWORD res = readProfileXml(handle, guid, profileName, includePlaintextKey ? WLAN_PROFILE_GET_PLAINTEXT_KEY : 0,
+                               &xml, nullptr);
+    if (res == ERROR_ACCESS_DENIED && includePlaintextKey)
+        res = readProfileXml(handle, guid, profileName, 0, &xml, nullptr);
     if (res != ERROR_SUCCESS)
     {
         setErr(error, "Không xuất được hồ sơ: " + dwordToErrorText(res));
         return QString();
     }
 
-    const QString xml = QString::fromWCharArray(xmlRaw);
-    WlanFreeMemory(xmlRaw);
+    if (includePlaintextKey)
+    {
+        // Không đủ quyền thì Windows hoặc từ chối (đã thử lại ở trên), hoặc vẫn trả thành công nhưng
+        // khóa ở dạng mã hóa - cả hai đều phải báo cho người dùng biết tệp KHÔNG chứa mật khẩu đọc được.
+        WifiProfile parsed;
+        if (WlanProfileXml::parse(xml, &parsed) && parsed.keyProtected)
+            setErr(error, "Đã xuất nhưng KHÔNG kèm mật khẩu dạng chữ (cần chạy với quyền Administrator). "
+                          "Khóa trong tệp ở dạng mã hóa, chỉ nhập lại được trên chính máy này.");
+    }
     return xml;
 }
 
@@ -419,10 +422,18 @@ bool WlanController::importProfileXml(const QString& adapterGuid, const QString&
 }
 
 bool WlanController::connectWithPassword(const QString& adapterGuid, const WifiNetwork& network, const QString& password,
-                                         WifiSecurity securityOverride, bool autoConnect, QString* error)
+                                         WifiSecurity securityOverride, bool autoConnect, WifiProfileBackup* backup,
+                                         QString* error)
 {
+    if (backup)
+        *backup = WifiProfileBackup();
     if (!ensureOpen(m_handle, error))
         return false;
+    if (network.ssid.isEmpty() || network.ssidBytes.isEmpty() || network.ssidBytes.size() > 32)
+    {
+        setErr(error, "Tên mạng (SSID) không hợp lệ (phải từ 1 đến 32 byte).");
+        return false;
+    }
 
     if (!WifiSecurityUtil::isSupportedForQuickConnect(securityOverride))
     {
@@ -442,10 +453,50 @@ bool WlanController::connectWithPassword(const QString& adapterGuid, const WifiN
         return false;
     }
 
-    const QString xml = WlanProfileXml::build(network.ssidBytes, network.ssid, securityOverride, password, autoConnect);
+    const HANDLE handle = static_cast<HANDLE>(m_handle);
+    const QString profileName = network.ssid;
+
+    // ---- Sao lưu hồ sơ cùng tên (nếu có) TRƯỚC khi ghi đè ----
+    // WlanSetProfile(bOverwrite=TRUE) bên dưới thay hẳn hồ sơ cũ bằng hồ sơ mang mật khẩu vừa nhập, TRƯỚC
+    // khi biết mật khẩu đó có đúng không. Không sao lưu thì một lần gõ nhầm là mất mật khẩu đúng đang lưu.
+    // Ưu tiên bản có khóa dạng chữ (chắc chắn nhập lại được); không đủ quyền thì dùng bản khóa mã hóa mà
+    // Windows trả về (nhập lại được trên chính máy này).
+    WifiProfileBackup saved;
+    saved.adapterGuid = adapterGuid;
+    saved.profileName = profileName;
+    {
+        QString oldXml;
+        DWORD oldFlags = 0;
+        DWORD getRes = readProfileXml(handle, guid, profileName, WLAN_PROFILE_GET_PLAINTEXT_KEY, &oldXml, &oldFlags);
+        if (getRes == ERROR_ACCESS_DENIED)
+            getRes = readProfileXml(handle, guid, profileName, 0, &oldXml, &oldFlags);
+
+        if (getRes == ERROR_SUCCESS)
+        {
+            if (oldFlags & WLAN_PROFILE_GROUP_POLICY)
+            {
+                setErr(error, "Hồ sơ của mạng này do chính sách nhóm (Group Policy) quản lý, không thể thay đổi.");
+                return false;
+            }
+            saved.existed = true;
+            saved.perUser = (oldFlags & WLAN_PROFILE_USER) != 0;
+            saved.xml = oldXml;
+        }
+        else if (getRes != ERROR_NOT_FOUND)
+        {
+            // Có hồ sơ nhưng không đọc được để sao lưu: thà không kết nối còn hơn ghi đè không đường lui.
+            setErr(error, "Không sao lưu được hồ sơ hiện có của mạng này nên không ghi đè: " + dwordToErrorText(getRes));
+            return false;
+        }
+    }
+    saved.valid = true;
+    const DWORD profileFlags = saved.perUser ? WLAN_PROFILE_USER : 0;
+
+    const QString xml = WlanProfileXml::build(network.ssidBytes, network.ssid, securityOverride, password, autoConnect,
+                                              network.hidden);
 
     DWORD reason = 0;
-    const DWORD setRes = WlanSetProfile(static_cast<HANDLE>(m_handle), &guid, 0,
+    const DWORD setRes = WlanSetProfile(handle, &guid, profileFlags,
                                         reinterpret_cast<LPCWSTR>(xml.utf16()), nullptr, TRUE, nullptr, &reason);
     if (setRes != ERROR_SUCCESS)
     {
@@ -455,17 +506,59 @@ bool WlanController::connectWithPassword(const QString& adapterGuid, const WifiN
 
     WLAN_CONNECTION_PARAMETERS params{};
     params.wlanConnectionMode = wlan_connection_mode_profile;
-    const std::wstring profileNameW = network.ssid.toStdWString();
+    const std::wstring profileNameW = profileName.toStdWString();
     params.strProfile = profileNameW.c_str();
     params.pDot11Ssid = nullptr;
     params.pDesiredBssidList = nullptr;
     params.dot11BssType = dot11_BSS_type_infrastructure;
     params.dwFlags = 0;
 
-    const DWORD connRes = WlanConnect(static_cast<HANDLE>(m_handle), &guid, &params, nullptr);
+    const DWORD connRes = WlanConnect(handle, &guid, &params, nullptr);
     if (connRes != ERROR_SUCCESS)
     {
+        // Hồ sơ đã bị ghi đè/tạo mới nhưng không gửi nổi yêu cầu kết nối: hoàn tác ngay tại đây.
+        rollbackProfile(saved, nullptr);
         setErr(error, "Không gửi được yêu cầu kết nối: " + dwordToErrorText(connRes));
+        return false;
+    }
+    if (backup)
+        *backup = saved;
+    return true;
+}
+
+bool WlanController::rollbackProfile(const WifiProfileBackup& backup, QString* error)
+{
+    if (!backup.valid)
+        return true;
+    if (!ensureOpen(m_handle, error))
+        return false;
+
+    GUID guid{};
+    if (!stringToGuid(backup.adapterGuid, &guid))
+    {
+        setErr(error, "GUID adapter không hợp lệ.");
+        return false;
+    }
+
+    const HANDLE handle = static_cast<HANDLE>(m_handle);
+    if (backup.existed)
+    {
+        DWORD reason = 0;
+        const DWORD res = WlanSetProfile(handle, &guid, backup.perUser ? WLAN_PROFILE_USER : 0,
+                                         reinterpret_cast<LPCWSTR>(backup.xml.utf16()), nullptr, TRUE, nullptr, &reason);
+        if (res != ERROR_SUCCESS)
+        {
+            setErr(error, QString("Không khôi phục được hồ sơ cũ \"%1\" (mã lỗi lý do %2): %3")
+                              .arg(backup.profileName).arg(reason).arg(dwordToErrorText(res)));
+            return false;
+        }
+        return true;
+    }
+
+    const DWORD res = WlanDeleteProfile(handle, &guid, reinterpret_cast<LPCWSTR>(backup.profileName.utf16()), nullptr);
+    if (res != ERROR_SUCCESS && res != ERROR_NOT_FOUND)
+    {
+        setErr(error, QString("Không xóa được hồ sơ tạm \"%1\": %2").arg(backup.profileName, dwordToErrorText(res)));
         return false;
     }
     return true;
@@ -550,6 +643,9 @@ WifiCurrentConnection WlanController::currentConnection(const QString& adapterGu
 
     const auto* attr = static_cast<const WLAN_CONNECTION_ATTRIBUTES*>(data);
     result.isConnected = (attr->isState == wlan_interface_state_connected);
+    result.connecting = (attr->isState == wlan_interface_state_associating ||
+                         attr->isState == wlan_interface_state_discovering ||
+                         attr->isState == wlan_interface_state_authenticating);
     result.ssid = ssidToDisplayString(attr->wlanAssociationAttributes.dot11Ssid);
     const auto& mac = attr->wlanAssociationAttributes.dot11Bssid;
     result.bssid = QString("%1:%2:%3:%4:%5:%6")

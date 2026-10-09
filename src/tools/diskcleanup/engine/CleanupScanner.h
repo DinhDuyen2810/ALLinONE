@@ -21,6 +21,8 @@ public:
     ~CleanupScanner() override;
 
     void setCategories(const QList<CleanupCategory>& categories);
+    /// Bắt đầu quét - LUÔN dùng hàm này thay cho start() trực tiếp (đặt lại cờ dừng trước khi luồng chạy).
+    void startScan(QThread::Priority priority = QThread::InheritPriority);
     void requestStop();
 
 signals:

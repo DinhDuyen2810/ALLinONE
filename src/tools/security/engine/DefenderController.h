@@ -71,6 +71,8 @@ QString buildSetRealtimeMonitoringScript(bool enabled);
 QString buildSetNetworkProtectionScript(bool enabled);
 
 QString buildStartScanScript(ScanType type, const QString& customPath);
+/// Thời gian chờ tối đa cho một lượt Start-MpScan theo loại quét (xem ghi chú trong .cpp).
+int scanTimeoutMs(ScanType type);
 
 QString buildListThreatsScript();
 QList<ThreatRecord> parseThreatsJson(const QByteArray& json, QString* error);

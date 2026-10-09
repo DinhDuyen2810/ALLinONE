@@ -19,10 +19,12 @@ public:
     ~ConnectWindow() override;
 
 protected:
+    void showEvent(QShowEvent* event) override;
     void closeEvent(QCloseEvent* event) override;
 
 private:
     void buildUi();
+    void startController(bool showErrorDialog);
     void appendLog(const QString& text);
     void updateRoleBanner();
 

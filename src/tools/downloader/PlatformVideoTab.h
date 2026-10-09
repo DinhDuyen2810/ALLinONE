@@ -22,7 +22,8 @@ public:
     explicit PlatformVideoTab(QWidget* parent = nullptr);
     ~PlatformVideoTab() override;
 
-    /// Dừng NGAY phiên tải yt-dlp.exe đang chạy (nếu có), không hỏi xác nhận - gọi từ
+    /// Dừng NGAY phiên tải yt-dlp.exe đang chạy VÀ lượt lấy thông tin đang chạy (nếu có), không hỏi xác
+    /// nhận, không chờ - gọi từ
     /// DownloaderWindow::closeEvent() (đóng cửa sổ) và DownloaderTool::stopBackgroundWorkForQuit() (ứng
     /// dụng thoát qua qApp->quit() ở nơi khác) - nếu không tự dừng, yt-dlp.exe (và ffmpeg.exe nó tự sinh
     /// lúc ghép video+âm thanh) sẽ mồ côi và chạy ngầm vô thời hạn, đúng lớp lỗi đã gặp với scrcpy.exe/
@@ -34,6 +35,8 @@ private slots:
     void onInfoFetched(bool ok, VideoInfo info, QString error);
     void onChooseFolderClicked();
     void onDownloadClicked();
+    void onCancelDownloadClicked();
+    void onUrlTextChanged(const QString& text);
     void onDownloadProgress(qint64 downloaded, qint64 total, qint64 speed, qint64 eta);
     void onDownloadFinished(bool ok, QString error);
 
@@ -42,6 +45,8 @@ private:
     void updateBundleBanner();
     void setBusyFetching(bool busy);
     void setBusyDownloading(bool busy);
+    bool isDownloading() const;
+    void clearFetchedInfo();
 
     QLabel* m_bundleBanner{nullptr};
     QLineEdit* m_urlEdit{nullptr};
@@ -53,6 +58,7 @@ private:
     QLabel* m_folderLabel{nullptr};
     QPushButton* m_chooseFolderBtn{nullptr};
     QPushButton* m_downloadBtn{nullptr};
+    QPushButton* m_cancelBtn{nullptr};
 
     QProgressBar* m_progressBar{nullptr};
     QLabel* m_progressLabel{nullptr};
@@ -61,5 +67,10 @@ private:
     YtDlpDownloadWorker* m_downloadWorker{nullptr};
 
     VideoInfo m_currentInfo;
+    /// URL mà thông tin/danh sách định dạng đang hiển thị thuộc về - lượt TẢI luôn dùng đúng URL này chứ
+    /// không đọc lại ô nhập (trước đây sửa ô nhập sau khi lấy thông tin là tải URL mới với mã định dạng
+    /// của video cũ). Rỗng = chưa có thông tin hợp lệ, không tải được.
+    QString m_infoUrl;
+    QString m_pendingInfoUrl; ///< URL của lượt lấy thông tin đang chạy
     QString m_saveFolder;
 };

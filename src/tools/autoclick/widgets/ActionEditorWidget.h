@@ -36,6 +36,9 @@ public slots:
     void onPositionCaptured(int x, int y);
     void onDragGestureCaptured(int startX, int startY, int endX, int endY);
 
+protected:
+    void hideEvent(QHideEvent* event) override;
+
 private slots:
     void onTypeChanged(int index);
     void onApplyClicked();
@@ -44,6 +47,11 @@ private slots:
 private:
     void setupUi();
     void connectDirtyTracking();
+    void cancelHotkeyCapture();
+    /// Chọn phím `vkCode` trong combo phím; nếu phím đó KHÔNG có trong danh sách hỗ trợ sẵn thì thêm một
+    /// mục tạm "(phím khác: ...)" giữ nguyên mã + tên gốc, xem setAction().
+    static void selectKeyInCombo(QComboBox* combo, int vkCode, const QString& keyName);
+    static QString keyNameFromCombo(const QComboBox* combo);
     QWidget* createClickPage();
     QWidget* createDragPage();
     QWidget* createHoldPage();
@@ -56,6 +64,7 @@ private:
     int m_capturingField{0}; // 0: X,Y; 1: startX,startY; 2: endX,endY
     bool m_loadingAction{false}; // true trong lúc setAction() đang nạp giá trị - tránh markDirty() giả
     bool m_dirty{false};
+    bool m_loadedEnabled{true}; // Action::enabled của hành động đang sửa - editor không có ô nào cho nó
 
     QComboBox* m_typeCombo;
     QStackedWidget* m_pagesStack;

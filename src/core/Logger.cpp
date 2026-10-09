@@ -1,5 +1,5 @@
 #include "Logger.h"
-#include <QDir>
+#include "core/AppPaths.h"
 #include <QDateTime>
 #include <QFileInfo>
 #include <QTextStream>
@@ -32,14 +32,19 @@ void Logger::rotateIfTooLarge(QFile& file)
 
 Logger::Logger()
 {
-    ensureLogDir();
-    m_appLogFile.setFileName("logs/app.log");
+    // Đường dẫn tuyệt đối trong thư mục dữ liệu người dùng (xem AppPaths.h) - trước đây là "logs/..."
+    // tương đối theo CWD, không ghi được khi cài vào Program Files hoặc khi CWD không phải thư mục exe.
+    m_appLogFile.setFileName(AppPaths::logFile("app.log"));
     rotateIfTooLarge(m_appLogFile);
-    m_appLogFile.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text);
+    // Không mở được log (đĩa đầy, thư mục bị khóa...) KHÔNG được làm ứng dụng dừng - log() tự bỏ qua tệp
+    // chưa mở; chỉ báo ra kênh debug để còn dấu vết.
+    if (!m_appLogFile.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text))
+        qWarning("Logger: không mở được %s", qUtf8Printable(m_appLogFile.fileName()));
 
-    m_autoclickLogFile.setFileName("logs/autoclick.log");
+    m_autoclickLogFile.setFileName(AppPaths::logFile("autoclick.log"));
     rotateIfTooLarge(m_autoclickLogFile);
-    m_autoclickLogFile.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text);
+    if (!m_autoclickLogFile.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text))
+        qWarning("Logger: không mở được %s", qUtf8Printable(m_autoclickLogFile.fileName()));
 }
 
 Logger::~Logger()
@@ -49,15 +54,6 @@ Logger::~Logger()
         m_appLogFile.close();
     if (m_autoclickLogFile.isOpen())
         m_autoclickLogFile.close();
-}
-
-void Logger::ensureLogDir()
-{
-    QDir dir("logs");
-    if (!dir.exists())
-    {
-        dir.mkpath(".");
-    }
 }
 
 void Logger::log(LogLevel level, const QString& module, const QString& message)

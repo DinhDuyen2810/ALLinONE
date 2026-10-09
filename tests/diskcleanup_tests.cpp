@@ -9,14 +9,20 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QTemporaryDir>
+#include <QProcess>
 #include <QTimer>
 #include <cstdio>
+
+#include <windows.h>
+
+#include "core/AppPaths.h"
 
 #include "tools/diskcleanup/engine/CategoryRegistry.h"
 #include "tools/diskcleanup/engine/CleanupExecutor.h"
 #include "tools/diskcleanup/engine/CleanupScanner.h"
 #include "tools/diskcleanup/engine/DiskSpaceInfo.h"
 #include "tools/diskcleanup/engine/DuplicateFinder.h"
+#include "tools/diskcleanup/engine/FsSafety.h"
 #include "tools/diskcleanup/engine/LargeFileScanner.h"
 #include "tools/diskcleanup/engine/PartitionManager.h"
 #include "tools/diskcleanup/engine/RecycleBinOps.h"
@@ -216,10 +222,13 @@ int main(int argc, char** argv)
         scanner2.setCategories({bigCat, catA, catB});
         bool stopped = false;
         QObject::connect(&scanner2, &CleanupScanner::scanStopped, [&] { stopped = true; });
-        scanner2.start();
+        // startScan() đặt lại cờ dừng TRƯỚC khi luồng chạy - requestStop() gọi ngay sau đó KHÔNG được mất
+        // (trước đây run() tự xóa cờ ở dòng đầu, lượt quét có thể chạy tới hết dù đã yêu cầu dừng).
+        scanner2.startScan();
         scanner2.requestStop();
         CHECK(waitUntil([&] { return stopped || !scanner2.isRunning(); }));
         scanner2.wait();
+        CHECK(stopped);
     }
 
     // ---- CleanupScanner: lối tắt (.lnk) KHÔNG được tính theo kích thước thư mục đích ----
@@ -572,10 +581,11 @@ int main(int argc, char** argv)
         finder3.setMinSizeBytes(1);
         bool stopped = false;
         QObject::connect(&finder3, &DuplicateFinder::scanStopped, [&] { stopped = true; });
-        finder3.start();
+        finder3.startScan();
         finder3.requestStop();
         CHECK(waitUntil([&] { return stopped || !finder3.isRunning(); }));
         finder3.wait();
+        CHECK(stopped); // yêu cầu dừng ngay sau startScan() không được mất
 
         // Thư mục không tồn tại -> không crash, 0 nhóm
         DuplicateFinder finder4;
@@ -743,6 +753,429 @@ int main(int argc, char** argv)
             CHECK(p.partitionNumber >= 0);
             CHECK(p.sizeBytes > 0);
         }
+    }
+
+    // =====================================================================================
+    // Hồi quy cho đợt rà soát "chống xóa nhầm": mọi thứ dưới đây chỉ đụng tới QTemporaryDir.
+    // =====================================================================================
+
+    // Tạo junction bằng mklink /J (không cần quyền Administrator). Đích LUÔN nằm trong thư mục tạm của test.
+    auto makeJunction = [](const QString& link, const QString& target) -> bool {
+        QProcess proc;
+        proc.start(AppPaths::systemExecutable("cmd.exe"),
+                   {"/c", "mklink", "/J", QDir::toNativeSeparators(link), QDir::toNativeSeparators(target)});
+        return proc.waitForFinished(10000) && proc.exitCode() == 0 && FsSafety::rawInfo(link).isLink;
+    };
+
+    // ---- FsSafety::unsafeCleanupRootReason: thư mục gốc dọn dẹp phải hợp lý ----
+    {
+        const QStringList prot = {"C:/Users/Ai Do", "C:/Program Files", "C:/Windows"};
+        CHECK(!FsSafety::unsafeCleanupRootReason("", prot).isEmpty());                 // rỗng
+        CHECK(!FsSafety::unsafeCleanupRootReason("   ", prot).isEmpty());
+        CHECK(!FsSafety::unsafeCleanupRootReason("/Temp", prot).isEmpty());            // sinh ra khi biến môi trường rỗng
+        CHECK(!FsSafety::unsafeCleanupRootReason("Windows.old", prot).isEmpty());      // tương đối
+        CHECK(!FsSafety::unsafeCleanupRootReason("C:Temp", prot).isEmpty());           // tương đối theo ổ
+        CHECK(!FsSafety::unsafeCleanupRootReason("C:/", prot).isEmpty());              // gốc ổ đĩa
+        CHECK(!FsSafety::unsafeCleanupRootReason("D:\\", prot).isEmpty());
+        CHECK(!FsSafety::unsafeCleanupRootReason("d:", prot).isEmpty());
+        CHECK(!FsSafety::unsafeCleanupRootReason("C:/Users/Ai Do", prot).isEmpty());   // trùng thư mục được bảo vệ
+        CHECK(!FsSafety::unsafeCleanupRootReason("c:\\users\\ai do\\", prot).isEmpty()); // không phân biệt hoa thường/dấu gạch
+        CHECK(!FsSafety::unsafeCleanupRootReason("C:/Users", prot).isEmpty());         // CHỨA thư mục được bảo vệ
+        CHECK(!FsSafety::unsafeCleanupRootReason("C:/Windows", prot).isEmpty());
+        CHECK(!FsSafety::unsafeCleanupRootReason("C:/Program Files/../Windows", prot).isEmpty()); // có ".." vẫn nhận ra
+        CHECK(FsSafety::unsafeCleanupRootReason("C:/Windows/Temp", prot).isEmpty());   // thư mục CON thì hợp lệ
+        CHECK(FsSafety::unsafeCleanupRootReason("C:/Users/Ai Do/AppData/Local/Temp", prot).isEmpty());
+        CHECK(FsSafety::unsafeCleanupRootReason("C:/UsersBackup", prot).isEmpty());    // chỉ giống tiền tố, không phải cha
+        CHECK(!FsSafety::unsafeCleanupRootReason("//may/chiase", prot).isEmpty());     // gốc thư mục chia sẻ mạng
+        CHECK(FsSafety::unsafeCleanupRootReason("//may/chiase/Temp", prot).isEmpty());
+
+        // Máy thật: các thư mục được bảo vệ đọc được và chính chúng bị từ chối
+        const QStringList real = FsSafety::systemProtectedDirs();
+        CHECK(!real.isEmpty());
+        for (const QString& dir : real)
+            CHECK(!FsSafety::unsafeCleanupRootReason(dir, real).isEmpty());
+        CHECK(!FsSafety::windowsDirectory().isEmpty());
+        // %TEMP% thật của máy build phải vẫn được chấp nhận (không chặn nhầm trường hợp bình thường)
+        const CleanupEnvironment realEnv = CleanupEnvironment::current();
+        CHECK(FsSafety::unsafeCleanupRootReason(realEnv.tempDir, realEnv.protectedDirs + QStringList{realEnv.windowsDir}).isEmpty());
+    }
+
+    // ---- CategoryRegistry: biến môi trường rỗng/trỏ sai KHÔNG được sinh ra hạng mục nào ----
+    {
+        // Mọi biến đều rỗng -> không hạng mục nào có thư mục gốc (trước đây sinh "/Temp", "/Logs",
+        // "/Microsoft/..." - bị Windows hiểu theo gốc ổ đĩa hiện hành - và "Windows.old" tương đối).
+        const QList<CleanupCategory> none = CategoryRegistry::buildCategories(CleanupEnvironment{});
+        CHECK(!none.isEmpty());
+        for (const auto& c : none)
+            CHECK(c.rootPaths.isEmpty());
+
+        QTemporaryDir tmp;
+        CHECK(tmp.isValid());
+        QDir(tmp.path()).mkpath("Temp");
+        QDir(tmp.path()).mkpath("Roaming/Microsoft/Windows/Recent");
+
+        auto find = [](const QList<CleanupCategory>& cats, CleanupCategoryId id) -> const CleanupCategory* {
+            for (const auto& c : cats)
+                if (c.id == id)
+                    return &c;
+            return nullptr;
+        };
+
+        // TEMP trỏ vào gốc ổ đĩa -> hạng mục "Tệp tạm" không khả dụng (không phải "cả ổ C: là rác")
+        CleanupEnvironment rootEnv;
+        rootEnv.tempDir = QDir(tmp.path()).rootPath(); // "C:/"
+        const auto rootCats = CategoryRegistry::buildCategories(rootEnv);
+        const CleanupCategory* rootTemp = find(rootCats, CleanupCategoryId::UserTemp);
+        CHECK(rootTemp && rootTemp->rootPaths.isEmpty());
+
+        // TEMP trỏ đúng vào một thư mục được bảo vệ (vd hồ sơ người dùng) -> cũng không khả dụng
+        CleanupEnvironment protEnv;
+        protEnv.tempDir = tmp.path() + "/Temp";
+        protEnv.roamingAppData = tmp.path() + "/Roaming";
+        protEnv.protectedDirs = {tmp.path() + "/Temp"};
+        const auto protCats = CategoryRegistry::buildCategories(protEnv);
+        const CleanupCategory* protTemp = find(protCats, CleanupCategoryId::UserTemp);
+        CHECK(protTemp && protTemp->rootPaths.isEmpty());
+
+        // Bình thường: khả dụng, có lọc "mới sửa gần đây"; Recent loại trừ 2 thư mục chứa mục ghim
+        protEnv.protectedDirs.clear();
+        const auto okCats = CategoryRegistry::buildCategories(protEnv);
+        const CleanupCategory* okTemp = find(okCats, CleanupCategoryId::UserTemp);
+        CHECK(okTemp && okTemp->rootPaths.size() == 1);
+        CHECK(okTemp && okTemp->minAgeSeconds > 0);
+        const CleanupCategory* recent = find(okCats, CleanupCategoryId::RecentItems);
+        CHECK(recent && recent->rootPaths.size() == 1);
+        CHECK(recent && recent->excludeNames.contains("AutomaticDestinations"));
+        CHECK(recent && recent->excludeNames.contains("CustomDestinations"));
+    }
+
+    // ---- CleanupScanner: excludeNames + minAgeSeconds + gốc không hợp lệ ----
+    {
+        QTemporaryDir tmp;
+        CHECK(tmp.isValid());
+        QDir root(tmp.path());
+        root.mkpath("Recent/AutomaticDestinations");
+        root.mkpath("Recent/CustomDestinations");
+        root.mkpath("Recent/OtherDir");
+        writeFile(tmp.path() + "/Recent/AutomaticDestinations/pinned.automaticDestinations-ms", 4000);
+        writeFile(tmp.path() + "/Recent/CustomDestinations/pinned.customDestinations-ms", 4000);
+        writeFile(tmp.path() + "/Recent/OtherDir/x.bin", 300);
+        writeFile(tmp.path() + "/Recent/doc.txt", 100);
+
+        auto scan = [&](const CleanupCategory& cat) {
+            QList<CleanupItem> items;
+            CleanupScanner scanner;
+            scanner.setCategories({cat});
+            QObject::connect(&scanner, &CleanupScanner::itemFound, [&](CleanupItem i) { items.push_back(i); });
+            scanner.startScan();
+            scanner.wait();
+            return items;
+        };
+
+        CleanupCategory cat;
+        cat.id = CleanupCategoryId::RecentItems;
+        cat.name = "Exclude test";
+        cat.rootPaths = {tmp.path() + "/Recent"};
+        cat.excludeNames = {"automaticdestinations", "CustomDestinations"}; // không phân biệt hoa thường
+        const auto items = scan(cat);
+        CHECK(items.size() == 2); // OtherDir + doc.txt
+        for (const auto& it : items)
+        {
+            CHECK(!it.path.contains("AutomaticDestinations"));
+            CHECK(!it.path.contains("CustomDestinations"));
+        }
+
+        // Mục vừa tạo (mới sửa trong 1 giờ qua) bị bỏ qua khi hạng mục yêu cầu "đủ cũ"
+        cat.excludeNames.clear();
+        cat.minAgeSeconds = 3600;
+        CHECK(scan(cat).isEmpty());
+        cat.minAgeSeconds = 0;
+        CHECK(scan(cat).size() == 4);
+
+        // Thư mục gốc rỗng/tương đối/gốc ổ đĩa: máy quét tự bỏ qua, không liệt kê gì
+        CleanupCategory bad;
+        bad.id = CleanupCategoryId::UserTemp;
+        bad.name = "Bad root";
+        bad.rootPaths = {QString(), "/Temp", "Windows.old", QDir(tmp.path()).rootPath()};
+        CHECK(scan(bad).isEmpty());
+        bad.keepRootFolder = false;
+        CHECK(scan(bad).isEmpty());
+    }
+
+    // ---- Junction/symlink thư mục + hardlink: không đi xuyên, không coi là bản trùng, không xóa ----
+    {
+        QTemporaryDir tmp;
+        CHECK(tmp.isValid());
+        QDir root(tmp.path());
+        root.mkpath("scan/real");
+        root.mkpath("outside");
+        writeFile(tmp.path() + "/scan/real/big.bin", 50000);
+        writeFile(tmp.path() + "/outside/precious.bin", 70000); // dữ liệu NGOÀI thư mục quét
+
+        const QString junction = tmp.path() + "/scan/jlink";
+        const bool haveJunction = makeJunction(junction, tmp.path() + "/outside");
+        if (!haveJunction)
+            std::printf("LUU Y: khong tao duoc junction (mklink /J) - bo qua cac kiem tra junction\n");
+        else
+        {
+            const FsSafety::RawInfo info = FsSafety::rawInfo(junction);
+            CHECK(info.exists && info.isDir && info.isLink);
+            CHECK(!FsSafety::rawInfo(tmp.path() + "/scan/real").isLink);
+
+            // walkFiles KHÔNG đi vào junction: chỉ thấy big.bin, không thấy precious.bin
+            std::atomic_bool stop{false};
+            QStringList seen;
+            qint64 total = 0;
+            CHECK(FsSafety::walkFiles(tmp.path() + "/scan", stop, [&](const FsSafety::WalkEntry& e) {
+                seen << e.path;
+                total += e.sizeBytes;
+            }));
+            CHECK(seen.size() == 1);
+            CHECK(total == 50000);
+
+            // CleanupScanner: junction không được liệt kê (không tính kích thước đích, không đưa vào danh sách xóa)
+            CleanupCategory cat;
+            cat.id = CleanupCategoryId::UserTemp;
+            cat.name = "Junction test";
+            cat.rootPaths = {tmp.path() + "/scan"};
+            QList<CleanupItem> items;
+            qint64 finalBytes = -1;
+            CleanupScanner scanner;
+            scanner.setCategories({cat});
+            QObject::connect(&scanner, &CleanupScanner::itemFound, [&](CleanupItem i) { items.push_back(i); });
+            QObject::connect(&scanner, &CleanupScanner::scanFinished, [&](qint64 bytes, int) { finalBytes = bytes; });
+            scanner.startScan();
+            scanner.wait();
+            CHECK(items.size() == 1); // chỉ "real"
+            CHECK(finalBytes == 50000);
+            for (const auto& it : items)
+                CHECK(!it.path.endsWith("jlink"));
+
+            // CleanupExecutor: dù bị yêu cầu, junction KHÔNG bị xóa và dữ liệu đích còn nguyên
+            CleanupExecutor executor;
+            executor.setItems({junction}, {70000});
+            bool success = true;
+            int count = -1;
+            QString note;
+            QObject::connect(&executor, &CleanupExecutor::executionFinished, [&](bool ok, QString n, qint64, int cnt) {
+                success = ok;
+                count = cnt;
+                note = n;
+            });
+            executor.start();
+            executor.wait();
+            CHECK(!success);
+            CHECK(count == 0);
+            CHECK(!note.isEmpty());
+            CHECK(FsSafety::existsNoFollow(junction));
+            CHECK(QFile::exists(tmp.path() + "/outside/precious.bin"));
+
+            // LargeFileScanner: tệp sau junction không được đưa vào danh sách
+            LargeFileScanner large;
+            large.setRootPath(tmp.path() + "/scan");
+            large.setMinSizeBytes(1000);
+            QList<LargeFileEntry> largeResults;
+            QObject::connect(&large, &LargeFileScanner::scanFinished, [&](QList<LargeFileEntry> r) { largeResults = r; });
+            large.startScan();
+            large.wait();
+            CHECK(largeResults.size() == 1);
+            CHECK(largeResults.size() == 1 && largeResults[0].path.endsWith("big.bin"));
+            CHECK(largeResults.size() == 1 && largeResults[0].lastModified.isValid());
+        }
+
+        // DuplicateFinder: cùng MỘT tệp thấy qua junction hoặc hardlink không phải là "bản trùng"
+        QTemporaryDir dupTmp;
+        CHECK(dupTmp.isValid());
+        QDir(dupTmp.path()).mkpath("a");
+        writeFile(dupTmp.path() + "/a/only.bin", 9000);
+        const bool hardLinked = CreateHardLinkW(reinterpret_cast<const wchar_t*>(QDir::toNativeSeparators(dupTmp.path() + "/a/hard.bin").utf16()),
+                                                reinterpret_cast<const wchar_t*>(QDir::toNativeSeparators(dupTmp.path() + "/a/only.bin").utf16()),
+                                                nullptr) != 0;
+        CHECK(hardLinked);
+        const bool dupJunction = makeJunction(dupTmp.path() + "/b", dupTmp.path() + "/a");
+
+        FsSafety::FileIdentity id1, id2;
+        CHECK(FsSafety::fileIdentity(dupTmp.path() + "/a/only.bin", &id1));
+        if (hardLinked)
+        {
+            CHECK(FsSafety::fileIdentity(dupTmp.path() + "/a/hard.bin", &id2));
+            CHECK(id1 == id2);
+        }
+
+        auto findDuplicates = [&]() {
+            QList<DuplicateGroup> groups;
+            DuplicateFinder finder;
+            finder.setRootPath(dupTmp.path());
+            finder.setMinSizeBytes(100);
+            QObject::connect(&finder, &DuplicateFinder::scanFinished, [&](QList<DuplicateGroup> g, qint64, int) { groups = g; });
+            finder.startScan();
+            finder.wait();
+            return groups;
+        };
+        // only.bin, hard.bin (hardlink) và b/only.bin, b/hard.bin (qua junction) đều là MỘT tệp -> 0 nhóm
+        CHECK(findDuplicates().isEmpty());
+
+        // Thêm một bản sao THẬT -> đúng 1 nhóm, 2 thành viên là 2 tệp vật lý khác nhau
+        writeFile(dupTmp.path() + "/a/copy.bin", 9000);
+        const auto groups = findDuplicates();
+        CHECK(groups.size() == 1);
+        if (groups.size() == 1)
+        {
+            const DuplicateGroup& g = groups[0];
+            CHECK(g.paths.size() == 2);
+            CHECK(g.lastWriteTimes.size() == g.paths.size());
+            CHECK(g.wastedBytes() == 9000);
+            int copies = 0;
+            for (const QString& path : g.paths)
+            {
+                if (path.endsWith("copy.bin")) ++copies;
+                if (dupJunction)
+                    CHECK(!path.contains("/b/")); // không có đường dẫn nào đi qua junction
+            }
+            CHECK(copies == 1);
+
+            // fileUnchanged: đúng lúc vừa quét; sai sau khi tệp bị sửa hoặc bị xóa
+            for (int i = 0; i < g.paths.size(); ++i)
+                CHECK(DuplicateFinder::fileUnchanged(g.paths[i], g.sizeEachBytes, g.lastWriteTimes[i]));
+            CHECK(!DuplicateFinder::fileUnchanged(g.paths[0], g.sizeEachBytes + 1, g.lastWriteTimes[0]));
+            CHECK(!DuplicateFinder::fileUnchanged(g.paths[0], g.sizeEachBytes, g.lastWriteTimes[0] + 10000000));
+            {
+                QFile f(dupTmp.path() + "/a/copy.bin");
+                CHECK(f.open(QIODevice::Append));
+                f.write("thay doi");
+            }
+            for (int i = 0; i < g.paths.size(); ++i)
+                if (g.paths[i].endsWith("copy.bin"))
+                    CHECK(!DuplicateFinder::fileUnchanged(g.paths[i], g.sizeEachBytes, g.lastWriteTimes[i]));
+            CHECK(!DuplicateFinder::fileUnchanged(dupTmp.path() + "/a/khong_ton_tai.bin", 9000, 0));
+        }
+    }
+
+    // ---- CleanupExecutor: lối tắt hỏng phải được XÓA THẬT, đường dẫn lặp chỉ tính một lần ----
+    {
+        QTemporaryDir tmp;
+        CHECK(tmp.isValid());
+        const QString target = tmp.path() + "/target.txt";
+        const QString link = tmp.path() + "/broken.lnk";
+        writeFile(target, 50);
+        const bool linked = QFile::link(target, link);
+        CHECK(linked);
+        CHECK(QFile::remove(target)); // lối tắt giờ trỏ tới một tệp không còn tồn tại
+        if (linked)
+        {
+            CHECK(FsSafety::existsNoFollow(link)); // chính tệp .lnk vẫn còn đó
+            const qint64 linkSize = FsSafety::rawInfo(link).sizeBytes;
+
+            const QString dup = tmp.path() + "/dup_listed.tmp";
+            writeFile(dup, 400);
+
+            CleanupExecutor executor;
+            // 'dup' xuất hiện 3 lần (2 hạng mục cùng quét một thư mục, khác hoa thường/dấu gạch)
+            executor.setItems({link, dup, QString(dup).toUpper(), dup + "/."}, {linkSize, 400, 400, 400});
+            bool success = false;
+            qint64 freed = -1;
+            int count = -1;
+            QObject::connect(&executor, &CleanupExecutor::executionFinished, [&](bool ok, QString, qint64 bytes, int cnt) {
+                success = ok;
+                freed = bytes;
+                count = cnt;
+            });
+            executor.start();
+            executor.wait();
+            CHECK(success);
+            CHECK(count == 2);              // lối tắt + dup (một lần)
+            CHECK(freed == linkSize + 400); // không cộng 400 ba lần
+            CHECK(!FsSafety::existsNoFollow(link)); // trước đây: báo "đã giải phóng" nhưng tệp .lnk vẫn còn
+            CHECK(!FsSafety::existsNoFollow(dup));
+        }
+
+        // Đường dẫn rỗng/tương đối/gốc ổ đĩa không bao giờ được chuyển cho Shell để xóa
+        CleanupExecutor refuser;
+        refuser.setItems({QString(), "Windows.old", QDir(tmp.path()).rootPath()}, {1, 1, 1});
+        bool success = true;
+        int count = -1;
+        QObject::connect(&refuser, &CleanupExecutor::executionFinished, [&](bool ok, QString, qint64, int cnt) {
+            success = ok;
+            count = cnt;
+        });
+        refuser.start();
+        refuser.wait();
+        CHECK(!success);
+        CHECK(count == 0);
+        CHECK(QDir(QDir(tmp.path()).rootPath()).exists());
+    }
+
+    // ---- RecycleBinOps: mục không vào Thùng rác được phải bị nhận ra TRƯỚC khi đưa cho Shell ----
+    {
+        using namespace RecycleBinOps::internal;
+        const qint64 mb = 1024 * 1024;
+        CHECK(recycleVerdict(DriveKind::Fixed, false, 8225, 100 * mb).isEmpty());
+        CHECK(recycleVerdict(DriveKind::Fixed, false, 8225, 8225 * mb).isEmpty());     // vừa khít vẫn vào được
+        CHECK(!recycleVerdict(DriveKind::Fixed, false, 8225, 8225 * mb + 1).isEmpty()); // lớn hơn -> Shell sẽ hủy hẳn
+        CHECK(!recycleVerdict(DriveKind::Fixed, true, 8225, 10).isEmpty());             // Thùng rác bị tắt cho ổ này
+        CHECK(recycleVerdict(DriveKind::Fixed, false, -1, 500000 * mb).isEmpty());      // không đọc được cấu hình -> không kết luận
+        CHECK(!recycleVerdict(DriveKind::Network, false, 8225, 10).isEmpty());
+        CHECK(!recycleVerdict(DriveKind::Removable, false, 8225, 10).isEmpty());
+        CHECK(!recycleVerdict(DriveKind::Other, false, 8225, 10).isEmpty());
+
+        // Máy thật (chỉ đọc registry + loại ổ): một tệp tạm nhỏ trên ổ cố định phải vào Thùng rác được,
+        // còn một "tệp" 100.000 TB chắc chắn lớn hơn mọi Thùng rác nếu đọc được cấu hình.
+        QTemporaryDir tmp;
+        CHECK(tmp.isValid());
+        const QString small = tmp.path() + "/small.tmp";
+        writeFile(small, 10);
+        const QString smallReason = RecycleBinOps::notRecyclableReason(small, 10);
+        const QString hugeReason = RecycleBinOps::notRecyclableReason(small, 100000LL * 1024 * 1024 * mb);
+        std::printf("RecycleBinOps: tep nho -> '%s'; tep khong lo -> '%s'\n", qPrintable(smallReason), qPrintable(hugeReason));
+        CHECK(smallReason.isEmpty());
+    }
+
+    // ---- PartitionManager: kẹp kích thước + lớp kiểm tra cuối trước khi resize (THUẦN, không chạy gì) ----
+    {
+        using namespace PartitionManager;
+        const double gb = 1024.0 * 1024.0 * 1024.0;
+
+        SupportedSizeRange range;
+        range.ok = true;
+        range.minBytes = 40000000000LL;
+        range.maxBytes = 99999999488LL;
+        // Ô nhập làm tròn 2 chữ số GB: giá trị tối đa hiển thị (93.13) đổi ra byte VƯỢT maxBytes thật
+        const double spinMax = 93.14; // làm tròn lên của 99999999488 / GB = 93.1322...
+        CHECK(static_cast<qint64>(spinMax * gb) > range.maxBytes);
+        CHECK(internal::clampResizeBytes(spinMax, range) == range.maxBytes);
+        CHECK(internal::clampResizeBytes(1.0, range) == range.minBytes);
+        CHECK(internal::clampResizeBytes(50.0, range) == static_cast<qint64>(50.0 * gb));
+
+        PartitionInfo c;
+        c.diskNumber = 0;
+        c.partitionNumber = 2;
+        c.driveLetter = "C";
+        c.sizeBytes = 90000000000LL;
+        PartitionInfo d;
+        d.diskNumber = 1;
+        d.partitionNumber = 1;
+        d.driveLetter = "D";
+        d.sizeBytes = 500000000000LL;
+        const QList<PartitionInfo> list = {c, d};
+
+        // Hợp lệ: đúng phân vùng, đúng kích thước lúc tra, kích thước mới trong khoảng
+        CHECK(internal::resizeBlockReason(0, 2, 90000000000LL, list, range, 60000000000LL).isEmpty());
+        // Phân vùng không còn (rút ổ/đổi số) -> từ chối
+        CHECK(!internal::resizeBlockReason(3, 1, 90000000000LL, list, range, 60000000000LL).isEmpty());
+        CHECK(!internal::resizeBlockReason(0, 2, 90000000000LL, {}, range, 60000000000LL).isEmpty());
+        CHECK(!internal::resizeBlockReason(-1, -1, 90000000000LL, list, range, 60000000000LL).isEmpty());
+        // Số đĩa/phân vùng vẫn có nhưng giờ là phân vùng KHÁC (kích thước khác lúc tra) -> từ chối
+        CHECK(!internal::resizeBlockReason(1, 1, 90000000000LL, list, range, 60000000000LL).isEmpty());
+        // Kích thước mới ngoài khoảng (theo byte) -> từ chối
+        CHECK(!internal::resizeBlockReason(0, 2, 90000000000LL, list, range, range.minBytes - 1).isEmpty());
+        CHECK(!internal::resizeBlockReason(0, 2, 90000000000LL, list, range, range.maxBytes + 1).isEmpty());
+        CHECK(!internal::resizeBlockReason(0, 2, 90000000000LL, list, range, 0).isEmpty());
+        CHECK(internal::resizeBlockReason(0, 2, 90000000000LL, list, range, range.minBytes).isEmpty());
+        CHECK(internal::resizeBlockReason(0, 2, 90000000000LL, list, range, range.maxBytes).isEmpty());
+        // Không đổi gì -> từ chối
+        CHECK(!internal::resizeBlockReason(0, 2, 90000000000LL, list, range, 90000000000LL).isEmpty());
+        // Không xác nhận lại được khoảng cho phép -> từ chối
+        CHECK(!internal::resizeBlockReason(0, 2, 90000000000LL, list, SupportedSizeRange{}, 60000000000LL).isEmpty());
     }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);

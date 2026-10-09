@@ -2,7 +2,11 @@
 
 #include <QWidget>
 
+#include <functional>
+
 #include "engine/PartitionManager.h"
+
+class QThread;
 
 class QDoubleSpinBox;
 class QLabel;
@@ -29,6 +33,19 @@ public:
     /// tệp), khác hẳn các thao tác khác trong ứng dụng (quét/dọn dẹp/kết nối VPN) vốn hủy được an toàn.
     bool isResizingNow() const;
 
+    /// Đang chờ Windows trả lời một truy vấn CHỈ ĐỌC (liệt kê phân vùng/tra khoảng kích thước) trên luồng
+    /// nền - bảng và các nút bị khóa trong lúc đó.
+    bool isLoading() const;
+
+    /// Rỗng nếu trạng thái giao diện HIỆN TẠI cho phép đi tiếp tới hộp xác nhận đổi kích thước; ngược lại
+    /// là lý do chặn (chưa chọn, chưa tra, phân vùng đang chọn KHÁC phân vùng đã tra, chưa gõ xác nhận).
+    /// Chỉ đọc trạng thái, không làm gì - bộ test UI dùng để kiểm tra lớp chặn mà không chạy resize.
+    QString resizeRequestBlockReason() const;
+
+    /// CHỈ dành cho bộ test UI: gán một khoảng kích thước giả cho phân vùng đang chọn như thể vừa tra
+    /// xong (tra thật cần quyền Administrator). Không gọi PowerShell, không đụng tới đĩa.
+    void applySupportedRangeForTest(const PartitionManager::SupportedSizeRange& range);
+
 private slots:
     void onRefreshClicked();
     void onRelaunchElevatedClicked();
@@ -41,8 +58,14 @@ private slots:
 private:
     void buildUi();
     void reloadPartitions();
+    void populatePartitions(const QList<PartitionManager::PartitionInfo>& partitions, const QString& error);
     void updateElevationBanner();
-    void showResizeControls(bool visible);
+    void showSelectionControls(bool visible);
+    void resetResizeState();
+    void applySupportedRange(int disk, int partition, qint64 sizeBytes,
+                             const PartitionManager::SupportedSizeRange& range, const QString& error);
+    void setLoading(bool loading, const QString& statusText = QString());
+    void runInBackground(const QString& statusText, std::function<void()> work, std::function<void()> done);
     const PartitionManager::PartitionInfo* selectedPartition() const;
 
     QLabel* m_elevationBanner{nullptr};
@@ -64,5 +87,12 @@ private:
 
     QList<PartitionManager::PartitionInfo> m_partitions;
     PartitionManager::SupportedSizeRange m_supportedRange;
+    // Phân vùng mà m_supportedRange/ô nhập/ô xác nhận THUỘC VỀ (-1 = chưa tra) - xem resetResizeState().
+    int m_queriedDisk{-1};
+    int m_queriedPartition{-1};
+    qint64 m_queriedSizeBytes{-1};
+    bool m_loading{false};
+    QThread* m_queryThread{nullptr};
+    QString m_statusAfterReload;
     PartitionResizer* m_resizer{nullptr};
 };

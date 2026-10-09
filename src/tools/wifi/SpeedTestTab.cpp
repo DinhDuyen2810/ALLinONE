@@ -47,7 +47,14 @@ SpeedTestTab::SpeedTestTab(WlanController* controller, QWidget* parent)
         m_startStopBtn->setText("▶ Bắt đầu đo");
         m_startStopBtn->setStyleSheet(WifiUi::primaryButtonStyle());
         m_progressBar->setVisible(false);
-        if (!m_phaseLabel->text().startsWith("⚠"))
+        if (m_runner->wasStoppedByUser())
+        {
+            // Phép đo bị người dùng dừng giữa chừng KHÔNG phải "Hoàn tất": các ô chưa đo tới vẫn là "—",
+            // ô đang đo dở chỉ là con số tạm tính.
+            m_phaseLabel->setStyleSheet("color: #57606a; font-size: 12px;");
+            m_phaseLabel->setText("■ Đã dừng - kết quả chưa đầy đủ.");
+        }
+        else if (!m_phaseLabel->text().startsWith("⚠"))
         {
             m_phaseLabel->setStyleSheet("color: #1a7f37; font-size: 12px; font-weight: bold;");
             m_phaseLabel->setText("✓ Hoàn tất.");
@@ -98,6 +105,7 @@ void SpeedTestTab::buildUi()
     root->addWidget(intro);
 
     m_linkRateLabel = new QLabel(this);
+    m_linkRateLabel->setTextFormat(Qt::PlainText); // có chứa SSID - xem WifiUi::plainMessage()
     m_linkRateLabel->setWordWrap(true);
     m_linkRateLabel->setStyleSheet(WifiUi::bannerStyle(false));
     root->addWidget(m_linkRateLabel);
@@ -179,9 +187,13 @@ void SpeedTestTab::onStartStopClicked()
 {
     if (m_runner->isRunning())
     {
-        m_runner->stop();
+        // Đặt nhãn "Đang dừng..." TRƯỚC khi gọi stop(): stop() hủy yêu cầu mạng đang chạy và finished() có
+        // thể phát NGAY trong lời gọi đó (đồng bộ). Thứ tự cũ (stop() trước, đặt nhãn sau) ghi đè lên nhãn
+        // kết thúc do finished() vừa đặt, để lại "Đang dừng..." vĩnh viễn dù phép đo đã dừng xong.
         m_startStopBtn->setEnabled(false);
+        m_phaseLabel->setStyleSheet("color: #57606a; font-size: 12px;");
         m_phaseLabel->setText("Đang dừng...");
+        m_runner->stop();
         QTimer::singleShot(50, this, [this] { m_startStopBtn->setEnabled(true); });
         return;
     }

@@ -17,6 +17,9 @@ public:
     bool isAvailable() const override { return true; }
 
     QWidget* createWindow() override;
+    /// Dừng phiên scrcpy + daemon adb đóng gói kèm khi ứng dụng thoát mà cửa sổ Android Phone Control còn
+    /// mở (closeEvent của nó không chạy trên đường thoát qApp->quit()).
+    void stopBackgroundWorkForQuit() override;
 
 private:
     QPointer<QWidget> m_window; // một cửa sổ duy nhất

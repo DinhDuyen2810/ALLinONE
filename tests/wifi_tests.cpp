@@ -4,6 +4,7 @@
 #include <cstdio>
 
 #include "tools/wifi/engine/WlanProfileXml.h"
+#include "tools/wifi/model/WifiNetwork.h"
 
 static int g_fail = 0, g_pass = 0;
 #define CHECK(cond)                                                            \
@@ -70,14 +71,38 @@ int main(int argc, char** argv)
         CHECK(!p.hasPassword); // keyMaterial rỗng -> readElementText trả "" -> hasPassword=false theo thiết kế parse()
     }
 
-    // ---- 4. Namespace đúng cho WPA3 (v3) khác với các loại khác (v1) ----
+    // ---- 4. Namespace gốc LUÔN là v1, kể cả WPA3 ----
+    // Hồi quy: hồ sơ WPA3 từng bị ghi gốc ".../profile/v3". Theo tài liệu "WLAN_profile schema" của
+    // Microsoft, phần tử WLANProfile luôn ở namespace .../WLAN/profile/v1; WPA3SAE chỉ là một giá trị của
+    // <authentication> trong chính schema đó.
     {
+        const QString v1 = "xmlns=\"http://www.microsoft.com/networking/WLAN/profile/v1\"";
+        for (WifiSecurity s : {WifiSecurity::Open, WifiSecurity::Wep, WifiSecurity::WpaPsk, WifiSecurity::Wpa2Psk,
+                               WifiSecurity::Wpa3Sae})
+        {
+            const QString xml = WlanProfileXml::build(QByteArray("X"), "X", s, "pw12345678", true);
+            CHECK(xml.contains(v1));
+            CHECK(!xml.contains("/profile/v2") && !xml.contains("/profile/v3") && !xml.contains("/profile/v4"));
+        }
         const QString xmlWpa3 = WlanProfileXml::build(QByteArray("X"), "X", WifiSecurity::Wpa3Sae, "pw12345678", true);
         const QString xmlWpa2 = WlanProfileXml::build(QByteArray("X"), "X", WifiSecurity::Wpa2Psk, "pw12345678", true);
-        CHECK(xmlWpa3.contains("/profile/v3"));
-        CHECK(xmlWpa2.contains("/profile/v1"));
-        CHECK(xmlWpa3.contains("WPA3SAE"));
-        CHECK(xmlWpa2.contains("WPA2PSK"));
+        CHECK(xmlWpa3.contains("<authentication>WPA3SAE</authentication>"));
+        CHECK(xmlWpa2.contains("<authentication>WPA2PSK</authentication>"));
+    }
+
+    // ---- 4b. Mạng ẩn: <nonBroadcast>true</nonBroadcast> nằm trong SSIDConfig, SAU </SSID> ----
+    {
+        const QString hidden = WlanProfileXml::build(QByteArray("Hid"), "Hid", WifiSecurity::Wpa2Psk, "pw12345678", true, true);
+        const QString normal = WlanProfileXml::build(QByteArray("Hid"), "Hid", WifiSecurity::Wpa2Psk, "pw12345678", true);
+        CHECK(hidden.contains("<nonBroadcast>true</nonBroadcast>"));
+        CHECK(!normal.contains("nonBroadcast"));
+        const int ssidEnd = hidden.indexOf("</SSID>");
+        const int nb = hidden.indexOf("<nonBroadcast>");
+        const int cfgEnd = hidden.indexOf("</SSIDConfig>");
+        CHECK(ssidEnd > 0 && nb > ssidEnd && cfgEnd > nb);
+        WifiProfile p;
+        CHECK(WlanProfileXml::parse(hidden, &p));
+        CHECK(p.name == "Hid" && p.ssid == "Hid" && p.security == WifiSecurity::Wpa2Psk && p.password == "pw12345678");
     }
 
     // ---- 5. Open network: không có khối sharedKey ----
@@ -137,6 +162,20 @@ int main(int argc, char** argv)
         CHECK(p.security == WifiSecurity::Wpa2Psk);
         CHECK(!p.hasPassword); // protected=true => không phải mật khẩu dạng chữ, không được hiển thị
         CHECK(p.password.isEmpty());
+        // Hồi quy: phải NHẬN BIẾT được trường hợp này (API trả thành công nhưng khóa mã hóa) để giao diện
+        // hiện "(Cần quyền Admin)" thay vì "••••••••" không lời giải thích.
+        CHECK(p.keyProtected);
+
+        // Khóa dạng chữ / không có khóa thì keyProtected=false.
+        WifiProfile plain;
+        CHECK(WlanProfileXml::parse(WlanProfileXml::build(QByteArray("A"), "A", WifiSecurity::Wpa2Psk, "pw12345678", true), &plain));
+        CHECK(plain.hasPassword && !plain.keyProtected);
+        WifiProfile open;
+        CHECK(WlanProfileXml::parse(WlanProfileXml::build(QByteArray("A"), "A", WifiSecurity::Open, "", true), &open));
+        CHECK(!open.hasPassword && !open.keyProtected);
+        // Tái dùng cùng một struct: kết quả lần parse trước không được rò sang lần sau.
+        CHECK(WlanProfileXml::parse(xml, &plain));
+        CHECK(!plain.hasPassword && plain.password.isEmpty() && plain.keyProtected);
     }
 
     // ---- 9. parse() hồ sơ Enterprise (useOneX=true) nhận diện đúng ----
@@ -168,6 +207,74 @@ int main(int argc, char** argv)
     for (WifiSecurity s : {WifiSecurity::Open, WifiSecurity::Wep, WifiSecurity::WpaPsk, WifiSecurity::Wpa2Psk,
                            WifiSecurity::Wpa3Sae, WifiSecurity::Enterprise, WifiSecurity::Unknown})
         CHECK(!WifiSecurityUtil::displayName(s).isEmpty());
+
+    // ---- 11. Ánh xạ DOT11_AUTH_ALGORITHM -> WifiSecurity ----
+    // Hồi quy: mọi giá trị > 7 (RSNA_PSK) từng bị coi là WPA3-Personal.
+    {
+        using WifiSecurityUtil::fromDot11;
+        const unsigned kCipherNone = 0, kCipherWep = 0x101, kCipherCcmp = 4;
+        CHECK(fromDot11(7, kCipherCcmp, false) == WifiSecurity::Open); // bSecurityEnabled=false thắng tất cả
+        CHECK(fromDot11(1, kCipherNone, true) == WifiSecurity::Open);
+        CHECK(fromDot11(1, kCipherWep, true) == WifiSecurity::Wep);
+        CHECK(fromDot11(2, kCipherWep, true) == WifiSecurity::Wep);
+        CHECK(fromDot11(3, kCipherCcmp, true) == WifiSecurity::Enterprise);  // WPA
+        CHECK(fromDot11(4, kCipherCcmp, true) == WifiSecurity::WpaPsk);
+        CHECK(fromDot11(5, kCipherCcmp, true) == WifiSecurity::Unknown);     // WPA_NONE (không hỗ trợ)
+        CHECK(fromDot11(6, kCipherCcmp, true) == WifiSecurity::Enterprise);  // RSNA (WPA2-Enterprise)
+        CHECK(fromDot11(7, kCipherCcmp, true) == WifiSecurity::Wpa2Psk);
+        CHECK(fromDot11(8, kCipherCcmp, true) == WifiSecurity::Enterprise);  // WPA3-Enterprise 192-bit
+        CHECK(fromDot11(9, kCipherCcmp, true) == WifiSecurity::Wpa3Sae);
+        CHECK(fromDot11(10, kCipherCcmp, true) == WifiSecurity::Unknown);    // OWE - không dùng mật khẩu chung
+        CHECK(fromDot11(11, kCipherCcmp, true) == WifiSecurity::Enterprise); // WPA3-Enterprise
+        CHECK(fromDot11(12, kCipherCcmp, true) == WifiSecurity::Unknown);    // giá trị tương lai
+        CHECK(fromDot11(0x80000001u, kCipherCcmp, true) == WifiSecurity::Unknown); // riêng của hãng (IHV)
+        CHECK(!WifiSecurityUtil::requiresPassword(fromDot11(11, kCipherCcmp, true)));
+    }
+
+    // ---- 12. Gộp mục trùng của danh sách mạng ----
+    {
+        auto net = [](const QString& ssid, WifiSecurity sec, int signal, bool hasProfile, const QString& profile, bool connected = false) {
+            WifiNetwork n;
+            n.ssid = ssid;
+            n.ssidBytes = ssid.toUtf8();
+            n.security = sec;
+            n.signalQuality = signal;
+            n.hasProfile = hasProfile;
+            n.profileName = profile;
+            n.connected = connected;
+            n.numberOfBssids = 1;
+            n.hidden = ssid.isEmpty();
+            return n;
+        };
+
+        // Hồi quy: mục KHÔNG gắn hồ sơ đứng trước mục có hồ sơ -> mục gộp từng mất profileName, nút
+        // "Quên mạng này" sáng nhưng bấm không làm gì.
+        QList<WifiNetwork> in = {net("Home", WifiSecurity::Wpa2Psk, 40, false, QString()),
+                                 net("Home", WifiSecurity::Wpa2Psk, 80, true, "Home", true),
+                                 net("Cafe", WifiSecurity::Open, 55, false, QString())};
+        QList<WifiNetwork> out = WifiNetworkUtil::mergeDuplicates(in);
+        CHECK(out.size() == 2);
+        CHECK(out[0].ssid == "Home" && out[0].hasProfile && out[0].profileName == "Home");
+        CHECK(out[0].signalQuality == 80 && out[0].connected && out[0].numberOfBssids == 2);
+        CHECK(out[1].ssid == "Cafe" && !out[1].hasProfile && out[1].profileName.isEmpty());
+
+        // Thứ tự ngược lại cho cùng kết quả; cùng SSID khác loại bảo mật thì KHÔNG gộp.
+        in = {net("Home", WifiSecurity::Wpa2Psk, 80, true, "Home"), net("Home", WifiSecurity::Wpa2Psk, 40, false, QString()),
+              net("Home", WifiSecurity::Open, 30, false, QString())};
+        out = WifiNetworkUtil::mergeDuplicates(in);
+        CHECK(out.size() == 2 && out[0].profileName == "Home" && out[1].security == WifiSecurity::Open);
+
+        // Mạng ẩn: ssid RỖNG (không còn chuỗi giả "(Mạng ẩn)" trong ssid), tên trang trí chỉ ở displayName().
+        in = {net(QString(), WifiSecurity::Wpa2Psk, 50, false, QString()), net(QString(), WifiSecurity::Wpa2Psk, 60, false, QString()),
+              net(QString(), WifiSecurity::Wpa2Psk, 70, true, "Secret")};
+        out = WifiNetworkUtil::mergeDuplicates(in);
+        CHECK(out.size() == 2);
+        CHECK(out[0].ssid.isEmpty() && out[0].hidden && out[0].signalQuality == 60);
+        CHECK(out[0].displayName() == "(Mạng ẩn)");
+        CHECK(out[1].ssid.isEmpty() && out[1].displayName().contains("Secret"));
+        CHECK(net("Home", WifiSecurity::Open, 1, false, QString()).displayName() == "Home");
+        CHECK(WifiNetworkUtil::mergeDuplicates({}).isEmpty());
+    }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;

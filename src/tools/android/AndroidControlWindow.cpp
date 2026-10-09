@@ -38,9 +38,17 @@ void AndroidControlWindow::closeEvent(QCloseEvent* event)
     // dừng phiên scrcpy ở đây, phiên gương/điều khiển đang chạy (nếu có) sẽ tiếp tục chạy ngầm vô thời
     // hạn dù người dùng tưởng đã "đóng" công cụ này - đúng như thói quen đóng cửa sổ của các tool khác
     // trong ứng dụng (xem ConnectWindow::closeEvent/VpnControlWindow::closeEvent).
-    if (m_devicesTab)
-        m_devicesTab->stopActiveSession();
+    //
+    // stopBackgroundWork() (không chỉ stopActiveSession()): còn phải dừng daemon adb đóng gói kèm - nó
+    // sống tiếp sau khi ứng dụng thoát và khóa tệp scrcpy/adb.exe, xem AdbController::stopBundledAdbServer().
+    stopBackgroundWork();
     event->accept();
+}
+
+void AndroidControlWindow::stopBackgroundWork()
+{
+    if (m_devicesTab)
+        m_devicesTab->stopBackgroundWork();
 }
 
 void AndroidControlWindow::buildUi()

@@ -12,9 +12,12 @@
 #include <QPushButton>
 #include <QStandardPaths>
 #include <QTabWidget>
+#include <QTableWidget>
+#include <QTemporaryDir>
 #include <QTimer>
 #include <cstdio>
 
+#include "core/AppPaths.h"
 #include "tools/downloader/DownloaderWindow.h"
 #include "tools/downloader/engine/FileDownloader.h"
 
@@ -28,6 +31,10 @@ static int g_fail = 0, g_pass = 0;
 int main(int argc, char** argv)
 {
     QApplication app(argc, argv);
+
+    // Cửa sổ ghi log khi mở - ép dữ liệu vào thư mục tạm để test không ghi vào log thật của người dùng.
+    QTemporaryDir dataDir;
+    AppPaths::setDataDirOverride(dataDir.path());
 
     DownloaderWindow win;
     win.setAttribute(Qt::WA_DontShowOnScreen, true);
@@ -43,6 +50,29 @@ int main(int argc, char** argv)
 
     const auto labels = win.findChildren<QLabel*>();
     CHECK(labels.size() >= 3);
+
+    // Hồi quy lỗi THẬT: mục đưa vào FileDownloader dùng chung KHÔNG qua tab "Tải trực tiếp" (đúng cách tab
+    // "Quét trang web" làm) trước đây vẫn tải nhưng không có hàng nào trong bảng hàng đợi - không thấy tiến
+    // độ/lỗi, không dừng/hủy được. KHÔNG start() ở đây nên không có yêu cầu mạng nào.
+    {
+        auto* shared = win.findChild<FileDownloader*>();
+        CHECK(shared != nullptr);
+        QTableWidget* queueTable = nullptr;
+        for (auto* table : win.findChildren<QTableWidget*>())
+            if (table->columnCount() == 5) queueTable = table; // bảng hàng đợi (bảng kết quả quét có 3 cột)
+        CHECK(queueTable != nullptr);
+        if (shared && queueTable)
+        {
+            CHECK(queueTable->rowCount() == 0);
+            const int id = shared->enqueue("https://example.invalid/anh.jpg", QDir::tempPath() + "/oneforall_downloader_test/tu-tab-quet-trang.jpg");
+            CHECK(queueTable->rowCount() == 1);
+            CHECK(queueTable->item(0, 0) && queueTable->item(0, 0)->text() == "tu-tab-quet-trang.jpg");
+            CHECK(queueTable->item(0, 4) && queueTable->item(0, 4)->text() == "Đang chờ");
+            shared->cancel(id);
+            CHECK(queueTable->item(0, 4) && queueTable->item(0, 4)->text() == "Đã hủy");
+            CHECK(queueTable->rowCount() == 1);
+        }
+    }
 
     // Tải THẬT một tệp nhỏ công khai, ổn định - xác nhận FileDownloader hoạt động thật trên máy build.
     const QString destDir = QDir::tempPath() + "/oneforall_downloader_test";
@@ -113,6 +143,7 @@ int main(int argc, char** argv)
         {
             CHECK(!errOk); // URL chắc chắn không tồn tại - phải báo thất bại thật
             CHECK(!QFileInfo::exists(errDestPath)); // KHÔNG được để lại tệp rác (nội dung trang lỗi)
+            CHECK(!QFileInfo::exists(errDestPath + ".part")); // ... kể cả dưới dạng tệp tải dở
         }
         QDir(destDir).removeRecursively();
     }

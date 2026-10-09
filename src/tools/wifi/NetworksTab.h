@@ -4,6 +4,7 @@
 
 #include "engine/WlanController.h"
 
+class ConnectionWatcher;
 class QLabel;
 class QPushButton;
 class QTableWidget;
@@ -28,6 +29,7 @@ signals:
 private slots:
     void onScanClicked();
     void onConnectClicked();
+    void onNewPasswordClicked();
     void onDisconnectClicked();
     void onForgetClicked();
     void onHiddenClicked();
@@ -40,7 +42,11 @@ private:
     void reloadNetworks();
     void reloadCurrentConnectionBanner();
     int selectedRow() const;
+    bool hasSelection() const;
     WifiNetwork selectedNetwork() const;
+    /// Mở ConnectDialog (nhập ĐÚNG MỘT mật khẩu) cho mạng đã chọn / cho mạng ẩn tự nhập SSID.
+    void openConnectDialog(const WifiNetwork& net);
+    void openHiddenDialog(WifiSecurity security);
 
     WlanController* m_controller;
     QString m_adapterGuid;
@@ -49,6 +55,7 @@ private:
     QTableWidget* m_table{nullptr};
     QPushButton* m_scanBtn{nullptr};
     QPushButton* m_connectBtn{nullptr};
+    QPushButton* m_newPasswordBtn{nullptr}; // chỉ cho mạng ĐÃ có hồ sơ: chủ động nhập mật khẩu khác
     QPushButton* m_disconnectBtn{nullptr};
     QPushButton* m_forgetBtn{nullptr};
     QPushButton* m_hiddenBtn{nullptr};
@@ -59,4 +66,5 @@ private:
     QTimer* m_scanSettleTimer{nullptr}; // chờ driver hoàn tất quét rồi đọc lại danh sách
     QTimer* m_pollTimer{nullptr};       // làm mới trạng thái kết nối hiện tại định kỳ khi tab đang mở
     bool m_scanning{false};
+    ConnectionWatcher* m_watcher{nullptr}; // theo dõi kết quả khi kết nối bằng hồ sơ đã lưu
 };

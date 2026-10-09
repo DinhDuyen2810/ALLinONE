@@ -64,6 +64,8 @@ struct ParsedPayload
     QList<QPair<QString, QString>> fields;      // Các trường (nhãn, giá trị)
     QString actionUrl;                          // URL có thể mở (http/https/mailto/tel/map...)
     QString actionLabel;                        // Nhãn nút hành động
+    int secretField{-1};                        // Chỉ số trong fields của trường NHẠY CẢM (mật khẩu WiFi) - giao
+                                                // diện phải che mặc định; -1 nếu không có
 };
 
 class QRPayload
@@ -83,6 +85,13 @@ public:
 
     // ---- Phân tích nội dung quét được ----
     static ParsedPayload parse(const QString& content);
+
+    /// Bản để HIỂN THỊ của nội dung: nếu là payload WIFI: có mật khẩu thì thay giá trị P: bằng dấu chấm
+    /// (••••••••), mọi phần khác giữ nguyên; nội dung loại khác trả về nguyên văn. Dùng cho danh sách kết
+    /// quả/lịch sử/tooltip - nơi mật khẩu WiFi không nên nằm phơi trên màn hình khi người dùng chưa chủ
+    /// động yêu cầu xem. KHÔNG dùng kết quả này để mã hóa lại/sao chép (đã mất mật khẩu thật).
+    static QString maskSecrets(const QString& content);
+    static QString secretMask() { return QStringLiteral("••••••••"); }
 
     /// Escape cho định dạng WIFI: \ ; , : "
     static QString escapeWifi(const QString& s);

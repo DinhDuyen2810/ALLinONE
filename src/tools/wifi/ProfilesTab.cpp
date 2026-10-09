@@ -1,6 +1,8 @@
 #include "ProfilesTab.h"
 
 #include "WifiUiStyle.h"
+#include "engine/ConnectionWatcher.h"
+#include "engine/WlanProfileXml.h"
 
 #include <QCheckBox>
 #include <QClipboard>
@@ -31,6 +33,17 @@ ProfilesTab::ProfilesTab(WlanController* controller, QWidget* parent)
     , m_controller(controller)
 {
     buildUi();
+
+    // "Kết nối" chỉ GỬI yêu cầu (WlanConnect trả về ngay). Trước đây dòng trạng thái dừng mãi ở "Đang kết
+    // nối..." dù kết nối đã xong hay đã thất bại.
+    m_watcher = new ConnectionWatcher(m_controller, this);
+    connect(m_watcher, &ConnectionWatcher::succeeded, this, [this](const QString& ssid) {
+        m_statusLabel->setText("✓ Đã kết nối: " + ssid);
+    });
+    connect(m_watcher, &ConnectionWatcher::failed, this, [this](const QString& name) {
+        m_statusLabel->setText(QString("⚠ Không kết nối được tới \"%1\" (mạng ngoài tầm phủ sóng, hoặc mật khẩu đã lưu "
+                                       "không còn đúng).").arg(name));
+    });
 }
 
 void ProfilesTab::buildUi()
@@ -94,6 +107,7 @@ void ProfilesTab::buildUi()
     root->addWidget(m_table, 1);
 
     m_statusLabel = new QLabel(this);
+    m_statusLabel->setTextFormat(Qt::PlainText); // có chứa SSID/tên hồ sơ - xem WifiUi::plainMessage()
     m_statusLabel->setWordWrap(true);
     m_statusLabel->setStyleSheet("color: #57606a; font-size: 11px;");
     root->addWidget(m_statusLabel);
@@ -177,13 +191,26 @@ void ProfilesTab::onConnectClicked()
     if (row < 0 || row >= m_profiles.size())
         return;
 
-    QString error;
-    if (!m_controller->connectToSavedProfile(m_adapterGuid, m_profiles[row].name, &error))
+    const WifiProfile& profile = m_profiles[row];
+
+    // Đang nối sẵn bằng chính hồ sơ này: không gửi lại yêu cầu (và không báo "thành công" dựa trên một
+    // kết nối vốn có từ trước).
+    const WifiCurrentConnection cur = m_controller->currentConnection(m_adapterGuid);
+    if (cur.isConnected && cur.profileName == profile.name)
     {
-        QMessageBox::critical(this, "Không kết nối được", error);
+        m_watcher->cancel();
+        m_statusLabel->setText("✓ Đang kết nối sẵn tới \"" + profile.ssid + "\".");
         return;
     }
-    m_statusLabel->setText("⏳ Đang kết nối tới \"" + m_profiles[row].ssid + "\"...");
+
+    QString error;
+    if (!m_controller->connectToSavedProfile(m_adapterGuid, profile.name, &error))
+    {
+        WifiUi::plainMessage(this, QMessageBox::Critical, "Không kết nối được", error);
+        return;
+    }
+    m_statusLabel->setText("⏳ Đang kết nối tới \"" + profile.ssid + "\"...");
+    m_watcher->watch(m_adapterGuid, profile.ssid, profile.name);
 }
 
 void ProfilesTab::onCopyPasswordClicked()
@@ -201,31 +228,70 @@ void ProfilesTab::onExportClicked()
     if (row < 0 || row >= m_profiles.size())
         return;
 
-    const QString suggested = m_profiles[row].ssid + ".xml";
+    const WifiProfile profile = m_profiles[row];
+
+    // Hồ sơ có mật khẩu: hỏi TRƯỚC người dùng có muốn tệp chứa mật khẩu dạng chữ không. Trước đây luôn xin
+    // mật khẩu dạng chữ và ghi thẳng ra một tệp XML thường (ai mở tệp cũng đọc được) mà không một lời
+    // cảnh báo.
+    bool includeKey = false;
+    if (WifiSecurityUtil::requiresPassword(profile.security))
+    {
+        QMessageBox box(QMessageBox::Warning, "Xuất hồ sơ WiFi",
+                        QString("Xuất hồ sơ \"%1\" ra tệp XML.\n\n"
+                                "• KÈM mật khẩu: mật khẩu WiFi nằm trong tệp ở dạng CHỮ ĐỌC ĐƯỢC - bất kỳ ai mở tệp "
+                                "đều thấy. Dùng khi cần chuyển hồ sơ sang máy khác; hãy giữ tệp cẩn thận và xóa sau khi dùng.\n\n"
+                                "• KHÔNG kèm mật khẩu: khóa trong tệp ở dạng mã hóa, chỉ nhập lại được trên chính máy này.")
+                            .arg(profile.ssid),
+                        QMessageBox::NoButton, this);
+        box.setTextFormat(Qt::PlainText);
+        QPushButton* withoutKey = box.addButton("Không kèm mật khẩu", QMessageBox::AcceptRole);
+        QPushButton* withKey = box.addButton("Kèm mật khẩu (dạng chữ)", QMessageBox::DestructiveRole);
+        box.addButton("Hủy", QMessageBox::RejectRole);
+        box.setDefaultButton(withoutKey);
+        box.exec();
+        if (box.clickedButton() == withKey)
+            includeKey = true;
+        else if (box.clickedButton() != withoutKey)
+            return;
+    }
+
+    const QString suggested = profile.ssid + ".xml";
     const QString path = QFileDialog::getSaveFileName(this, "Xuất hồ sơ WiFi", suggested, "XML (*.xml)");
     if (path.isEmpty())
         return;
 
     QString error;
-    const QString xml = m_controller->exportProfileXml(m_adapterGuid, m_profiles[row].name, &error);
+    const QString xml = m_controller->exportProfileXml(m_adapterGuid, profile.name, includeKey, &error);
     if (xml.isEmpty())
     {
-        QMessageBox::critical(this, "Lỗi", error.isEmpty() ? "Không xuất được hồ sơ." : error);
+        WifiUi::plainMessage(this, QMessageBox::Critical, "Lỗi", error.isEmpty() ? "Không xuất được hồ sơ." : error);
         return;
     }
 
     QFile f(path);
     if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
     {
-        QMessageBox::critical(this, "Lỗi", "Không ghi được file: " + f.errorString());
+        WifiUi::plainMessage(this, QMessageBox::Critical, "Lỗi", "Không ghi được file: " + f.errorString());
         return;
     }
-    f.write(xml.toUtf8());
+    const QByteArray bytes = xml.toUtf8();
+    if (f.write(bytes) != bytes.size() || !f.flush())
+    {
+        WifiUi::plainMessage(this, QMessageBox::Critical, "Lỗi", "Không ghi được file: " + f.errorString());
+        return;
+    }
+    f.close();
 
+    // Nói rõ tệp vừa lưu CÓ hay KHÔNG chứa mật khẩu đọc được (dựa trên chính nội dung đã ghi).
+    WifiProfile written;
+    const bool hasPlainKey = WlanProfileXml::parse(xml, &written) && written.hasPassword;
+    QString message = "Đã lưu: " + path;
+    if (hasPlainKey)
+        message += "\n\n⚠ Tệp này CHỨA MẬT KHẨU WiFi ở dạng chữ đọc được. Đừng chia sẻ/để ở nơi người khác mở được.";
     if (!error.isEmpty())
-        QMessageBox::information(this, "Xuất hồ sơ", "Đã lưu: " + path + "\n\n⚠ " + error);
-    else
-        QMessageBox::information(this, "Xuất hồ sơ", "Đã lưu: " + path);
+        message += "\n\n⚠ " + error;
+    WifiUi::plainMessage(this, hasPlainKey || !error.isEmpty() ? QMessageBox::Warning : QMessageBox::Information,
+                         "Xuất hồ sơ", message);
 }
 
 void ProfilesTab::onImportClicked()
@@ -237,19 +303,38 @@ void ProfilesTab::onImportClicked()
     QFile f(path);
     if (!f.open(QIODevice::ReadOnly))
     {
-        QMessageBox::critical(this, "Lỗi", "Không đọc được file: " + f.errorString());
+        WifiUi::plainMessage(this, QMessageBox::Critical, "Lỗi", "Không đọc được file: " + f.errorString());
         return;
     }
     const QString xml = QString::fromUtf8(f.readAll());
 
+    // Đọc tên hồ sơ trong tệp TRƯỚC khi nhập: WlanSetProfile ghi đè hồ sơ trùng tên (kèm mật khẩu đã lưu
+    // của nó) không hỏi han gì - trước đây chọn nhầm tệp là mất hồ sơ đang dùng.
+    WifiProfile incoming;
+    if (!WlanProfileXml::parse(xml, &incoming))
+    {
+        WifiUi::plainMessage(this, QMessageBox::Critical, "Lỗi",
+                             "Tệp này không phải hồ sơ WiFi hợp lệ (không đọc được XML hoặc thiếu tên hồ sơ).");
+        return;
+    }
+    if (m_controller->hasProfile(m_adapterGuid, incoming.name))
+    {
+        if (WifiUi::plainMessage(this, QMessageBox::Warning, "Nhập hồ sơ",
+                                 QString("Máy này đã có hồ sơ tên \"%1\".\n\nNhập tệp sẽ GHI ĐÈ hồ sơ đó (kể cả mật khẩu "
+                                         "đang lưu). Tiếp tục?").arg(incoming.name),
+                                 QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+            return;
+    }
+
     QString error;
     if (!m_controller->importProfileXml(m_adapterGuid, xml, &error))
     {
-        QMessageBox::critical(this, "Lỗi", error);
+        WifiUi::plainMessage(this, QMessageBox::Critical, "Lỗi", error);
         return;
     }
     reload();
-    QMessageBox::information(this, "Nhập hồ sơ", "Đã nhập hồ sơ thành công.");
+    WifiUi::plainMessage(this, QMessageBox::Information, "Nhập hồ sơ",
+                         QString("Đã nhập hồ sơ \"%1\" thành công.").arg(incoming.name));
 }
 
 void ProfilesTab::onDeleteClicked()
@@ -258,14 +343,15 @@ void ProfilesTab::onDeleteClicked()
     if (row < 0 || row >= m_profiles.size())
         return;
 
-    if (QMessageBox::question(this, "Xóa hồ sơ", QString("Xóa hồ sơ \"%1\"? Mật khẩu đã lưu sẽ bị xóa khỏi máy này.").arg(m_profiles[row].ssid),
-                              QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+    if (WifiUi::plainMessage(this, QMessageBox::Question, "Xóa hồ sơ",
+                             QString("Xóa hồ sơ \"%1\"? Mật khẩu đã lưu sẽ bị xóa khỏi máy này.").arg(m_profiles[row].ssid),
+                             QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
         return;
 
     QString error;
     if (!m_controller->deleteProfile(m_adapterGuid, m_profiles[row].name, &error))
     {
-        QMessageBox::critical(this, "Lỗi", error);
+        WifiUi::plainMessage(this, QMessageBox::Critical, "Lỗi", error);
         return;
     }
     reload();

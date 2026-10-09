@@ -2,25 +2,31 @@
 
 #include "core/PowerShellRunner.h"
 
-#include <QDir>
+#include "core/AppPaths.h"
+
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSaveFile>
 
 namespace
 {
+/// %LOCALAPPDATA%\OneForAll\profiles\vpn_profiles.json (AppPaths) - trước đây là đường dẫn TƯƠNG ĐỐI
+/// "profiles/vpn_profiles.json", tức phụ thuộc thư mục làm việc lúc khởi động: cài vào Program Files hay
+/// chạy lại với quyền Administrator là ghi thất bại im lặng hoặc đọc nhầm một tệp khác.
 QString profilesFilePath()
 {
-    QDir().mkpath("profiles");
-    return "profiles/vpn_profiles.json";
+    return AppPaths::profileFile("vpn_profiles.json");
 }
 
-/// Nhãn quốc gia do người dùng tự đặt cho từng tên kết nối - KHÔNG phải dữ liệu Windows biết, chỉ lưu
-/// riêng trong ứng dụng để hiển thị. Đọc/ghi toàn bộ map mỗi lần (danh sách nhỏ, vài chục mục là nhiều).
-QHash<QString, QString> loadCountryLabels()
+/// Thông tin PHỤ do người dùng tự đặt cho từng tên kết nối (nhãn quốc gia, tên đăng nhập) - KHÔNG phải
+/// dữ liệu Windows biết, chỉ lưu riêng trong ứng dụng. KHÔNG BAO GIỜ chứa mật khẩu. Đọc/ghi toàn bộ map
+/// mỗi lần (danh sách nhỏ, vài chục mục là nhiều). Định dạng: { "<tên>": {"country": "...", "username":
+/// "..."} }; bản cũ lưu { "<tên>": "<nhãn quốc gia>" } vẫn đọc được.
+QHash<QString, VpnController::VpnProfileMeta> loadProfileMetas()
 {
-    QHash<QString, QString> result;
+    QHash<QString, VpnController::VpnProfileMeta> result;
     QFile f(profilesFilePath());
     if (!f.open(QIODevice::ReadOnly))
         return result;
@@ -29,18 +35,47 @@ QHash<QString, QString> loadCountryLabels()
         return result;
     const QJsonObject obj = doc.object();
     for (auto it = obj.constBegin(); it != obj.constEnd(); ++it)
-        result[it.key()] = it.value().toString();
+    {
+        VpnController::VpnProfileMeta meta;
+        if (it.value().isObject())
+        {
+            const QJsonObject o = it.value().toObject();
+            meta.countryLabel = o.value("country").toString();
+            meta.username = o.value("username").toString();
+        }
+        else
+        {
+            meta.countryLabel = it.value().toString();
+        }
+        result[it.key()] = meta;
+    }
     return result;
 }
 
-void saveCountryLabels(const QHash<QString, QString>& labels)
+/// Ghi NGUYÊN TỬ qua QSaveFile (ghi ra tệp tạm rồi đổi tên): mất điện/crash giữa chừng không để lại tệp
+/// rỗng hay tệp JSON cụt làm mất toàn bộ nhãn đã đặt. Trả về false + lý do nếu không ghi được.
+bool saveProfileMetas(const QHash<QString, VpnController::VpnProfileMeta>& metas, QString* error)
 {
     QJsonObject obj;
-    for (auto it = labels.constBegin(); it != labels.constEnd(); ++it)
-        obj[it.key()] = it.value();
-    QFile f(profilesFilePath());
-    if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
-        f.write(QJsonDocument(obj).toJson(QJsonDocument::Indented));
+    for (auto it = metas.constBegin(); it != metas.constEnd(); ++it)
+    {
+        if (it.value().countryLabel.isEmpty() && it.value().username.isEmpty())
+            continue;
+        QJsonObject o;
+        o["country"] = it.value().countryLabel;
+        o["username"] = it.value().username;
+        obj[it.key()] = o;
+    }
+
+    QSaveFile f(profilesFilePath());
+    const QByteArray data = QJsonDocument(obj).toJson(QJsonDocument::Indented);
+    if (!f.open(QIODevice::WriteOnly) || f.write(data) != data.size() || !f.commit())
+    {
+        if (error)
+            *error = "Không lưu được thông tin hồ sơ VPN vào " + f.fileName() + ": " + f.errorString();
+        return false;
+    }
+    return true;
 }
 
 QString tunnelTypeToPs(VpnTunnelType type)
@@ -90,9 +125,13 @@ QList<VpnConnectionStatus> listConnections(QString* error)
     if (!parseErr.isEmpty() && error)
         *error = parseErr;
 
-    const auto labels = loadCountryLabels();
+    const auto metas = loadProfileMetas();
     for (auto& c : result)
-        c.countryLabel = labels.value(c.name);
+    {
+        const VpnProfileMeta meta = metas.value(c.name);
+        c.countryLabel = meta.countryLabel;
+        c.username = meta.username;
+    }
     return result;
 }
 
@@ -100,8 +139,14 @@ bool addConnection(const VpnProfile& profile, QString* error)
 {
     bool ok = false;
     PowerShellRunner::run(internal::buildAddConnectionScript(profile), &ok, error);
-    if (ok && !profile.countryLabel.isEmpty())
-        setCountryLabel(profile.name, profile.countryLabel);
+    if (ok && (!profile.countryLabel.isEmpty() || !profile.username.isEmpty()))
+    {
+        // Kết nối đã được tạo thật trong Windows - lưu thông tin phụ thất bại KHÔNG biến việc thêm thành
+        // thất bại, chỉ trả kèm cảnh báo qua *error (nơi gọi hiển thị như một ghi chú).
+        QString saveError;
+        if (!setProfileMeta(profile.name, {profile.countryLabel, profile.username}, &saveError) && error)
+            *error = saveError;
+    }
     return ok;
 }
 
@@ -111,18 +156,30 @@ bool removeConnection(const QString& name, QString* error)
     PowerShellRunner::run(internal::buildRemoveConnectionScript(name), &ok, error);
     if (ok)
     {
-        auto labels = loadCountryLabels();
-        labels.remove(name);
-        saveCountryLabels(labels);
+        auto metas = loadProfileMetas();
+        if (metas.remove(name) > 0)
+            saveProfileMetas(metas, nullptr);
     }
     return ok;
 }
 
+VpnProfileMeta profileMeta(const QString& name)
+{
+    return loadProfileMetas().value(name);
+}
+
+bool setProfileMeta(const QString& name, const VpnProfileMeta& meta, QString* error)
+{
+    auto metas = loadProfileMetas();
+    metas[name] = meta;
+    return saveProfileMetas(metas, error);
+}
+
 void setCountryLabel(const QString& name, const QString& countryLabel)
 {
-    auto labels = loadCountryLabels();
-    labels[name] = countryLabel;
-    saveCountryLabels(labels);
+    VpnProfileMeta meta = profileMeta(name);
+    meta.countryLabel = countryLabel;
+    setProfileMeta(name, meta, nullptr);
 }
 
 namespace internal
@@ -130,9 +187,11 @@ namespace internal
 
 QString escapePsString(const QString& s)
 {
-    QString out = s;
-    out.replace('\'', "''");
-    return out;
+    // Lớp bọc giữ tên cũ: PowerShellRunner::quoteLiteral nhân đôi CẢ dấu ' ASCII lẫn 4 dấu nháy "cong"
+    // U+2018/2019/201A/201B mà PowerShell cũng coi là dấu nháy đơn - bản riêng trước đây chỉ xử lý dấu
+    // ASCII, nên một tên kết nối chứa ’ đóng chuỗi sớm và phần còn lại chạy như LỆNH PowerShell (tên lấy
+    // từ Get-VpnConnection, tức không phải lúc nào cũng do chính ứng dụng này đặt).
+    return PowerShellRunner::quoteLiteral(s);
 }
 
 QString buildListConnectionsScript()

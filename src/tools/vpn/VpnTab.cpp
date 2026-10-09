@@ -15,7 +15,10 @@
 #include <QPushButton>
 #include <QTableWidget>
 #include <QTableWidgetItem>
+#include <QThread>
 #include <QVBoxLayout>
+
+#include <memory>
 
 VpnTab::VpnTab(QWidget* parent)
     : QWidget(parent)
@@ -39,6 +42,10 @@ VpnTab::~VpnTab()
     // gần như chắc chắn không đủ trong trường hợp đó, khiến QThread bị hủy đối tượng trong lúc vẫn đang
     // thực sự chạy (hành vi KHÔNG XÁC ĐỊNH theo tài liệu Qt). Phải HỦY (an toàn) rồi mới chờ.
     cancelAndWait(3000);
+    // Luồng nền đang chạy một lệnh PowerShell (liệt kê/thêm/xóa hồ sơ, tối đa ~20 giây) cũng phải thoát
+    // hẳn trước khi đối tượng QThread của nó bị hủy cùng tab này.
+    if (m_backgroundThread)
+        m_backgroundThread->wait();
 }
 
 bool VpnTab::isBusy() const
@@ -161,11 +168,53 @@ void VpnTab::buildUi()
     root->addLayout(bottomRow);
 }
 
+void VpnTab::runInBackground(const QString& statusText, std::function<void()> work, std::function<void()> done)
+{
+    // Get-VpnConnection/Add-VpnConnection/Remove-VpnConnection qua PowerShell mất 1-3 giây (tối đa 20 giây
+    // theo PowerShellRunner) - trước đây chạy thẳng trên luồng giao diện, làm cửa sổ đứng hình ngay lúc
+    // mở và sau mỗi lần thêm/xóa/kết nối.
+    m_statusLabel->setText(statusText);
+    QThread* thread = QThread::create(std::move(work));
+    thread->setParent(this);
+    m_backgroundThread = thread;
+    connect(thread, &QThread::finished, this, [this, thread, done = std::move(done)]() {
+        if (m_backgroundThread == thread)
+            m_backgroundThread = nullptr;
+        thread->deleteLater();
+        done();
+        updateButtons();
+    });
+    thread->start();
+    updateButtons();
+}
+
 void VpnTab::reloadConnections()
 {
-    QString error;
-    m_connections = VpnController::listConnections(&error);
+    if (m_backgroundThread)
+        return;
 
+    auto connections = std::make_shared<QList<VpnConnectionStatus>>();
+    auto error = std::make_shared<QString>();
+    // Giữ nguyên dòng thông báo đang hiện (vd kết quả kết nối vừa xong) nếu có - chỉ ghi "đang tải" khi trống.
+    const QString keepStatus = m_statusLabel->text();
+    runInBackground(
+        keepStatus.isEmpty() ? QString("⏳ Đang đọc danh sách hồ sơ VPN...") : keepStatus,
+        [connections, error]() { *connections = VpnController::listConnections(error.get()); },
+        [this, connections, error, keepStatus]() {
+            populateConnections(*connections, *error);
+            if (error->isEmpty() && !keepStatus.isEmpty() && !keepStatus.startsWith("Có "))
+                m_statusLabel->setText(keepStatus);
+        });
+}
+
+void VpnTab::populateConnections(const QList<VpnConnectionStatus>& connections, const QString& error)
+{
+    // Nhớ tên đang chọn để chọn lại sau khi nạp (danh sách được dựng lại từ đầu).
+    const auto* previous = selectedConnection();
+    const QString previousName = previous ? previous->name : QString();
+
+    m_table->clearSelection();
+    m_connections = connections;
     m_table->setRowCount(m_connections.size());
     for (int i = 0; i < m_connections.size(); ++i)
     {
@@ -181,10 +230,12 @@ void VpnTab::reloadConnections()
         setItem(1, c.countryLabel.isEmpty() ? "—" : c.countryLabel);
         setItem(2, c.tunnelType);
         setItem(3, c.isConnected() ? "Đã kết nối" : "Chưa kết nối", VpnUi::statusColor(c.isConnected()));
+        if (!previousName.isEmpty() && c.name == previousName)
+            m_table->selectRow(i);
     }
 
     m_statusLabel->setText(error.isEmpty() ? QString("Có %1 hồ sơ VPN.").arg(m_connections.size()) : ("⚠ " + error));
-    onRowSelectionChanged();
+    updateButtons();
 }
 
 const VpnConnectionStatus* VpnTab::selectedConnection() const
@@ -198,24 +249,39 @@ const VpnConnectionStatus* VpnTab::selectedConnection() const
     return &m_connections[row];
 }
 
-void VpnTab::onRowSelectionChanged()
+void VpnTab::updateButtons()
 {
     const auto* c = selectedConnection();
-    const bool busy = m_connector->isRunning();
-    m_removeBtn->setEnabled(c != nullptr && !busy);
+    // Bận = đang kết nối/ngắt kết nối HOẶC đang chạy một lệnh PowerShell nền. Trong lúc bận khóa cả Làm
+    // mới/Thêm/Xóa và bảng: trước đây chỉ nút Kết nối bị tắt, nên vẫn bấm Xóa được (Remove-VpnConnection
+    // -Force) đúng lúc hồ sơ đó đang quay số.
+    const bool busy = m_connector->isRunning() || m_backgroundThread != nullptr;
+    m_refreshBtn->setEnabled(!busy);
+    m_addBtn->setEnabled(!busy);
+    m_table->setEnabled(!busy);
+    m_removeBtn->setEnabled(c != nullptr && !busy && !c->isConnected());
     m_connectBtn->setEnabled(c != nullptr && !c->isConnected() && !busy);
     m_connectBtn->setVisible(!(c && c->isConnected()));
     m_disconnectBtn->setVisible(c && c->isConnected());
     m_disconnectBtn->setEnabled(!busy);
 }
 
+void VpnTab::onRowSelectionChanged()
+{
+    updateButtons();
+}
+
 void VpnTab::onRefreshClicked()
 {
+    m_statusLabel->clear();
     reloadConnections();
 }
 
 void VpnTab::onAddClicked()
 {
+    if (m_backgroundThread || m_connector->isRunning())
+        return;
+
     AddVpnProfileDialog dlg(this);
     if (dlg.exec() != QDialog::Accepted)
         return;
@@ -227,67 +293,119 @@ void VpnTab::onAddClicked()
         return;
     }
 
-    QString error;
-    if (!VpnController::addConnection(profile, &error))
-    {
-        QMessageBox::critical(this, "Không thêm được", error);
-        return;
-    }
-    reloadConnections();
+    auto ok = std::make_shared<bool>(false);
+    auto error = std::make_shared<QString>();
+    runInBackground(
+        "⏳ Đang thêm hồ sơ \"" + profile.name + "\"...",
+        [profile, ok, error]() { *ok = VpnController::addConnection(profile, error.get()); },
+        [this, ok, error]() {
+            if (!*ok)
+            {
+                m_statusLabel->clear();
+                QMessageBox::critical(this, "Không thêm được", *error);
+            }
+            else
+            {
+                // Thêm thành công; *error (nếu có) chỉ là cảnh báo không lưu được nhãn/tên đăng nhập.
+                m_statusLabel->setText(error->isEmpty() ? QString() : ("⚠ " + *error));
+            }
+            reloadConnections();
+        });
 }
 
 void VpnTab::onRemoveClicked()
 {
     const auto* c = selectedConnection();
-    if (!c)
+    if (!c || m_backgroundThread || m_connector->isRunning())
         return;
 
-    if (QMessageBox::question(this, "Xóa hồ sơ VPN", QString("Xóa hồ sơ \"%1\"?").arg(c->name),
+    const QString name = c->name;
+    if (QMessageBox::question(this, "Xóa hồ sơ VPN",
+                              QString("Xóa hồ sơ \"%1\" khỏi Windows?\n\nĐây là kết nối VPN của hệ thống (cũng hiện trong "
+                                      "Cài đặt > Mạng > VPN của Windows), không chỉ riêng trong ứng dụng này.")
+                                  .arg(name),
                               QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
         return;
+    if (m_backgroundThread || m_connector->isRunning())
+        return; // hộp thoại chạy vòng lặp sự kiện riêng - trạng thái có thể đã đổi
 
-    QString error;
-    if (!VpnController::removeConnection(c->name, &error))
-    {
-        QMessageBox::critical(this, "Không xóa được", error);
-        return;
-    }
-    reloadConnections();
+    auto ok = std::make_shared<bool>(false);
+    auto error = std::make_shared<QString>();
+    runInBackground(
+        "⏳ Đang xóa hồ sơ \"" + name + "\"...",
+        [name, ok, error]() { *ok = VpnController::removeConnection(name, error.get()); },
+        [this, ok, error]() {
+            m_statusLabel->clear();
+            if (!*ok)
+                QMessageBox::critical(this, "Không xóa được", *error);
+            reloadConnections();
+        });
 }
 
 void VpnTab::onConnectClicked()
 {
     const auto* c = selectedConnection();
-    if (!c)
+    if (!c || m_backgroundThread || m_connector->isRunning())
         return;
+    const QString name = c->name;
+    const QString savedUsername = c->username;
 
+    // Điền sẵn tên đăng nhập đã lưu cho hồ sơ này (nhập lúc thêm hồ sơ hoặc ở lần kết nối thành công
+    // trước) - trước đây ô "Tên đăng nhập" của hộp thoại thêm hồ sơ bị bỏ đi, lần nào cũng phải gõ lại.
     bool ok = false;
-    const QString username = QInputDialog::getText(this, "Kết nối VPN", "Tên đăng nhập:", QLineEdit::Normal, QString(), &ok);
+    const QString username =
+        QInputDialog::getText(this, "Kết nối VPN", "Tên đăng nhập (để trống = dùng thông tin Windows đã nhớ):",
+                              QLineEdit::Normal, savedUsername, &ok).trimmed();
     if (!ok)
         return;
-    const QString password = QInputDialog::getText(this, "Kết nối VPN", "Mật khẩu:", QLineEdit::Password, QString(), &ok);
-    if (!ok)
+    QString password;
+    if (!username.isEmpty())
+    {
+        password = QInputDialog::getText(this, "Kết nối VPN", "Mật khẩu:", QLineEdit::Password, QString(), &ok);
+        if (!ok)
+            return;
+    }
+    if (m_backgroundThread || m_connector->isRunning())
         return;
 
-    m_connector->setConnectTarget(c->name, username, password);
-    m_connectBtn->setEnabled(false);
-    m_statusLabel->setText("⏳ Đang kết nối \"" + c->name + "\"...");
+    m_pendingConnectionName = name;
+    m_pendingUsername = username;
+    // Mật khẩu đi thẳng vào bộ nhớ của VpnConnector (không qua dòng lệnh tiến trình con nào) - lớp đó tự
+    // xóa trắng vùng nhớ chứa mật khẩu ngay sau khi gọi RAS API, xem VpnConnector.h.
+    m_connector->setConnectTarget(name, username, password);
+    m_statusLabel->setText("⏳ Đang kết nối \"" + name + "\"...");
     m_connector->start();
+    updateButtons();
 }
 
 void VpnTab::onDisconnectClicked()
 {
     const auto* c = selectedConnection();
-    if (!c)
+    if (!c || m_backgroundThread || m_connector->isRunning())
         return;
+    m_pendingConnectionName.clear();
+    m_pendingUsername.clear();
     m_connector->setDisconnectTarget(c->name);
-    m_disconnectBtn->setEnabled(false);
     m_statusLabel->setText("⏳ Đang ngắt kết nối \"" + c->name + "\"...");
     m_connector->start();
+    updateButtons();
 }
 
 void VpnTab::onConnectorFinished(bool success, QString message)
 {
+    // Kết nối thành công với một tên đăng nhập mới -> nhớ lại cho lần sau (chỉ tên, KHÔNG có mật khẩu).
+    if (success && !m_pendingConnectionName.isEmpty() && !m_pendingUsername.isEmpty())
+    {
+        VpnController::VpnProfileMeta meta = VpnController::profileMeta(m_pendingConnectionName);
+        if (meta.username != m_pendingUsername)
+        {
+            meta.username = m_pendingUsername;
+            VpnController::setProfileMeta(m_pendingConnectionName, meta, nullptr);
+        }
+    }
+    m_pendingConnectionName.clear();
+    m_pendingUsername.clear();
+
     m_statusLabel->setText((success ? "✓ " : "⚠ ") + (message.isEmpty() ? (success ? "Xong." : "Thất bại.") : message));
     reloadConnections();
     if (success)

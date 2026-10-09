@@ -20,3 +20,12 @@ QWidget* SecurityGatewayTool::createWindow()
         m_window = new SecurityGatewayWindow();
     return m_window;
 }
+
+void SecurityGatewayTool::stopBackgroundWorkForQuit()
+{
+    // KHÔNG gọi close() như DownloaderTool: closeEvent() của cửa sổ này hỏi xác nhận nếu đang quét - không
+    // được hiện hộp thoại giữa lúc ứng dụng đang thoát. Chỉ YÊU CẦU dừng (không chờ): luồng quét tự kết
+    // thúc powershell.exe con của nó trong ~200ms thay vì bỏ lại nó chạy ngầm sau khi ứng dụng đã thoát.
+    if (auto* window = qobject_cast<SecurityGatewayWindow*>(m_window.data()))
+        window->requestCancelScanForQuit();
+}

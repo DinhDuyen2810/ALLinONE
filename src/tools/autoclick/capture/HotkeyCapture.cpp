@@ -80,7 +80,10 @@ void HotkeyCapture::cancelCapture()
     if (!m_keyboardHook)
         return;
     uninstallHook();
-    emit captureCancelled();
+    // Phát QUA HÀNG ĐỢI sự kiện (cả hotkeyCaptured bên dưới): hàm này có thể đang chạy BÊN TRONG callback
+    // hook bàn phím (Esc) - nơi nhận cập nhật giao diện, không nên làm việc đó khi Windows còn đang chờ
+    // callback trả về.
+    QMetaObject::invokeMethod(this, &HotkeyCapture::captureCancelled, Qt::QueuedConnection);
 }
 
 void HotkeyCapture::uninstallHook()
@@ -122,7 +125,9 @@ bool HotkeyCapture::onRawKey(int vkCode, bool pressed)
     {
         const bool ctrl = m_ctrlDown, alt = m_altDown, shift = m_shiftDown, win = m_winDown;
         uninstallHook();
-        emit hotkeyCaptured(ctrl, alt, shift, win, vkCode);
+        QMetaObject::invokeMethod(
+            this, [this, ctrl, alt, shift, win, vkCode]() { emit hotkeyCaptured(ctrl, alt, shift, win, vkCode); },
+            Qt::QueuedConnection);
     }
     return true;
 }

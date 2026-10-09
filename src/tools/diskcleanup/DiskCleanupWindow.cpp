@@ -48,6 +48,8 @@ bool DiskCleanupWindow::hasUnsafeOperationInProgress() const
 
 void DiskCleanupWindow::stopSafelyCancellableWorkForQuit()
 {
+    if (m_cleanupTab)
+        m_cleanupTab->stopScanIfRunning(); // quét hạng mục chỉ ĐỌC - an toàn để dừng, khác với xóa thật
     if (m_largeFilesTab)
         m_largeFilesTab->stopScanIfRunning();
     if (m_duplicateFilesTab)
@@ -91,7 +93,9 @@ void DiskCleanupWindow::closeEvent(QCloseEvent* event)
     // chặn đóng cửa sổ, nhưng vẫn phải tự dừng ở đây: cửa sổ này được DiskCleanupTool giữ qua QPointer và
     // TÁI DÙNG ở lần mở sau (không WA_DeleteOnClose) - đóng chỉ ẨN đi, các tab con không bị hủy nên
     // destructor của chúng (vốn đã requestStop()+wait() đúng) không bao giờ chạy, QThread quét tiếp tục
-    // chạy ngầm vô ích nếu không chủ động dừng ở đây.
+    // chạy ngầm vô ích nếu không chủ động dừng ở đây. Lượt quét theo hạng mục của CleanupTab cũng vậy.
+    if (m_cleanupTab)
+        m_cleanupTab->stopScanIfRunning();
     if (m_largeFilesTab)
         m_largeFilesTab->stopScanIfRunning();
     if (m_duplicateFilesTab)

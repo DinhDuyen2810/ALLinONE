@@ -3,6 +3,7 @@
 #include <QWidget>
 
 class QCloseEvent;
+class QShowEvent;
 class QComboBox;
 class QLabel;
 class QTabWidget;
@@ -22,6 +23,7 @@ public:
 
 protected:
     void closeEvent(QCloseEvent* event) override;
+    void showEvent(QShowEvent* event) override;
 
 private slots:
     void onAdapterChanged(int index);
@@ -33,6 +35,7 @@ private:
 
     WlanController* m_controller{nullptr};
     bool m_serviceAvailable{false};
+    bool m_shownOnce{false}; // lần hiện đầu tiên: constructor vừa nạp adapter xong, showEvent không nạp lại
 
     QComboBox* m_adapterCombo{nullptr};
     QLabel* m_warningLabel{nullptr};

@@ -25,6 +25,11 @@ public:
     explicit AutoClickWindow(QWidget* parent = nullptr);
     ~AutoClickWindow() override;
 
+    /// Dừng NGAY chuỗi đang chạy (nếu có), không hỏi xác nhận, chờ luồng chạy kết thúc trong thời gian
+    /// giới hạn - dùng cho AutoClickTool::stopBackgroundWorkForQuit() khi ứng dụng thoát theo đường
+    /// KHÔNG đi qua closeEvent() của cửa sổ này (xem core/Tool.h).
+    void stopForQuit();
+
 private slots:
     // Chain slots
     void onChainSelected(int index);
@@ -49,8 +54,10 @@ private slots:
     void onRunnerStateChanged(RunnerState state);
     void onRunnerRoundStarted(int currentRound, int totalRounds);
     void onRunnerActionStarted(int currentRound, int totalRounds, int actionIndex, int totalActions,
-                               const QString& currentDesc, const QString& nextDesc, int targetX, int targetY);
+                               const QString& currentDesc, const QString& nextDesc, int targetX, int targetY,
+                               int sourceIndex);
     void onRunnerCountdownTick(qint64 remainingMs, const QString& phase);
+    void onRunnerError(const QString& message);
     void onRunnerFinished();
 
     // Storage slots
@@ -64,6 +71,7 @@ private slots:
 
 protected:
     void closeEvent(QCloseEvent* event) override;
+    bool nativeEvent(const QByteArray& eventType, void* message, qintptr* result) override;
 
 private:
     void setupUi();
@@ -72,10 +80,26 @@ private:
     void updateRepeatFromUi();
     void startChain(int index);
     ActionChain* currentChain();
+    void registerStopHotkey();
+    void unregisterStopHotkey();
+    /// Gọi khi THÊM/XÓA/ĐỔI CHỖ hành động của chain đang xem - nếu đó chính là chain đang chạy thì chỉ
+    /// số hàng không còn khớp với bản sao ActionRunner đang giữ, phải thôi tô hàng "đang chạy".
+    void noteActionsRestructured();
+    void clearRunningMarker();
+    /// Đổi tên tệp hồ sơ mặc định bị hỏng thành "<tên>.<thời điểm>.bak" để KHÔNG BAO GIỜ ghi đè lên nó.
+    bool backupCorruptDefaultProfile(QString* backupPath = nullptr);
 
     std::vector<ActionChain> m_chains;
     int m_currentChainIndex{0};
     bool m_syncingUi{false};
+
+    // Trạng thái của lần chạy hiện tại
+    bool m_runActive{false};            // true từ startChain() tới khi onRunnerFinished() ĐÃ xử lý xong lần chạy đó
+    int m_runningChainIndex{-1};        // chỉ số (trong m_chains) của chain đang chạy, -1 = không chạy/không còn xác định
+    bool m_runningChainRestructured{false};
+    bool m_stopHotkeyRegistered{false};
+    QString m_lastRunError;             // lỗi ActionRunner báo về, hiện cho người dùng khi lần chạy kết thúc
+    bool m_corruptDefaultProfilePending{false}; // tệp mặc định hỏng mà CHƯA đổi tên được - cấm ghi đè
 
     // UI Widgets
     QSplitter* m_splitter;

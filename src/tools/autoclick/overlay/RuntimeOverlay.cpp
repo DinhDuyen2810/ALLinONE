@@ -55,6 +55,9 @@ RuntimeOverlay::RuntimeOverlay(QWidget* parent)
 
     // Bottom stop button
     auto* bottomLayout = new QHBoxLayout();
+    m_hotkeyHintLabel = new QLabel(this);
+    m_hotkeyHintLabel->setStyleSheet("color: #57606a; font-size: 11px;");
+    bottomLayout->addWidget(m_hotkeyHintLabel);
     bottomLayout->addStretch();
     m_stopButton = new QPushButton("■ Dừng lại (Stop)", this);
     m_stopButton->setFixedSize(130, 28);
@@ -81,6 +84,11 @@ void RuntimeOverlay::setRoundInfo(int currentRound, int totalRounds)
 {
     QString totalStr = (totalRounds > 0) ? QString::number(totalRounds) : "∞";
     m_roundLabel->setText(QString("Vòng %1 / %2").arg(currentRound).arg(totalStr));
+}
+
+void RuntimeOverlay::setStopHotkeyHint(const QString& hotkeyLabel)
+{
+    m_hotkeyHintLabel->setText(hotkeyLabel.isEmpty() ? QString() : QString("Dừng nhanh: %1").arg(hotkeyLabel));
 }
 
 void RuntimeOverlay::setActionInfo(int actionIndex, int totalActions, const QString& currentDesc, const QString& nextDesc, int targetX, int targetY)

@@ -9,6 +9,7 @@
 #include "QRPayload.h"
 
 class QCamera;
+class QCheckBox;
 class QComboBox;
 class QLabel;
 class QListWidget;
@@ -60,6 +61,10 @@ private:
     void showResult(int index);
     void clearResults();
     bool cameraAvailable() const;
+    /// Hiển thị một kết quả ĐÃ giải mã (không giải mã lại) cho ảnh tương ứng. Trả về số mã.
+    int presentResults(const QImage& image, const QList<QRDecoded>& found, const QString& sourceName);
+    /// Chỉ giải phóng QCamera/phiên/sink, KHÔNG đụng trạng thái nút Camera (khác stopCamera()).
+    void releaseCamera();
 
     QRImageView* m_view{nullptr};
     QListWidget* m_resultList{nullptr};
@@ -67,6 +72,7 @@ private:
     QTableWidget* m_fieldTable{nullptr};
     QPlainTextEdit* m_rawText{nullptr};
     QLabel* m_status{nullptr};
+    QCheckBox* m_revealCheck{nullptr}; // chỉ hiện khi kết quả đang xem có trường nhạy cảm (mật khẩu WiFi)
 
     QPushButton* m_openBtn{nullptr};
     QPushButton* m_pasteBtn{nullptr};

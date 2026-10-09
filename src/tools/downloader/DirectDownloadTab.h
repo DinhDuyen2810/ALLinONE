@@ -24,10 +24,11 @@ public:
     explicit DirectDownloadTab(FileDownloader* downloader, QWidget* parent = nullptr);
 
 public slots:
-    /// Cho PageScanTab (và tính năng tự phát hiện clipboard) gọi để thêm thẳng vào hàng đợi.
+    /// Thêm một URL vào hàng đợi rồi bắt đầu tải (tên tệp/đường dẫn đích do tab này tự chọn).
     void enqueueUrl(const QString& url);
 
 private slots:
+    void addRowForId(int id);
     void onAddClicked();
     void onChooseFolderClicked();
     void onStartAllClicked();
@@ -37,7 +38,6 @@ private slots:
 
 private:
     void buildUi();
-    void addRowForId(int id);
     void refreshRow(int id);
     QString suggestedDestPath(const QString& url) const;
 

@@ -7,7 +7,7 @@
 Ứng dụng desktop Windows (C++20, Qt 6.11 MinGW, CMake + Ninja) dạng launcher gồm 9 công cụ - **toàn bộ 9/9 công cụ nay đã hoàn chỉnh**: **Auto Click**, **QR Tools**, **WiFi Connection**, **Connect Together** (tham khảo Mouse without Borders), **Disk Cleanup** (tham khảo CCleaner/BleachBit/Windows Disk Cleanup), **Android Phone Control** (dựa trên scrcpy), **VPN & Location** (VPN gốc Windows + vị trí theo IP), **Security Gateway** (tham khảo Kaspersky, xây trên Windows Defender có sẵn) và **Downloader** (tải trực tiếp/quét trang web/video nền tảng qua yt-dlp).
 
 ## 2. Luồng khởi động
-`main.cpp` đặt Per-Monitor DPI v2 → `QApplication` → `Logger` ghi `logs/app.log` → `MainWindow`.
+`main.cpp` đặt Per-Monitor DPI v2 → `QApplication` → `Logger` ghi `%LOCALAPPDATA%\OneForAll\logs\app.log` (xem `AppPaths`, mục 4o) → `MainWindow`.
 `MainWindow::registerTools()` đăng ký tool vào singleton `ToolManager`, đổ lên sidebar. Bấm "Mở cửa sổ" gọi `ITool::createWindow()` tạo cửa sổ độc lập.
 
 ## 3. Cấu trúc mã nguồn
@@ -16,12 +16,13 @@
 | `src/main.cpp` | Điểm vào, DPI awareness |
 | `src/core/Tool.h` | Interface `ITool` (id, name, description, icon, `createWindow()`) |
 | `src/core/ToolManager.*` | Registry tool + `PlaceholderTool` |
-| `src/core/Logger.*` | Log thread-safe ra `logs/app.log`, `logs/autoclick.log` |
+| `src/core/AppPaths.*` | Nơi DUY NHẤT quyết định dữ liệu người dùng nằm ở đâu (`%LOCALAPPDATA%\OneForAll\{profiles,logs}`), di trú từ vị trí cũ, đường dẫn tuyệt đối tới exe hệ thống |
+| `src/core/Logger.*` | Log thread-safe ra `logs\app.log`, `logs\autoclick.log` trong thư mục dữ liệu người dùng |
 | `src/core/IconHelper.h` | Vẽ icon badge nền trắng bo góc |
 | `src/ui/MainWindow.*` | Sidebar + thẻ thông tin + nút mở tool |
 | `src/tools/autoclick/model/` | `Action`, `ActionChain` (struct thuần, không phụ thuộc UI) |
-| `src/tools/autoclick/storage/` | `ActionSerializer`: chain ↔ JSON (`profiles/default.json`) |
-| `src/tools/autoclick/engine/` | `ActionRunner` (QThread) và `InputController` (Win32 `SendInput`/`SetCursorPos`) |
+| `src/tools/autoclick/storage/` | `ActionSerializer`: chain ↔ JSON (`profiles\default.json` trong thư mục dữ liệu người dùng, ghi nguyên tử) |
+| `src/tools/autoclick/engine/` | `ActionRunner` (QThread), `InputController` (Win32 `SendInput`/`SetCursorPos`, lib `input_core`), `StopHotkey` (phím dừng toàn cục Ctrl+Alt+F8) |
 | `src/tools/autoclick/capture/` | `CoordinateOverlay`, `MouseCapture`: bắt tọa độ toàn desktop |
 | `src/tools/autoclick/overlay/` | `RuntimeOverlay`: HUD trạng thái khi chạy |
 | `src/tools/autoclick/widgets/` | `ChainListWidget`, `ActionListWidget`, `ActionEditorWidget` |
@@ -29,27 +30,28 @@
 | `src/tools/qr/QRCodec.*` | Lõi QR: mã hóa (qrcodegen), render ảnh/SVG, giải mã (quirc) |
 | `src/tools/qr/QRPayload.*` | Tạo và phân tích nội dung: Text, URL, WiFi, Email, SMS, Phone, Geo, vCard/MECARD |
 | `src/tools/qr/QRWindow.*`, `QRGenerateTab.*`, `QRScanTab.*`, `QRHistoryTab.*` | UI QR Tools: 3 tab Tạo / Quét / Lịch sử |
-| `src/tools/qr/QRHistoryStore.*` | Lịch sử tạo/quét, lưu `profiles/qr_history.json` (tối đa 300 mục) |
+| `src/tools/qr/QRHistoryStore.*` | Lịch sử tạo/quét, lưu `profiles\qr_history.json` trong thư mục dữ liệu người dùng (tối đa 300 mục) |
 | `src/tools/qr/QRImageView.*`, `ScreenSnipOverlay.*` | Khung xem ảnh kéo-thả có viền mã; chụp vùng màn hình |
 | `src/tools/qr/QRTool.*` | `ITool` của QR (một cửa sổ duy nhất) |
 | `src/tools/wifi/model/` | `WifiNetwork`, `WifiProfile`, `WifiSecurity` (struct/enum thuần) |
 | `src/tools/wifi/engine/WlanProfileXml.*` | Dựng/phân tích XML hồ sơ WLAN (thuần Qt, test được không cần phần cứng) |
 | `src/tools/wifi/engine/WlanController.*` | Lớp duy nhất gọi Windows WLAN API (wlanapi.dll): quét, hồ sơ, kết nối, trạng thái |
 | `src/tools/wifi/WifiWindow.*`, `NetworksTab.*`, `ProfilesTab.*`, `ConnectDialog.*` | UI: tab Mạng xung quanh / Hồ sơ đã lưu, hộp thoại kết nối |
+| `src/tools/wifi/engine/ConnectionWatcher.*` | Theo dõi kết quả một lần kết nối WiFi (polling trạng thái, có giới hạn thời gian) |
 | `src/tools/wifi/engine/SpeedTestRunner.*` | Đo tốc độ mạng qua HTTP (ping/jitter/download/upload), thuần Qt Network |
 | `src/tools/wifi/SpeedTestTab.*` | Tab "Đo tốc độ mạng" |
 | `src/tools/connect/model/` | `ScreenSide`, `PeerInfo` (struct/enum thuần) |
 | `src/tools/connect/engine/PairingCode.*` | Mã ghép đôi 9 số, sinh/kiểm tra/định dạng (thuần Qt) |
 | `src/tools/connect/engine/ProtocolMessage.*` | Khung thông điệp nhị phân giữa 2 máy (thuần Qt, QDataStream) |
-| `src/tools/connect/engine/CryptoSession.*` | AES-256-GCM qua Windows CNG (bcrypt.dll), suy khóa PBKDF2 |
+| `src/tools/connect/engine/CryptoSession.*` | AES-256-GCM qua Windows CNG (bcrypt.dll), suy khóa PBKDF2 (ghép đôi) và HMAC-SHA256 (khóa phiên từng chiều - giao thức v2, mục 4o) |
 | `src/tools/connect/model/PairedPeer.h` | Máy đã ghép đôi, lưu lâu dài (id, tên, khóa dài hạn, vị trí) |
-| `src/tools/connect/engine/PeerStore.*` | Lưu/nạp danh sách peer đã ghép đôi, `profiles/connect_peers.json` |
+| `src/tools/connect/engine/PeerStore.*` | Lưu/nạp danh sách peer đã ghép đôi, `profiles\connect_peers.json` (khóa dài hạn bọc DPAPI) |
 | `src/tools/connect/engine/NetworkSession.*` | Phiên TCP đóng khung + mã hóa đầu-cuối (CryptoSession) |
 | `src/tools/connect/engine/PeerDiscovery.*` | Khám phá máy trong LAN qua UDP broadcast (chỉ thông tin công khai) |
 | `src/tools/connect/engine/EdgeDetector.*` | Toán học thuần phát hiện chuột chạm biên màn hình để chuyển quyền điều khiển |
 | `src/tools/connect/engine/InputInjector.*` | Tiêm chuột/phím nhận được lên máy này (SendInput/SetCursorPos) |
 | `src/tools/connect/engine/InputHook.*` | Hook bàn phím/chuột toàn cục (WH_MOUSE_LL/WH_KEYBOARD_LL), chỉ "nuốt" input khi đang chủ động chia sẻ |
-| `src/tools/connect/engine/LocalIdentityStore.*` | Định danh ổn định của máy này, `profiles/connect_identity.json` |
+| `src/tools/connect/engine/LocalIdentityStore.*` | Định danh ổn định của máy này, `profiles\connect_identity.json` |
 | `src/tools/connect/engine/ConnectSessionController.*` | Điều phối toàn bộ: ghép đôi, kết nối lại, biên màn hình, hook/injector, clipboard |
 | `src/tools/connect/ConnectWindow.*`, `PairingTab.*`, `PeersTab.*` | UI: tab Ghép đôi / Máy đã ghép đôi, banner trạng thái, log |
 | `src/tools/connect/ConnectTool.*` | `ITool` của Connect Together (một cửa sổ duy nhất) |
@@ -58,6 +60,7 @@
 | `src/tools/diskcleanup/engine/CleanupScanner.*` | Quét hạng mục trên QThread riêng, chỉ đọc (không xóa) |
 | `src/tools/diskcleanup/engine/RecycleBinOps.*` | Lớp duy nhất gọi Shell API Thùng rác (SHFileOperationW/SHQueryRecycleBinW/SHEmptyRecycleBinW) |
 | `src/tools/diskcleanup/engine/CleanupExecutor.*` | Thực hiện xóa (qua Thùng rác mặc định) trên QThread riêng |
+| `src/tools/diskcleanup/engine/FsSafety.*` | Lớp an toàn hệ thống tệp: duyệt Win32 không đi xuyên junction/symlink thư mục, danh tính tệp vật lý, kiểm thư mục gốc đáng ngờ |
 | `src/tools/diskcleanup/engine/DiskSpaceInfo.*` | Dung lượng từng ổ đĩa (thuần Qt, QStorageInfo) |
 | `src/tools/diskcleanup/engine/LargeFileScanner.*` | Tìm tệp lớn trong một thư mục gốc tùy chọn, QThread riêng |
 | `src/tools/diskcleanup/engine/DuplicateFinder.*` | Tìm tệp trùng lặp NỘI DUNG (nhóm theo kích thước rồi hash SHA-256), QThread riêng |
@@ -72,18 +75,19 @@
 | `src/tools/diskcleanup/DiskCleanupTool.*` | `ITool` của Disk Cleanup (một cửa sổ duy nhất) |
 | `src/tools/wifi/WifiTool.*` | `ITool` của WiFi (một cửa sổ duy nhất) |
 | `src/tools/android/model/AndroidDeviceInfo.h` | Một thiết bị adb thấy (serial, trạng thái, model, USB/không dây) - struct thuần |
-| `src/tools/android/engine/AdbController.*` | Lớp duy nhất gọi `adb.exe` đóng gói kèm: liệt kê/ghép đôi/kết nối thiết bị |
+| `src/tools/android/engine/AdbController.*` | Lớp duy nhất gọi `adb.exe` đóng gói kèm: liệt kê/ghép đôi/kết nối thiết bị, dừng daemon adb đóng gói kèm |
+| `src/tools/android/engine/AdbDeviceLister.*` | Chạy `adb devices -l` bất đồng bộ (không chặn luồng giao diện, không chồng lệnh) |
 | `src/tools/android/engine/ScrcpyLauncher.*` | Khởi chạy/quản lý tiến trình `scrcpy.exe` (gương + điều khiển màn hình thời gian thực) |
 | `src/tools/android/AndroidUiStyle.h` | Style Light Theme dùng chung cho UI Android (giống các `*UiStyle.h` khác) |
 | `src/tools/android/WirelessPairDialog.*` | Hộp thoại ghép đôi gỡ lỗi không dây (Android 11+): nhập IP:Cổng + mã 6 số |
 | `src/tools/android/DevicesTab.*` | Danh sách thiết bị, tùy chọn điều khiển (độ phân giải/bitrate/fps/ghi hình...), nút Điều khiển |
 | `src/tools/android/AndroidControlWindow.*` | Cửa sổ Android Phone Control |
 | `src/tools/android/AndroidControlTool.*` | `ITool` của Android Phone Control (một cửa sổ duy nhất) |
-| `src/core/WinElevation.*` | Kiểm tra/khởi chạy lại với quyền Administrator (Win32, dùng chung Disk Cleanup + VPN) |
-| `src/core/PowerShellRunner.*` | Chạy script PowerShell qua `-EncodedCommand` (Base64 UTF-16LE), trả stdout/stderr/mã lỗi (dùng chung) |
+| `src/core/WinElevation.*` | Kiểm tra/khởi chạy lại với quyền Administrator (Win32, dùng chung - lib `core_shared`) |
+| `src/core/PowerShellRunner.*` | Chạy script PowerShell qua `-EncodedCommand` (Base64 UTF-16LE), ép UTF-8, trả stdout/stderr/mã lỗi; `quoteLiteral()` để đặt chuỗi vào `'...'` an toàn (dùng chung) |
 | `src/tools/vpn/model/VpnProfile.h` | `VpnProfile`, `VpnTunnelType` (struct/enum thuần, không có trường mật khẩu) |
 | `src/tools/vpn/engine/VpnController.*` | Thêm/liệt kê/xóa hồ sơ VPN qua PowerShell (`Add`/`Get`/`Remove-VpnConnection`), lưu nhãn quốc gia riêng |
-| `src/tools/vpn/engine/VpnConnector.*` | Kết nối/ngắt kết nối VPN qua `rasdial.exe` trên QThread riêng (nhận username/password lúc chạy) |
+| `src/tools/vpn/engine/VpnConnector.*` | Kết nối/ngắt kết nối VPN qua RAS API (`RasDialW`/`RasHangUpW`) trên QThread riêng - mật khẩu chỉ nằm trong bộ nhớ (trước v1.19.0 dùng `rasdial.exe`) |
 | `src/tools/vpn/engine/PublicIpChecker.*` | Tra cứu IP công khai + vị trí (quốc gia/thành phố) hiện tại qua `ipwho.is`, thuần Qt Network |
 | `src/tools/vpn/AddVpnProfileDialog.*` | Hộp thoại thêm hồ sơ VPN (tên/quốc gia/máy chủ/giao thức/tên đăng nhập) |
 | `src/tools/vpn/VpnTab.*` | Tab chính: vị trí hiện tại theo IP, bảng hồ sơ VPN, Kết nối/Ngắt kết nối |
@@ -110,7 +114,8 @@
 | `vendor/yt-dlp/` | yt-dlp + ffmpeg/ffprobe đóng gói (Unlicense/GPLv3+ kết hợp + GPL, KHÔNG commit Git) - xem `THIRD_PARTY.md` |
 | `tests/` | `qr_tests`/`qr_ui_tests`, `wifi_tests`/`wifi_ui_tests`, `connect_tests`/`connect_ui_tests` (506 + 2, ghép đôi 2 chiều thật qua TCP, ổn định qua 40+ lần chạy liên tiếp), `diskcleanup_tests`/`diskcleanup_ui_tests` (176 + 19 kiểm tra, có xóa file thật qua Thùng rác, liệt kê phân vùng thật), `android_tests`/`android_ui_tests` (45 + 7 kiểm tra, có gọi `adb devices` thật - chỉ đọc), `vpn_tests`/`vpn_ui_tests` (41 + 6 kiểm tra, có gọi `Get-VpnConnection` thật - chỉ đọc), `security_tests`/`security_ui_tests` (76 + 6 kiểm tra, có gọi `Get-MpComputerStatus`/đọc hosts file thật - chỉ đọc), `downloader_tests`/`downloader_ui_tests` (63 + 8 kiểm tra, có tải thật một tệp công khai nhỏ qua HTTP thật) |
 | `assets/resources.qrc`, `icon/` | Icon nhúng vào exe |
-| `profiles/default.json` | Profile mặc định (chain mẫu) |
+| `profiles/default.json` | Chuỗi Auto Click MẪU đóng gói kèm (lần chạy đầu được chép sang thư mục dữ liệu người dùng) |
+| `CLAUDE.md` | Quy tắc làm việc đứng cho Claude Code (build → commit → push sau mỗi lần sửa...) |
 | `build_app.bat`, `run_app.bat` | Build + đóng gói (`windeployqt`), chạy bản Release |
 
 ## 4. Auto Click
@@ -771,6 +776,9 @@ cần vài bước thủ công trên GitHub (tag + tạo Release + đính kèm f
 tác dụng kể từ bản đầu tiên ĐÃ CÓ sẵn bộ tự cập nhật (v1.15.0 trở đi) - người dùng đang ở bản cũ hơn vẫn
 phải tự tải/cài thủ công một lần để có được bộ tự cập nhật.
 
+**Cập nhật v1.19.0:** cách chạy trình cài đặt và mở lại ứng dụng mô tả ở trên (`/CLOSEAPPLICATIONS` +
+`/RESTARTAPPLICATIONS`, luôn tải `.exe`) đã được thay - xem mục 4o "Tự cập nhật".
+
 ## 4l. Rà soát xung đột khi đóng ứng dụng/chạy nhiều tiện ích cùng lúc (2026-10-08)
 Yêu cầu người dùng: kiểm tra toàn bộ phần mềm - tắt bằng X khi đang có thao tác nền có chạy ngầm/xung đột
 không, chạy nhiều tiện ích cùng lúc có xung đột không (vd 2 tiện ích cùng quét thư mục). Xuất phát từ lỗi
@@ -1042,6 +1050,153 @@ ba. Thư mục `obj\` (nơi `heat.exe`/`candle.exe` ghi file trung gian) thêm v
 qua Chocolatey, lặp lại đúng chuỗi lệnh đã xác nhận ở trên) và đính kèm cả 4 vào GitHub Release khi đẩy tag
 - xem mục 5c để biết quy trình phát hành đã cập nhật.
 
+## 4o. Rà soát toàn bộ mã nguồn + sửa lỗi tiềm ẩn (2026-10-09, v1.19.0)
+Yêu cầu người dùng: đọc hết toàn bộ dự án (kể cả các file trước đó chưa đọc), rà toàn bộ và sửa các lỗi
+tiềm ẩn, và thêm quy tắc build/commit/push sau mỗi lần sửa. Cách làm: đọc từng dòng cả 9 công cụ + phần
+lõi + script build/CI/installer, ghi lại từng phát hiện kèm file:dòng, tự mở code kiểm lại các lỗi nặng
+nhất trước khi sửa, rồi sửa theo từng công cụ và build + chạy test cho từng phần. Mọi mục dưới đây đã build
+và qua test tự động; phần nào KHÔNG kiểm chứng được trên máy dev (cần hai máy LAN, điện thoại Android, tài
+khoản VPN, hook/chuột/phím thật, hộp thoại UAC) được ghi rõ ở cuối mục.
+
+**Nền dùng chung (`src/core`)**
+- **Dữ liệu người dùng rời khỏi thư mục cài đặt** (`AppPaths`, mới): hồ sơ JSON và log trước đây ghi theo
+  đường dẫn TƯƠNG ĐỐI (`profiles/...`, `logs/...`) tức phụ thuộc thư mục làm việc lúc khởi động. Hệ quả
+  thật: cài "cho mọi người dùng" thì không ghi được; trình cài đặt chép đè `profiles\default.json` mẫu lên
+  đúng tệp người dùng đang lưu chuỗi Auto Click ở MỖI lần cập nhật; chạy bản dev ghi dữ liệu cá nhân vào
+  chính thư mục sẽ được đóng gói. Nay toàn bộ nằm ở `%LOCALAPPDATA%\OneForAll\{profiles,logs}`; lần chạy
+  đầu tự chép tệp từ vị trí cũ (cạnh exe) sang, tệp cũ giữ nguyên - riêng `connect_peers.json` (khóa ghép
+  đôi) bị xóa ở vị trí cũ sau khi đã ghi lại bằng DPAPI. Test ép thư mục tạm qua
+  `AppPaths::setDataDirOverride()` để không đụng dữ liệu thật.
+- **`PowerShellRunner`**: (1) ép stdout/stderr sang UTF-8 không BOM - trước đây đọc theo codepage OEM nên
+  tên có dấu ("Hà Lan - Mullvad", nhãn ổ đĩa) làm hỏng JSON; (2) `quoteLiteral()` nhân đôi cả `'` lẫn
+  U+2018/2019/201A/201B - PowerShell coi cả bốn là dấu nháy đơn, hàm thoát cũ chỉ xử lý `'` ASCII nên tên
+  thư mục quét/tên kết nối VPN chứa `’` chạy được lệnh tùy ý với quyền của ứng dụng (đã xác nhận thật bằng
+  parser của PowerShell); (3) gọi `powershell.exe` bằng đường dẫn tuyệt đối trong System32; (4) bỏ khối
+  CLIXML lẫn vào thông báo lỗi.
+- **`WinProcessTree`**: bỏ qua "tiến trình con" có thời điểm tạo SỚM HƠN tiến trình cha - PID cha chỉ là con
+  số, một PID được Windows cấp lại có thể khiến tiến trình mồ côi cũ bị dừng nhầm.
+- **CMake**: gom `AppPaths`/`Logger`/`WinElevation`/`PowerShellRunner` vào lib `core_shared`, tách
+  `InputController` thành `input_core` - hết cảnh cùng một file `.cpp` nằm trong nhiều target (đúng kiểu rủi
+  ro thứ tự link đã phải sửa cho `WinProcessTree` ở mục 4l).
+- **`MainWindow`**: tiêu đề và nhãn phiên bản lấy từ `APP_VERSION` (trước đó ghi cứng "v1.0"/"1.0.0").
+
+**Tự cập nhật (sửa lại mục 4k)**
+- Bản cũ dựa vào `/RESTARTAPPLICATIONS` của Inno Setup để mở lại ứng dụng. Theo tài liệu Inno, việc đó chỉ
+  có tác dụng với ứng dụng đã gọi `RegisterApplicationRestart` VÀ do Restart Manager đóng - ứng dụng này
+  không gọi, lại tự thoát trước, nên sau khi cập nhật ứng dụng KHÔNG tự mở lại. Ngoài ra trình cài đặt khởi
+  động song song lúc ứng dụng đang thoát, có thể gặp `AppMutex` còn tồn tại.
+- Nay `UpdateInstaller` khởi chạy một tiến trình trợ giúp tách rời (powershell ẩn): chờ đúng PID ứng dụng
+  thoát → chạy trình cài đặt im lặng và chờ xong → mở lại ứng dụng. Đã chạy thử thật cơ chế chờ-PID + truyền
+  tham số có dấu cách/dấu nháy bằng tiến trình giả.
+- Bản cài bằng `.msi` nay tải và chạy `OneForAll_Setup.msi` (`msiexec /i ... /qn`); trước đó nó chạy
+  `OneForAll_Setup.exe`, tức cài THÊM một bản thứ hai vào thư mục khác. Bản chạy không qua cài đặt
+  (portable/dev) mở trình cài đặt ở chế độ tương tác thay vì âm thầm cài rồi mở lại bản cũ.
+- Tệp tải về được đối chiếu SHA-256 với trường `digest` GitHub công bố cho asset (có thì kiểm, lệch thì xóa
+  không chạy); URL tải bắt buộc `https://github.com/...`.
+
+**Build / CI / bộ cài đặt**
+- CI: bước dọn bản sao cho `heat.exe` dùng `robocopy` (trả mã 1 khi copy THÀNH CÔNG) trong bước
+  `shell: pwsh` - GitHub Actions kết thúc bước bằng mã thoát của lệnh native cuối nên bước sẽ bị tính là
+  thất bại; đã đặt lại `$LASTEXITCODE`. Ghim `gha-setup-ninja@v6` thay cho `@master`.
+- `ci_fetch_vendor.ps1`: ffmpeg nay được kiểm SHA-256 theo `checksums.sha256` của bản phát hành (trước đó
+  tải không kiểm; THIRD_PARTY.md lại ghi là đã kiểm).
+- Bộ cài đặt (cả `.exe` lẫn `.msi`) loại TOÀN BỘ `profiles\` của thư mục Release và chỉ đóng gói
+  `profiles\default.json` lấy thẳng từ Git - trước đây chỉ loại riêng `qr_history.json`, nên khóa ghép đôi/
+  nhãn VPN của máy dev có thể lọt vào bộ cài. `build_app.bat` và CI cùng chép tệp mẫu này (bản CI trước đó
+  không có tệp mẫu).
+
+**Auto Click**
+- Thêm phím dừng khẩn cấp toàn cục Ctrl+Alt+F8 (`RegisterHotKey`, chỉ đăng ký khi đang chạy, ghi trên HUD).
+- Dừng/đóng cửa sổ có tác dụng ngay cả giữa bước gõ/cuộn dài (trước đó ngủ một mạch tới 1 giờ); thời gian
+  chờ tính theo `steady_clock` nên không trôi.
+- `SendInput`/`SetCursorPos` thất bại (màn hình khóa, UAC, cửa sổ đích quyền cao hơn) thì dừng chuỗi và báo
+  lỗi thay vì chạy tiếp trong im lặng.
+- "Lưu hành động" không còn bật lại hành động đã tắt hay âm thầm đổi phím nằm ngoài danh sách; chạy chuỗi
+  không còn ghi đè chỉnh sửa chưa lưu; thêm/nhân bản chuỗi chọn đúng chuỗi mới.
+- Hồ sơ ghi nguyên tử (`QSaveFile`), tệp hỏng giữ lại dạng `.bak`, hỏi trước khi Nạp/Nhập ghi đè.
+- Nội dung "Gõ văn bản" không còn ghi vào log. Bắt thao tác kéo có Esc/timeout; bắt tổ hợp phím tự hủy khi
+  đổi hàng/đóng cửa sổ.
+
+**Connect Together**
+- **Lỗi chức năng nặng nhất của đợt rà**: chuyển quyền điều khiển chuột/phím KHÔNG BAO GIỜ được máy nhận
+  chấp nhận - chỉ bên gọi gửi `SessionHello` nên chỉ bên nhận đăng ký phiên; `ControlHandoff` tới đầu kia
+  trên một phiên còn nằm trong hàng chờ và bị bỏ qua, trong khi máy gửi đã bật hook nuốt input. Kèm theo:
+  rớt kết nối lúc đang điều khiển để hook tiếp tục nuốt chuột/phím cục bộ mà Ctrl+Alt+Home không còn tác
+  dụng.
+- Giao thức v2: khung mở đầu không mã hóa mang id (bên nhận chọn khóa theo id thay vì đoán theo IP);
+  `SessionHello`/`SessionHelloAck` trao nonce dưới khóa dài hạn; hai bên suy khóa phiên RIÊNG TỪNG CHIỀU
+  bằng HMAC-SHA256 (CNG); `SessionConfirm` hai chiều; chỉ đăng ký phiên sau khi giải mã được Confirm của
+  bên kia; nonce GCM là bộ đếm theo từng chiều (chống phát lại/phản xạ/đảo thứ tự). Hai máy phải cùng cập
+  nhật; không cần ghép đôi lại.
+- Hook chỉ active khi đang `Controlling` và còn phiên (kiểm mỗi 16 ms); Ctrl+Alt+Home luôn trả quyền, dùng
+  được ở cả hai máy; sau khi trả quyền con trỏ lùi vào trong + nghỉ 400 ms, các phím đang giữ được nhả ở
+  máy kia.
+- Input chỉ nhận từ máy đang điều khiển; mã ghép đôi hủy sau 5 lần sai; giới hạn kết nối chờ, kích thước
+  gói, bảng discovery; heartbeat phát hiện phiên chết; mở lại cửa sổ thì khởi động lại dịch vụ.
+- Khóa dài hạn lưu bằng DPAPI (tệp cũ dạng Base64 thô tự được ghi lại).
+
+**Disk Cleanup**
+- **Đổi kích thước nhầm phân vùng**: đổi dòng chọn không xóa khoảng kích thước/ô xác nhận/trạng thái nút, nên
+  tra ổ C, gõ "C", bấm sang D rồi bấm Đổi kích thước sẽ chạy trên D với số của C. Nay mọi lần đổi dòng đều
+  xóa trạng thái, lệnh bị từ chối nếu phân vùng đang chọn khác phân vùng đã tra, kích thước kẹp theo byte,
+  và luồng resize tự hỏi lại Windows ngay trước khi chạy. Bỏ giới hạn 180 giây (hết giờ là `kill` giữa lúc
+  đang đổi phân vùng).
+- "Xóa vào Thùng rác" không còn âm thầm thành xóa vĩnh viễn với tệp quá cỡ Thùng rác/ổ không có Thùng rác.
+- Không đi xuyên junction/symlink thư mục khi quét và xóa; từ chối thư mục gốc đáng ngờ (rỗng, gốc ổ, hồ sơ
+  người dùng, Windows, Program Files); hộp xác nhận hiện đường dẫn; giữ mục ghim trong Recent và tệp tạm
+  vừa sửa trong 5 phút.
+- Tìm tệp trùng: khử trùng theo danh tính tệp vật lý (hardlink/junction không còn bị coi là bản sao - xóa
+  "bản sao" đó từng có thể là xóa bản duy nhất), luôn giữ ít nhất một bản, kiểm lại tệp trước khi xóa.
+- Liệt kê phân vùng/tra kích thước chạy nền.
+
+**VPN & Location**
+- Kết nối/ngắt qua RAS API (`RasDialW`/`RasHangUpW`) thay cho `rasdial.exe` - mật khẩu không còn nằm trên
+  dòng lệnh tiến trình con. Đã gọi thật tới một hồ sơ không tồn tại (lỗi 623 đúng như mong đợi).
+- Hủy một lần không còn làm mọi lần kết nối sau tự "Đã hủy" (cờ hủy không được đặt lại); cùng lỗi đó ở quét
+  Defender cũng đã sửa.
+- Nhớ tên đăng nhập (không lưu mật khẩu); thêm/liệt kê/xóa hồ sơ chạy nền.
+
+**Security Gateway**
+- Hosts: sao lưu một lần (`hosts.oneforall.bak`), ghi nguyên tử, kiểm kết quả ghi (trước đó luôn báo thành
+  công); khối đánh dấu thiếu dòng END không còn làm mất mọi dòng phía sau; chuẩn hóa/kiểm tên miền.
+- `CommandAnalyzer`: nhận diện `irm ... | iex`, mọi dạng viết tắt của `-EncodedCommand`/`-ExecutionPolicy`/
+  `-WindowStyle`, tắt Defender bằng `1`/`$true`, thêm vùng loại trừ, xóa shadow copy, LOLBin tải từ xa, che
+  giấu bằng dấu backtick/ghép chuỗi.
+- Chỉ gửi Ctrl+V khi cửa sổ PowerShell vừa mở thật sự ở phía trước (trước đó dán vào bất kỳ cửa sổ nào đang
+  focus rồi báo thành công); cảnh báo + xác nhận với lệnh nhiều dòng và khi ứng dụng đang chạy quyền
+  Administrator.
+- Lỗi đọc danh sách mối đe dọa/danh sách chặn hiện ra thay vì bảng trống; quét toàn bộ không bị cắt sau 1
+  giờ.
+
+**Downloader**
+- Mục tải từ tab "Quét trang web" nay hiện trong hàng đợi (trước đó tải ngầm, không dừng/hủy được).
+- Tải vào `<tên>.part` rồi mới đổi tên; tiếp tục tải dở dùng `If-Range`; báo lỗi ghi đĩa; timeout; chỉ nhận
+  http/https; làm sạch tên tệp (chặn path traversal, tên dành riêng); hết ghi đè do trùng tên.
+- yt-dlp: kiểm URL, `--` trước URL, `--ignore-config`; định dạng chỉ-video tự ghép âm thanh; có nút Hủy;
+  không kẹt khi yt-dlp không khởi chạy được.
+
+**QR Tools / WiFi / Android**
+- QR: nút Camera tắt được camera; che mật khẩu WiFi ở ô nhập/kết quả/lịch sử; nội dung mã quét được hiển thị
+  dạng văn bản thuần; đọc được mã lật gương và nhiều mã cỡ khác nhau trong một ảnh; SVG bo tròn đúng.
+- WiFi: nhập sai mật khẩu không còn phá hồ sơ đã lưu (sao lưu + khôi phục); mạng đã lưu nối bằng hồ sơ sẵn
+  có; hồ sơ WPA3 dùng đúng namespace gốc `v1`; mạng ẩn có `nonBroadcast`; xuất XML cảnh báo mật khẩu dạng
+  chữ, nhập hỏi trước khi ghi đè. Đo tốc độ: bỏ mẫu ping khởi động, có timeout chờ byte đầu. Vẫn KHÔNG có
+  cơ chế thử nhiều mật khẩu.
+- Android: `adb devices` chạy bất đồng bộ và chỉ khi cửa sổ đang hiện (trước đó chặn luồng giao diện mỗi 3
+  giây, suốt đời ứng dụng); dừng daemon adb đóng gói kèm khi đóng/thoát (nó khóa `adb.exe`, cản trình cài
+  đặt cập nhật); kiểm định dạng IP:cổng và mã ghép đôi.
+
+**Kiểm thử**: Build sạch toàn bộ + 18 bộ test (qr, wifi, connect, diskcleanup, android, vpn, security, downloader - mỗi bộ `_tests` và `_ui_tests` - cùng `update_tests` và `autoclick_tests` mới): **2717 kiểm tra đều pass, 0 lỗi** (trước đợt này khoảng 1170).
+
+**CHƯA kiểm chứng được trên máy dev (cần người dùng tự thử)**
+- Connect Together trên HAI máy thật: chuột đi qua biên, bàn phím, clipboard, đa màn hình khác DPI.
+- Auto Click: chạy chuỗi thật, Ctrl+Alt+F8 dừng thật, bắt kéo/bắt tổ hợp phím bằng hook thật.
+- WiFi: mọi luồng đổi cấu hình thật (kết nối, khôi phục hồ sơ, mạng ẩn, WPA3). Camera quét QR.
+- VPN: kết nối thật qua RAS API. Disk Cleanup: đổi kích thước phân vùng thật.
+- Security: ghi hosts thật, quét/hủy Defender thật, dán vào PowerShell thật. Downloader: mọi luồng yt-dlp.
+- Android: phiên scrcpy, ghép đôi, ghi hình với thiết bị thật.
+- Tự cập nhật đầu-cuối từ một bản đã cài (cần một bản phát hành mới hơn trên GitHub).
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
@@ -1049,6 +1204,8 @@ tải bản scrcpy-win64 chính thức) thì cũng tự đóng gói vào `scrcpy
 Phone Control. Tương tự, nếu có `vendor\yt-dlp\` (xem `THIRD_PARTY.md` để tải yt-dlp.exe + ffmpeg/ffprobe
 chính thức) thì tự đóng gói vào `yt-dlp\` cạnh file exe cho tính năng Downloader (tab Video nền tảng).
 Thư mục `build/`, `OneForAll_Release/`, `vendor/`, `logs/` không được commit (xem `.gitignore`).
+Dữ liệu lúc chạy (hồ sơ, log) KHÔNG nằm trong các thư mục này mà ở `%LOCALAPPDATA%\OneForAll\` (mục 4o);
+`OneForAll_Release\profiles\default.json` chỉ là tệp mẫu do `build_app.bat` chép từ `profiles\default.json`.
 
 ## 5b. Bộ cài đặt setup.exe (đã hoàn thiện)
 Yêu cầu người dùng: chỉ MỘT file `setup.exe` duy nhất, bung thư viện/exe thật khi chạy, cho chọn đường
@@ -1117,6 +1274,10 @@ Các bước **thủ công trên GitHub** người phát hành (chủ dự án) 
 6. Xong - lần mở ứng dụng tiếp theo trên MỌI máy đã cài bản có bộ tự cập nhật (v1.15.0 trở đi), app sẽ tự
    hỏi thấy v1.16.0 mới hơn, hiện hộp thoại mời cập nhật.
 
+**Từ v1.19.0:** máy cài bằng `.msi` tự cập nhật bằng asset `OneForAll_Setup.msi` (tên cũng phải đúng tuyệt
+đối) - Release thiếu tệp này thì các máy đó được báo tự tải tay. Trình tự cập nhật đối chiếu SHA-256 với
+trường `digest` GitHub tự sinh cho từng asset, không cần đính kèm tệp checksum riêng.
+
 **Lưu ý:** asset đính kèm Release PHẢI tên ĐÚNG TUYỆT ĐỐI `OneForAll_Setup.exe` (khớp đúng tên
 `OutputBaseFilename=OneForAll_Setup` trong `installer/OneForAll.iss` - `build_installer.bat`/GitHub
 Release UI đều giữ nguyên tên này mặc định, không cần đổi tay) - `UpdateChecker` so khớp TUYỆT ĐỐI, không
@@ -1129,14 +1290,27 @@ như "không có gì để tự cập nhật" (an toàn, không báo lỗi gây 
 bằng tay mỗi khi đổi phiên bản (hiện khớp `README.md`), không tự động đồng bộ từ CMake.
 
 ## 6. Vấn đề đã biết (chưa sửa)
-- Pause/Resume đã an toàn ở tầng runner nhưng chưa có nút trên UI.
-- Chưa có hotkey dừng toàn cục (chỉ nút Stop trên cửa sổ và HUD).
-- Profile lưu text (kể cả mật khẩu trong TypeText) dạng plain text.
-- Không có checkbox bật/tắt từng action trên UI (field `enabled` chỉ đọc từ JSON).
-- Việc quy đổi tọa độ cho HUD giả định mọi màn hình cùng DPR với màn hình chính.
+- **Connect Together - ghép đôi**: mã 9 số được dùng thẳng làm khóa (PBKDF2, salt cố định, không PAKE). Ai bắt
+  được gói ghép đôi trong LAN đúng lúc ghép có thể dò offline 10^9 mã để lấy khóa dài hạn. Chỉ ghép đôi
+  trên mạng tin cậy; thiết kế lại (trao đổi khóa có xác thực) là việc riêng, chưa làm.
+- Connect Together: server lắng nghe trên mọi card mạng (`AnyIPv4`); bố cục nhiều màn hình không chữ nhật
+  chưa xử lý; chưa từng chạy thử trên hai máy thật (xem mục 4o).
+- Auto Click: Pause/Resume có ở tầng runner nhưng chưa có nút trên UI; chưa có checkbox bật/tắt từng hành
+  động (trường `enabled` chỉ đọc từ JSON, nay được giữ nguyên khi lưu); nội dung "Gõ văn bản" lưu dạng chữ
+  thường trong hồ sơ; HUD né sai trên nhiều màn hình khác DPI.
+- Android: `adb pair` vẫn chạy đồng bộ trên luồng giao diện (có thể đứng tới ~25 giây); sau khi ghép đôi
+  không dây chưa có bước `adb connect`; hai bản ứng dụng chạy cùng lúc dùng chung một daemon adb.
+- Security Gateway: các lệnh Defender ngắn vẫn chạy đồng bộ trên luồng giao diện (đứng 1-3 giây khi mở cửa sổ
+  hoặc bật/tắt); hủy quét chỉ dừng `powershell.exe`, chưa chắc dừng lần quét bên trong dịch vụ Defender;
+  clipboard không được khôi phục sau khi dán lệnh.
+- VPN: chưa có tùy chọn `-L2tpPsk`/`-SplitTunneling`; không xóa được hồ sơ đang kết nối.
+- WiFi: hồ sơ mới luôn đặt tên theo SSID kể cả khi hồ sơ cũ có tên khác.
+- Tự cập nhật: nếu người dùng mở hai cửa sổ ứng dụng cùng lúc, trình cài đặt `.exe` im lặng có thể tự hủy
+  (thấy bản còn lại đang chạy) - ứng dụng vẫn mở lại và hỏi cập nhật lần sau.
+- File cài đặt chưa ký số (đang chờ SignPath, mục 4m).
 
 ## 7. Quy trình làm việc
-Mỗi lần sửa code: commit riêng với message mô tả rõ, và cập nhật file này (mục 3-6 nếu cấu trúc/hành vi đổi) cùng bảng lịch sử bên dưới.
+Quy tắc đứng nằm ở `CLAUDE.md` (gốc dự án). Tóm tắt - mỗi lần sửa code: build exe + chạy test liên quan → `build_installer.bat /nopause` (đủ 4 file: `setup.exe`, `setup.msi`, zip của cả hai) → cập nhật file này (mục 3-6 nếu cấu trúc/hành vi đổi) cùng bảng lịch sử bên dưới và `README.md` → commit → push → kiểm lượt chạy CI.
 
 ## 8. Lịch sử thay đổi
 | Ngày | Commit | Nội dung |
@@ -1166,6 +1340,7 @@ Mỗi lần sửa code: commit riêng với message mô tả rõ, và cập nh�
 | 2026-10-07 | Rà soát toàn diện cả 9 công cụ: an toàn đa luồng + giao diện responsive | Yêu cầu người dùng: duyệt toàn bộ tiện ích, đảm bảo hoạt động đúng/đủ, giao diện thân thiện/responsive, không crash ở mọi tiến trình, đa luồng song song ổn. Rà soát có hệ thống toàn bộ `src/` (không chỉ chạy lại test cũ) theo 4 hướng: **(1) Vòng đời QThread** - liệt kê cả 9 class kế thừa `QThread` trong dự án, đối chiếu thời gian chạy THẬT tối đa của từng worker với thời gian `wait()` trong destructor cửa sổ chứa nó. Phát hiện **4 lỗi THẬT** (tiềm ẩn, chưa ai báo nhưng xác nhận được bằng cách đọc code + đo thời gian thật): `VpnConnector` (rasdial có thể mất tới 45s nhưng `VpnTab` chỉ `wait(3000)`), `DefenderScanWorker` (FullScan tới 1 giờ nhưng `MalwareScanTab` chỉ `wait(5000)`), `PartitionResizer` (co giãn lớn tới vài phút nhưng không hề có cơ chế hủy), `CleanupExecutor` (xóa hàng nghìn tệp có thể lâu hơn 5s, cũng không hủy được) - tất cả đều có thể khiến đóng cửa sổ giữa chừng HỦY MỘT QThread ĐANG THỰC SỰ CHẠY (hành vi KHÔNG XÁC ĐỊNH theo tài liệu Qt, có thể crash). Sửa: thêm `requestCancel()` (hủy an toàn, polling 200ms) cho `VpnConnector` và `DefenderScanWorker` (thêm `PowerShellRunner::runCancelable` dùng chung) + nút "Hủy quét" thật trong UI; `PartitionTab`/`CleanupTab` (không an toàn để hủy giữa chừng) thêm `closeEvent` CHẶN HẲN việc đóng cửa sổ trong lúc đang chạy, cộng `wait()` không giới hạn làm lưới an toàn cuối. **Xác nhận THẬT** cơ chế hủy mới hoạt động: chạy `Start-Sleep -Seconds 30` qua `runCancelable`, đặt cờ hủy từ luồng khác sau 1 giây - trả về sau ~1 giây (không phải 30), xác nhận tiến trình con bị dừng thật (chuỗi sau lệnh sleep không được in ra). **(2) `connect()` với lambda** - xác nhận toàn bộ lambda bắt `this` trong `connect()` (67 lượt, 21 tệp) đều truyền `this`/widget làm đối tượng nhận (context object) để Qt tự ngắt kết nối khi đối tượng bị hủy - không có nguy cơ gọi vào con trỏ `this` treo. **(3) Luồng dữ liệu dùng chung** - xác nhận mọi `QNetworkAccessManager` (4 chỗ) đều sống trên luồng giao diện (không tạo trong `run()` của QThread nào); xác nhận mọi cờ hủy chia sẻ giữa 2 luồng đều là `std::atomic_bool` (không phải `bool` thường - tránh race điều kiện thật). **(4) Giao diện responsive** - phát hiện 3 nhãn hiển thị ĐƯỜNG DẪN THƯ MỤC (độ dài không giới hạn) trong `DirectDownloadTab`/`PageScanTab`/`PlatformVideoTab` thiếu `setWordWrap` - đường dẫn dài có thể bị cắt cụt không thấy hết (thanh cuộn ngang đã tắt toàn ứng dụng); đã thêm word-wrap + tooltip đầy đủ, áp dụng phòng ngừa thêm cho nhãn vị trí IP/VPN. **Lỗi THẬT khác phát hiện qua kiểm tra tải song song thật (3 tệp cùng lúc)**: một URL lỗi HTTP thật (404) khiến NỘI DUNG TRANG LỖI bị ghi nhầm vào tệp đích - người dùng thấy "Thất bại" nhưng vẫn có tệp rác nằm lại; nguyên nhân sâu hơn: logic cũ coi MỌI mã trạng thái khác 206 khi đang resume là "server bỏ qua Range" rồi TỰ XÓA (Truncate) tệp đích trước khi biết đó có phải lỗi thật hay không - nghĩa là một lần resume gặp lỗi mạng thật có thể XÓA MẤT phần đã tải đúng trước đó. Sửa `FileDownloader`: chỉ ghi dữ liệu vào tệp khi mã trạng thái HTTP là 2xx; chỉ coi là "tải lại từ đầu" khi CHÍNH XÁC là 200 (không phải "khác 206"); xóa tệp đích khi thất bại CHỈ với lần tải mới (không phải đang resume) - xác nhận lại bằng tải thật 1 URL 404 thật, tệp không còn bị tạo ra. Xác nhận tải song song thật (3 tệp cùng lúc, tối đa đồng thời mặc định 3) hoàn tất đúng, không hỏng trạng thái dùng chung. Thêm 3 test hồi quy (tổng 1150 kiểm tra toàn dự án đều pass, tăng từ 1147). **Giới hạn môi trường này không đổi**: vẫn không có desktop tương tác thật nên không chụp lại được ảnh màn hình cho các module mới (VPN/Security/Downloader) - đã bù bằng rà soát code kỹ + áp dụng đúng mẫu đã được xác nhận bằng ảnh ở các module cũ hơn. |
 | 2026-10-08 | Auto Click: 11 phản hồi người dùng (a-k) kèm ảnh lỗi giao diện | Sửa lỗi giao diện thật (viên nén/capsule đè chữ do thiếu `setEditTriggers(NoEditTriggers)`); thêm dấu `*` khi sửa hành động chưa lưu; thu nhỏ ứng dụng trước khi chạy; tìm và sửa lỗi THẬT trong `Logger` (flush() ép ghi đĩa ở MỌI lần log, không điều kiện - rủi ro giật luồng tự động hóa khi chạy 24h liên tục vì `ActionRunner` log đồng bộ) + thêm cơ chế xoay vòng log trước đó CHƯA TỪNG CÓ (ngưỡng 10MB); nới rộng khu danh sách hành động, thu hẹp khu cài đặt; khu hành động rút còn 3 nút (Thêm/Nhân bản/Xóa) + kéo-thả đổi vị trí (tự viết `ReorderableTable` tránh lỗi biết trước của `QTableWidget::InternalMove` xáo trộn theo ô thay vì theo dòng); thêm nhấp đúp đổi tên chuỗi hành động (đã có sẵn qua chuột phải); bỏ nút mũi tên ô Lặp lại. **Thêm 2 tính năng bắt thao tác thật mới** (ngoài yêu cầu gốc, đáp ứng sâu hơn mục f/i): `HotkeyCapture` (nút "Bắt tổ hợp phím", hook `WH_KEYBOARD_LL` theo mẫu `InputHook`, nuốt phím khi đang bắt) và `DragGestureCapture` (nút "Bắt thao tác kéo thật", hook `WH_MOUSE_LL`, ẩn cửa sổ rồi người dùng kéo thật trên màn hình, hook KHÔNG BAO GIỜ nuốt sự kiện để màn hình vẫn nhận tương tác, xong tự điền tọa độ và khôi phục cửa sổ). Xác nhận mục (k) nút Dừng ở HUD đã nối đúng từ trước, không cần sửa. **Giới hạn môi trường kiểm thử**: không có màn hình/desktop tương tác thật trong môi trường build này nên không tự xác nhận được việc Windows giao sự kiện bàn phím/chuột thật qua `SetWindowsHookExW` tới 2 lớp bắt mới - đã kiểm tra thay thế bằng cách gọi thẳng logic xử lý sự kiện (`onRawKey`/`onRawMouse`) với dữ liệu giả lập đúng thật, 22/22 kiểm tra đạt; người dùng cần tự bấm thử 2 nút này trên máy thật để xác nhận lần cuối. |
 | 2026-10-08 | Android: `adb.exe` không dừng dù đã đóng ứng dụng; đổi icon ứng dụng sang `icon/App.png` | Người dùng báo `adb.exe` (từ `One for ALL\scrcpy`) còn chạy dù đã đóng ứng dụng - dựng lại được bằng cách soi tiến trình thật đang chạy (bắt được một `adb.exe` mồ côi từ phiên test trước, xác nhận lỗi có thật). **2 nguyên nhân gốc cộng hưởng, đã sửa cả hai** (xem 4g để biết chi tiết đầy đủ): (1) `AndroidControlWindow` thiếu `closeEvent` (khác mọi cửa sổ tool khác có tiến trình nền) nên bấm X chỉ ẨN cửa sổ, không hủy `DevicesTab`/`ScrcpyLauncher`, destructor (vốn đã có `stop()` đúng) không bao giờ chạy - thêm `closeEvent` gọi `DevicesTab::stopActiveSession()` (hàm mới, dùng chung nút Dừng/destructor/closeEvent/`aboutToQuit`); (2) `ScrcpyLauncher::stop()` chỉ dừng đúng tiến trình `scrcpy.exe`, không đụng tới `adb.exe shell ...` là tiến trình CON của nó (Windows không đệ quy dừng cây tiến trình như Linux) - thêm `terminateProcessTree()` (quét `CreateToolhelp32Snapshot` + BFS tìm hậu duệ PID rồi `TerminateProcess` từng cái), gọi sau mỗi lần `stop()` chủ động và khi scrcpy thoát không bình thường. Xác nhận thật bằng cách tìm và tự tay dừng đúng tiến trình `adb.exe` mồ côi phát hiện được trên máy build trước khi commit. **Icon ứng dụng:** dựng lại `assets/app_icon.ico` (icon file .exe - Explorer/Taskbar/shortcut/installer) từ `icon/App.png` thay vì `icon/autoclicker.jpg`, dùng đúng thuật toán `IconHelper::makeBadgedPixmap` (nền trắng bo góc + viền mảnh, giữ tỉ lệ bo góc/đệm cho mọi kích thước 16-256px vì không có script dựng icon sẵn trong repo, viết tay bằng Pillow); icon cửa sổ chính lúc chạy (`MainWindow::setWindowIcon`) cũng đổi sang `:/icons/App.png` (thêm vào `resources.qrc`) - các icon riêng từng tool trong sidebar (wifi.png, vpn.jpg, autoclicker.jpg...) giữ nguyên, không đổi. |
+| 2026-10-09 | Rà soát toàn bộ + sửa lỗi tiềm ẩn (v1.19.0) | Đọc từng dòng toàn bộ dự án rồi sửa theo từng công cụ - chi tiết đầy đủ ở mục 4o. Nặng nhất: Connect Together chưa từng chuyển được quyền điều khiển (bên nhận bỏ qua handoff) và có thể khóa chuột/phím khi rớt kết nối; Disk Cleanup có thể đổi kích thước nhầm phân vùng khi đổi dòng chọn; cờ hủy VPN/quét Defender không được đặt lại; chèn lệnh PowerShell qua dấu nháy Unicode; tự cập nhật không mở lại ứng dụng và cài nhầm bản `.exe` lên bản `.msi`; bộ cài có thể đóng gói dữ liệu cá nhân của máy dev; bước robocopy của CI sẽ bị tính là thất bại. Dữ liệu người dùng chuyển sang `%LOCALAPPDATA%\OneForAll`. Thêm `CLAUDE.md` (quy tắc đứng). Build sạch toàn bộ + 18 bộ test (qr, wifi, connect, diskcleanup, android, vpn, security, downloader - mỗi bộ `_tests` và `_ui_tests` - cùng `update_tests` và `autoclick_tests` mới): **2717 kiểm tra đều pass, 0 lỗi** (trước đợt này khoảng 1170). |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `

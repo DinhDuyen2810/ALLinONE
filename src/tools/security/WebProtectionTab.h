@@ -21,6 +21,11 @@ class WebProtectionTab : public QWidget
 public:
     explicit WebProtectionTab(QWidget* parent = nullptr);
 
+public slots:
+    /// Khóa/mở nút "Chạy lại với quyền Quản trị" (nút đó gọi qApp->quit()) - SecurityGatewayWindow khóa
+    /// nó trong lúc tab Quét mã độc đang quét, tránh thoát ứng dụng khi luồng quét còn chạy.
+    void setRelaunchAllowed(bool allowed);
+
 private slots:
     void onRefreshClicked();
     void onRelaunchElevatedClicked();
@@ -42,6 +47,7 @@ private:
     QPushButton* m_toggleBtn{nullptr};
     QLabel* m_tamperWarning{nullptr};
 
+    QLabel* m_blocklistErrorLabel{nullptr};
     QListWidget* m_domainList{nullptr};
     QLineEdit* m_domainEdit{nullptr};
     QPushButton* m_addDomainBtn{nullptr};

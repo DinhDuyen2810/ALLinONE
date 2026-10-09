@@ -40,6 +40,17 @@ inline QString groupStyle()
            "QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; font-size: 11px; }";
 }
 
+/// Tooltip cho nội dung KHÔNG TIN CẬY (nội dung mã QR quét được). QToolTip tự đoán định dạng: chuỗi trông
+/// giống HTML sẽ được dựng như rich text - một mã QR chứa thẻ (vd <img src="\\máy-lạ\x">) có thể khiến
+/// Qt tự nạp tài nguyên từ đường dẫn mạng. Ở đây ÉP rich text nhưng mọi ký tự đặc biệt đã được escape,
+/// nên nội dung luôn hiện đúng nguyên văn (pre-wrap giữ xuống dòng).
+inline QString plainToolTip(const QString& text)
+{
+    if (text.isEmpty())
+        return QString();
+    return "<p style=\"white-space: pre-wrap;\">" + text.toHtmlEscaped() + "</p>";
+}
+
 inline QString tableStyle()
 {
     return "QTableWidget, QListWidget { background-color: #ffffff; color: #1f2328; border: 1px solid #d0d7de; border-radius: 10px; }"

@@ -38,6 +38,33 @@ add_library(winprocess_core STATIC
 target_include_directories(winprocess_core PUBLIC src)
 target_link_libraries(winprocess_core PUBLIC Qt6::Core)
 
+# ---- Phần lõi dùng chung KHÔNG phụ thuộc widget: đường dẫn dữ liệu người dùng (AppPaths), Logger, kiểm
+# tra/nâng quyền Administrator, chạy PowerShell. Trước đây WinElevation.cpp/PowerShellRunner.cpp bị liệt kê
+# TRÙNG trong diskcleanup_core + vpn_core + security_core, và Logger.cpp bị thêm tay vào từng *_ui_tests -
+# đúng kiểu "cùng một symbol nằm trong nhiều archive, build được nhờ thứ tự link" đã phải sửa cho
+# WinProcessTree (xem ghi chú winprocess_core ở trên). Gom về MỘT lib, mọi target khác link vào.
+add_library(core_shared STATIC
+    src/core/AppPaths.h
+    src/core/AppPaths.cpp
+    src/core/Logger.h
+    src/core/Logger.cpp
+    src/core/WinElevation.h
+    src/core/WinElevation.cpp
+    src/core/PowerShellRunner.h
+    src/core/PowerShellRunner.cpp
+)
+target_include_directories(core_shared PUBLIC src)
+target_link_libraries(core_shared PUBLIC Qt6::Core advapi32 shell32)
+
+# ---- InputController (SendInput/SetCursorPos) - dùng chung cho Auto Click (ActionRunner) và Security
+# Gateway (CommandLauncher gửi Ctrl+V). Trước đây liệt kê trùng trong security_core và SOURCES của exe.
+add_library(input_core STATIC
+    src/tools/autoclick/engine/InputController.h
+    src/tools/autoclick/engine/InputController.cpp
+)
+target_include_directories(input_core PUBLIC src)
+target_link_libraries(input_core PUBLIC Qt6::Core user32)
+
 # ---- Lõi QR (không phụ thuộc widget) + thư viện bên thứ ba ----
 add_library(qr_core STATIC
     src/tools/qr/QRCodec.h
@@ -83,10 +110,10 @@ add_library(qr_ui STATIC
     src/tools/qr/QRUiStyle.h
 )
 target_include_directories(qr_ui PUBLIC src)
-target_link_libraries(qr_ui PUBLIC qr_core Qt6::Widgets Qt6::Multimedia)
+target_link_libraries(qr_ui PUBLIC qr_core Qt6::Widgets Qt6::Multimedia core_shared)
 
 # ---- Kiểm thử UI QR: cmake --build build --target qr_ui_tests ----
-add_executable(qr_ui_tests EXCLUDE_FROM_ALL tests/qr_ui_tests.cpp src/core/Logger.cpp)
+add_executable(qr_ui_tests EXCLUDE_FROM_ALL tests/qr_ui_tests.cpp)
 target_link_libraries(qr_ui_tests PRIVATE qr_ui)
 
 # ---- Lõi WiFi (XML hồ sơ WLAN, thuần Qt, không phụ thuộc Win32) ----
@@ -110,6 +137,8 @@ add_library(wifi_ui STATIC
     src/tools/wifi/engine/WlanController.cpp
     src/tools/wifi/engine/SpeedTestRunner.h
     src/tools/wifi/engine/SpeedTestRunner.cpp
+    src/tools/wifi/engine/ConnectionWatcher.h
+    src/tools/wifi/engine/ConnectionWatcher.cpp
     src/tools/wifi/WifiUiStyle.h
     src/tools/wifi/ConnectDialog.h
     src/tools/wifi/ConnectDialog.cpp
@@ -123,10 +152,10 @@ add_library(wifi_ui STATIC
     src/tools/wifi/WifiWindow.cpp
 )
 target_include_directories(wifi_ui PUBLIC src)
-target_link_libraries(wifi_ui PUBLIC wifi_core Qt6::Widgets Qt6::Network wlanapi)
+target_link_libraries(wifi_ui PUBLIC wifi_core Qt6::Widgets Qt6::Network wlanapi core_shared)
 
 # ---- Kiểm thử "khói" UI WiFi: cmake --build build --target wifi_ui_tests ----
-add_executable(wifi_ui_tests EXCLUDE_FROM_ALL tests/wifi_ui_tests.cpp src/core/Logger.cpp)
+add_executable(wifi_ui_tests EXCLUDE_FROM_ALL tests/wifi_ui_tests.cpp)
 target_link_libraries(wifi_ui_tests PRIVATE wifi_ui)
 
 # ---- Lõi Connect Together (mã hóa, giao thức, mã ghép đôi) - thuần Qt + Windows CNG, test được ----
@@ -158,7 +187,7 @@ add_library(connect_core STATIC
     src/tools/connect/engine/ConnectSessionController.cpp
 )
 target_include_directories(connect_core PUBLIC src)
-target_link_libraries(connect_core PUBLIC Qt6::Core Qt6::Gui Qt6::Network bcrypt)
+target_link_libraries(connect_core PUBLIC Qt6::Core Qt6::Gui Qt6::Network bcrypt crypt32 core_shared)
 
 # ---- Kiểm thử lõi Connect Together: cmake --build build --target connect_tests ----
 add_executable(connect_tests EXCLUDE_FROM_ALL tests/connect_tests.cpp)
@@ -178,7 +207,7 @@ target_include_directories(connect_ui PUBLIC src)
 target_link_libraries(connect_ui PUBLIC connect_core Qt6::Widgets)
 
 # ---- Kiểm thử "khói" UI Connect Together: cmake --build build --target connect_ui_tests ----
-add_executable(connect_ui_tests EXCLUDE_FROM_ALL tests/connect_ui_tests.cpp src/core/Logger.cpp)
+add_executable(connect_ui_tests EXCLUDE_FROM_ALL tests/connect_ui_tests.cpp)
 target_link_libraries(connect_ui_tests PRIVATE connect_ui)
 
 # ---- Lõi Disk Cleanup (quét/xóa/dung lượng ổ đĩa) ----
@@ -203,13 +232,11 @@ add_library(diskcleanup_core STATIC
     src/tools/diskcleanup/engine/PartitionManager.cpp
     src/tools/diskcleanup/engine/PartitionResizer.h
     src/tools/diskcleanup/engine/PartitionResizer.cpp
-    src/core/WinElevation.h
-    src/core/WinElevation.cpp
-    src/core/PowerShellRunner.h
-    src/core/PowerShellRunner.cpp
+    src/tools/diskcleanup/engine/FsSafety.h
+    src/tools/diskcleanup/engine/FsSafety.cpp
 )
 target_include_directories(diskcleanup_core PUBLIC src)
-target_link_libraries(diskcleanup_core PUBLIC Qt6::Core shell32 advapi32)
+target_link_libraries(diskcleanup_core PUBLIC Qt6::Core shell32 advapi32 core_shared)
 
 # ---- Kiểm thử lõi Disk Cleanup: cmake --build build --target diskcleanup_tests ----
 add_executable(diskcleanup_tests EXCLUDE_FROM_ALL tests/diskcleanup_tests.cpp)
@@ -234,9 +261,8 @@ target_link_libraries(diskcleanup_ui PUBLIC diskcleanup_core Qt6::Widgets)
 
 # ---- Kiểm thử "khói" UI Disk Cleanup: cmake --build build --target diskcleanup_ui_tests ----
 # PartitionTab.cpp gọi ToolManager::instance() (chặn "chạy lại với quyền Admin" nếu tool khác đang bận
-# không an toàn để hủy) - thêm ToolManager.cpp làm nguồn phụ, cùng lý do với Logger.cpp (không phải static
-# lib riêng để link vào).
-add_executable(diskcleanup_ui_tests EXCLUDE_FROM_ALL tests/diskcleanup_ui_tests.cpp src/core/Logger.cpp src/core/ToolManager.cpp)
+# không an toàn để hủy) - thêm ToolManager.cpp làm nguồn phụ (không nằm trong static lib nào vì cần widget).
+add_executable(diskcleanup_ui_tests EXCLUDE_FROM_ALL tests/diskcleanup_ui_tests.cpp src/core/ToolManager.cpp)
 target_link_libraries(diskcleanup_ui_tests PRIVATE diskcleanup_ui)
 
 # ---- Lõi Android Phone Control (gọi adb.exe/scrcpy.exe đóng gói kèm - xem vendor/scrcpy, THIRD_PARTY.md) ----
@@ -244,11 +270,13 @@ add_library(android_core STATIC
     src/tools/android/model/AndroidDeviceInfo.h
     src/tools/android/engine/AdbController.h
     src/tools/android/engine/AdbController.cpp
+    src/tools/android/engine/AdbDeviceLister.h
+    src/tools/android/engine/AdbDeviceLister.cpp
     src/tools/android/engine/ScrcpyLauncher.h
     src/tools/android/engine/ScrcpyLauncher.cpp
 )
 target_include_directories(android_core PUBLIC src)
-target_link_libraries(android_core PUBLIC Qt6::Core winprocess_core)
+target_link_libraries(android_core PUBLIC Qt6::Core winprocess_core core_shared)
 
 # ---- Kiểm thử lõi Android: cmake --build build --target android_tests ----
 add_executable(android_tests EXCLUDE_FROM_ALL tests/android_tests.cpp)
@@ -268,10 +296,10 @@ target_include_directories(android_ui PUBLIC src)
 target_link_libraries(android_ui PUBLIC android_core Qt6::Widgets)
 
 # ---- Kiểm thử "khói" UI Android: cmake --build build --target android_ui_tests ----
-add_executable(android_ui_tests EXCLUDE_FROM_ALL tests/android_ui_tests.cpp src/core/Logger.cpp)
+add_executable(android_ui_tests EXCLUDE_FROM_ALL tests/android_ui_tests.cpp)
 target_link_libraries(android_ui_tests PRIVATE android_ui)
 
-# ---- Lõi VPN & Location (quản lý kết nối VPN hệ thống Windows qua PowerShell/rasdial) ----
+# ---- Lõi VPN & Location (quản lý kết nối VPN hệ thống Windows qua PowerShell + RAS API/rasapi32) ----
 add_library(vpn_core STATIC
     src/tools/vpn/model/VpnProfile.h
     src/tools/vpn/engine/VpnController.h
@@ -280,13 +308,9 @@ add_library(vpn_core STATIC
     src/tools/vpn/engine/VpnConnector.cpp
     src/tools/vpn/engine/PublicIpChecker.h
     src/tools/vpn/engine/PublicIpChecker.cpp
-    src/core/WinElevation.h
-    src/core/WinElevation.cpp
-    src/core/PowerShellRunner.h
-    src/core/PowerShellRunner.cpp
 )
 target_include_directories(vpn_core PUBLIC src)
-target_link_libraries(vpn_core PUBLIC Qt6::Core Qt6::Network advapi32 shell32)
+target_link_libraries(vpn_core PUBLIC Qt6::Core Qt6::Network advapi32 shell32 rasapi32 core_shared)
 
 # ---- Kiểm thử lõi VPN: cmake --build build --target vpn_tests ----
 add_executable(vpn_tests EXCLUDE_FROM_ALL tests/vpn_tests.cpp)
@@ -306,13 +330,11 @@ target_include_directories(vpn_ui PUBLIC src)
 target_link_libraries(vpn_ui PUBLIC vpn_core Qt6::Widgets)
 
 # ---- Kiểm thử "khói" UI VPN: cmake --build build --target vpn_ui_tests ----
-add_executable(vpn_ui_tests EXCLUDE_FROM_ALL tests/vpn_ui_tests.cpp src/core/Logger.cpp)
+add_executable(vpn_ui_tests EXCLUDE_FROM_ALL tests/vpn_ui_tests.cpp)
 target_link_libraries(vpn_ui_tests PRIVATE vpn_ui)
 
 # ---- Lõi Security Gateway (cổng lệnh PowerShell + bảo vệ web + quét mã độc qua Windows Defender) ----
-# InputController.h/.cpp được liệt kê lại ở đây (giống WinElevation/PowerShellRunner đã dùng chung cho
-# diskcleanup_core/vpn_core) vì CommandLauncher cần gửi Ctrl+V thật - tránh phụ thuộc vòng vào các
-# nguồn trực tiếp của OneForAll (AutoClick không đóng gói thành thư viện riêng).
+# CommandLauncher cần gửi Ctrl+V thật qua InputController - link input_core (dùng chung với Auto Click).
 add_library(security_core STATIC
     src/tools/security/model/ThreatRecord.h
     src/tools/security/engine/CommandAnalyzer.h
@@ -325,15 +347,9 @@ add_library(security_core STATIC
     src/tools/security/engine/DefenderScanWorker.cpp
     src/tools/security/engine/HostsBlocklist.h
     src/tools/security/engine/HostsBlocklist.cpp
-    src/tools/autoclick/engine/InputController.h
-    src/tools/autoclick/engine/InputController.cpp
-    src/core/WinElevation.h
-    src/core/WinElevation.cpp
-    src/core/PowerShellRunner.h
-    src/core/PowerShellRunner.cpp
 )
 target_include_directories(security_core PUBLIC src)
-target_link_libraries(security_core PUBLIC Qt6::Core Qt6::Gui advapi32 shell32 user32)
+target_link_libraries(security_core PUBLIC Qt6::Core Qt6::Gui advapi32 shell32 user32 core_shared input_core)
 
 # ---- Kiểm thử lõi Security Gateway: cmake --build build --target security_tests ----
 add_executable(security_tests EXCLUDE_FROM_ALL tests/security_tests.cpp)
@@ -356,8 +372,8 @@ target_link_libraries(security_ui PUBLIC security_core Qt6::Widgets)
 
 # ---- Kiểm thử "khói" UI Security Gateway: cmake --build build --target security_ui_tests ----
 # WebProtectionTab.cpp/MalwareScanTab.cpp gọi ToolManager::instance() (chặn "chạy lại với quyền Admin"
-# nếu tool khác đang bận không an toàn để hủy) - thêm ToolManager.cpp làm nguồn phụ, cùng lý do Logger.cpp.
-add_executable(security_ui_tests EXCLUDE_FROM_ALL tests/security_ui_tests.cpp src/core/Logger.cpp src/core/ToolManager.cpp)
+# nếu tool khác đang bận không an toàn để hủy) - thêm ToolManager.cpp làm nguồn phụ.
+add_executable(security_ui_tests EXCLUDE_FROM_ALL tests/security_ui_tests.cpp src/core/ToolManager.cpp)
 target_link_libraries(security_ui_tests PRIVATE security_ui)
 
 # ---- Lõi Downloader (tải trực tiếp HTTP + quét media trang web + yt-dlp cho video nền tảng) ----
@@ -378,7 +394,7 @@ add_library(downloader_core STATIC
     src/tools/downloader/engine/YtDlpDownloadWorker.cpp
 )
 target_include_directories(downloader_core PUBLIC src)
-target_link_libraries(downloader_core PUBLIC Qt6::Core Qt6::Network winprocess_core)
+target_link_libraries(downloader_core PUBLIC Qt6::Core Qt6::Network winprocess_core core_shared)
 
 # ---- Kiểm thử lõi Downloader: cmake --build build --target downloader_tests ----
 add_executable(downloader_tests EXCLUDE_FROM_ALL tests/downloader_tests.cpp)
@@ -393,14 +409,13 @@ add_library(update_core STATIC
     src/core/update/UpdateInstaller.cpp
 )
 target_include_directories(update_core PUBLIC src ${CMAKE_BINARY_DIR}/generated)
-target_link_libraries(update_core PUBLIC downloader_core Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network)
+target_link_libraries(update_core PUBLIC downloader_core core_shared Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network)
 
 # ---- Kiểm thử lõi tự cập nhật: cmake --build build --target update_tests ----
 # update_core (khác các *_core thuần khác) có gọi Logger::instance() (ghi log kiểm tra cập nhật) VÀ
 # ToolManager::instance() (UpdateInstaller tự kiểm tra "có tool nào đang bận không an toàn để hủy" trước
-# khi âm thầm chạy trình cài đặt) - thêm thẳng cả 2 làm nguồn phụ, đúng mẫu đã dùng cho mọi *_ui_tests
-# (Logger.cpp/ToolManager.cpp chỉ nằm trong SOURCES chính của OneForAll, không phải static lib riêng).
-add_executable(update_tests EXCLUDE_FROM_ALL tests/update_tests.cpp src/core/Logger.cpp src/core/ToolManager.cpp)
+# khi âm thầm chạy trình cài đặt) - Logger đã nằm trong core_shared, ToolManager.cpp thêm làm nguồn phụ.
+add_executable(update_tests EXCLUDE_FROM_ALL tests/update_tests.cpp src/core/ToolManager.cpp)
 target_link_libraries(update_tests PRIVATE update_core)
 
 # ---- Giao diện Downloader ----
@@ -419,7 +434,7 @@ target_include_directories(downloader_ui PUBLIC src)
 target_link_libraries(downloader_ui PUBLIC downloader_core Qt6::Widgets)
 
 # ---- Kiểm thử "khói" UI Downloader: cmake --build build --target downloader_ui_tests ----
-add_executable(downloader_ui_tests EXCLUDE_FROM_ALL tests/downloader_ui_tests.cpp src/core/Logger.cpp)
+add_executable(downloader_ui_tests EXCLUDE_FROM_ALL tests/downloader_ui_tests.cpp)
 target_link_libraries(downloader_ui_tests PRIVATE downloader_ui)
 
 set(SOURCES
@@ -428,8 +443,6 @@ set(SOURCES
     src/core/ToolManager.h
     src/core/ToolManager.cpp
     src/core/IconHelper.h
-    src/core/Logger.h
-    src/core/Logger.cpp
     src/ui/MainWindow.h
     src/ui/MainWindow.cpp
     src/tools/qr/QRTool.h
@@ -458,10 +471,10 @@ set(SOURCES
     src/tools/autoclick/model/ActionChain.cpp
     src/tools/autoclick/storage/ActionSerializer.h
     src/tools/autoclick/storage/ActionSerializer.cpp
-    src/tools/autoclick/engine/InputController.h
-    src/tools/autoclick/engine/InputController.cpp
     src/tools/autoclick/engine/ActionRunner.h
     src/tools/autoclick/engine/ActionRunner.cpp
+    src/tools/autoclick/engine/StopHotkey.h
+    src/tools/autoclick/engine/StopHotkey.cpp
     src/tools/autoclick/capture/CoordinateOverlay.h
     src/tools/autoclick/capture/CoordinateOverlay.cpp
     src/tools/autoclick/capture/MouseCapture.h
@@ -503,6 +516,42 @@ target_link_libraries(OneForAll PRIVATE
     downloader_ui
     vpn_ui
     update_core
+    input_core
+    core_shared
     user32
     dwmapi
 )
+
+# ---- Kiểm thử Auto Click (lõi thuần + "khói" giao diện): cmake --build build --target autoclick_tests ----
+# Auto Click không đóng gói thành static lib riêng (nguồn nằm thẳng trong SOURCES của exe), nên bộ test tự
+# liệt kê lại đúng các tệp nó cần - EXCLUDE_FROM_ALL, không ảnh hưởng tới lần build thường của OneForAll.
+# KHÔNG gửi chuột/phím thật và KHÔNG cài hook thật: chỉ dựng cửa sổ, bấm nút Qt và gọi hàm thuần.
+add_executable(autoclick_tests EXCLUDE_FROM_ALL
+    tests/autoclick_tests.cpp
+    src/tools/autoclick/AutoClickWindow.h
+    src/tools/autoclick/AutoClickWindow.cpp
+    src/tools/autoclick/model/Action.cpp
+    src/tools/autoclick/model/ActionChain.cpp
+    src/tools/autoclick/storage/ActionSerializer.cpp
+    src/tools/autoclick/engine/ActionRunner.h
+    src/tools/autoclick/engine/ActionRunner.cpp
+    src/tools/autoclick/engine/StopHotkey.cpp
+    src/tools/autoclick/capture/CoordinateOverlay.h
+    src/tools/autoclick/capture/CoordinateOverlay.cpp
+    src/tools/autoclick/capture/MouseCapture.h
+    src/tools/autoclick/capture/MouseCapture.cpp
+    src/tools/autoclick/capture/HotkeyCapture.h
+    src/tools/autoclick/capture/HotkeyCapture.cpp
+    src/tools/autoclick/capture/DragGestureCapture.h
+    src/tools/autoclick/capture/DragGestureCapture.cpp
+    src/tools/autoclick/overlay/RuntimeOverlay.h
+    src/tools/autoclick/overlay/RuntimeOverlay.cpp
+    src/tools/autoclick/widgets/ChainListWidget.h
+    src/tools/autoclick/widgets/ChainListWidget.cpp
+    src/tools/autoclick/widgets/ActionListWidget.h
+    src/tools/autoclick/widgets/ActionListWidget.cpp
+    src/tools/autoclick/widgets/ActionEditorWidget.h
+    src/tools/autoclick/widgets/ActionEditorWidget.cpp
+)
+target_include_directories(autoclick_tests PRIVATE src)
+target_link_libraries(autoclick_tests PRIVATE Qt6::Widgets input_core core_shared user32)

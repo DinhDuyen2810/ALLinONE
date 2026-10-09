@@ -115,9 +115,13 @@ QImage padWhite(const QImage& gray, int pad)
     return out;
 }
 
-QList<QRDecoded> decodeGray(const QImage& gray, double scale, int pad, const QPoint& /*unused*/)
+/// undecoded (nếu khác null) nhận số lưới mã mà quirc ĐÃ NHÌN THẤY trong ảnh nhưng KHÔNG giải mã được ở
+/// lượt này - nơi gọi dùng để biết kết quả mới chỉ là một phần (xem QRCodec::decode()).
+QList<QRDecoded> decodeGray(const QImage& gray, double scale, int pad, int* undecoded)
 {
     QList<QRDecoded> results;
+    if (undecoded)
+        *undecoded = 0;
     if (gray.isNull() || gray.width() < 21 || gray.height() < 21)
         return results;
 
@@ -138,8 +142,20 @@ QList<QRDecoded> decodeGray(const QImage& gray, double scale, int pad, const QPo
     for (int i = 0; i < count; ++i)
     {
         quirc_extract(q.get(), i, code.get());
-        if (quirc_decode(code.get(), data.get()) != QUIRC_SUCCESS)
+        quirc_decode_error_t err = quirc_decode(code.get(), data.get());
+        if (err == QUIRC_ERROR_DATA_ECC)
+        {
+            // Mã bị lật gương (ảnh chụp qua gương/camera trước, in ngược...): lưới đọc được nhưng dữ liệu
+            // sai ECC. Lật lưới rồi thử lại đúng một lần - cách dùng quirc_flip() theo tài liệu quirc.
+            quirc_flip(code.get());
+            err = quirc_decode(code.get(), data.get());
+        }
+        if (err != QUIRC_SUCCESS)
+        {
+            if (undecoded)
+                ++*undecoded;
             continue;
+        }
 
         QRDecoded d;
         d.text = payloadToString(*data);
@@ -212,17 +228,39 @@ QRMatrix QRCodec::encode(const QString& text, QREcc ecc, QString* error)
     }
 
     const QByteArray utf8 = text.toUtf8();
-    if (utf8.size() > maxBytes(ecc))
+    const auto tooLong = [&] {
+        return QString("Nội dung quá dài (%1 byte). Mức sửa lỗi %2 chỉ chứa tối đa khoảng %3 byte văn bản "
+                       "thường (chuỗi chỉ gồm chữ số hoặc chữ HOA/số chứa được nhiều hơn).")
+            .arg(utf8.size()).arg(eccName(ecc)).arg(maxBytes(ecc));
+    };
+
+    // Sức chứa THẬT phụ thuộc chế độ mã hóa mà thư viện tự chọn (numeric/alphanumeric/byte): một chuỗi
+    // toàn chữ số dài tới 7089 ký tự vẫn vừa mã v40-L, trong khi maxBytes() chỉ là giới hạn của chế độ
+    // byte. Trước đây chặn cứng theo maxBytes() nên từ chối oan các chuỗi số/chữ HOA dài. Nay chỉ chặn
+    // sớm đầu vào chắc chắn không mã QR nào chứa nổi (tránh phân tích vô ích một văn bản khổng lồ), phần
+    // còn lại để thư viện tự báo data_too_long.
+    constexpr int kAbsoluteMaxChars = 7089; // v40, mức L, toàn chữ số
+    if (utf8.size() > kAbsoluteMaxChars)
     {
-        if (error)
-            *error = QString("Nội dung quá dài (%1 byte). Mức sửa lỗi %2 chỉ chứa tối đa khoảng %3 byte.")
-                         .arg(utf8.size()).arg(eccName(ecc)).arg(maxBytes(ecc));
+        if (error) *error = tooLong();
         return m;
     }
 
     try
     {
-        const auto segs = qrcodegen::QrSegment::makeSegments(utf8.constData());
+        // makeSegments() nhận chuỗi C (kết thúc bằng NUL) - nội dung có ký tự U+0000 ở giữa (vd "Tạo lại
+        // mã" từ một mã nhị phân vừa quét) sẽ bị cắt cụt âm thầm tại đó. Gặp NUL thì mã hóa nguyên khối
+        // byte bằng makeBytes() (không phụ thuộc ký tự kết thúc).
+        std::vector<qrcodegen::QrSegment> segs;
+        if (utf8.contains('\0'))
+        {
+            const std::vector<std::uint8_t> bytes(utf8.cbegin(), utf8.cend());
+            segs.push_back(qrcodegen::QrSegment::makeBytes(bytes));
+        }
+        else
+        {
+            segs = qrcodegen::QrSegment::makeSegments(utf8.constData());
+        }
         const auto qr = qrcodegen::QrCode::encodeSegments(segs, toLibEcc(ecc), 1, 40, -1, true);
 
         m.size = qr.getSize();
@@ -232,6 +270,11 @@ QRMatrix QRCodec::encode(const QString& text, QREcc ecc, QString* error)
         for (int y = 0; y < m.size; ++y)
             for (int x = 0; x < m.size; ++x)
                 m.modules[static_cast<size_t>(y) * m.size + x] = qr.getModule(x, y);
+    }
+    catch (const qrcodegen::data_too_long&)
+    {
+        m = QRMatrix();
+        if (error) *error = tooLong();
     }
     catch (const std::exception& e)
     {
@@ -309,30 +352,47 @@ QString QRCodec::toSvg(const QRMatrix& matrix, const QRStyle& style)
 
     QString svg;
     svg += QString("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+    // crispEdges chỉ đúng cho ô vuông (tắt khử răng cưa để các ô liền nhau không hở khe); ô bo tròn cần
+    // khử răng cưa nên dùng geometricPrecision.
     svg += QString("<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" "
-                   "version=\"1.1\" viewBox=\"0 0 %1 %1\" width=\"%2\" height=\"%2\" shape-rendering=\"crispEdges\">\n")
-               .arg(cells).arg(style.targetSize);
+                   "version=\"1.1\" viewBox=\"0 0 %1 %1\" width=\"%2\" height=\"%2\" shape-rendering=\"%3\">\n")
+               .arg(cells).arg(style.targetSize).arg(style.roundedModules ? "geometricPrecision" : "crispEdges");
     svg += QString("<rect width=\"%1\" height=\"%1\" fill=\"%2\"/>\n").arg(cells).arg(colorToSvg(style.background));
 
-    QString path;
-    for (int y = 0; y < matrix.size; ++y)
+    if (style.roundedModules)
     {
-        int x = 0;
-        while (x < matrix.size)
-        {
-            if (!matrix.at(x, y))
-            {
-                ++x;
-                continue;
-            }
-            int run = 0;
-            while (x + run < matrix.size && matrix.at(x + run, y))
-                ++run;
-            path += QString("M%1,%2h%3v1h-%3z").arg(x + quiet).arg(y + quiet).arg(run);
-            x += run;
-        }
+        // Khớp với render(): MỖI ô là một hình vuông bo góc riêng, bán kính 0.32 ô. Trước đây toSvg() bỏ
+        // qua roundedModules nên tệp SVG xuất ra (ô vuông) khác hẳn bản xem trước/PNG (ô bo tròn).
+        svg += QString("<g fill=\"%1\">\n").arg(colorToSvg(style.foreground));
+        for (int y = 0; y < matrix.size; ++y)
+            for (int x = 0; x < matrix.size; ++x)
+                if (matrix.at(x, y))
+                    svg += QString("<rect x=\"%1\" y=\"%2\" width=\"1\" height=\"1\" rx=\"0.32\" ry=\"0.32\"/>\n")
+                               .arg(x + quiet).arg(y + quiet);
+        svg += "</g>\n";
     }
-    svg += QString("<path d=\"%1\" fill=\"%2\"/>\n").arg(path).arg(colorToSvg(style.foreground));
+    else
+    {
+        QString path;
+        for (int y = 0; y < matrix.size; ++y)
+        {
+            int x = 0;
+            while (x < matrix.size)
+            {
+                if (!matrix.at(x, y))
+                {
+                    ++x;
+                    continue;
+                }
+                int run = 0;
+                while (x + run < matrix.size && matrix.at(x + run, y))
+                    ++run;
+                path += QString("M%1,%2h%3v1h-%3z").arg(x + quiet).arg(y + quiet).arg(run);
+                x += run;
+            }
+        }
+        svg += QString("<path d=\"%1\" fill=\"%2\"/>\n").arg(path).arg(colorToSvg(style.foreground));
+    }
 
     if (!style.logo.isNull())
     {
@@ -382,8 +442,20 @@ QList<QRDecoded> QRCodec::decode(const QImage& image)
     if (std::max(base.width(), base.height()) > 800)
         passes.push_back({0.5, true});
 
+    // Trước đây trả về NGAY ở lượt đầu tiên có kết quả - nếu lượt đó nhìn thấy 2 mã nhưng chỉ đọc được 1
+    // (mã kia quá nhỏ/mờ ở tỉ lệ này) thì mã còn lại bị bỏ sót hẳn dù một lượt phóng to/thu nhỏ đọc được.
+    // Nay: lượt nào đọc được HẾT các lưới nó nhìn thấy thì vẫn dừng ngay như cũ (trường hợp thường gặp,
+    // không tốn thêm gì); chỉ khi còn lưới chưa đọc được mới chạy tiếp các lượt CÙNG cực tính (bỏ qua các
+    // lượt đảo màu ngược lại - gần như chắc chắn vô ích) rồi gộp kết quả, tối đa thêm 1-2 lượt.
+    QList<QRDecoded> all;
+    bool partial = false;
+    bool partialInvert = false;
+
     for (const Pass& pass : passes)
     {
+        if (partial && pass.invert != partialInvert)
+            continue;
+
         QImage work = base;
         if (pass.scale != 1.0)
         {
@@ -396,11 +468,25 @@ QList<QRDecoded> QRCodec::decode(const QImage& image)
 
         constexpr int pad = 32;
         const QImage padded = padWhite(work, pad);
-        QList<QRDecoded> found = decodeGray(padded, pass.scale * baseScale, pad, QPoint());
-        if (!found.isEmpty())
-            return found;
+        int undecoded = 0;
+        const QList<QRDecoded> found = decodeGray(padded, pass.scale * baseScale, pad, &undecoded);
+        for (const QRDecoded& d : found)
+        {
+            const bool dup = std::any_of(all.begin(), all.end(),
+                                         [&](const QRDecoded& r) { return r.text == d.text; });
+            if (!dup)
+                all.push_back(d);
+        }
+
+        if (!found.isEmpty() && undecoded == 0)
+            return all;
+        if (!all.isEmpty() && !partial)
+        {
+            partial = true;
+            partialInvert = pass.invert;
+        }
     }
-    return {};
+    return all;
 }
 
 double QRCodec::contrastRatio(const QColor& a, const QColor& b)

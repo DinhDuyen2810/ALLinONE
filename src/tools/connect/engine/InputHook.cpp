@@ -26,8 +26,16 @@ LRESULT CALLBACK mouseProc(int nCode, WPARAM wParam, LPARAM lParam)
     switch (wParam)
     {
         case WM_MOUSEMOVE:
-            consumed = g_instance->onRawMouseMove(data->pt.x, data->pt.y);
+        {
+            // Chỉ hỏi vị trí con trỏ thật khi đang chia sẻ điều khiển (không tốn thêm lời gọi hệ thống cho
+            // mọi cử động chuột lúc bình thường). GetCursorPos thất bại (hiếm - vd đang ở desktop bảo mật)
+            // thì coi như độ dịch 0: thà mất một cử động còn hơn gửi sang máy kia một bước nhảy sai.
+            POINT cur = data->pt;
+            if (g_instance->isActive())
+                GetCursorPos(&cur);
+            consumed = g_instance->onRawMouseMove(data->pt.x, data->pt.y, cur.x, cur.y);
             break;
+        }
         case WM_LBUTTONDOWN: consumed = g_instance->onRawMouseButton(0, true); break;
         case WM_LBUTTONUP:   consumed = g_instance->onRawMouseButton(0, false); break;
         case WM_RBUTTONDOWN: consumed = g_instance->onRawMouseButton(1, true); break;
@@ -112,7 +120,6 @@ bool InputHook::install(QString* error)
 
     m_mouseHook = mouse;
     m_keyboardHook = keyboard;
-    m_hasLastPoint = false;
     return true;
 }
 
@@ -137,6 +144,16 @@ void InputHook::uninstall()
         m_keyboardHook = nullptr;
     }
     m_active = false;
+
+    // Không còn hook thì không còn thấy lần nhả nào nữa - xóa sạch sổ theo dõi để lần cài lại không bắt
+    // đầu với trạng thái phím/nút "đang giữ" đã cũ.
+    m_physKeys.reset();
+    m_preHeldKeys.reset();
+    m_swallowedKeys.reset();
+    m_swallowedButtons = 0;
+    m_ctrlDown = false;
+    m_altDown = false;
+    m_hotkeyHomeSwallowed = false;
 }
 
 bool InputHook::isInstalled() const
@@ -144,27 +161,37 @@ bool InputHook::isInstalled() const
     return m_mouseHook != nullptr && m_keyboardHook != nullptr;
 }
 
-bool InputHook::onRawMouseMove(long x, long y)
+void InputHook::setActive(bool active)
+{
+    if (active && !m_active)
+    {
+        // Sổ m_physKeys dựng từ các sự kiện hook đã thấy - có thể còn sót phím mà lần NHẢ không bao giờ
+        // tới hook (vd Win+L: nhả phím lúc đã ở màn hình khóa, nơi hook cấp thấp không chạy). Đối chiếu với
+        // trạng thái thật của hệ điều hành để bỏ các mục đã cũ; nếu không, lần gõ kế tiếp của đúng phím đó
+        // trong lúc điều khiển máy kia sẽ bị coi nhầm là "phím giữ sẵn" và rơi xuống máy này. Chỉ đối chiếu
+        // khi hook thật đang cài (bộ kiểm thử gọi thẳng onRaw*() không có trạng thái hệ điều hành tương ứng).
+        if (isInstalled())
+        {
+            for (int vk = 1; vk < 256; ++vk)
+                if (m_physKeys.test(static_cast<size_t>(vk)) && !(GetAsyncKeyState(vk) & 0x8000))
+                    m_physKeys.reset(static_cast<size_t>(vk));
+        }
+        m_preHeldKeys = m_physKeys;
+    }
+    else if (!active)
+    {
+        m_preHeldKeys.reset();
+    }
+    m_active = active;
+}
+
+bool InputHook::onRawMouseMove(long x, long y, long cursorX, long cursorY)
 {
     if (!m_active)
-    {
-        m_hasLastPoint = false; // không theo dõi khi không active - tránh bước nhảy delta lớn lúc kích hoạt lại
         return false;
-    }
 
-    if (!m_hasLastPoint)
-    {
-        m_lastX = x;
-        m_lastY = y;
-        m_hasLastPoint = true;
-        return true; // vẫn nuốt sự kiện đầu tiên (không có delta hợp lệ để gửi)
-    }
-
-    const int dx = static_cast<int>(x - m_lastX);
-    const int dy = static_cast<int>(y - m_lastY);
-    m_lastX = x;
-    m_lastY = y;
-
+    const int dx = static_cast<int>(x - cursorX);
+    const int dy = static_cast<int>(y - cursorY);
     if (dx != 0 || dy != 0)
         emit mouseMoveRelative(dx, dy);
     return true;
@@ -172,9 +199,27 @@ bool InputHook::onRawMouseMove(long x, long y)
 
 bool InputHook::onRawMouseButton(int button, bool pressed)
 {
-    if (!m_active)
+    if (button < 0 || button > 4)
         return false;
-    emit mouseButtonChanged(button, pressed);
+    const unsigned bit = 1u << button;
+
+    if (pressed)
+    {
+        if (!m_active)
+            return false;
+        m_swallowedButtons |= bit;
+        emit mouseButtonChanged(button, true);
+        return true;
+    }
+
+    // Lần nhả: chỉ nuốt nếu lần NHẤN tương ứng đã bị nuốt. Nút được nhấn trước khi chia sẻ điều khiển thì
+    // máy này đã thấy lần nhấn - phải cho nó thấy cả lần nhả, nếu không ứng dụng cục bộ kẹt ở trạng thái
+    // "đang giữ nút" (vd đang kéo một cửa sổ).
+    if (!(m_swallowedButtons & bit))
+        return false;
+    m_swallowedButtons &= ~bit;
+    if (m_active) // đã trả quyền điều khiển thì ConnectSessionController đã tự gửi lệnh nhả sang máy kia
+        emit mouseButtonChanged(button, false);
     return true;
 }
 
@@ -195,15 +240,63 @@ bool InputHook::onRawKey(int vkCode, int scanCode, bool pressed, bool extended)
     else if (vkCode == VK_MENU || vkCode == VK_LMENU || vkCode == VK_RMENU)
         m_altDown = pressed;
 
-    if (pressed && vkCode == VK_HOME && m_ctrlDown && m_altDown)
+    if (vkCode == VK_HOME)
     {
-        emit returnHotkeyPressed();
-        return m_active; // nuốt tổ hợp phím nóng khi đang active (không gửi Home xuống máy đang điều khiển)
+        if (pressed && m_ctrlDown && m_altDown)
+        {
+            // Chốt trạng thái active TRƯỚC khi phát tín hiệu: nơi nhận (ConnectSessionController) tắt active
+            // ngay trong lúc xử lý, nếu đọc lại m_active sau đó thì phím Home của tổ hợp lọt xuống ứng dụng
+            // cục bộ.
+            const bool wasActive = m_active;
+            m_hotkeyHomeSwallowed = wasActive;
+            emit returnHotkeyPressed();
+            return wasActive; // nuốt tổ hợp phím nóng khi đang active (không gửi Home xuống máy đang điều khiển)
+        }
+        if (!pressed && m_hotkeyHomeSwallowed)
+        {
+            m_hotkeyHomeSwallowed = false;
+            return true; // lần nhả của đúng phím Home vừa nuốt - không lọt xuống đâu cả
+        }
+    }
+
+    const bool trackable = vkCode > 0 && vkCode < 256;
+    const size_t idx = trackable ? static_cast<size_t>(vkCode) : 0;
+
+    if (pressed)
+    {
+        if (!m_active)
+        {
+            if (trackable)
+                m_physKeys.set(idx);
+            return false;
+        }
+        // Phím đã giữ sẵn từ trước khi chia sẻ điều khiển (lần nhấn lặp do giữ phím): vẫn thuộc về máy này.
+        if (trackable && m_preHeldKeys.test(idx))
+            return false;
+        if (trackable)
+            m_swallowedKeys.set(idx);
+        emit keyChanged(vkCode, scanCode, true, extended);
+        return true;
+    }
+
+    if (trackable)
+    {
+        m_physKeys.reset(idx);
+        if (m_preHeldKeys.test(idx))
+        {
+            m_preHeldKeys.reset(idx);
+            return false; // nhả phím đã giữ từ trước - cho máy này thấy để không kẹt phím cục bộ
+        }
+        if (!m_swallowedKeys.test(idx))
+            return false; // lần nhấn không bị nuốt (vd nhấn ngay trước khi kích hoạt) -> lần nhả cũng đi qua
+        m_swallowedKeys.reset(idx);
+        if (m_active) // đã trả quyền điều khiển thì ConnectSessionController đã tự gửi lệnh nhả sang máy kia
+            emit keyChanged(vkCode, scanCode, false, extended);
+        return true;
     }
 
     if (!m_active)
         return false;
-
-    emit keyChanged(vkCode, scanCode, pressed, extended);
+    emit keyChanged(vkCode, scanCode, false, extended);
     return true;
 }

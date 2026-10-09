@@ -1,5 +1,7 @@
 #include "PeerDiscovery.h"
 
+#include "ProtocolMessage.h"
+
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QNetworkDatagram>
@@ -77,7 +79,9 @@ void PeerDiscovery::onAnnounceTick()
 
     QJsonObject o;
     o["app"] = kAppTag;
-    o["v"] = 1;
+    // Phiên bản GIAO THỨC (không phải phiên bản ứng dụng): hai máy khác "v" không bắt tay được với nhau -
+    // máy nhận thấy "v" khác thì báo rõ "cần cập nhật" thay vì cố kết nối.
+    o["v"] = ConnectProtocol::kVersion;
     o["id"] = m_myId;
     o["name"] = m_myName;
     o["port"] = m_myPort;
@@ -89,7 +93,10 @@ void PeerDiscovery::onReadyRead()
 {
     while (m_socket && m_socket->hasPendingDatagrams())
     {
-        const QNetworkDatagram dg = m_socket->receiveDatagram();
+        const QNetworkDatagram dg = m_socket->receiveDatagram(kMaxDatagramBytes + 1);
+        if (dg.data().size() > kMaxDatagramBytes)
+            continue; // quá lớn so với một gói quảng bá thật - không phân tích JSON rác
+
         const QJsonDocument doc = QJsonDocument::fromJson(dg.data());
         if (!doc.isObject())
             continue;
@@ -99,11 +106,19 @@ void PeerDiscovery::onReadyRead()
             continue; // không phải gói của ứng dụng này - bỏ qua
 
         const QString id = o.value("id").toString();
-        if (id.isEmpty() || id == m_myId)
-            continue; // bỏ qua gói của chính mình
+        if (id == m_myId || !ConnectProtocol::isValidPeerId(id))
+            continue; // bỏ qua gói của chính mình + id sai định dạng (rỗng/quá dài/ký tự lạ)
 
-        const QString name = o.value("name").toString();
-        const quint16 port = static_cast<quint16>(o.value("port").toInt());
-        emit peerAnnounced(id, name, dg.senderAddress(), port);
+        const int port = o.value("port").toInt();
+        if (port < 1 || port > 65535)
+            continue;
+
+        const QHostAddress sender = dg.senderAddress();
+        if (sender.isNull())
+            continue;
+
+        const QString name = ConnectProtocol::sanitizeMachineName(o.value("name").toString());
+        const int version = o.value("v").toInt(0);
+        emit peerAnnounced(id, name, sender, static_cast<quint16>(port), version);
     }
 }

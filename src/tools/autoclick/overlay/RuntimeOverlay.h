@@ -20,6 +20,9 @@ public:
     void setRoundInfo(int currentRound, int totalRounds);
     void setActionInfo(int actionIndex, int totalActions, const QString& currentDesc, const QString& nextDesc, int targetX, int targetY);
     void setCountdown(qint64 remainingMs, const QString& phase);
+    /// Hiện phím tắt dừng toàn cục đang có hiệu lực (vd "Ctrl+Alt+F8") cạnh nút Dừng; chuỗi rỗng = phím
+    /// tắt không đăng ký được, chỉ còn nút bấm - xem engine/StopHotkey.h.
+    void setStopHotkeyHint(const QString& hotkeyLabel);
 
 signals:
     void stopClicked();
@@ -37,6 +40,7 @@ private:
     QLabel* m_countdownLabel;
     QProgressBar* m_progressBar;
     QPushButton* m_stopButton;
+    QLabel* m_hotkeyHintLabel;
 
     int m_targetX{0};
     int m_targetY{0};

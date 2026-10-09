@@ -87,7 +87,7 @@ void MainWindow::registerTools()
 
 void MainWindow::setupUi()
 {
-    setWindowTitle("ONE FOR ALL - Desktop Suite v1.0");
+    setWindowTitle(QString("ONE FOR ALL - Desktop Suite v%1").arg(APP_VERSION));
     // Icon đại diện CHO CẢ ỨNG DỤNG (cửa sổ chính/taskbar lúc đang chạy) - khác icon riêng từng tool
     // trong sidebar (mỗi tool vẫn giữ icon riêng, vd autoclicker.jpg cho Auto Click). Icon file .exe
     // (Explorer/shortcut/khi chưa chạy) nằm ở assets/app_icon.ico, cũng dựng từ icon/App.png.
@@ -145,7 +145,7 @@ void MainWindow::setupUi()
     );
     sidebarLayout->addWidget(m_toolListWidget, 1);
 
-    auto* versionLabel = new QLabel("Version 1.0.0 (C++20 & Qt 6)", this);
+    auto* versionLabel = new QLabel(QString("Phiên bản %1 (C++20 & Qt 6)").arg(APP_VERSION), this);
     versionLabel->setStyleSheet("color: #8c959f; font-size: 11px;");
     versionLabel->setAlignment(Qt::AlignCenter);
     sidebarLayout->addWidget(versionLabel);
@@ -299,7 +299,10 @@ void MainWindow::onOpenToolClicked()
 
 void MainWindow::onUpdateAvailable(UpdateInfo info)
 {
-    const double mb = info.downloadSize > 0 ? info.downloadSize / 1024.0 / 1024.0 : 0.0;
+    // Dung lượng hiển thị theo đúng asset sẽ tải (bản cài bằng .msi tải tệp .msi).
+    const bool viaMsi = UpdateInstaller::detectInstallKind() == UpdateInstaller::InstallKind::Msi;
+    const qint64 sizeBytes = viaMsi ? info.msiSize : info.downloadSize;
+    const double mb = sizeBytes > 0 ? sizeBytes / 1024.0 / 1024.0 : 0.0;
     const QString sizeText = mb > 0 ? QString(" (%1 MB)").arg(mb, 0, 'f', 1) : QString();
 
     QMessageBox box(this);
@@ -324,6 +327,8 @@ void MainWindow::onUpdateAvailable(UpdateInfo info)
     progress->setAutoClose(false);
     progress->setAutoReset(false);
 
+    if (m_updateInstaller)
+        m_updateInstaller->deleteLater();
     m_updateInstaller = new UpdateInstaller(this);
 
     connect(m_updateInstaller, &UpdateInstaller::progress, progress, [progress](qint64 received, qint64 total) {
@@ -349,11 +354,10 @@ void MainWindow::onUpdateAvailable(UpdateInfo info)
     connect(m_updateInstaller, &UpdateInstaller::aboutToRestart, this, [progress]() {
         progress->close();
         progress->deleteLater();
-        // Trình cài đặt đã khởi chạy (âm thầm) và tự lo việc đóng + mở lại OneForAll.exe sau khi cài
-        // xong (/CLOSEAPPLICATIONS /RESTARTAPPLICATIONS, xem UpdateInstaller.cpp) - tự đóng ngay ở đây
-        // để không bị Restart Manager phải "ép" đóng giữa chừng.
+        // Tiến trình trợ giúp đã khởi chạy và đang CHỜ chính tiến trình này thoát rồi mới chạy trình cài
+        // đặt và mở lại ứng dụng (xem UpdateInstaller.h) - thoát ngay.
         qApp->quit();
     });
 
-    m_updateInstaller->downloadAndInstall(info.downloadUrl);
+    m_updateInstaller->downloadAndInstall(info);
 }

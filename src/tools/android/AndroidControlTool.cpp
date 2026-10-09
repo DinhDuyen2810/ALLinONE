@@ -20,3 +20,9 @@ QWidget* AndroidControlTool::createWindow()
         m_window = new AndroidControlWindow();
     return m_window;
 }
+
+void AndroidControlTool::stopBackgroundWorkForQuit()
+{
+    if (auto* window = qobject_cast<AndroidControlWindow*>(m_window.data()))
+        window->stopBackgroundWork();
+}

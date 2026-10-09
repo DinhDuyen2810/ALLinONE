@@ -29,6 +29,9 @@ public:
     void setRootPath(const QString& path) { m_rootPath = path; }
     void setMinSizeBytes(qint64 bytes) { m_minSizeBytes = bytes; }
     void setMaxResults(int max) { m_maxResults = max; }
+    /// Bắt đầu quét - LUÔN dùng hàm này thay cho start() trực tiếp (đặt lại cờ dừng trước khi luồng chạy,
+    /// xem CleanupScanner::startScan).
+    void startScan(QThread::Priority priority = QThread::InheritPriority);
     void requestStop();
 
 signals:

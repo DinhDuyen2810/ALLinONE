@@ -45,8 +45,9 @@ void SecurityGatewayWindow::closeEvent(QCloseEvent* event)
     {
         const auto reply = QMessageBox::question(
             this, "Đang quét mã độc",
-            "Đang quét mã độc (có thể là quét toàn bộ máy, mất nhiều thời gian). Đóng cửa sổ sẽ HỦY "
-            "quét giữa chừng (an toàn - giống bấm Hủy trên Windows Security). Bạn có muốn tiếp tục đóng?",
+            "Đang quét mã độc (có thể là quét toàn bộ máy, mất nhiều thời gian). Đóng cửa sổ sẽ ngừng "
+            "theo dõi lượt quét này (an toàn - Windows Defender có thể vẫn tự hoàn tất phần đang dở trong "
+            "nền). Bạn có muốn tiếp tục đóng?",
             QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
         if (reply != QMessageBox::Yes)
         {
@@ -56,6 +57,12 @@ void SecurityGatewayWindow::closeEvent(QCloseEvent* event)
         m_scanTab->cancelScanAndWait();
     }
     event->accept();
+}
+
+void SecurityGatewayWindow::requestCancelScanForQuit()
+{
+    if (m_scanTab)
+        m_scanTab->requestCancelScan();
 }
 
 void SecurityGatewayWindow::buildUi()
@@ -71,5 +78,7 @@ void SecurityGatewayWindow::buildUi()
     m_tabs->addTab(m_commandTab, "💻  Cổng lệnh PowerShell");
     m_tabs->addTab(m_webTab, "🌐  Bảo vệ Web");
     m_tabs->addTab(m_scanTab, "🦠  Quét mã độc");
+    connect(m_scanTab, &MalwareScanTab::scanningChanged, m_webTab,
+            [this](bool scanning) { m_webTab->setRelaunchAllowed(!scanning); });
     root->addWidget(m_tabs, 1);
 }

@@ -15,7 +15,14 @@ struct CleanupEnvironment
     QString localAppData;   // %LOCALAPPDATA%
     QString roamingAppData; // %APPDATA%
 
-    /// Đọc biến môi trường THẬT của máy đang chạy.
+    /// Thư mục KHÔNG BAO GIỜ được làm thư mục gốc dọn dẹp (hồ sơ người dùng, Program Files...) - xem
+    /// FsSafety::unsafeCleanupRootReason(). current() điền từ máy thật; môi trường giả của test để rỗng
+    /// (các kiểm tra cơ bản - rỗng/tương đối/gốc ổ đĩa - vẫn luôn áp dụng).
+    QStringList protectedDirs;
+
+    /// Đọc biến môi trường THẬT của máy đang chạy. Biến thiếu/không phải đường dẫn tuyệt đối thì trường
+    /// tương ứng để RỖNG (các hạng mục phụ thuộc nó sẽ không khả dụng) thay vì sinh đường dẫn kiểu
+    /// "/Temp" bị Windows hiểu theo ổ đĩa hiện hành.
     static CleanupEnvironment current();
 };
 

@@ -1,5 +1,6 @@
 #include "ScreenSnipOverlay.h"
 
+#include <QCloseEvent>
 #include <QGuiApplication>
 #include <QKeyEvent>
 #include <QMouseEvent>
@@ -122,6 +123,19 @@ void ScreenSnipOverlay::keyPressEvent(QKeyEvent* event)
         emit cancelled();
         close();
     }
+}
+
+void ScreenSnipOverlay::closeEvent(QCloseEvent* event)
+{
+    // Lớp phủ bị đóng mà CHƯA phát tín hiệu nào (Alt+F4, hệ thống đóng cửa sổ khi tắt máy/đăng xuất...):
+    // nơi gọi đã ẩn cửa sổ QR Tools và chỉ hiện lại khi nhận captured()/cancelled() - không báo hủy ở đây
+    // thì cửa sổ đó bị ẩn luôn.
+    if (!m_done)
+    {
+        m_done = true;
+        emit cancelled();
+    }
+    QWidget::closeEvent(event);
 }
 
 QImage ScreenSnipOverlay::cropSelection(const QRect& globalRect) const

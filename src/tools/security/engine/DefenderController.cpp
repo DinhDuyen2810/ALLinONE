@@ -9,13 +9,6 @@
 
 namespace
 {
-QString escapePsString(const QString& s)
-{
-    QString out = s;
-    out.replace('\'', "''");
-    return out;
-}
-
 /// Đọc một trường DateTime đã được script dựng sẵn ép kiểu chuỗi ISO-8601 ("o") - rỗng nếu Defender
 /// chưa từng quét (QuickScanEndTime/FullScanEndTime null) hoặc không đọc được.
 QDateTime parseIsoDateTime(const QJsonValue& v)
@@ -217,7 +210,10 @@ QString buildStartScanScript(ScanType type, const QString& customPath)
         case ScanType::Full: typeArg = "FullScan"; break;
         case ScanType::Custom:
             typeArg = "CustomScan";
-            pathArg = QStringLiteral(" -ScanPath '%1'").arg(escapePsString(customPath));
+            // quoteLiteral nhân đôi CẢ dấu ' ASCII lẫn U+2018/2019/201A/201B - PowerShell coi cả bốn là dấu
+            // đóng chuỗi nháy đơn, nên một thư mục tên kiểu "a’; <lệnh>; ’b" từng chạy <lệnh> với quyền của
+            // ứng dụng khi được chọn để quét (đã xác nhận bằng parser của PowerShell).
+            pathArg = QStringLiteral(" -ScanPath '%1'").arg(PowerShellRunner::quoteLiteral(customPath));
             break;
     }
     // Start-MpScan là lệnh ĐỒNG BỘ (chặn tới khi quét xong - đã xác nhận qua tài liệu API Win32
@@ -234,6 +230,16 @@ QString buildStartScanScript(ScanType type, const QString& customPath)
                "  exit 1\n"
                "}\n")
         .arg(typeArg, pathArg);
+}
+
+int scanTimeoutMs(ScanType type)
+{
+    // Quét nhanh: 1 giờ là quá đủ. Quét toàn bộ/một thư mục: trước đây cũng 1 giờ, khiến lượt quét toàn
+    // bộ trên ổ đĩa lớn bị kết thúc giữa chừng rồi báo "Hết thời gian chờ" như một lỗi - nay coi như
+    // không giới hạn (7 ngày; vẫn hủy được bất cứ lúc nào qua DefenderScanWorker::requestCancel()). Không
+    // dùng INT_MAX: vòng chờ của PowerShellRunner cộng dồn từng 200ms vào một biến int.
+    constexpr int kHour = 60 * 60 * 1000;
+    return type == ScanType::Quick ? kHour : 7 * 24 * kHour;
 }
 
 QString buildListThreatsScript()

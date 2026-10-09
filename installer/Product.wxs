@@ -7,15 +7,15 @@
   lựa chọn thay thế cho người dùng nào gặp vướng mắc với bản .exe (xem PROJECT_OVERVIEW.md mục 4n).
 
   Danh sách file KHÔNG liệt kê tay ở đây (quá nhiều - DLL Qt + plugin nhiều thư mục con + vendor/scrcpy +
-  vendor/yt-dlp, thay đổi tùy máy build có sẵn vendor/ hay không) - build_msi.bat tự dùng heat.exe của
-  WiX để "gặt" (harvest) toàn bộ cây thư mục OneForAll_Release (bản đã dọn sạch logs\/qr_history.json,
-  đúng quy tắc Excludes như installer/OneForAll.iss) thành Harvested.wxs lúc build, include() vào đây.
+  vendor/yt-dlp, thay đổi tùy máy build có sẵn vendor/ hay không) - build_installer.bat tự dùng heat.exe của
+  WiX để "gặt" (harvest) toàn bộ cây thư mục OneForAll_Release (bản đã dọn sạch logs\ và profiles\, chỉ
+  giữ profiles\default.json mẫu lấy từ mã nguồn - đúng quy tắc Excludes như installer/OneForAll.iss) thành Harvested.wxs lúc build, include() vào đây.
 
   Cài đặt THEO NGƯỜI DÙNG (per-user, InstallScope="perUser") - không cần quyền Administrator, đúng tinh
   thần PrivilegesRequired=lowest đã dùng cho bản .exe.
 -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
-  <!-- ProductVersion/ProductCode: build_msi.bat truyền qua -dAppVersion, đọc từ file VERSION ở gốc dự án
+  <!-- ProductVersion/ProductCode: build_installer.bat truyền qua -dAppVersion, đọc từ file VERSION ở gốc dự án
        (nguồn DUY NHẤT cho version - xem CMakeLists.txt/installer/OneForAll.iss cùng đọc file này). -->
   <?ifndef AppVersion?>
     <?define AppVersion = "0.0.0" ?>
@@ -97,7 +97,7 @@
     </DirectoryRef>
 
     <!-- ComponentGroup "MainComponents" được sinh TỰ ĐỘNG bởi heat.exe vào Harvested.wxs lúc build (xem
-         build_msi.bat) - chứa toàn bộ file thật của OneForAll_Release (exe/DLL/plugin/vendor). -->
+         build_installer.bat) - chứa toàn bộ file thật của OneForAll_Release (exe/DLL/plugin/vendor). -->
     <Feature Id="MainApplication" Title="One for ALL" Level="1">
       <ComponentGroupRef Id="MainComponents" />
       <ComponentRef Id="ApplicationShortcut" />
@@ -115,7 +115,7 @@
     <!-- Dùng đường dẫn qua thư mục đích (giống hệt Target của Shortcut ở trên) thay vì cú pháp [#FileId] -
          heat.exe tự sinh File/@Id dạng băm (vd "filC8CB...") để tránh trùng tên file giữa các thư mục con
          Qt plugin khác nhau, nên KHÔNG thể cậy vào Id="OneForAll.exe" cố định được (đã xác nhận thật bằng
-         cách đọc Harvested.wxs sau khi chạy heat.exe - xem build_msi.bat). -->
+         cách đọc Harvested.wxs sau khi chạy heat.exe - xem build_installer.bat). -->
     <Property Id="WixShellExecTarget" Value="[INSTALLFOLDER]OneForAll.exe" />
     <CustomAction Id="LaunchApplication" BinaryKey="WixCA" DllEntry="WixShellExec" Impersonate="yes" />
     <UI>

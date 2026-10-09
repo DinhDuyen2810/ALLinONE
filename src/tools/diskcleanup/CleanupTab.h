@@ -31,6 +31,10 @@ public:
     /// hủy giữa chừng, vì vẫn đang đọc đĩa).
     bool isBusy() const;
 
+    /// Yêu cầu dừng lượt quét đang chạy (nếu có), KHÔNG chờ - gọi từ DiskCleanupWindow khi đóng cửa sổ
+    /// (chỉ ẨN, tab không bị hủy) hoặc khi ứng dụng thoát, để luồng quét không chạy ngầm vô ích.
+    void stopScanIfRunning();
+
 private slots:
     void onScanClicked();
     void onCleanClicked();

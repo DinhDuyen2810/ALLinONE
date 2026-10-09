@@ -30,12 +30,16 @@ public:
     /// DiskCleanupWindow::closeEvent() khi đóng cửa sổ (chỉ ẨN, không hủy tab - xem closeEvent()).
     void stopScanIfRunning();
 
+public slots:
+    /// Nhận kết quả quét và dựng cây. Để public để bộ test UI nạp một kết quả dựng sẵn (không cần quét
+    /// thư mục thật) rồi kiểm tra quy tắc "mỗi nhóm luôn giữ lại ít nhất 1 bản".
+    void onScanFinished(QList<DuplicateGroup> groups, qint64 wastedBytes, int totalGroupsFound);
+
 private slots:
     void onBrowseClicked();
     void onScanClicked();
     void onStopClicked();
     void onProgressTick(qint64 filesScanned, qint64 filesHashed, QString currentPath);
-    void onScanFinished(QList<DuplicateGroup> groups, qint64 wastedBytes, int totalGroupsFound);
     void onScanStopped();
     void onDeleteSelectedClicked();
     void onItemChanged(QTreeWidgetItem* item, int column);

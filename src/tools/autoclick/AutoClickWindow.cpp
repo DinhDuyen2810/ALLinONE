@@ -1,14 +1,79 @@
 #include "AutoClickWindow.h"
 #include "storage/ActionSerializer.h"
+#include "engine/StopHotkey.h"
 #include "core/Logger.h"
 
 #include <algorithm>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
+#include <QDateTime>
+#include <QDir>
+#include <QFile>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QMessageBox>
 #include <QCloseEvent>
 #include <QIcon>
+#include <QStandardPaths>
+#include <QTimer>
+
+namespace
+{
+/// Thư mục gợi ý cho hộp thoại Xuất/Nhập: Documents của người dùng. Trước đây là "profiles" TƯƠNG ĐỐI
+/// theo thư mục làm việc của tiến trình - tức thường là thư mục cài đặt (không ghi được nếu cài cho mọi
+/// người dùng), và là thư mục khác nhau tùy cách mở ứng dụng.
+QString exchangeDir()
+{
+    const QString docs = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    return docs.isEmpty() ? QDir::homePath() : docs;
+}
+
+ActionChain makeDemoChain()
+{
+    // Create demo sample chain as documented in Section 94
+    ActionChain defaultChain;
+    defaultChain.id = "demo_chain";
+    defaultChain.name = "Demo Thao Tác";
+    defaultChain.description = "Chuỗi hành động mẫu Click, Type, Wait";
+    defaultChain.repeatCount = 1;
+
+    Action a1;
+    a1.type = ActionType::MouseClick;
+    a1.x = 500;
+    a1.y = 300;
+    a1.waitBefore = std::chrono::milliseconds(500);
+    a1.waitAfter = std::chrono::milliseconds(500);
+
+    Action a2;
+    a2.type = ActionType::TypeText;
+    a2.text = "admin";
+    a2.waitBefore = std::chrono::milliseconds(200);
+    a2.waitAfter = std::chrono::milliseconds(400);
+
+    Action a3;
+    a3.type = ActionType::KeyPress;
+    a3.keyCode = 9; // TAB
+    a3.keyName = "TAB";
+    a3.waitBefore = std::chrono::milliseconds(100);
+    a3.waitAfter = std::chrono::milliseconds(300);
+
+    Action a4;
+    a4.type = ActionType::TypeText;
+    a4.text = "123456";
+    a4.waitBefore = std::chrono::milliseconds(200);
+    a4.waitAfter = std::chrono::milliseconds(500);
+
+    Action a5;
+    a5.type = ActionType::KeyPress;
+    a5.keyCode = 13; // ENTER
+    a5.keyName = "ENTER";
+    a5.waitBefore = std::chrono::milliseconds(200);
+    a5.waitAfter = std::chrono::milliseconds(1000);
+
+    defaultChain.actions = {a1, a2, a3, a4, a5};
+    return defaultChain;
+}
+} // namespace
 
 AutoClickWindow::AutoClickWindow(QWidget* parent)
     : QWidget(parent)
@@ -23,6 +88,7 @@ AutoClickWindow::AutoClickWindow(QWidget* parent)
     connect(m_runner, &ActionRunner::roundStarted, this, &AutoClickWindow::onRunnerRoundStarted);
     connect(m_runner, &ActionRunner::actionStarted, this, &AutoClickWindow::onRunnerActionStarted);
     connect(m_runner, &ActionRunner::countdownTick, this, &AutoClickWindow::onRunnerCountdownTick);
+    connect(m_runner, &ActionRunner::errorOccurred, this, &AutoClickWindow::onRunnerError);
     connect(m_runner, &ActionRunner::chainFinished, this, &AutoClickWindow::onRunnerFinished);
     connect(m_runner, &ActionRunner::executionStopped, this, &AutoClickWindow::onRunnerFinished);
 
@@ -34,12 +100,16 @@ AutoClickWindow::AutoClickWindow(QWidget* parent)
     connect(m_mouseCapture, &MouseCapture::pointCaptured, m_actionEditorWidget, &ActionEditorWidget::onPositionCaptured);
     connect(m_actionEditorWidget, &ActionEditorWidget::dragGestureCaptureRequested, m_mouseCapture, &MouseCapture::startDragGestureCapture);
     connect(m_mouseCapture, &MouseCapture::dragGestureCaptured, m_actionEditorWidget, &ActionEditorWidget::onDragGestureCaptured);
+    connect(m_mouseCapture, &MouseCapture::captureFailed, this, [this](const QString& message) {
+        QMessageBox::warning(this, "Không bắt được thao tác", message);
+    });
 
     loadDefaultProfile();
 }
 
 AutoClickWindow::~AutoClickWindow()
 {
+    unregisterStopHotkey();
     if (m_overlay)
     {
         m_overlay->close();
@@ -59,10 +129,79 @@ void AutoClickWindow::closeEvent(QCloseEvent* event)
             return;
         }
         m_runner->requestStop();
-        m_runner->wait(3000);
+        // Cửa sổ này đóng là chỉ ẨN đi (AutoClickTool tái dùng nó) - tuyệt đối không được ẩn trong khi
+        // luồng chạy còn đang điều khiển chuột/bàn phím: lúc đó cả cửa sổ lẫn HUD (nơi có nút Dừng) đều
+        // đã biến mất. Trước đây kết quả wait() bị bỏ qua. Mọi khoảng ngủ của ActionRunner/InputController
+        // nay đều kiểm tra cờ dừng mỗi <=50ms nên bình thường luồng thoát gần như tức thì.
+        if (!m_runner->wait(3000))
+        {
+            m_statusLabel->setText("Trạng thái: Chưa dừng được chuỗi - thử đóng lại sau");
+            event->ignore();
+            return;
+        }
     }
+    unregisterStopHotkey();
     if (m_overlay) m_overlay->hide();
     event->accept();
+}
+
+void AutoClickWindow::stopForQuit()
+{
+    if (m_runner && m_runner->isRunning())
+    {
+        m_runner->requestStop();
+        m_runner->wait(2000); // có giới hạn - không được treo quá trình thoát ứng dụng
+    }
+    unregisterStopHotkey();
+    if (m_overlay) m_overlay->hide();
+}
+
+bool AutoClickWindow::nativeEvent(const QByteArray& eventType, void* message, qintptr* result)
+{
+    // WM_HOTKEY của phím dừng toàn cục (chỉ đăng ký trong lúc chuỗi đang chạy - xem registerStopHotkey()).
+    if (m_stopHotkeyRegistered && StopHotkey::isStopMessage(message))
+    {
+        onStopClicked();
+        if (result) *result = 0;
+        return true;
+    }
+    return QWidget::nativeEvent(eventType, message, result);
+}
+
+void AutoClickWindow::registerStopHotkey()
+{
+    if (!m_stopHotkeyRegistered)
+        m_stopHotkeyRegistered = StopHotkey::registerFor(winId());
+
+    if (!m_stopHotkeyRegistered)
+    {
+        // Thường do ứng dụng khác đã chiếm đúng tổ hợp này - vẫn cho chạy, chỉ là phải dừng bằng nút.
+        Logger::instance().warning("AutoClick", QString("Không đăng ký được phím dừng toàn cục %1 - chỉ dừng "
+                                                        "được bằng nút Dừng.").arg(StopHotkey::label()));
+    }
+    m_overlay->setStopHotkeyHint(m_stopHotkeyRegistered ? StopHotkey::label() : QString());
+}
+
+void AutoClickWindow::unregisterStopHotkey()
+{
+    if (!m_stopHotkeyRegistered)
+        return;
+    StopHotkey::unregisterFor(winId());
+    m_stopHotkeyRegistered = false;
+}
+
+void AutoClickWindow::clearRunningMarker()
+{
+    m_actionListWidget->setRunningRow(-1);
+}
+
+void AutoClickWindow::noteActionsRestructured()
+{
+    if (m_runningChainIndex >= 0 && m_currentChainIndex == m_runningChainIndex)
+    {
+        m_runningChainRestructured = true;
+        clearRunningMarker();
+    }
 }
 
 #include "core/IconHelper.h"
@@ -233,58 +372,69 @@ void AutoClickWindow::setupUi()
     mainLayout->addLayout(bottomBar);
 }
 
+bool AutoClickWindow::backupCorruptDefaultProfile(QString* backupPath)
+{
+    const QString path = ActionSerializer::getDefaultProfilePath();
+    const QString backup = path + "." + QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss") + ".bak";
+    if (!QFile::rename(path, backup))
+        return false;
+    if (backupPath) *backupPath = backup;
+    return true;
+}
+
 void AutoClickWindow::loadDefaultProfile()
 {
-    QString path = ActionSerializer::getDefaultProfilePath();
-    if (!ActionSerializer::loadFromFile(path, m_chains) || m_chains.empty())
+    const QString path = ActionSerializer::getDefaultProfilePath();
+    QString notice;
+
+    if (QFileInfo::exists(path))
     {
-        // Create demo sample chain as documented in Section 94
-        ActionChain defaultChain;
-        defaultChain.id = "demo_chain";
-        defaultChain.name = "Demo Thao Tác";
-        defaultChain.description = "Chuỗi hành động mẫu Click, Type, Wait";
-        defaultChain.repeatCount = 1;
+        QString loadError;
+        if (!ActionSerializer::loadFromFile(path, m_chains, &loadError))
+        {
+            // Tệp CÓ nhưng không đọc được (JSON hỏng/sai định dạng). Trước đây trường hợp này đi chung
+            // nhánh với "chưa có tệp": tạo chuỗi mẫu rồi GHI ĐÈ luôn lên tệp của người dùng - mất sạch
+            // mọi chuỗi đã lưu chỉ vì một ký tự hỏng. Nay đổi tên tệp hỏng thành .bak để giữ lại, rồi
+            // mới tạo tệp mới.
+            m_chains.clear();
+            QString backupPath;
+            if (backupCorruptDefaultProfile(&backupPath))
+            {
+                notice = QString("Tệp hồ sơ Auto Click không đọc được (%1).\n\nBản gốc đã được giữ lại tại:\n%2\n\n"
+                                 "Đã tạo một hồ sơ mẫu mới.")
+                             .arg(loadError, QDir::toNativeSeparators(backupPath));
+            }
+            else
+            {
+                m_corruptDefaultProfilePending = true;
+                notice = QString("Tệp hồ sơ Auto Click không đọc được (%1) và không đổi tên được để giữ lại:\n%2\n\n"
+                                 "Chuỗi mẫu đang hiển thị CHƯA được lưu - tệp gốc vẫn còn nguyên.")
+                             .arg(loadError, QDir::toNativeSeparators(path));
+            }
+            Logger::instance().warning("AutoClick", QString(notice).replace('\n', ' '));
+        }
+    }
 
-        Action a1;
-        a1.type = ActionType::MouseClick;
-        a1.x = 500;
-        a1.y = 300;
-        a1.waitBefore = std::chrono::milliseconds(500);
-        a1.waitAfter = std::chrono::milliseconds(500);
-
-        Action a2;
-        a2.type = ActionType::TypeText;
-        a2.text = "admin";
-        a2.waitBefore = std::chrono::milliseconds(200);
-        a2.waitAfter = std::chrono::milliseconds(400);
-
-        Action a3;
-        a3.type = ActionType::KeyPress;
-        a3.keyCode = 9; // TAB
-        a3.keyName = "TAB";
-        a3.waitBefore = std::chrono::milliseconds(100);
-        a3.waitAfter = std::chrono::milliseconds(300);
-
-        Action a4;
-        a4.type = ActionType::TypeText;
-        a4.text = "123456";
-        a4.waitBefore = std::chrono::milliseconds(200);
-        a4.waitAfter = std::chrono::milliseconds(500);
-
-        Action a5;
-        a5.type = ActionType::KeyPress;
-        a5.keyCode = 13; // ENTER
-        a5.keyName = "ENTER";
-        a5.waitBefore = std::chrono::milliseconds(200);
-        a5.waitAfter = std::chrono::milliseconds(1000);
-
-        defaultChain.actions = {a1, a2, a3, a4, a5};
-        m_chains.push_back(defaultChain);
-        ActionSerializer::saveToFile(path, m_chains);
+    if (m_chains.empty())
+    {
+        m_chains.push_back(makeDemoChain());
+        QString saveError;
+        if (!m_corruptDefaultProfilePending && !ActionSerializer::saveToFile(path, m_chains, &saveError))
+            Logger::instance().warning("AutoClick", QString("Không ghi được hồ sơ mẫu vào %1: %2").arg(path, saveError));
     }
 
     m_chainListWidget->setChains(m_chains);
     syncUiWithCurrentChain();
+
+    if (!notice.isEmpty())
+    {
+        m_statusLabel->setText("Trạng thái: Hồ sơ cũ bị hỏng - đã tạo hồ sơ mẫu");
+        // Hàm này chạy trong constructor (cửa sổ chưa hiện) - hoãn hộp thoại tới khi vòng lặp sự kiện chạy.
+        QTimer::singleShot(0, this, [this, notice]() {
+            if (isVisible())
+                QMessageBox::warning(this, "Hồ sơ Auto Click bị hỏng", notice);
+        });
+    }
 }
 
 ActionChain* AutoClickWindow::currentChain()
@@ -300,6 +450,10 @@ void AutoClickWindow::syncUiWithCurrentChain()
 {
     ActionChain* chain = currentChain();
     m_syncingUi = true;
+    // Dấu "▶ đang chạy" thuộc về chain đang chạy - chuyển sang xem chain khác thì bỏ (hàng cùng số thứ tự
+    // của chain khác không phải hành động đang chạy).
+    if (m_currentChainIndex != m_runningChainIndex)
+        clearRunningMarker();
     if (chain)
     {
         m_actionListWidget->setActions(chain->actions);
@@ -359,9 +513,14 @@ void AutoClickWindow::onAddChain()
     chain.repeatCount = 1;
 
     m_chains.push_back(chain);
-    m_currentChainIndex = static_cast<int>(m_chains.size()) - 1;
+    // Giữ chỉ số đích trong biến CỤC BỘ: setChains() dựng lại danh sách rồi tự chọn lại hàng CŨ, phát
+    // chainSelectionChanged -> onChainSelected() ghi đè m_currentChainIndex về hàng cũ đó. Trước đây dòng
+    // setSelectedChainIndex(m_currentChainIndex) ngay sau vì thế chọn lại đúng hàng cũ - chuỗi vừa thêm/
+    // nhân bản không bao giờ được chọn.
+    const int newIndex = static_cast<int>(m_chains.size()) - 1;
     m_chainListWidget->setChains(m_chains);
-    m_chainListWidget->setSelectedChainIndex(m_currentChainIndex);
+    m_chainListWidget->setSelectedChainIndex(newIndex);
+    m_currentChainIndex = newIndex;
     syncUiWithCurrentChain();
 }
 
@@ -371,9 +530,10 @@ void AutoClickWindow::onCloneChain(int index)
     {
         ActionChain cloned = m_chains[index].clone();
         m_chains.push_back(cloned);
-        m_currentChainIndex = static_cast<int>(m_chains.size()) - 1;
+        const int newIndex = static_cast<int>(m_chains.size()) - 1; // biến cục bộ - xem onAddChain()
         m_chainListWidget->setChains(m_chains);
-        m_chainListWidget->setSelectedChainIndex(m_currentChainIndex);
+        m_chainListWidget->setSelectedChainIndex(newIndex);
+        m_currentChainIndex = newIndex;
         syncUiWithCurrentChain();
     }
 }
@@ -389,9 +549,20 @@ void AutoClickWindow::onDeleteChain(int index)
         }
 
         m_chains.erase(m_chains.begin() + index);
-        m_currentChainIndex = std::max(0, index - 1);
+        // Chain đang chạy (ActionRunner giữ bản sao riêng nên vẫn chạy tiếp được) bị xóa hoặc bị dồn chỉ số.
+        if (index == m_runningChainIndex)
+        {
+            m_runningChainIndex = -1;
+            clearRunningMarker();
+        }
+        else if (index < m_runningChainIndex)
+        {
+            --m_runningChainIndex;
+        }
+        const int newIndex = std::max(0, index - 1); // biến cục bộ - xem onAddChain()
         m_chainListWidget->setChains(m_chains);
-        m_chainListWidget->setSelectedChainIndex(m_currentChainIndex);
+        m_chainListWidget->setSelectedChainIndex(newIndex);
+        m_currentChainIndex = newIndex;
         syncUiWithCurrentChain();
     }
 }
@@ -419,6 +590,7 @@ void AutoClickWindow::onAddAction()
     ActionChain* chain = currentChain();
     if (!chain) return;
 
+    noteActionsRestructured();
     Action newAct;
     chain->actions.push_back(newAct);
     int newIdx = static_cast<int>(chain->actions.size()) - 1;
@@ -437,6 +609,7 @@ void AutoClickWindow::onCloneAction(int index)
     ActionChain* chain = currentChain();
     if (chain && index >= 0 && index < static_cast<int>(chain->actions.size()))
     {
+        noteActionsRestructured();
         Action cloned = chain->actions[index];
         chain->actions.insert(chain->actions.begin() + index + 1, cloned);
         m_actionListWidget->setActions(chain->actions);
@@ -450,6 +623,7 @@ void AutoClickWindow::onDeleteAction(int index)
     ActionChain* chain = currentChain();
     if (chain && index >= 0 && index < static_cast<int>(chain->actions.size()))
     {
+        noteActionsRestructured();
         chain->actions.erase(chain->actions.begin() + index);
         m_actionListWidget->setActions(chain->actions);
         int nextIdx = std::min(index, static_cast<int>(chain->actions.size()) - 1);
@@ -482,6 +656,7 @@ void AutoClickWindow::onActionMoved(int from, int to)
     // Di chuyển đúng MỘT phần tử từ chỉ số from sang đúng chỉ số to (giữ nguyên thứ tự tương đối của
     // mọi phần tử còn lại) - cách chuẩn dùng std::rotate, tránh tính sai lệch chỉ số dễ gặp nếu tự
     // erase() rồi insert() thủ công (chỉ số to đổi ý nghĩa ngay sau khi erase phần tử phía trước nó).
+    noteActionsRestructured();
     auto& actions = chain->actions;
     if (from < to)
         std::rotate(actions.begin() + from, actions.begin() + from + 1, actions.begin() + to + 1);
@@ -519,6 +694,13 @@ void AutoClickWindow::onRunClicked()
 
 void AutoClickWindow::startChain(int index)
 {
+    // Lần chạy trước chưa được onRunnerFinished() xử lý xong (kể cả khi luồng đã thoát nhưng tín hiệu kết
+    // thúc còn nằm trong hàng đợi sự kiện): không bắt đầu lần mới. Nếu cho chạy, tín hiệu kết thúc CŨ tới
+    // sau sẽ ẩn HUD, hủy phím dừng toàn cục và bật lại nút Chạy ngay giữa lúc chuỗi MỚI đang chạy (đường
+    // vào: menu chuột phải "Chạy chuỗi này" không bị vô hiệu hóa như nút RUN).
+    if (m_runActive)
+        return;
+
     if (m_runner->isRunning())
     {
         // Thread có thể vừa phát tín hiệu kết thúc nhưng chưa thoát hẳn
@@ -548,6 +730,16 @@ void AutoClickWindow::startChain(int index)
     m_runButton->setEnabled(false);
     m_stopButton->setEnabled(true);
     m_statusLabel->setText("Trạng thái: Đang thực thi...");
+
+    m_lastRunError.clear();
+    m_runActive = true;
+    m_runningChainIndex = m_currentChainIndex;
+    m_runningChainRestructured = false;
+    clearRunningMarker();
+
+    // Phím dừng toàn cục CHỈ có hiệu lực trong lúc chuỗi chạy (hủy ở onRunnerFinished) - đăng ký thất
+    // bại không chặn việc chạy.
+    registerStopHotkey();
 
     // Thu nhỏ cửa sổ quản lý TRƯỚC khi bắt đầu thao tác thật - tránh chính cửa sổ này che/nhận nhầm
     // click/gõ phím của chuỗi hành động (vd nếu vị trí click trùng với cửa sổ quản lý). HUD (RuntimeOverlay)
@@ -581,6 +773,9 @@ void AutoClickWindow::onRunnerStateChanged(RunnerState state)
         case RunnerState::Idle:
             m_statusLabel->setText("Trạng thái: Sẵn sàng (Idle)");
             break;
+        case RunnerState::Error:
+            m_statusLabel->setText("Trạng thái: Đã dừng do lỗi (Error)");
+            break;
         default:
             break;
     }
@@ -592,10 +787,28 @@ void AutoClickWindow::onRunnerRoundStarted(int currentRound, int totalRounds)
 }
 
 void AutoClickWindow::onRunnerActionStarted(int /*currentRound*/, int /*totalRounds*/, int actionIndex, int totalActions,
-                                           const QString& currentDesc, const QString& nextDesc, int targetX, int targetY)
+                                           const QString& currentDesc, const QString& nextDesc, int targetX, int targetY,
+                                           int sourceIndex)
 {
     m_overlay->setActionInfo(actionIndex, totalActions, currentDesc, nextDesc, targetX, targetY);
-    m_actionListWidget->setSelectedActionIndex(actionIndex - 1);
+
+    // Ba lỗi của cách cũ (setSelectedActionIndex(actionIndex - 1)):
+    //  - ĐỔI HÀNG ĐANG CHỌN kéo theo nạp lại ActionEditorWidget -> xóa sạch chỉnh sửa người dùng đang gõ
+    //    dở mà chưa bấm "Lưu hành động", ở MỖI hành động của chuỗi đang chạy.
+    //  - actionIndex đếm trong các hành động ĐANG BẬT, không phải số hàng (lệch khi có hành động bị tắt).
+    //  - Tô luôn cả khi người dùng đang xem một chain KHÁC chain đang chạy.
+    // Nay chỉ ĐÁNH DẤU hàng (không đụng lựa chọn/editor), theo chỉ số gốc, và chỉ khi danh sách đang hiện
+    // đúng là chain đang chạy với cấu trúc chưa bị sửa.
+    const bool showingRunningChain =
+        m_runningChainIndex >= 0 && m_currentChainIndex == m_runningChainIndex && !m_runningChainRestructured;
+    m_actionListWidget->setRunningRow(showingRunningChain ? sourceIndex : -1);
+}
+
+void AutoClickWindow::onRunnerError(const QString& message)
+{
+    // Chỉ ghi nhận - hiện cho người dùng ở onRunnerFinished() (executionStopped tới ngay sau), khi cửa
+    // sổ đã được khôi phục khỏi trạng thái thu nhỏ.
+    m_lastRunError = message;
 }
 
 void AutoClickWindow::onRunnerCountdownTick(qint64 remainingMs, const QString& phase)
@@ -605,22 +818,68 @@ void AutoClickWindow::onRunnerCountdownTick(qint64 remainingMs, const QString& p
 
 void AutoClickWindow::onRunnerFinished()
 {
+    unregisterStopHotkey();
+    m_runActive = false;
+    m_runningChainIndex = -1;
+    m_runningChainRestructured = false;
+    clearRunningMarker();
+
     m_runButton->setEnabled(true);
     m_stopButton->setEnabled(false);
     m_overlay->hide();
-    m_statusLabel->setText("Trạng thái: Sẵn sàng (Idle)");
+    // Không đặt lại nhãn trạng thái ở đây: onRunnerStateChanged() vừa đặt "Hoàn tất"/"Sẵn sàng"/"Lỗi" ngay
+    // trước tín hiệu này - trước đây dòng ghi đè "Sẵn sàng (Idle)" làm "Hoàn tất" không bao giờ kịp hiện.
+
+    // startChain() đã thu nhỏ cửa sổ này - chạy xong thì đưa nó trở lại (trước đây người dùng phải tự
+    // tìm lại trên thanh tác vụ). Chỉ khi nó còn đang hiện-và-thu-nhỏ: nếu người dùng đã ĐÓNG cửa sổ giữa
+    // lúc chạy (closeEvent tự dừng chuỗi) thì không tự bật nó lên lại.
+    if (isVisible() && isMinimized())
+    {
+        setWindowState((windowState() & ~Qt::WindowMinimized) | Qt::WindowActive);
+        raise();
+        activateWindow();
+    }
+
+    if (!m_lastRunError.isEmpty())
+    {
+        const QString error = m_lastRunError;
+        m_lastRunError.clear();
+        if (isVisible())
+        {
+            QMessageBox::warning(this, "Auto Click đã dừng do lỗi",
+                                 error + "\n\nChuỗi hành động đã dừng tại bước này. Nếu cửa sổ đích chạy với quyền "
+                                         "Administrator, hãy chạy One for ALL cùng mức quyền.");
+        }
+    }
 }
 
 void AutoClickWindow::onSaveProfile()
 {
     QString path = ActionSerializer::getDefaultProfilePath();
-    if (ActionSerializer::saveToFile(path, m_chains))
+
+    // Tệp mặc định hỏng mà lúc mở cửa sổ chưa đổi tên giữ lại được (xem loadDefaultProfile()) - thử lại
+    // trước khi ghi; vẫn không được thì KHÔNG ghi đè lên nó.
+    if (m_corruptDefaultProfilePending)
     {
-        QMessageBox::information(this, "Lưu cấu hình", "Đã lưu thành công cấu hình vào: " + path);
+        if (QFileInfo::exists(path) && !backupCorruptDefaultProfile())
+        {
+            QMessageBox::critical(this, "Lỗi",
+                                  "Tệp hồ sơ cũ bị hỏng và không đổi tên được để giữ lại, nên chưa lưu đè lên nó:\n" +
+                                      QDir::toNativeSeparators(path) + "\n\nHãy dùng \"Xuất file\" để lưu ra nơi khác.");
+            return;
+        }
+        m_corruptDefaultProfilePending = false;
+    }
+
+    QString error;
+    if (ActionSerializer::saveToFile(path, m_chains, &error))
+    {
+        QMessageBox::information(this, "Lưu cấu hình", "Đã lưu thành công cấu hình vào: " + QDir::toNativeSeparators(path));
     }
     else
     {
-        QMessageBox::critical(this, "Lỗi", "Không thể lưu cấu hình vào: " + path);
+        QMessageBox::critical(this, "Lỗi",
+                              QString("Không thể lưu cấu hình vào: %1\n\n%2").arg(QDir::toNativeSeparators(path), error));
     }
 }
 
@@ -628,57 +887,99 @@ void AutoClickWindow::onLoadProfile()
 {
     QString path = ActionSerializer::getDefaultProfilePath();
     std::vector<ActionChain> loaded;
-    if (ActionSerializer::loadFromFile(path, loaded) && !loaded.empty())
+    QString error;
+    if (!ActionSerializer::loadFromFile(path, loaded, &error))
     {
-        m_chains = loaded;
-        m_currentChainIndex = 0;
-        m_chainListWidget->setChains(m_chains);
-        m_chainListWidget->setSelectedChainIndex(0);
-        m_currentChainIndex = 0;
-        syncUiWithCurrentChain();
-        QMessageBox::information(this, "Nạp cấu hình", "Đã nạp thành công cấu hình từ: " + path);
+        QMessageBox::critical(this, "Lỗi",
+                              QString("Không thể nạp cấu hình từ: %1\n\n%2").arg(QDir::toNativeSeparators(path), error));
+        return;
     }
-    else
+    if (loaded.empty())
     {
-        QMessageBox::critical(this, "Lỗi", "Không thể nạp cấu hình từ: " + path);
+        QMessageBox::warning(this, "Nạp cấu hình", "Tệp cấu hình đã lưu không có chuỗi hành động nào.");
+        return;
     }
+
+    // Nạp lại THAY TOÀN BỘ danh sách chain đang có trong bộ nhớ - kể cả những gì chưa bấm Lưu cấu hình.
+    // Trước đây làm ngay không hỏi.
+    if (!m_chains.empty() &&
+        QMessageBox::question(this, "Nạp cấu hình",
+                              QString("Nạp lại sẽ thay toàn bộ %1 chuỗi đang có bằng %2 chuỗi trong tệp đã lưu. "
+                                      "Mọi thay đổi chưa lưu sẽ mất.\n\nTiếp tục?")
+                                  .arg(m_chains.size())
+                                  .arg(loaded.size()),
+                              QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+    {
+        return;
+    }
+
+    m_chains = loaded;
+    m_runningChainIndex = -1; // chain đang chạy (nếu có) không còn nằm trong danh sách mới
+    clearRunningMarker();
+    m_chainListWidget->setChains(m_chains);
+    m_chainListWidget->setSelectedChainIndex(0);
+    m_currentChainIndex = 0;
+    syncUiWithCurrentChain();
+    QMessageBox::information(this, "Nạp cấu hình", "Đã nạp thành công cấu hình từ: " + QDir::toNativeSeparators(path));
 }
 
 void AutoClickWindow::onExportProfile()
 {
-    QString path = QFileDialog::getSaveFileName(this, "Xuất cấu hình Auto Click", "profiles/export.json", "JSON Files (*.json)");
+    QString path = QFileDialog::getSaveFileName(this, "Xuất cấu hình Auto Click",
+                                                exchangeDir() + "/autoclick_export.json", "JSON Files (*.json)");
     if (!path.isEmpty())
     {
-        if (ActionSerializer::saveToFile(path, m_chains))
+        QString error;
+        if (ActionSerializer::saveToFile(path, m_chains, &error))
         {
             QMessageBox::information(this, "Xuất file", "Đã xuất cấu hình ra file thành công!");
         }
         else
         {
-            QMessageBox::critical(this, "Lỗi", "Không thể xuất file.");
+            QMessageBox::critical(this, "Lỗi", "Không thể xuất file.\n\n" + error);
         }
     }
 }
 
 void AutoClickWindow::onImportProfile()
 {
-    QString path = QFileDialog::getOpenFileName(this, "Nhập cấu hình Auto Click", "profiles", "JSON Files (*.json)");
-    if (!path.isEmpty())
+    QString path = QFileDialog::getOpenFileName(this, "Nhập cấu hình Auto Click", exchangeDir(), "JSON Files (*.json)");
+    if (path.isEmpty())
+        return;
+
+    std::vector<ActionChain> loaded;
+    QString error;
+    if (!ActionSerializer::loadFromFile(path, loaded, &error))
     {
-        std::vector<ActionChain> loaded;
-        if (ActionSerializer::loadFromFile(path, loaded) && !loaded.empty())
-        {
-            m_chains = loaded;
-            m_currentChainIndex = 0;
-            m_chainListWidget->setChains(m_chains);
-            syncUiWithCurrentChain();
-            QMessageBox::information(this, "Nhập file", "Đã nhập cấu hình thành công!");
-        }
-        else
-        {
-            QMessageBox::critical(this, "Lỗi", "File không hợp lệ hoặc lỗi phân tích cú pháp JSON.");
-        }
+        QMessageBox::critical(this, "Lỗi", "File không hợp lệ hoặc lỗi phân tích cú pháp JSON.\n\n" + error);
+        return;
     }
+    if (loaded.empty())
+    {
+        QMessageBox::critical(this, "Lỗi", "File không có chuỗi hành động nào.");
+        return;
+    }
+
+    // Nhập THAY TOÀN BỘ danh sách chain đang có (không gộp thêm) - hỏi trước, xem onLoadProfile().
+    if (!m_chains.empty() &&
+        QMessageBox::question(this, "Nhập file",
+                              QString("Nhập file sẽ thay toàn bộ %1 chuỗi đang có bằng %2 chuỗi trong file. "
+                                      "Mọi thay đổi chưa lưu sẽ mất.\n\nTiếp tục?")
+                                  .arg(m_chains.size())
+                                  .arg(loaded.size()),
+                              QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+    {
+        return;
+    }
+
+    m_chains = loaded;
+    m_runningChainIndex = -1;
+    clearRunningMarker();
+    m_chainListWidget->setChains(m_chains);
+    m_chainListWidget->setSelectedChainIndex(0);
+    m_currentChainIndex = 0;
+    syncUiWithCurrentChain();
+    QMessageBox::information(this, "Nhập file", "Đã nhập cấu hình thành công!");
 }
 
 void AutoClickWindow::onCaptureRequested(int /*targetField*/)

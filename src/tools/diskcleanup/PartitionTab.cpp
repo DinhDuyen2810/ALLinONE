@@ -17,7 +17,10 @@
 #include <QStringList>
 #include <QTableWidget>
 #include <QTableWidgetItem>
+#include <QThread>
 #include <QVBoxLayout>
+
+#include <memory>
 
 namespace
 {
@@ -54,6 +57,9 @@ PartitionTab::~PartitionTab()
     // đang đổi kích thước, đây chỉ là lưới an toàn cuối cùng (vd nếu widget bị hủy theo đường khác).
     if (m_resizer && m_resizer->isRunning())
         m_resizer->wait();
+    // Luồng nền đang hỏi Windows (chỉ đọc, tối đa ~20 giây) cũng phải thoát hẳn trước khi bị hủy.
+    if (m_queryThread)
+        m_queryThread->wait();
 }
 
 bool PartitionTab::isResizingNow() const
@@ -124,6 +130,7 @@ void PartitionTab::buildUi()
     m_queryBtn->setStyleSheet(DiskUi::buttonStyle());
     m_queryBtn->setCursor(Qt::PointingHandCursor);
     m_queryBtn->setVisible(false);
+    m_queryBtn->setObjectName("partitionQueryButton"); // objectName: để bộ test UI tìm đúng widget
     connect(m_queryBtn, &QPushButton::clicked, this, &PartitionTab::onQuerySupportedSizeClicked);
     root->addWidget(m_queryBtn);
 
@@ -141,6 +148,7 @@ void PartitionTab::buildUi()
     m_newSizeSpin->setSuffix(" GB");
     m_newSizeSpin->setDecimals(2);
     m_newSizeSpin->setVisible(false);
+    m_newSizeSpin->setObjectName("partitionNewSizeSpin");
     m_sizeLabel->setVisible(false);
     resizeRow->addWidget(m_sizeLabel);
     resizeRow->addWidget(m_newSizeSpin);
@@ -156,6 +164,7 @@ void PartitionTab::buildUi()
     m_confirmEdit = new QLineEdit(this);
     m_confirmEdit->setStyleSheet(DiskUi::inputStyle());
     m_confirmEdit->setVisible(false);
+    m_confirmEdit->setObjectName("partitionConfirmEdit");
     connect(m_confirmEdit, &QLineEdit::textChanged, this, &PartitionTab::onConfirmTextChanged);
     confirmRow->addWidget(m_confirmEdit);
 
@@ -164,6 +173,7 @@ void PartitionTab::buildUi()
     m_resizeBtn->setCursor(Qt::PointingHandCursor);
     m_resizeBtn->setEnabled(false);
     m_resizeBtn->setVisible(false);
+    m_resizeBtn->setObjectName("partitionResizeButton");
     connect(m_resizeBtn, &QPushButton::clicked, this, &PartitionTab::onResizeClicked);
     confirmRow->addWidget(m_resizeBtn);
     root->addLayout(confirmRow);
@@ -224,11 +234,65 @@ void PartitionTab::onRefreshClicked()
     reloadPartitions();
 }
 
+bool PartitionTab::isLoading() const
+{
+    return m_loading;
+}
+
+void PartitionTab::setLoading(bool loading, const QString& statusText)
+{
+    m_loading = loading;
+    // Khóa bảng + các nút trong lúc đang hỏi Windows: không cho đổi dòng chọn/bấm tra lần nữa khi kết quả
+    // của lần hỏi trước chưa về (kết quả sẽ được gắn cho phân vùng đang chọn lúc BẮT ĐẦU hỏi).
+    m_refreshBtn->setEnabled(!loading);
+    m_table->setEnabled(!loading);
+    m_queryBtn->setEnabled(!loading);
+    if (loading && !statusText.isEmpty())
+        m_statusLabel->setText(statusText);
+}
+
+void PartitionTab::runInBackground(const QString& statusText, std::function<void()> work, std::function<void()> done)
+{
+    // Get-Partition/Get-PartitionSupportedSize qua PowerShell mất 1-3 giây (lần đầu nạp module Storage
+    // có thể lâu hơn nhiều, tối đa 20 giây theo PowerShellRunner) - trước đây chạy thẳng trên luồng giao
+    // diện, làm cả cửa sổ Disk Cleanup đứng hình ngay lúc mở và mỗi lần bấm Làm mới/Tra kích thước.
+    setLoading(true, statusText);
+    QThread* thread = QThread::create(std::move(work));
+    thread->setParent(this);
+    m_queryThread = thread;
+    connect(thread, &QThread::finished, this, [this, thread, done = std::move(done)]() {
+        if (m_queryThread == thread)
+            m_queryThread = nullptr;
+        thread->deleteLater();
+        setLoading(false);
+        done();
+    });
+    thread->start();
+}
+
 void PartitionTab::reloadPartitions()
 {
-    showResizeControls(false);
-    QString error;
-    m_partitions = PartitionManager::listPartitions(&error);
+    if (m_loading)
+        return;
+
+    m_table->clearSelection();
+    resetResizeState();
+    showSelectionControls(false);
+
+    auto partitions = std::make_shared<QList<PartitionManager::PartitionInfo>>();
+    auto error = std::make_shared<QString>();
+    runInBackground(
+        "⏳ Đang đọc danh sách phân vùng...",
+        [partitions, error]() { *partitions = PartitionManager::listPartitions(error.get()); },
+        [this, partitions, error]() { populatePartitions(*partitions, *error); });
+}
+
+void PartitionTab::populatePartitions(const QList<PartitionManager::PartitionInfo>& partitions, const QString& error)
+{
+    m_table->clearSelection();
+    resetResizeState();
+    showSelectionControls(false);
+    m_partitions = partitions;
 
     m_table->setRowCount(m_partitions.size());
     for (int i = 0; i < m_partitions.size(); ++i)
@@ -253,8 +317,13 @@ void PartitionTab::reloadPartitions()
         setItem(6, notes.join(", "));
     }
 
-    m_statusLabel->setText(error.isEmpty() ? QString("Tìm thấy %1 phân vùng.").arg(m_partitions.size())
-                                           : ("⚠ " + error));
+    if (!error.isEmpty())
+        m_statusLabel->setText("⚠ " + error);
+    else if (!m_statusAfterReload.isEmpty())
+        m_statusLabel->setText(m_statusAfterReload); // giữ kết quả lần đổi kích thước vừa xong trên màn hình
+    else
+        m_statusLabel->setText(QString("Tìm thấy %1 phân vùng.").arg(m_partitions.size()));
+    m_statusAfterReload.clear();
 }
 
 const PartitionManager::PartitionInfo* PartitionTab::selectedPartition() const
@@ -268,28 +337,39 @@ const PartitionManager::PartitionInfo* PartitionTab::selectedPartition() const
     return &m_partitions[row];
 }
 
-void PartitionTab::showResizeControls(bool visible)
+void PartitionTab::showSelectionControls(bool visible)
 {
     m_detailLabel->setVisible(visible);
     m_queryBtn->setVisible(visible);
-    if (!visible)
-    {
-        m_warningLabel->setVisible(false);
-        m_newSizeSpin->setVisible(false);
-        m_sizeLabel->setVisible(false);
-        m_confirmHintLabel->setVisible(false);
-        m_confirmEdit->setVisible(false);
-        m_confirmEdit->clear();
-        m_resizeBtn->setVisible(false);
-        m_resizeBtn->setEnabled(false);
-        m_supportedRange = PartitionManager::SupportedSizeRange{};
-    }
+}
+
+void PartitionTab::resetResizeState()
+{
+    // Xóa SẠCH mọi thứ thuộc về lần tra trước: khoảng kích thước, phân vùng đã tra, ô nhập, ô xác nhận,
+    // nút "Đổi kích thước". Gọi ở MỌI lần đổi dòng chọn/nạp lại danh sách - trước đây chỉ làm khi bỏ
+    // chọn hẳn, nên chọn ổ C: -> tra -> gõ "C" (nút bật) -> bấm sang dòng ổ D: vẫn để nguyên nút đang
+    // bật cùng khoảng kích thước của C:, và bấm nút sẽ đổi kích thước ổ D: theo số liệu của ổ C:.
+    m_supportedRange = PartitionManager::SupportedSizeRange{};
+    m_queriedDisk = -1;
+    m_queriedPartition = -1;
+    m_queriedSizeBytes = -1;
+
+    m_warningLabel->setVisible(false);
+    m_newSizeSpin->setVisible(false);
+    m_sizeLabel->setVisible(false);
+    m_confirmHintLabel->setVisible(false);
+    m_confirmEdit->setVisible(false);
+    m_confirmEdit->clear();
+    m_confirmEdit->setPlaceholderText(QString());
+    m_resizeBtn->setVisible(false);
+    m_resizeBtn->setEnabled(false);
 }
 
 void PartitionTab::onRowSelectionChanged()
 {
+    resetResizeState();
     const auto* p = selectedPartition();
-    showResizeControls(p != nullptr);
+    showSelectionControls(p != nullptr);
     if (!p)
         return;
 
@@ -303,23 +383,48 @@ void PartitionTab::onRowSelectionChanged()
 void PartitionTab::onQuerySupportedSizeClicked()
 {
     const auto* p = selectedPartition();
-    if (!p)
+    if (!p || m_loading)
         return;
 
-    QString error;
-    m_supportedRange = PartitionManager::querySupportedSize(p->diskNumber, p->partitionNumber, &error);
-    if (!m_supportedRange.ok)
+    resetResizeState();
+    // Chép ra giá trị: con trỏ vào m_partitions không được giữ qua lúc chờ luồng nền.
+    const int disk = p->diskNumber;
+    const int partition = p->partitionNumber;
+    const qint64 sizeBytes = p->sizeBytes;
+
+    auto range = std::make_shared<PartitionManager::SupportedSizeRange>();
+    auto error = std::make_shared<QString>();
+    runInBackground(
+        "⏳ Đang hỏi Windows khoảng kích thước cho phép...",
+        [range, error, disk, partition]() { *range = PartitionManager::querySupportedSize(disk, partition, error.get()); },
+        [this, range, error, disk, partition, sizeBytes]() {
+            m_statusLabel->setText(QString("Tìm thấy %1 phân vùng.").arg(m_partitions.size()));
+            applySupportedRange(disk, partition, sizeBytes, *range, *error);
+        });
+}
+
+void PartitionTab::applySupportedRange(int disk, int partition, qint64 sizeBytes,
+                                       const PartitionManager::SupportedSizeRange& range, const QString& error)
+{
+    resetResizeState();
+
+    // Kết quả chỉ có nghĩa cho ĐÚNG phân vùng đã hỏi - nếu dòng đang chọn không còn là nó thì bỏ.
+    const auto* p = selectedPartition();
+    if (!p || p->diskNumber != disk || p->partitionNumber != partition || p->sizeBytes != sizeBytes)
+        return;
+
+    if (!range.ok)
     {
         m_warningLabel->setText("⚠ Không tra được kích thước cho phép" + (error.isEmpty() ? "" : (": " + error)) +
                                 (PartitionManager::isElevated() ? "" : " (thường cần quyền Administrator)."));
         m_warningLabel->setVisible(true);
-        m_newSizeSpin->setVisible(false);
-        m_sizeLabel->setVisible(false);
-        m_confirmHintLabel->setVisible(false);
-        m_confirmEdit->setVisible(false);
-        m_resizeBtn->setVisible(false);
         return;
     }
+
+    m_supportedRange = range;
+    m_queriedDisk = disk;
+    m_queriedPartition = partition;
+    m_queriedSizeBytes = sizeBytes;
 
     QString warn = QString("Windows cho phép đổi kích thước phân vùng này trong khoảng %1 - %2.")
                        .arg(DiskUi::formatBytes(m_supportedRange.minBytes), DiskUi::formatBytes(m_supportedRange.maxBytes));
@@ -342,17 +447,57 @@ void PartitionTab::onQuerySupportedSizeClicked()
     m_resizeBtn->setEnabled(false);
 }
 
-void PartitionTab::onConfirmTextChanged(const QString& text)
+void PartitionTab::applySupportedRangeForTest(const PartitionManager::SupportedSizeRange& range)
+{
+    if (const auto* p = selectedPartition())
+        applySupportedRange(p->diskNumber, p->partitionNumber, p->sizeBytes, range, QString());
+}
+
+QString PartitionTab::resizeRequestBlockReason() const
 {
     const auto* p = selectedPartition();
-    m_resizeBtn->setEnabled(p && m_supportedRange.ok && text == confirmToken(*p));
+    if (!p)
+        return "Chưa chọn phân vùng nào.";
+    if (!m_supportedRange.ok || m_queriedDisk < 0)
+        return "Chưa tra kích thước cho phép của phân vùng đang chọn.";
+    // Phân vùng đang chọn PHẢI là đúng phân vùng đã tra (cùng số đĩa, số phân vùng, kích thước) - khoảng
+    // kích thước, giá trị trong ô nhập và chuỗi đã gõ xác nhận đều thuộc về phân vùng đã tra.
+    if (p->diskNumber != m_queriedDisk || p->partitionNumber != m_queriedPartition || p->sizeBytes != m_queriedSizeBytes)
+        return "Phân vùng đang chọn không phải phân vùng đã tra kích thước - hãy tra lại cho phân vùng này.";
+    if (m_confirmEdit->text() != confirmToken(*p))
+        return QString("Chưa gõ đúng \"%1\" để xác nhận.").arg(confirmToken(*p));
+    return {};
+}
+
+void PartitionTab::onConfirmTextChanged(const QString&)
+{
+    m_resizeBtn->setEnabled(!m_loading && resizeRequestBlockReason().isEmpty());
 }
 
 void PartitionTab::onResizeClicked()
 {
-    const auto* p = selectedPartition();
-    if (!p || !m_supportedRange.ok)
+    if (m_loading || isResizingNow())
         return;
+
+    const QString blockReason = resizeRequestBlockReason();
+    if (!blockReason.isEmpty())
+    {
+        QMessageBox::warning(this, "Chưa thể đổi kích thước", blockReason);
+        const auto* stale = selectedPartition();
+        if (stale && (stale->diskNumber != m_queriedDisk || stale->partitionNumber != m_queriedPartition))
+            resetResizeState();
+        else
+            m_resizeBtn->setEnabled(false);
+        return;
+    }
+    const auto* p = selectedPartition();
+
+    if (!PartitionManager::isElevated())
+    {
+        QMessageBox::warning(this, "Cần quyền Administrator",
+            "Đổi kích thước phân vùng cần quyền Administrator - hãy bấm \"Chạy lại với quyền Quản trị\" rồi thử lại.");
+        return;
+    }
 
     // Tránh đổi kích thước trong lúc một tab KHÁC (Tìm tệp lớn/Tìm tệp trùng lặp/Dọn dẹp) đang đọc/ghi
     // trên cùng ổ đĩa - Resize-Partition cần di chuyển dữ liệu hệ thống tệp, I/O đồng thời từ chính ứng
@@ -369,18 +514,31 @@ void PartitionTab::onResizeClicked()
         }
     }
 
-    const qint64 newSizeBytes = static_cast<qint64>(m_newSizeSpin->value() * GB);
+    // Kẹp theo BYTE vào đúng khoảng Windows trả về (ô nhập làm tròn 2 chữ số thập phân GB).
+    const qint64 newSizeBytes = PartitionManager::internal::clampResizeBytes(m_newSizeSpin->value(), m_supportedRange);
+    if (newSizeBytes == p->sizeBytes)
+    {
+        QMessageBox::information(this, "Đổi kích thước", "Kích thước mới bằng kích thước hiện tại - không có gì để đổi.");
+        return;
+    }
     const QString name = p->driveLetter.isEmpty() ? confirmToken(*p) : (p->driveLetter + ":");
 
     const auto answer = QMessageBox::warning(
         this, "Xác nhận đổi kích thước phân vùng",
-        QString("Sắp đổi kích thước ổ %1 từ %2 thành %3.\n\n"
+        QString("Sắp đổi kích thước ổ %1 (đĩa %4, phân vùng %5) từ %2 thành %3.\n\n"
                 "Đây là thao tác đĩa THẬT, không có \"hoàn tác\" dễ dàng nếu có sự cố giữa chừng. "
                 "Hãy chắc chắn bạn đã sao lưu dữ liệu quan trọng.\n\n"
                 "Tiếp tục?")
-            .arg(name, DiskUi::formatBytes(p->sizeBytes), DiskUi::formatBytes(newSizeBytes)),
+            .arg(name, DiskUi::formatBytes(p->sizeBytes), DiskUi::formatBytes(newSizeBytes))
+            .arg(p->diskNumber)
+            .arg(p->partitionNumber),
         QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
     if (answer != QMessageBox::Yes)
+        return;
+
+    // Hộp thoại vừa rồi chạy vòng lặp sự kiện riêng - kiểm tra lại lần nữa rằng không có gì đổi trong lúc đó.
+    p = selectedPartition();
+    if (!resizeRequestBlockReason().isEmpty() || !p || m_loading || isResizingNow())
         return;
 
     m_refreshBtn->setEnabled(false);
@@ -392,7 +550,9 @@ void PartitionTab::onResizeClicked()
     m_progressBar->setVisible(true);
     m_statusLabel->setText("⏳ Đang đổi kích thước - KHÔNG tắt máy/rút nguồn...");
 
-    m_resizer->setTarget(p->diskNumber, p->partitionNumber, newSizeBytes);
+    // PartitionResizer tự đọc lại danh sách phân vùng + khoảng cho phép từ Windows ngay trước khi chạy
+    // và dừng nếu có sai khác so với m_queriedSizeBytes (xem PartitionResizer.h).
+    m_resizer->setTarget(p->diskNumber, p->partitionNumber, newSizeBytes, m_queriedSizeBytes);
     m_resizer->start();
 }
 
@@ -407,12 +567,12 @@ void PartitionTab::onResizeFinished(bool success, QString error)
 
     if (success)
     {
-        m_statusLabel->setText("✓ Đã đổi kích thước thành công.");
+        m_statusAfterReload = "✓ Đã đổi kích thước thành công.";
         QMessageBox::information(this, "Hoàn tất", "Đã đổi kích thước phân vùng thành công.");
     }
     else
     {
-        m_statusLabel->setText("⚠ Đổi kích thước thất bại: " + error);
+        m_statusAfterReload = "⚠ Đổi kích thước thất bại: " + error;
         QMessageBox::critical(this, "Lỗi", "Không đổi được kích thước:\n" + error);
     }
     reloadPartitions(); // làm mới danh sách + ẩn khu vực đổi kích thước, dù thành công hay thất bại

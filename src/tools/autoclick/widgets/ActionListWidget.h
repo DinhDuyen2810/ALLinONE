@@ -19,6 +19,10 @@ public:
     /// Đánh dấu (hoặc bỏ đánh dấu) dòng đang có thay đổi CHƯA LƯU bằng dấu "*" ở cột số thứ tự - gọi
     /// khi ActionEditorWidget phát hiện người dùng sửa một trường mà chưa bấm "Lưu hành động".
     void setRowDirty(int row, bool dirty);
+    /// Đánh dấu hàng đang được ActionRunner thực thi bằng "▶" ở cột số thứ tự (-1 = không hàng nào).
+    /// CHỈ đổi cách hiển thị, KHÔNG đổi hàng đang chọn: đổi hàng chọn sẽ nạp lại ActionEditorWidget và
+    /// xóa mất các chỉnh sửa người dùng chưa bấm "Lưu hành động".
+    void setRunningRow(int row);
 
 signals:
     void actionSelectionChanged(int index);
@@ -38,5 +42,8 @@ private:
     QPushButton* m_addButton;
     QPushButton* m_cloneButton;
     QPushButton* m_deleteBtn;
+    void refreshIndexCell(int row);
+
     int m_dirtyRow{-1};
+    int m_runningRow{-1};
 };

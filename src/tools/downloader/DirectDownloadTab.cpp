@@ -32,6 +32,10 @@ DirectDownloadTab::DirectDownloadTab(FileDownloader* downloader, QWidget* parent
     m_saveFolder = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
     buildUi();
 
+    // Hàng trong bảng được thêm theo tín hiệu itemAdded của FileDownloader dùng chung - KHÔNG thêm tay ở
+    // enqueueUrl(): tab "Quét trang web" đưa mục vào hàng đợi bằng cách gọi thẳng FileDownloader, trước
+    // đây các mục đó vẫn tải nhưng không có hàng nào ở đây (không thấy tiến độ/lỗi, không dừng/hủy được).
+    connect(m_downloader, &FileDownloader::itemAdded, this, &DirectDownloadTab::addRowForId);
     connect(m_downloader, &FileDownloader::itemUpdated, this, &DirectDownloadTab::onItemUpdated);
 
     connect(qApp->clipboard(), &QClipboard::dataChanged, this, &DirectDownloadTab::onClipboardChanged);
@@ -114,24 +118,17 @@ void DirectDownloadTab::buildUi()
 
 QString DirectDownloadTab::suggestedDestPath(const QString& url) const
 {
-    const QUrl u(url);
-    QString name = u.fileName();
+    // Tên tệp lấy từ URL là dữ liệu KHÔNG tin cậy - fileNameFromUrl() đã làm sạch (bỏ thành phần thư mục,
+    // ký tự cấm, tên thiết bị dành riêng... xem FileDownloaderInternal::sanitizeFileName).
+    QString name = FileDownloaderInternal::fileNameFromUrl(url);
     if (name.isEmpty() || !name.contains('.'))
         name = QString("tai-ve-%1").arg(QDateTime::currentMSecsSinceEpoch());
 
-    QString destPath = m_saveFolder + "/" + name;
-    // Tránh ghi đè tệp đã có cùng tên - thêm hậu tố (1), (2)... giống Windows/trình duyệt vẫn làm.
-    if (QFile::exists(destPath))
-    {
-        const int dot = name.lastIndexOf('.');
-        const QString base = dot >= 0 ? name.left(dot) : name;
-        const QString ext = dot >= 0 ? name.mid(dot) : QString();
-        int counter = 1;
-        do {
-            destPath = QString("%1/%2 (%3)%4").arg(m_saveFolder, base).arg(counter++).arg(ext);
-        } while (QFile::exists(destPath));
-    }
-    return destPath;
+    // "Đã có" = có tệp trên đĩa HOẶC một mục khác trong hàng đợi đã nhắm tới đường dẫn đó (mục còn đang
+    // chờ chưa tạo tệp nào - chỉ kiểm tra QFile::exists() thì hai mục trùng tên ghi đè lên nhau).
+    return FileDownloaderInternal::uniqueDestPath(m_saveFolder, name, [this](const QString& path) {
+        return QFile::exists(path) || m_downloader->isDestPathInUse(path);
+    });
 }
 
 void DirectDownloadTab::onAddClicked()
@@ -139,6 +136,12 @@ void DirectDownloadTab::onAddClicked()
     const QString url = m_urlEdit->text().trimmed();
     if (url.isEmpty())
         return;
+    if (!FileDownloaderInternal::isHttpUrl(url))
+    {
+        QMessageBox::warning(this, "Tải trực tiếp",
+                             "Liên kết không hợp lệ - chỉ hỗ trợ địa chỉ bắt đầu bằng http:// hoặc https://.");
+        return;
+    }
     enqueueUrl(url);
     m_urlEdit->clear();
 }
@@ -146,13 +149,14 @@ void DirectDownloadTab::onAddClicked()
 void DirectDownloadTab::enqueueUrl(const QString& url)
 {
     const QString destPath = suggestedDestPath(url);
-    const int id = m_downloader->enqueue(url, destPath);
-    addRowForId(id);
+    const int id = m_downloader->enqueue(url, destPath); // hàng trong bảng tự thêm qua tín hiệu itemAdded
     m_downloader->start(id);
 }
 
 void DirectDownloadTab::addRowForId(int id)
 {
+    if (m_idToRow.contains(id))
+        return;
     const int row = m_table->rowCount();
     m_table->insertRow(row);
     m_idToRow[id] = row;

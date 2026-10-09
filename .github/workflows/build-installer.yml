@@ -58,7 +58,7 @@ jobs:
           cache: true
 
       - name: Cài Ninja
-        uses: seanmiddleditch/gha-setup-ninja@master
+        uses: seanmiddleditch/gha-setup-ninja@v6
 
       - name: Cài Inno Setup
         run: choco install innosetup -y --no-progress
@@ -108,6 +108,9 @@ jobs:
                   Copy-Item "build\$d\*" "OneForAll_Release\$d\" -Recurse -Force
               }
           }
+          # Chuoi Auto Click MAU - nguon duy nhat la profiles\default.json trong Git (build_app.bat buoc [7/7]).
+          New-Item -ItemType Directory -Force -Path "OneForAll_Release\profiles" | Out-Null
+          Copy-Item "profiles\default.json" "OneForAll_Release\profiles\default.json" -Force
 
       - name: Biên dịch trình cài đặt .exe (Inno Setup, đúng mẫu build_installer.bat)
         shell: pwsh
@@ -122,13 +125,19 @@ jobs:
       # Windows 11 (Smart App Control) chan file .exe tu giai nen - .msi di qua msiexec.exe co san cua he
       # dieu hanh la loi thoat thay the. Dung CHINH XAC cung chuoi lenh da xac nhan that tren may dev cuc
       # bo (heat -gg -scom -sreg -sfrag -srd, candle/light + -sice:ICE38/ICE64/ICE91 - xem build_installer.bat).
-      - name: Don sach ban sao OneForAll_Release cho heat.exe (loai logs/qr_history.json)
+      - name: Don sach ban sao OneForAll_Release cho heat.exe (loai logs + profiles, chi giu default.json mau)
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path "obj\msi_stage\OneForAll_Release" | Out-Null
           New-Item -ItemType Directory -Force -Path "obj\msi_obj" | Out-Null
-          robocopy "OneForAll_Release" "obj\msi_stage\OneForAll_Release" /E /XD logs /XF qr_history.json /NFL /NDL /NJH /NJS
+          robocopy "OneForAll_Release" "obj\msi_stage\OneForAll_Release" /E /XD logs profiles /NFL /NDL /NJH /NJS
           if ($LASTEXITCODE -ge 8) { throw "robocopy loi that su (ma $LASTEXITCODE)" }
+          # BAT BUOC dat lai: robocopy tra ma 1 khi COPY THANH CONG, va buoc "shell: pwsh" cua GitHub Actions
+          # ket thuc bang "exit $LASTEXITCODE" cua lenh native cuoi cung - khong dat lai thi ca buoc bi tinh
+          # la THAT BAI du khong co loi nao.
+          $global:LASTEXITCODE = 0
+          New-Item -ItemType Directory -Force -Path "obj\msi_stage\OneForAll_Release\profiles" | Out-Null
+          Copy-Item "profiles\default.json" "obj\msi_stage\OneForAll_Release\profiles\default.json" -Force
 
       - name: Bien dich bo cai dat .msi (WiX: heat + candle + light)
         shell: pwsh

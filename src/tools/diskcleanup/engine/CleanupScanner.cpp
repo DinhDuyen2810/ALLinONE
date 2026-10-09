@@ -1,74 +1,27 @@
 #include "CleanupScanner.h"
 
-#include <QDir>
-#include <QDirIterator>
-#include <QFileInfo>
+#include "FsSafety.h"
 
-#ifdef Q_OS_WIN
-#include <windows.h>
-#endif
+#include <QDir>
+#include <QFileInfo>
 
 namespace
 {
-/// Trên Windows, QFileInfo coi tệp lối tắt (.lnk/.pif) như một "symlink" và TỰ ĐỘNG đi theo nó:
-/// isDir()/entryList() phản ánh THƯ MỤC ĐÍCH chứ không phải chính tệp .lnk (vài trăm byte). Hạng mục
-/// "Danh sách tệp gần đây" (%APPDATA%/.../Recent) toàn là lối tắt - nếu không chặn việc này, một lối
-/// tắt trỏ tới "Downloads" hay cả ổ D: sẽ bị cộng nhầm HÀNG CHỤC GB vào kích thước hạng mục, dù xóa
-/// lối tắt chỉ giải phóng đúng kích thước của chính nó. Dùng GetFileAttributesExW (API Win32 thô, đọc
-/// thẳng thuộc tính NTFS của chính tệp .lnk - không hề biết/đi theo định dạng Shell Link) để lấy đúng
-/// loại + kích thước thật của chính đường dẫn đó, bỏ qua việc Qt "giải mã hộ" lối tắt.
-bool rawFileInfo(const QString& path, bool* isDirOut, qint64* sizeOut)
-{
-#ifdef Q_OS_WIN
-    WIN32_FILE_ATTRIBUTE_DATA data;
-    if (!GetFileAttributesExW(reinterpret_cast<const wchar_t*>(path.utf16()), GetFileExInfoStandard, &data))
-        return false;
-    *isDirOut = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-    *sizeOut = (static_cast<qint64>(data.nFileSizeHigh) << 32) | static_cast<qint64>(data.nFileSizeLow);
-    return true;
-#else
-    Q_UNUSED(path);
-    Q_UNUSED(isDirOut);
-    Q_UNUSED(sizeOut);
-    return false;
-#endif
-}
-
-/// Loại + kích thước thật của một mục, không bị Qt đi theo lối tắt (xem rawFileInfo). Dùng cho MỌI
-/// mục được liệt kê, không chỉ riêng hạng mục Recent Items - an toàn vì luôn trả về dữ liệu đúng hơn
-/// hoặc bằng QFileInfo (rawFileInfo chỉ thay thế khi entry thực sự là symlink/lối tắt).
-void realEntryInfo(const QFileInfo& entry, bool* isDirOut, qint64* sizeOut)
-{
-    if (entry.isSymLink())
-    {
-        bool rawIsDir = false;
-        qint64 rawSize = 0;
-        if (rawFileInfo(entry.absoluteFilePath(), &rawIsDir, &rawSize))
-        {
-            *isDirOut = rawIsDir;
-            *sizeOut = rawSize;
-            return;
-        }
-    }
-    *isDirOut = entry.isDir();
-    *sizeOut = entry.isDir() ? 0 : entry.size(); // thư mục: gọi directorySize() riêng, không dùng size() ở đây
-}
-
-/// Tính tổng kích thước một thư mục (đệ quy). Kiểm tra cờ dừng định kỳ vì thư mục có thể rất lớn
-/// (Windows.old có thể hàng chục GB). Bỏ qua lối tắt/symlink (QDir::NoSymLinks) để không vô tình đệ
-/// quy lạc sang một thư mục đích hoàn toàn khác với thư mục gốc đang quét - xem rawFileInfo() ở trên.
-qint64 directorySize(const QString& path, const std::atomic_bool& stopFlag)
+/// Tổng kích thước một thư mục (đệ quy) + thời điểm sửa MỚI NHẤT của các tệp bên trong. Dùng
+/// FsSafety::walkFiles: kiểm tra cờ dừng ở từng mục (thư mục có thể rất lớn - Windows.old hàng chục GB)
+/// và KHÔNG đi vào junction/symlink thư mục, bỏ qua lối tắt - không bao giờ cộng nhầm kích thước của một
+/// thư mục đích nằm ngoài thư mục gốc đang quét.
+qint64 directorySize(const QString& path, const std::atomic_bool& stopFlag, qint64* newestWriteTime = nullptr)
 {
     qint64 total = 0;
-    QDirIterator it(path, QDir::Files | QDir::System | QDir::Hidden | QDir::NoSymLinks, QDirIterator::Subdirectories);
-    int counter = 0;
-    while (it.hasNext())
-    {
-        if ((++counter & 0xFF) == 0 && stopFlag.load())
-            break;
-        it.next();
-        total += it.fileInfo().size();
-    }
+    qint64 newest = 0;
+    FsSafety::walkFiles(path, stopFlag, [&](const FsSafety::WalkEntry& e) {
+        total += e.sizeBytes;
+        if (e.lastWriteTime > newest)
+            newest = e.lastWriteTime;
+    });
+    if (newestWriteTime)
+        *newestWriteTime = newest;
     return total;
 }
 } // namespace
@@ -80,8 +33,10 @@ CleanupScanner::CleanupScanner(QObject* parent)
 
 CleanupScanner::~CleanupScanner()
 {
+    // Chờ KHÔNG giới hạn: vòng quét kiểm tra cờ dừng ở từng mục nên thoát nhanh, còn hủy một QThread
+    // đang thực sự chạy là hành vi KHÔNG XÁC ĐỊNH (crash) - tệ hơn nhiều so với chờ thêm một nhịp.
     requestStop();
-    wait(5000);
+    wait();
 }
 
 void CleanupScanner::setCategories(const QList<CleanupCategory>& categories)
@@ -94,9 +49,18 @@ void CleanupScanner::requestStop()
     m_stopRequested = true;
 }
 
+void CleanupScanner::startScan(QThread::Priority priority)
+{
+    // Đặt lại cờ dừng TRƯỚC khi start(), không phải ở đầu run(): nếu đặt lại trong run() thì một
+    // requestStop() gọi ngay sau start() (luồng mới chưa kịp chạy) sẽ bị chính run() xóa mất.
+    if (isRunning())
+        return; // lượt quét trước chưa thoát hẳn - không xóa cờ dừng đang chờ nó
+    m_stopRequested = false;
+    start(priority);
+}
+
 void CleanupScanner::run()
 {
-    m_stopRequested = false;
     qint64 grandTotalBytes = 0;
     int grandTotalItems = 0;
 
@@ -128,34 +92,64 @@ void CleanupScanner::run()
 
 void CleanupScanner::scanCategory(const CleanupCategory& category, qint64* outBytes, int* outCount)
 {
+    const qint64 newestAllowed =
+        category.minAgeSeconds > 0 ? FsSafety::nowFileTime() - static_cast<qint64>(category.minAgeSeconds) * 10000000LL : 0;
+
+    // Trả về false nếu mục này KHÔNG được liệt kê (liên kết thư mục, quá mới, bị dừng giữa chừng...).
+    auto emitItem = [&](const QString& path) -> bool {
+        // Thông tin của CHÍNH mục này, không để Qt đi theo lối tắt/symlink hộ (QFileInfo coi .lnk là
+        // "symlink" và trả về kích thước/loại của ĐÍCH - lỗi thật đã gặp với hạng mục Recent Items).
+        const FsSafety::RawInfo info = FsSafety::rawInfo(path);
+        if (!info.exists)
+            return false;
+        // Junction/symlink THƯ MỤC nằm trong thư mục gốc: bỏ qua hẳn (không tính kích thước, không đưa
+        // vào danh sách xóa) - đích của nó là dữ liệu ở NƠI KHÁC, không phải rác của hạng mục này, và
+        // không thể bảo đảm từ đây rằng Shell chỉ gỡ liên kết mà không đụng tới nội dung đích.
+        if (info.isDir && info.isLink)
+            return false;
+
+        qint64 size = info.sizeBytes;
+        qint64 newestWrite = info.lastWriteTime;
+        if (info.isDir)
+        {
+            qint64 newestInside = 0;
+            size = directorySize(path, m_stopRequested, &newestInside);
+            if (newestInside > newestWrite)
+                newestWrite = newestInside;
+        }
+        if (m_stopRequested)
+            return false;
+        if (newestAllowed > 0 && newestWrite > newestAllowed)
+            return false; // vừa được sửa - nhiều khả năng đang được một chương trình khác dùng
+
+        CleanupItem item;
+        item.path = path;
+        item.sizeBytes = size;
+        item.isDirectory = info.isDir;
+        item.categoryId = category.id;
+        item.selected = (category.risk == CleanupRisk::Safe);
+        emit itemFound(item);
+        *outBytes += size;
+        *outCount += 1;
+        return true;
+    };
+
     for (const QString& rootPath : category.rootPaths)
     {
         if (m_stopRequested)
             return;
 
+        // Lớp chặn cuối cùng ngay tại nơi quét (CategoryRegistry đã lọc một lần): không bao giờ coi một
+        // đường dẫn rỗng/tương đối/gốc ổ đĩa là "thư mục rác".
+        if (!FsSafety::unsafeCleanupRootReason(rootPath, {}).isEmpty())
+            continue;
+
         if (!category.keepRootFolder)
         {
             // Toàn bộ rootPath là MỘT mục cần xóa (vd: Windows.old)
-            const QFileInfo info(rootPath);
-            if (!info.exists())
-                continue;
-            bool isDir = false;
-            qint64 size = 0;
-            realEntryInfo(info, &isDir, &size);
-            if (isDir)
-                size = directorySize(rootPath, m_stopRequested);
+            emitItem(rootPath);
             if (m_stopRequested)
                 return;
-
-            CleanupItem item;
-            item.path = rootPath;
-            item.sizeBytes = size;
-            item.isDirectory = isDir;
-            item.categoryId = category.id;
-            item.selected = (category.risk == CleanupRisk::Safe);
-            emit itemFound(item);
-            *outBytes += size;
-            *outCount += 1;
             continue;
         }
 
@@ -173,24 +167,10 @@ void CleanupScanner::scanCategory(const CleanupCategory& category, qint64* outBy
         {
             if (m_stopRequested)
                 return;
-
-            bool isDir = false;
-            qint64 size = 0;
-            realEntryInfo(entry, &isDir, &size);
-            if (isDir)
-                size = directorySize(entry.absoluteFilePath(), m_stopRequested);
-            if (m_stopRequested)
-                return;
-
-            CleanupItem item;
-            item.path = entry.absoluteFilePath();
-            item.sizeBytes = size;
-            item.isDirectory = isDir;
-            item.categoryId = category.id;
-            item.selected = (category.risk == CleanupRisk::Safe);
-            emit itemFound(item);
-            *outBytes += size;
-            *outCount += 1;
+            if (category.excludeNames.contains(entry.fileName(), Qt::CaseInsensitive))
+                continue;
+            // Ghép tên thủ công thay vì entry.absoluteFilePath(): giữ đúng đường dẫn của CHÍNH mục này.
+            emitItem(dir.absoluteFilePath(entry.fileName()));
         }
     }
 }

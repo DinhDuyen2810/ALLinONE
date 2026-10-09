@@ -2,6 +2,7 @@
 
 #include <QCoreApplication>
 #include <QFileInfo>
+#include <QUrl>
 
 namespace
 {
@@ -23,6 +24,19 @@ QString ytDlpExecutablePath()
 QString ffmpegDirectoryPath()
 {
     return bundleDir();
+}
+
+bool isSupportedVideoUrl(const QString& url)
+{
+    if (!url.startsWith("http://", Qt::CaseInsensitive) && !url.startsWith("https://", Qt::CaseInsensitive))
+        return false;
+    for (const QChar c : url)
+    {
+        if (c.isSpace() || c.category() == QChar::Other_Control)
+            return false;
+    }
+    const QUrl parsed(url);
+    return parsed.isValid() && !parsed.host().isEmpty();
 }
 
 bool isBundleAvailable(QString* missingWhat)

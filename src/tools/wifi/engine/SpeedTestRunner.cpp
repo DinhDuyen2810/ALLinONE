@@ -5,6 +5,7 @@
 #include <QNetworkRequest>
 #include <QTimer>
 #include <QUrl>
+#include <algorithm>
 #include <cmath>
 
 namespace
@@ -15,8 +16,16 @@ const QUrl kDownloadUrl("https://speed.cloudflare.com/__down?bytes=60000000"); /
 const QUrl kUploadUrl("https://speed.cloudflare.com/__up");
 
 constexpr int kPingSampleCount = 8;
+// Yêu cầu ĐẦU TIÊN phải phân giải DNS + bắt tay TCP + TLS trước khi gửi được gì, nên chậm hơn hẳn các yêu
+// cầu sau (dùng lại kết nối). Tính nó vào trung bình/jitter làm cả hai con số phồng lên rõ rệt (mẫu đầu
+// vài trăm ms, các mẫu sau vài chục ms). Gửi thêm 1 yêu cầu "khởi động" và KHÔNG ghi nhận nó.
+constexpr int kPingWarmupCount = 1;
 constexpr int kPingTimeoutMs = 4000;
 constexpr int kTransferMaxDurationMs = 9000; // tính từ byte đầu tiên, không tính thời gian bắt tay TCP/TLS
+// Thời gian tối đa chờ byte đầu tiên của pha tải xuống/tải lên. m_abortTimer chỉ chạy TỪ byte đầu tiên, nên
+// thiếu mốc này thì một máy chủ nhận kết nối rồi im lặng (hoặc mạng rớt giữa lúc bắt tay) làm phép đo treo
+// vô hạn ở "Đang đo tốc độ..." - QNetworkAccessManager mặc định không tự hết giờ.
+constexpr int kFirstByteTimeoutMs = 10000;
 constexpr qint64 kUploadBytes = 24 * 1000 * 1000; // 24MB
 
 double mbps(qint64 bytes, qint64 elapsedMs)
@@ -37,11 +46,51 @@ SpeedTestRunner::SpeedTestRunner(QObject* parent)
         m_intentionalAbort = true;
         abortActiveReply();
     });
+
+    m_firstByteTimer = new QTimer(this);
+    m_firstByteTimer->setSingleShot(true);
+    m_firstByteTimer->setInterval(kFirstByteTimeoutMs);
+    connect(m_firstByteTimer, &QTimer::timeout, this, [this] {
+        if (!m_activeReply || m_transferStarted)
+            return;
+        m_intentionalAbort = false; // hết giờ thật sự = lỗi, không phải dừng có chủ đích
+        abortActiveReply();
+    });
 }
 
 SpeedTestRunner::~SpeedTestRunner()
 {
-    abortActiveReply();
+    // abort() phát finished() đồng bộ; các lambda nối với reply sẽ phát tiếp tín hiệu của runner tới giao
+    // diện đang bị hủy. Ngắt kết nối tín hiệu trước, chỉ còn việc hủy yêu cầu mạng.
+    if (m_activeReply)
+    {
+        m_activeReply->disconnect(this);
+        m_activeReply->abort();
+    }
+}
+
+SpeedTestRunner::PingStats SpeedTestRunner::computePingStats(const QList<double>& samplesMs)
+{
+    PingStats stats;
+    if (samplesMs.isEmpty())
+        return stats;
+
+    stats.minMs = samplesMs.first();
+    stats.maxMs = samplesMs.first();
+    double sum = 0;
+    for (double v : samplesMs)
+    {
+        stats.minMs = std::min(stats.minMs, v);
+        stats.maxMs = std::max(stats.maxMs, v);
+        sum += v;
+    }
+    stats.avgMs = sum / samplesMs.size();
+
+    double jitterSum = 0;
+    for (int i = 1; i < samplesMs.size(); ++i)
+        jitterSum += std::fabs(samplesMs[i] - samplesMs[i - 1]);
+    stats.jitterMs = samplesMs.size() > 1 ? jitterSum / (samplesMs.size() - 1) : 0.0;
+    return stats;
 }
 
 void SpeedTestRunner::abortActiveReply()
@@ -57,6 +106,11 @@ void SpeedTestRunner::start()
 
     m_running = true;
     m_stopRequested = false;
+    // Phải đặt lại: stop() trong pha ping để cờ này = true mà không nơi nào trả về false, nên ở lần đo kế
+    // tiếp một LỖI MẠNG THẬT trong pha tải xuống bị coi là "tự dừng có chủ đích" và hiện ra như một kết
+    // quả đo (thường là 0) thay vì báo lỗi.
+    m_intentionalAbort = false;
+    m_transferStarted = false;
     m_pingIndex = 0;
     m_pingSamplesMs.clear();
     runPingPhase();
@@ -75,6 +129,7 @@ void SpeedTestRunner::finishAll()
 {
     m_running = false;
     m_abortTimer->stop();
+    m_firstByteTimer->stop();
     emit finished();
 }
 
@@ -133,30 +188,20 @@ void SpeedTestRunner::sendNextPing()
             return;
         }
 
-        m_pingSamplesMs.push_back(elapsedMs);
-
-        double minMs = m_pingSamplesMs.first(), maxMs = m_pingSamplesMs.first(), sum = 0;
-        for (double v : m_pingSamplesMs)
+        // Mẫu khởi động (gồm cả DNS/TCP/TLS) không được ghi nhận - xem kPingWarmupCount.
+        if (m_pingIndex >= kPingWarmupCount)
         {
-            minMs = std::min(minMs, v);
-            maxMs = std::max(maxMs, v);
-            sum += v;
+            m_pingSamplesMs.push_back(elapsedMs);
+            const PingStats stats = computePingStats(m_pingSamplesMs);
+            emit pingUpdated(elapsedMs, stats.minMs, stats.avgMs, stats.maxMs, stats.jitterMs);
         }
-        const double avgMs = sum / m_pingSamplesMs.size();
-
-        double jitterSum = 0;
-        for (int i = 1; i < m_pingSamplesMs.size(); ++i)
-            jitterSum += std::fabs(m_pingSamplesMs[i] - m_pingSamplesMs[i - 1]);
-        const double jitterMs = m_pingSamplesMs.size() > 1 ? jitterSum / (m_pingSamplesMs.size() - 1) : 0.0;
-
-        emit pingUpdated(elapsedMs, minMs, avgMs, maxMs, jitterMs);
 
         ++m_pingIndex;
         if (m_stopRequested)
         {
             finishAll();
         }
-        else if (m_pingIndex < kPingSampleCount)
+        else if (m_pingIndex < kPingWarmupCount + kPingSampleCount)
         {
             sendNextPing();
         }
@@ -178,6 +223,7 @@ void SpeedTestRunner::runDownloadPhase()
     QNetworkRequest req(kDownloadUrl);
     req.setAttribute(QNetworkRequest::CacheLoadControlAttribute, QNetworkRequest::AlwaysNetwork);
     m_activeReply = m_nam->get(req);
+    m_firstByteTimer->start();
 
     connect(m_activeReply, &QNetworkReply::readyRead, this, [this] {
         if (!m_activeReply)
@@ -188,6 +234,7 @@ void SpeedTestRunner::runDownloadPhase()
         if (!m_transferStarted)
         {
             m_transferStarted = true;
+            m_firstByteTimer->stop();
             m_transferTimer.start();
             m_abortTimer->start(kTransferMaxDurationMs);
         }
@@ -201,6 +248,7 @@ void SpeedTestRunner::runDownloadPhase()
         QNetworkReply* reply = m_activeReply;
         m_activeReply = nullptr;
         m_abortTimer->stop();
+        m_firstByteTimer->stop();
 
         const bool wasIntentionalAbort = m_intentionalAbort;
         m_intentionalAbort = false;
@@ -237,6 +285,7 @@ void SpeedTestRunner::runUploadPhase()
 
     const QByteArray payload(kUploadBytes, 'Q'); // nội dung không quan trọng, chỉ cần đúng dung lượng
     m_activeReply = m_nam->post(req, payload);
+    m_firstByteTimer->start();
 
     connect(m_activeReply, &QNetworkReply::uploadProgress, this, [this](qint64 bytesSent, qint64) {
         if (bytesSent <= 0)
@@ -245,6 +294,7 @@ void SpeedTestRunner::runUploadPhase()
         if (!m_transferStarted)
         {
             m_transferStarted = true;
+            m_firstByteTimer->stop();
             m_transferTimer.start();
             m_abortTimer->start(kTransferMaxDurationMs);
         }
@@ -258,6 +308,7 @@ void SpeedTestRunner::runUploadPhase()
         QNetworkReply* reply = m_activeReply;
         m_activeReply = nullptr;
         m_abortTimer->stop();
+        m_firstByteTimer->stop();
 
         const bool wasIntentionalAbort = m_intentionalAbort;
         m_intentionalAbort = false;

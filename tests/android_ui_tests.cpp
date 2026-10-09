@@ -8,12 +8,19 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QElapsedTimer>
+#include <QLabel>
+#include <QLineEdit>
 #include <QPushButton>
 #include <QTableWidget>
+#include <QTemporaryDir>
+#include <QTimer>
 #include <cstdio>
 
+#include "core/AppPaths.h"
 #include "tools/android/AndroidControlWindow.h"
 #include "tools/android/DevicesTab.h"
+#include "tools/android/WirelessPairDialog.h"
 #include "tools/android/engine/AdbController.h"
 
 static int g_fail = 0, g_pass = 0;
@@ -27,10 +34,53 @@ int main(int argc, char** argv)
 {
     QApplication app(argc, argv);
 
+    // Cửa sổ ghi log lúc mở (Logger) - ép dữ liệu vào thư mục tạm, không đụng %LOCALAPPDATA%\OneForAll thật.
+    QTemporaryDir dataDir;
+    AppPaths::setDataDirOverride(dataDir.path());
+
+    // ---- Hộp thoại ghép đôi: chỉ đóng (Accepted) khi IP:Cổng + mã 6 số đúng định dạng ----
+    {
+        WirelessPairDialog dlg;
+        const auto edits = dlg.findChildren<QLineEdit*>();
+        CHECK(edits.size() == 2);
+        if (edits.size() == 2)
+        {
+            edits[0]->setText("--help");
+            edits[1]->setText("123456");
+            dlg.accept();
+            CHECK(dlg.result() != QDialog::Accepted); // bị từ chối, hộp thoại giữ nguyên
+
+            edits[0]->setText("192.168.1.23:41234");
+            edits[1]->setText("12345"); // thiếu 1 số
+            dlg.accept();
+            CHECK(dlg.result() != QDialog::Accepted);
+
+            edits[1]->setText("123456");
+            dlg.accept();
+            CHECK(dlg.result() == QDialog::Accepted);
+            CHECK(dlg.ipAndPort() == "192.168.1.23:41234" && dlg.pairingCode() == "123456");
+        }
+    }
+
     AndroidControlWindow win;
     win.setAttribute(Qt::WA_DontShowOnScreen, true);
+
+    // Timer tự làm mới CHỈ chạy khi cửa sổ đang hiện (trước đây chạy từ constructor, không bao giờ dừng -
+    // cửa sổ đã đóng/ẩn vẫn gọi adb.exe mỗi 3 giây).
+    auto* refreshTimer = win.findChild<QTimer*>("autoRefreshTimer");
+    CHECK(refreshTimer != nullptr);
+    if (refreshTimer)
+        CHECK(!refreshTimer->isActive()); // chưa hiện -> chưa chạy
+
+    QElapsedTimer showTimer;
+    showTimer.start();
     win.show();
     app.processEvents();
+    // Hiện cửa sổ KHÔNG được chặn luồng giao diện chờ adb (trước đây `adb devices -l` chạy đồng bộ ngay
+    // trong constructor - lần đầu phải chờ daemon adb khởi động vài giây).
+    CHECK(showTimer.elapsed() < 3000);
+    if (refreshTimer)
+        CHECK(refreshTimer->isActive());
     CHECK(true); // tới được đây tức là dựng cửa sổ không crash
 
     auto* devicesTab = win.findChild<DevicesTab*>();
@@ -48,6 +98,14 @@ int main(int argc, char** argv)
 
         const auto combos = devicesTab->findChildren<QComboBox*>();
         CHECK(combos.size() >= 2); // Độ phân giải + FPS tối đa
+
+        // Nhãn trạng thái hiện chuỗi từ adb/thiết bị phải ở chế độ văn bản thuần (nhãn duy nhất của tab
+        // đặt Qt::PlainText tường minh).
+        bool hasPlainStatusLabel = false;
+        for (auto* label : devicesTab->findChildren<QLabel*>())
+            if (label->textFormat() == Qt::PlainText)
+                hasPlainStatusLabel = true;
+        CHECK(hasPlainStatusLabel);
     }
 
     QString missing;
@@ -66,6 +124,22 @@ int main(int argc, char** argv)
         for (const auto& d : devices)
             std::printf("  - %s [%s] %s\n", qPrintable(d.serial), qPrintable(d.state), qPrintable(d.model));
         CHECK(true); // tới được đây tức là gọi adb thật không crash
+    }
+
+    // Ẩn/đóng cửa sổ: timer dừng; mở lại: chạy tiếp.
+    if (refreshTimer)
+    {
+        win.hide();
+        app.processEvents();
+        CHECK(!refreshTimer->isActive());
+        win.show();
+        app.processEvents();
+        CHECK(refreshTimer->isActive());
+        win.close(); // closeEvent -> stopBackgroundWork(): dừng timer + lệnh adb dở + daemon adb đóng gói kèm
+        app.processEvents();
+        CHECK(!refreshTimer->isActive());
+        if (bundleAvailable)
+            CHECK(AdbController::stopBundledAdbServer() == 0); // closeEvent đã dọn hết, không còn gì để dừng
     }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);

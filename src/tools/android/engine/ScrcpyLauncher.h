@@ -57,6 +57,7 @@ private:
     qint64 m_lastPid{0}; // PID của scrcpy.exe đã khởi chạy gần nhất - lưu riêng vì sau khi tiến trình đã
                          // thoát/bị buộc dừng, QProcess::processId() có thể trả về 0, mà vẫn cần PID này
                          // để quét dọn tiến trình adb.exe con còn sót (xem stop() trong .cpp).
+    bool m_stoppedByUs{false}; // true từ lúc stop() chủ động buộc dừng phiên hiện tại tới lần start() kế tiếp
 };
 
 namespace ScrcpyLauncherInternal

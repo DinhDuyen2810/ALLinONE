@@ -36,4 +36,13 @@ Verdict analyze(const QString& command);
 
 QString riskLevelLabel(RiskLevel level);
 
+namespace internal
+{
+/// Gỡ các lớp che giấu ĐƠN GIẢN trước khi so khớp mẫu: dấu ` (ký tự thoát của PowerShell, vd
+/// Down`loadString), dấu ^ (ký tự thoát của cmd.exe), ghép chuỗi 'Down'+'loadString', cặp nháy rỗng chen
+/// giữa tên lệnh (i''ex). KHÔNG phải trình thông dịch - che giấu nhiều tầng (toán tử -f, biến trung
+/// gian, mã hóa...) vẫn lọt; analyze() so khớp trên cả nguyên văn lẫn bản đã chuẩn hóa. Thuần chuỗi.
+QString normalizeForMatching(const QString& command);
+} // namespace internal
+
 } // namespace CommandAnalyzer

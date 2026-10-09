@@ -1,11 +1,29 @@
 #pragma once
 
+#include <QMessageBox>
 #include <QString>
 
 /// Style dùng chung cho module WiFi (đồng bộ Light Theme của toàn ứng dụng).
 /// Giống hệt src/tools/qr/QRUiStyle.h - để riêng theo module cho độc lập, dễ thay đổi sau này.
 namespace WifiUi
 {
+/// Hộp thoại cho thông báo có chứa SSID/tên hồ sơ. SSID là dữ liệu KHÔNG TIN CẬY (bất kỳ điểm phát nào
+/// quanh đây cũng tự đặt được, tối đa 32 byte tùy ý): QMessageBox/QLabel mặc định tự đoán định dạng và
+/// dựng chuỗi trông giống HTML thành rich text - một SSID kiểu <img src="\\máy-lạ\x"> có thể khiến Qt tự
+/// mở đường dẫn mạng đó. Mọi nơi hiển thị SSID đều ép Qt::PlainText (hộp thoại qua hàm này, QLabel qua
+/// setTextFormat).
+inline QMessageBox::StandardButton plainMessage(QWidget* parent, QMessageBox::Icon icon, const QString& title,
+                                                const QString& text,
+                                                QMessageBox::StandardButtons buttons = QMessageBox::Ok,
+                                                QMessageBox::StandardButton defaultButton = QMessageBox::NoButton)
+{
+    QMessageBox box(icon, title, text, buttons, parent);
+    box.setTextFormat(Qt::PlainText);
+    if (defaultButton != QMessageBox::NoButton)
+        box.setDefaultButton(defaultButton);
+    return static_cast<QMessageBox::StandardButton>(box.exec());
+}
+
 inline QString buttonStyle()
 {
     return "QPushButton { background-color: #ffffff; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 7px 14px; font-size: 12px; font-weight: 500; }"

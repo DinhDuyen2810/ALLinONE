@@ -2,6 +2,7 @@
 
 #include "SecurityUiStyle.h"
 #include "engine/CommandLauncher.h"
+#include "core/WinElevation.h"
 
 #include <QCheckBox>
 #include <QLabel>
@@ -28,7 +29,8 @@ void CommandGatewayTab::buildUi()
         "Dán một lệnh/đoạn script PowerShell khả nghi vào ô dưới để kiểm tra TRƯỚC KHI chạy thật. Ứng "
         "dụng chỉ PHÂN TÍCH CHỮ (không chạy thử) rồi cho biết có dấu hiệu bất thường hay không - việc "
         "chạy thật luôn diễn ra trên một cửa sổ PowerShell THẬT, riêng biệt, và bạn luôn là người tự "
-        "bấm Enter cuối cùng. Ứng dụng không bao giờ tự chạy lệnh thay bạn.",
+        "bấm Enter cuối cùng. Ứng dụng không bao giờ tự chạy lệnh thay bạn. Lưu ý: với lệnh NHIỀU DÒNG, "
+        "console có thể tự chạy các dòng trước dòng cuối ngay khi dán - ứng dụng sẽ hỏi lại trước khi dán.",
         this);
     introLabel->setWordWrap(true);
     introLabel->setStyleSheet(SecurityUi::bannerStyle("info"));
@@ -149,6 +151,23 @@ void CommandGatewayTab::updateLaunchButtonState()
 
 void CommandGatewayTab::onLaunchClicked()
 {
+    // Hai tình huống mà "dán hộ" không còn vô hại như mô tả ở đầu tab - nói rõ và để người dùng quyết
+    // định TRƯỚC khi mở cửa sổ (xem CommandLauncherInternal::pasteWarnings).
+    const QStringList warnings = CommandLauncherInternal::pasteWarnings(
+        CommandLauncherInternal::prepareForPaste(m_commandEdit->toPlainText()), WinElevation::isElevated());
+    if (!warnings.isEmpty())
+    {
+        QString text;
+        for (const QString& w : warnings)
+            text += "• " + w + "\n\n";
+        const auto answer = QMessageBox::warning(
+            this, "Mở PowerShell & dán lệnh",
+            text + "Vẫn mở PowerShell và dán lệnh này? (Chọn \"No\" nếu muốn tự sao chép và dán từng phần.)",
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (answer != QMessageBox::Yes)
+            return;
+    }
+
     m_launchBtn->setEnabled(false);
     m_statusLabel->setText("⏳ Đang mở PowerShell...");
     m_launcher->launchAndPaste(m_commandEdit->toPlainText());

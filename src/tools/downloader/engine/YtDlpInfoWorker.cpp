@@ -1,11 +1,13 @@
 #include "YtDlpInfoWorker.h"
 
 #include "YtDlpController.h"
+#include "core/WinProcessTree.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QProcess>
+#include <vector>
 
 YtDlpInfoWorker::YtDlpInfoWorker(QObject* parent)
     : QThread(parent)
@@ -21,22 +23,47 @@ void YtDlpInfoWorker::run()
         return;
     }
 
+    if (!YtDlpController::isSupportedVideoUrl(m_url))
+    {
+        emit infoFetched(false, {}, "Địa chỉ không hợp lệ - hãy dán URL video bắt đầu bằng http:// hoặc https://.");
+        return;
+    }
+
     QProcess proc;
     proc.setProgram(exe);
-    // --no-playlist: nếu URL vừa là video vừa thuộc playlist (vd link watch?v=...&list=...), chỉ lấy
-    // thông tin VIDEO ĐÓ - tránh vô tình kéo theo metadata cả playlist khi người dùng chỉ muốn 1 video.
-    proc.setArguments({"--no-playlist", "--simulate", "-j", m_url});
+    proc.setArguments(YtDlpInfoWorkerInternal::buildArguments(m_url));
     proc.start();
     if (!proc.waitForStarted(5000))
     {
-        emit infoFetched(false, {}, "Không khởi chạy được yt-dlp.exe.");
+        emit infoFetched(false, {}, "Không khởi chạy được yt-dlp.exe (" + proc.errorString() + ").");
         return;
     }
-    if (!proc.waitForFinished(45000))
+
+    // Chờ theo từng bước 200ms (tối đa 45 giây) để kiểm tra cờ hủy định kỳ - cùng mẫu với
+    // PowerShellRunner::runCancelable. QProcess chỉ được đụng tới trên chính luồng này.
+    bool finished = false;
+    bool canceled = false;
+    for (int waited = 0; waited < 45000; waited += 200)
     {
+        finished = proc.waitForFinished(200);
+        if (finished)
+            break;
+        if (m_cancelRequested.load())
+        {
+            canceled = true;
+            break;
+        }
+    }
+    if (!finished)
+    {
+        // yt-dlp.exe (bản đóng gói PyInstaller) tự sinh tiến trình con - kill() chỉ dừng đúng tiến trình
+        // cha, Windows không đệ quy dừng con của nó. Liệt kê hậu duệ TRƯỚC khi dừng (lúc PID chắc chắn còn
+        // là của ta) rồi dừng nốt - xem core/WinProcessTree.h.
+        const std::vector<qint64> descendants = WinProcessTree::findDescendants(proc.processId());
         proc.kill();
         proc.waitForFinished(2000);
-        emit infoFetched(false, {}, "Hết thời gian chờ yt-dlp (trang web phản hồi quá chậm).");
+        WinProcessTree::terminateProcessList(descendants);
+        emit infoFetched(false, {}, canceled ? "Đã hủy." : "Hết thời gian chờ yt-dlp (trang web phản hồi quá chậm).");
         return;
     }
 
@@ -64,6 +91,15 @@ void YtDlpInfoWorker::run()
 
 namespace YtDlpInfoWorkerInternal
 {
+
+QStringList buildArguments(const QString& url)
+{
+    // --ignore-config: không nạp tệp cấu hình yt-dlp của người dùng/cạnh exe (có thể chứa --exec...).
+    // --no-playlist: nếu URL vừa là video vừa thuộc playlist (vd link watch?v=...&list=...), chỉ lấy
+    // thông tin VIDEO ĐÓ - tránh vô tình kéo theo metadata cả playlist khi người dùng chỉ muốn 1 video.
+    // "--": mọi thứ sau đó là địa chỉ, không bao giờ là tùy chọn.
+    return {"--ignore-config", "--no-playlist", "--simulate", "-j", "--", url};
+}
 
 VideoInfo parseInfoJson(const QByteArray& json, QString* error)
 {

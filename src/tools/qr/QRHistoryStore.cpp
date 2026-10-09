@@ -1,5 +1,8 @@
 #include "QRHistoryStore.h"
 
+#include "core/AppPaths.h"
+#include "core/Logger.h"
+
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -15,8 +18,22 @@ QRHistoryStore& QRHistoryStore::instance()
 }
 
 QRHistoryStore::QRHistoryStore()
+    : m_path(AppPaths::profileFile("qr_history.json"))
 {
     load();
+}
+
+void QRHistoryStore::persist()
+{
+    // Trước đây kết quả save() bị bỏ qua ở cả add/removeAt/clear: ghi thất bại (thư mục không ghi được,
+    // đĩa đầy, tệp bị chương trình khác khóa) thì lịch sử lặng lẽ không được lưu, người dùng chỉ phát
+    // hiện ở lần mở ứng dụng sau.
+    m_lastSaveOk = save();
+    if (!m_lastSaveOk)
+    {
+        Logger::instance().warning("QR", "Không ghi được tệp lịch sử QR: " + m_path);
+        emit saveFailed(m_path);
+    }
 }
 
 void QRHistoryStore::add(const QString& source, const QString& typeName, const QString& content)
@@ -35,7 +52,7 @@ void QRHistoryStore::add(const QString& source, const QString& typeName, const Q
         while (m_entries.size() > kMaxEntries)
             m_entries.removeLast();
     }
-    save();
+    persist();
     emit changed();
 }
 
@@ -44,14 +61,14 @@ void QRHistoryStore::removeAt(int index)
     if (index < 0 || index >= m_entries.size())
         return;
     m_entries.removeAt(index);
-    save();
+    persist();
     emit changed();
 }
 
 void QRHistoryStore::clear()
 {
     m_entries.clear();
-    save();
+    persist();
     emit changed();
 }
 
@@ -59,12 +76,34 @@ bool QRHistoryStore::load()
 {
     m_entries.clear();
     QFile f(m_path);
+    if (!f.exists())
+        return true; // chưa có lịch sử - không phải lỗi
     if (!f.open(QIODevice::ReadOnly))
+    {
+        Logger::instance().warning("QR", "Không mở được tệp lịch sử QR: " + m_path + " (" + f.errorString() + ")");
         return false;
+    }
 
-    const QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+    const QByteArray raw = f.readAll();
+    f.close();
+    if (raw.trimmed().isEmpty())
+        return true; // tệp rỗng (vd vừa được tạo) - coi như chưa có lịch sử
+
+    const QJsonDocument doc = QJsonDocument::fromJson(raw);
     if (!doc.isObject())
+    {
+        // Tệp hỏng (ghi dở từ bản cũ, bị sửa tay sai cú pháp...). Trước đây chỉ trả false với danh sách
+        // rỗng, và lần add() kế tiếp GHI ĐÈ luôn lên tệp này - toàn bộ lịch sử cũ mất không dấu vết. Đổi
+        // tên sang .bak để tệp mới không đè lên nó, người dùng còn tự cứu/sửa tay được.
+        QString backup = m_path + ".bak";
+        if (QFile::exists(backup))
+            backup = m_path + "." + QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss") + ".bak";
+        if (QFile::rename(m_path, backup))
+            Logger::instance().warning("QR", "Tệp lịch sử QR bị hỏng, đã đổi tên thành: " + backup);
+        else
+            Logger::instance().warning("QR", "Tệp lịch sử QR bị hỏng và không đổi tên được: " + m_path);
         return false;
+    }
 
     for (const QJsonValue& v : doc.object().value("entries").toArray())
     {

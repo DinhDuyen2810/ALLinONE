@@ -1,24 +1,14 @@
 #include "ActionSerializer.h"
+#include "core/AppPaths.h"
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QFile>
-#include <QDir>
-#include <QStandardPaths>
-
-void ActionSerializer::ensureProfilesDir()
-{
-    QDir dir("profiles");
-    if (!dir.exists())
-    {
-        dir.mkpath(".");
-    }
-}
+#include <QSaveFile>
 
 QString ActionSerializer::getDefaultProfilePath()
 {
-    ensureProfilesDir();
-    return "profiles/default.json";
+    return AppPaths::profileFile("default.json");
 }
 
 static int clampInt(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
@@ -106,16 +96,31 @@ QString ActionSerializer::toJsonString(const std::vector<ActionChain>& chains)
     return doc.toJson(QJsonDocument::Indented);
 }
 
-bool ActionSerializer::fromJsonString(const QString& jsonStr, std::vector<ActionChain>& outChains)
+bool ActionSerializer::fromJsonString(const QString& jsonStr, std::vector<ActionChain>& outChains, QString* error)
 {
-    QJsonParseError error;
-    QJsonDocument doc = QJsonDocument::fromJson(jsonStr.toUtf8(), &error);
-    if (error.error != QJsonParseError::NoError || !doc.isObject())
+    QJsonParseError parseError;
+    QJsonDocument doc = QJsonDocument::fromJson(jsonStr.toUtf8(), &parseError);
+    if (parseError.error != QJsonParseError::NoError)
     {
+        if (error)
+            *error = QString("JSON không hợp lệ (%1, vị trí %2).").arg(parseError.errorString()).arg(parseError.offset);
+        return false;
+    }
+    if (!doc.isObject())
+    {
+        if (error) *error = "Tệp không phải hồ sơ Auto Click (phần gốc không phải đối tượng JSON).";
         return false;
     }
 
     QJsonObject root = doc.object();
+    // Thiếu "chains" (hoặc không phải mảng) = đây không phải tệp hồ sơ Auto Click. Trước đây trường hợp
+    // này vẫn trả về true với danh sách rỗng, rồi nơi gọi coi là "chưa có chuỗi nào" và ghi đè tệp mẫu
+    // lên chính tệp đó.
+    if (!root["chains"].isArray())
+    {
+        if (error) *error = "Tệp không phải hồ sơ Auto Click (thiếu danh sách \"chains\").";
+        return false;
+    }
     QJsonArray chainsArr = root["chains"].toArray();
 
     outChains.clear();
@@ -171,31 +176,44 @@ bool ActionSerializer::fromJsonString(const QString& jsonStr, std::vector<Action
     return true;
 }
 
-bool ActionSerializer::saveToFile(const QString& filePath, const std::vector<ActionChain>& chains)
+bool ActionSerializer::saveToFile(const QString& filePath, const std::vector<ActionChain>& chains, QString* error)
 {
-    ensureProfilesDir();
-    QFile file(filePath);
+    QSaveFile file(filePath);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text))
     {
+        if (error) *error = file.errorString();
         return false;
     }
 
-    QString jsonStr = toJsonString(chains);
-    file.write(jsonStr.toUtf8());
-    file.close();
+    const QByteArray data = toJsonString(chains).toUtf8();
+    // Kiểm tra CẢ số byte đã ghi lẫn commit(): write() có thể ghi thiếu (đầy đĩa) mà không báo lỗi lúc
+    // mở, và chỉ commit() mới thật sự đổi tên tệp tạm đè lên tệp đích - thất bại ở bước nào thì tệp
+    // đích cũ vẫn còn nguyên.
+    if (file.write(data) != data.size())
+    {
+        if (error) *error = file.errorString();
+        file.cancelWriting();
+        return false;
+    }
+    if (!file.commit())
+    {
+        if (error) *error = file.errorString();
+        return false;
+    }
     return true;
 }
 
-bool ActionSerializer::loadFromFile(const QString& filePath, std::vector<ActionChain>& outChains)
+bool ActionSerializer::loadFromFile(const QString& filePath, std::vector<ActionChain>& outChains, QString* error)
 {
     QFile file(filePath);
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
     {
+        if (error) *error = file.errorString();
         return false;
     }
 
     QByteArray data = file.readAll();
     file.close();
 
-    return fromJsonString(QString::fromUtf8(data), outChains);
+    return fromJsonString(QString::fromUtf8(data), outChains, error);
 }

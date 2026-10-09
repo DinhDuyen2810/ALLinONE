@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <atomic>
+#include <bitset>
 
 /**
  * @brief Lớp duy nhất cài đặt hook bàn phím/chuột toàn cục Windows (WH_MOUSE_LL/WH_KEYBOARD_LL).
@@ -32,7 +33,10 @@ public:
 
     /// true = đang chia sẻ điều khiển: chặn input thật khỏi máy này (không gửi tới ứng dụng cục bộ nào)
     /// và phát tín hiệu tương ứng để ConnectSessionController chuyển tiếp sang máy đang điều khiển.
-    void setActive(bool active) { m_active = active; }
+    /// Bật: ghi nhớ các phím ĐANG được giữ sẵn từ trước - chúng thuộc về máy này, lần nhả của chúng phải
+    /// tới được ứng dụng cục bộ (nếu nuốt thì máy này bị "kẹt phím"). Tắt: KHÔNG xóa danh sách phím/nút đã
+    /// nuốt lần nhấn - lần nhả tới sau vẫn bị nuốt cho khớp cặp.
+    void setActive(bool active);
     bool isActive() const { return m_active; }
 
 signals:
@@ -46,7 +50,14 @@ public:
     // Gọi từ hàm callback Win32 tĩnh trong .cpp khi có sự kiện thật (đã lọc injected); trả về true
     // nếu đã "nuốt" sự kiện (đang active, không cho lan tới hệ thống/ứng dụng khác). Không dành cho
     // code khác trong ứng dụng gọi - chỉ public vì callback Win32 phải là hàm tự do, không phải method.
-    bool onRawMouseMove(long x, long y);
+    //
+    // onRawMouseMove: (x, y) là vị trí con trỏ SẮP chuyển tới theo hook; (cursorX, cursorY) là vị trí con
+    // trỏ thật NGAY LÚC ĐÓ (GetCursorPos - chưa bị sự kiện này cập nhật). Độ dịch = hiệu của hai giá trị
+    // đó. KHÔNG lấy hiệu với sự kiện liền trước như bản cũ: khi đang nuốt sự kiện thì con trỏ thật đứng
+    // yên, mọi sự kiện đều được tính từ cùng một điểm, nên hiệu giữa hai sự kiện liên tiếp là "gia tốc"
+    // chứ không phải quãng đường (rê chuột đều tay sẽ ra 0). Công thức mới đúng cả khi con trỏ có di
+    // chuyển (GetCursorPos khi đó là vị trí ngay trước sự kiện).
+    bool onRawMouseMove(long x, long y, long cursorX, long cursorY);
     bool onRawMouseButton(int button, bool pressed);
     bool onRawMouseWheel(int deltaY, int deltaX);
     bool onRawKey(int vkCode, int scanCode, bool pressed, bool extended);
@@ -55,9 +66,12 @@ private:
     void* m_mouseHook{nullptr};
     void* m_keyboardHook{nullptr};
     std::atomic_bool m_active{false};
-    bool m_hasLastPoint{false};
-    long m_lastX{0};
-    long m_lastY{0};
     bool m_ctrlDown{false};
     bool m_altDown{false};
+    bool m_hotkeyHomeSwallowed{false}; // lần nhấn Home của phím nóng đã bị nuốt -> nuốt luôn lần nhả
+
+    std::bitset<256> m_physKeys;      // phím vật lý đang giữ mà máy NÀY đã thấy lần nhấn (không bị nuốt)
+    std::bitset<256> m_preHeldKeys;   // ảnh chụp m_physKeys lúc bật active
+    std::bitset<256> m_swallowedKeys; // phím có lần nhấn đã bị nuốt + chuyển tiếp sang máy kia
+    unsigned m_swallowedButtons{0};   // bit i = lần nhấn nút i đã bị nuốt + chuyển tiếp
 };

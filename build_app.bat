@@ -15,22 +15,22 @@ set "PATH=D:\Qt\Tools\mingw1310_64\bin;D:\Qt\Tools\CMake_64\bin;D:\Qt\Tools\Ninj
 set "QTFRAMEWORK_BYPASS_LICENSE_CHECK=1"
 
 echo.
-echo [1/5] Cau hinh CMake...
+echo [1/7] Cau hinh CMake...
 cmake -B build -G Ninja -DCMAKE_PREFIX_PATH="D:/Qt/6.11.1/mingw_64" -DCMAKE_BUILD_TYPE=Release
 if errorlevel 1 goto error
 
 echo.
-echo [2/5] Bien dich voi Ninja...
+echo [2/7] Bien dich voi Ninja...
 cmake --build build
 if errorlevel 1 goto error
 
 echo.
-echo [3/5] Dong goi Qt DLLs bang windeployqt...
+echo [3/7] Dong goi Qt DLLs bang windeployqt...
 "D:\Qt\6.11.1\mingw_64\bin\windeployqt.exe" "build\OneForAll.exe" --no-translations --compiler-runtime
 if errorlevel 1 goto error
 
 echo.
-echo [4/6] Dong goi adb/scrcpy (tinh nang Android Phone Control) neu co san trong vendor\scrcpy...
+echo [4/7] Dong goi adb/scrcpy (tinh nang Android Phone Control) neu co san trong vendor\scrcpy...
 if exist "vendor\scrcpy\scrcpy.exe" (
     if not exist "build\scrcpy" mkdir "build\scrcpy"
     xcopy /y /q "vendor\scrcpy\*" "build\scrcpy\" >nul
@@ -41,7 +41,7 @@ if exist "vendor\scrcpy\scrcpy.exe" (
 )
 
 echo.
-echo [5/6] Dong goi yt-dlp/ffmpeg (tinh nang Downloader - video nen tang) neu co san trong vendor\yt-dlp...
+echo [5/7] Dong goi yt-dlp/ffmpeg (tinh nang Downloader - video nen tang) neu co san trong vendor\yt-dlp...
 if exist "vendor\yt-dlp\yt-dlp.exe" (
     if not exist "build\yt-dlp" mkdir "build\yt-dlp"
     xcopy /y /q "vendor\yt-dlp\*" "build\yt-dlp\" >nul
@@ -52,7 +52,7 @@ if exist "vendor\yt-dlp\yt-dlp.exe" (
 )
 
 echo.
-echo [6/6] Dong bo sang OneForAll_Release (ban ma run_app.bat chay)...
+echo [6/7] Dong bo sang OneForAll_Release (ban ma run_app.bat chay)...
 if not exist "OneForAll_Release" mkdir "OneForAll_Release"
 copy /y "build\OneForAll.exe" "OneForAll_Release\" >nul
 if exist "build\*.dll" xcopy /y /q "build\*.dll" "OneForAll_Release\" >nul
@@ -61,6 +61,15 @@ if exist "build\yt-dlp" xcopy /y /q /s /i "build\yt-dlp" "OneForAll_Release\yt-d
 for %%D in (generic iconengines imageformats multimedia networkinformation platforms styles tls) do (
     if exist "build\%%D" xcopy /y /q /s /i "build\%%D" "OneForAll_Release\%%D\" >nul
 )
+
+echo.
+echo [7/7] Chep chuoi Auto Click MAU (profiles\default.json) tu ma nguon vao ban dong goi...
+rem Nguon DUY NHAT cua tep mau la profiles\default.json trong Git - truoc day OneForAll_Release\profiles\
+rem chi ton tai do tung chep tay mot lan tren may dev (ban CI khong co tep nay). Du lieu nguoi dung luc chay
+rem nay nam o %%LOCALAPPDATA%%\OneForAll (xem src\core\AppPaths.h), khong con ghi vao thu muc nay.
+if not exist "OneForAll_Release\profiles" mkdir "OneForAll_Release\profiles"
+copy /y "profiles\default.json" "OneForAll_Release\profiles\default.json" >nul
+if errorlevel 1 goto error
 
 echo.
 echo ===================================================

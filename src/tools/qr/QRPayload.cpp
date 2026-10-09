@@ -133,6 +133,27 @@ QString QRPayload::unescapeWifi(const QString& s)
     return out;
 }
 
+QString QRPayload::maskSecrets(const QString& content)
+{
+    const QString text = content.trimmed();
+    if (!text.startsWith("WIFI:", Qt::CaseInsensitive))
+        return content;
+
+    // splitUnescaped() giữ nguyên ký tự escape trong từng phần nên join(';') dựng lại đúng chuỗi gốc,
+    // chỉ khác ở giá trị P: đã bị thay.
+    QStringList parts = splitUnescaped(text.mid(5), ';');
+    bool changed = false;
+    for (QString& part : parts)
+    {
+        if (part.size() > 2 && part[1] == ':' && part[0].toUpper() == QChar('P'))
+        {
+            part = part.left(2) + secretMask();
+            changed = true;
+        }
+    }
+    return changed ? text.left(5) + parts.join(';') : content;
+}
+
 QString QRPayload::makeUrl(const QString& url)
 {
     const QString u = url.trimmed();
@@ -238,6 +259,8 @@ ParsedPayload QRPayload::parse(const QString& content)
                  << qMakePair(QString("Bảo mật"), sec.isEmpty() ? QString("nopass") : sec)
                  << qMakePair(QString("Mật khẩu"), pass)
                  << qMakePair(QString("Mạng ẩn"), hidden.compare("true", Qt::CaseInsensitive) == 0 ? QString("Có") : QString("Không"));
+        if (!pass.isEmpty())
+            p.secretField = 2; // "Mật khẩu" - giao diện che mặc định
         return p;
     }
 
@@ -246,6 +269,10 @@ ParsedPayload QRPayload::parse(const QString& content)
     {
         setType(QRContentType::VCard);
         const QStringList lines = text.split(QRegularExpression(R"(\r\n|\n|\r)"), Qt::SkipEmptyParts);
+        // Chỉ MỘT dòng "Họ tên": FN (tên hiển thị đầy đủ) được ưu tiên hơn N (họ;tên rời), bất kể dòng nào
+        // đứng trước. Trước đây chỉ nhánh N kiểm tra trùng và chỉ nhìn trường đầu tiên - vCard do chính
+        // makeVCard() tạo ra (N đứng TRƯỚC FN) hiện thành hai dòng "Họ tên".
+        int nameIndex = -1;
         for (const QString& line : lines)
         {
             const int colon = line.indexOf(':');
@@ -253,12 +280,25 @@ ParsedPayload QRPayload::parse(const QString& content)
                 continue;
             const QString key = line.left(colon).split(';').first().toUpper();
             const QString value = line.mid(colon + 1);
-            if (key == "FN")         p.fields << qMakePair(QString("Họ tên"), unescapeVCard(value));
+            if (key == "FN")
+            {
+                const QString fullName = unescapeVCard(value);
+                if (nameIndex < 0)
+                {
+                    nameIndex = p.fields.size();
+                    p.fields << qMakePair(QString("Họ tên"), fullName);
+                }
+                else if (!fullName.trimmed().isEmpty())
+                {
+                    p.fields[nameIndex].second = fullName;
+                }
+            }
             else if (key == "N")
             {
-                const QStringList n = splitUnescaped(value, ';');
-                if (!p.fields.isEmpty() && p.fields.first().first == "Họ tên")
+                if (nameIndex >= 0)
                     continue;
+                const QStringList n = splitUnescaped(value, ';');
+                nameIndex = p.fields.size();
                 p.fields << qMakePair(QString("Họ tên"),
                                       unescapeVCard((n.value(1) + " " + n.value(0)).trimmed()));
             }
@@ -314,6 +354,7 @@ ParsedPayload QRPayload::parse(const QString& content)
     if (text.startsWith("MATMSG:", Qt::CaseInsensitive))
     {
         setType(QRContentType::Email);
+        QString recipient;
         for (const QString& part : splitUnescaped(text.mid(7), ';'))
         {
             const int colon = part.indexOf(':');
@@ -321,13 +362,20 @@ ParsedPayload QRPayload::parse(const QString& content)
                 continue;
             const QString key = part.left(colon).toUpper();
             const QString value = unescapeWifi(part.mid(colon + 1));
-            if (key == "TO")        p.fields << qMakePair(QString("Người nhận"), value);
+            if (key == "TO")
+            {
+                p.fields << qMakePair(QString("Người nhận"), value);
+                if (recipient.isEmpty())
+                    recipient = value.trimmed();
+            }
             else if (key == "SUB")  p.fields << qMakePair(QString("Tiêu đề"), value);
             else if (key == "BODY") p.fields << qMakePair(QString("Nội dung"), value);
         }
-        if (!p.fields.isEmpty())
+        // Người nhận lấy từ đúng trường TO, không phải "trường đầu tiên" - MATMSG không quy định thứ tự,
+        // mã có SUB/BODY đứng trước TO từng khiến tiêu đề/nội dung bị dùng làm địa chỉ mailto:.
+        if (!recipient.isEmpty())
         {
-            p.actionUrl = "mailto:" + p.fields.first().second;
+            p.actionUrl = "mailto:" + recipient;
             p.actionLabel = "Soạn email";
         }
         return p;

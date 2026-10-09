@@ -72,3 +72,13 @@ QString Action::description() const
     }
     return "Hành động";
 }
+
+QString Action::logDescription() const
+{
+    if (type != ActionType::TypeText)
+        return description();
+
+    return QString("Gõ văn bản (%1 ký tự, %2)")
+        .arg(QString::fromStdString(text).size())
+        .arg(textMode == TextTypeMode::Instant ? "tức thì" : "từng ký tự");
+}

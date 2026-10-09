@@ -4,6 +4,7 @@
 
 #include "engine/WlanController.h"
 
+class ConnectionWatcher;
 class QCheckBox;
 class QLabel;
 class QPushButton;
@@ -47,4 +48,5 @@ private:
 
     QList<WifiProfile> m_profiles;
     bool m_passwordsVisible{false};
+    ConnectionWatcher* m_watcher{nullptr}; // theo dõi kết quả sau khi bấm "Kết nối"
 };

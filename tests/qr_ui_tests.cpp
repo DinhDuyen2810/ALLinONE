@@ -1,25 +1,31 @@
 // Kiểm thử giao diện QR (không hiển thị lên màn hình). Build: cmake --build build --target qr_ui_tests
 #include <QApplication>
+#include <QCheckBox>
 #include <QClipboard>
 #include <QComboBox>
 #include <QDir>
 #include <QFile>
+#include <QKeyEvent>
 #include <QLineEdit>
 #include <QCameraDevice>
 #include <QMediaDevices>
 #include <QPainter>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QTabWidget>
+#include <QTableWidget>
 #include <QTemporaryDir>
 #include <cstdio>
 
+#include "core/AppPaths.h"
 #include "tools/qr/QRCodec.h"
 #include "tools/qr/QRGenerateTab.h"
 #include "tools/qr/QRHistoryStore.h"
 #include "tools/qr/QRHistoryTab.h"
 #include "tools/qr/QRScanTab.h"
 #include "tools/qr/QRWindow.h"
+#include "tools/qr/ScreenSnipOverlay.h"
 
 static int g_fail = 0, g_pass = 0;
 #define CHECK(cond)                                                                \
@@ -42,6 +48,10 @@ int main(int argc, char** argv)
 
     QTemporaryDir tmp;
     CHECK(tmp.isValid());
+    // PHẢI đứng trước mọi lời gọi tới QRHistoryStore/Logger: ép toàn bộ dữ liệu vào thư mục tạm để bộ
+    // test không đọc/ghi/xóa lịch sử QR + log thật của người dùng trên máy đang chạy test.
+    AppPaths::setDataDirOverride(tmp.path());
+    CHECK(QRHistoryStore::instance().filePath().startsWith(QDir(tmp.path()).absolutePath()));
     QRHistoryStore::instance().setFilePath(tmp.filePath("history.json"));
     QRHistoryStore::instance().clear();
 
@@ -104,6 +114,17 @@ int main(int argc, char** argv)
         CHECK(gen->currentContent() == "WIFI:T:WPA;S:Home\\;WiFi;P:pa\\:ss\\,word;;");
         const auto r = QRCodec::decode(gen->currentImage());
         CHECK(r.size() == 1 && r.first().text == gen->currentContent());
+
+        // Ô mật khẩu che ký tự khi gõ; nút 👁 bật/tắt hiển thị (không đổi nội dung mã).
+        auto* pass = gen->findChild<QLineEdit*>("wifiPass");
+        auto* toggle = gen->findChild<QPushButton*>("wifiPassToggle");
+        CHECK(pass && toggle);
+        CHECK(pass->echoMode() == QLineEdit::Password);
+        toggle->click();
+        CHECK(pass->echoMode() == QLineEdit::Normal);
+        toggle->click();
+        CHECK(pass->echoMode() == QLineEdit::Password);
+        CHECK(gen->currentContent() == "WIFI:T:WPA;S:Home\\;WiFi;P:pa\\:ss\\,word;;");
     }
 
     // ---- 5. Lưu file các định dạng ----
@@ -136,6 +157,32 @@ int main(int argc, char** argv)
         scan->pasteFromClipboard();
         CHECK(scan->results().size() == 1);
         CHECK(scan->results().first().text == gen->currentContent());
+
+        // Mã vừa dán là mã WiFi: mật khẩu phải bị CHE mặc định ở bảng trường + ô nội dung gốc, chỉ hiện
+        // khi người dùng chủ động tick "Hiện mật khẩu". results() (dùng cho Sao chép/Tạo lại) vẫn đầy đủ.
+        auto* fields = scan->findChild<QTableWidget*>("fieldTable");
+        auto* raw = scan->findChild<QPlainTextEdit*>("rawText");
+        auto* reveal = scan->findChild<QCheckBox*>("revealCheck");
+        CHECK(fields && raw && reveal);
+        if (fields && raw && reveal)
+        {
+            auto tableText = [fields] {
+                QString all;
+                for (int r = 0; r < fields->rowCount(); ++r)
+                    all += fields->item(r, 0)->text() + "=" + fields->item(r, 1)->text() + "\n";
+                return all;
+            };
+            CHECK(!reveal->isHidden() && !reveal->isChecked());
+            CHECK(tableText().contains("Home;WiFi"));
+            CHECK(!tableText().contains("pa:ss,word"));
+            CHECK(!raw->toPlainText().contains("ss"));
+            reveal->setChecked(true);
+            CHECK(tableText().contains("pa:ss,word"));
+            CHECK(raw->toPlainText() == gen->currentContent());
+            reveal->setChecked(false);
+            CHECK(!tableText().contains("pa:ss,word"));
+            CHECK(scan->results().first().text.contains("pa\\:ss\\,word"));
+        }
     }
 
     // ---- 7. Quét ảnh không có mã / nhiều mã ----
@@ -155,6 +202,9 @@ int main(int argc, char** argv)
         p.drawImage(350, 20, QRCodec::render(QRCodec::encode("https://example.com", QREcc::Medium), st));
         p.end();
         CHECK(scan->scanImage(canvas, "two") == 2);
+        // Kết quả không có trường nhạy cảm thì không hiện ô "Hiện mật khẩu".
+        auto* reveal = scan->findChild<QCheckBox*>("revealCheck");
+        CHECK(reveal && reveal->isHidden());
     }
 
     // ---- 8. "Tạo lại mã" chuyển sang tab tạo ----
@@ -185,6 +235,125 @@ int main(int argc, char** argv)
 
         QRHistoryStore::instance().clear();
         CHECK(win.historyTab()->rowCount() == 0);
+    }
+
+    // ---- 9b. Lịch sử: che mật khẩu WiFi mặc định, tooltip không dựng HTML từ nội dung mã ----
+    {
+        QRHistoryStore& store = QRHistoryStore::instance();
+        const QString wifi = "WIFI:T:WPA;S:Home;P:sup3rSecret;;";
+        const QString html = "<img src=\"\\\\evil\\x\"><b>dam</b> & co";
+        store.add("scan", "WiFi", wifi);
+        store.add("scan", "Văn bản", html);
+
+        auto* table = win.historyTab()->findChild<QTableWidget*>();
+        auto* reveal = win.historyTab()->findChild<QCheckBox*>("historyRevealCheck");
+        CHECK(table && reveal && table->rowCount() == 2);
+        if (table && reveal && table->rowCount() == 2)
+        {
+            // Mới nhất ở đầu: hàng 0 = html, hàng 1 = wifi
+            CHECK(!reveal->isChecked());
+            CHECK(!table->item(1, 3)->text().contains("sup3rSecret"));
+            CHECK(!table->item(1, 3)->toolTip().contains("sup3rSecret"));
+            CHECK(table->item(1, 3)->text().contains("S:Home"));
+            CHECK(store.entries().at(1).content == wifi); // dữ liệu LƯU vẫn nguyên văn (cho "Tạo lại mã")
+
+            // Tooltip: mọi ký tự '<' của nội dung đã bị escape - không còn thẻ <img>/<b> thật nào.
+            const QString tip = table->item(0, 3)->toolTip();
+            CHECK(Qt::mightBeRichText(tip));
+            CHECK(!tip.contains("<img") && !tip.contains("<b>"));
+            CHECK(tip.contains("&lt;img") && tip.contains("&amp;"));
+            CHECK(table->item(0, 3)->text().contains("<img")); // ô bảng là văn bản thuần, hiện nguyên văn
+
+            reveal->setChecked(true);
+            CHECK(table->item(1, 3)->text().contains("sup3rSecret"));
+            reveal->setChecked(false);
+            CHECK(!table->item(1, 3)->text().contains("sup3rSecret"));
+        }
+
+        // "Tạo lại mã" từ lịch sử phải dùng nội dung THẬT, không phải bản đã che.
+        if (table)
+        {
+            win.tabs()->setCurrentWidget(win.historyTab());
+            table->setCurrentCell(1, 0);
+            QPushButton* re = findButton(win.historyTab(), "🔁 Tạo lại mã");
+            CHECK(re != nullptr);
+            if (re)
+                re->click();
+            CHECK(gen->currentContent() == wifi);
+        }
+        store.clear();
+    }
+
+    // ---- 9c. Tệp lịch sử hỏng được đổi tên .bak chứ không bị ghi đè; ghi thất bại được báo ----
+    {
+        QRHistoryStore& store = QRHistoryStore::instance();
+        const QString original = store.filePath();
+
+        const QString corrupt = tmp.filePath("corrupt.json");
+        {
+            QFile f(corrupt);
+            CHECK(f.open(QIODevice::WriteOnly));
+            f.write("{ \"entries\": [ {\"content\": \"du lieu cu\" ");  // JSON dở dang
+        }
+        store.setFilePath(corrupt);
+        CHECK(!store.load());
+        CHECK(store.entries().isEmpty());
+        CHECK(!QFile::exists(corrupt));
+        CHECK(QFile::exists(corrupt + ".bak"));
+        store.add("generate", "Văn bản", "muc moi");
+        CHECK(store.lastSaveOk());
+        {
+            QFile bak(corrupt + ".bak");
+            CHECK(bak.open(QIODevice::ReadOnly) && bak.readAll().contains("du lieu cu"));
+        }
+        CHECK(store.load() && store.entries().size() == 1);
+
+        // Tệp chưa tồn tại = lịch sử rỗng, không phải lỗi, không sinh .bak.
+        store.setFilePath(tmp.filePath("missing.json"));
+        CHECK(store.load() && store.entries().isEmpty());
+        CHECK(!QFile::exists(tmp.filePath("missing.json.bak")));
+
+        // Đường dẫn không ghi được (thư mục cha là một TỆP): add() phải ghi nhận thất bại + phát saveFailed.
+        const QString blocker = tmp.filePath("blocker");
+        {
+            QFile f(blocker);
+            CHECK(f.open(QIODevice::WriteOnly));
+            f.write("x");
+        }
+        int failedSignals = 0;
+        const auto conn = QObject::connect(&store, &QRHistoryStore::saveFailed, [&failedSignals](const QString&) { ++failedSignals; });
+        store.setFilePath(blocker + "/sub/history.json");
+        store.add("generate", "Văn bản", "khong ghi duoc");
+        CHECK(!store.lastSaveOk());
+        CHECK(failedSignals == 1);
+        QObject::disconnect(conn);
+
+        store.setFilePath(original);
+        store.load();
+        store.clear();
+        CHECK(store.lastSaveOk());
+    }
+
+    // ---- 9d. Lớp phủ chụp màn hình: đóng kiểu nào cũng báo cho nơi gọi đúng MỘT lần ----
+    // (không show() lớp phủ lên màn hình; closeEvent vẫn được gửi cho cửa sổ chưa hiện)
+    {
+        // Hồi quy: đóng không qua chuột/ESC (Alt+F4...) từng không phát tín hiệu nào -> cửa sổ QR Tools
+        // (đã bị ẩn trước khi chụp) không bao giờ hiện lại.
+        int cancelled = 0, captured = 0;
+        auto* overlay = new ScreenSnipOverlay();
+        QObject::connect(overlay, &ScreenSnipOverlay::cancelled, [&cancelled] { ++cancelled; });
+        QObject::connect(overlay, &ScreenSnipOverlay::captured, [&captured](const QImage&) { ++captured; });
+        overlay->close();
+        CHECK(cancelled == 1 && captured == 0);
+
+        // ESC: đã phát cancelled() rồi thì closeEvent() không phát thêm lần nữa.
+        cancelled = 0;
+        auto* overlay2 = new ScreenSnipOverlay();
+        QObject::connect(overlay2, &ScreenSnipOverlay::cancelled, [&cancelled] { ++cancelled; });
+        QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+        QCoreApplication::sendEvent(overlay2, &esc);
+        CHECK(cancelled == 1);
+        app.processEvents(); // cho WA_DeleteOnClose dọn hai lớp phủ
     }
 
     // ---- 10. Camera: trạng thái nút khớp với thiết bị ----

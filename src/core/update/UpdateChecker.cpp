@@ -9,6 +9,7 @@
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QRegularExpression>
 #include <QTimer>
 #include <QUrl>
 
@@ -36,6 +37,7 @@ void UpdateChecker::checkNow()
     req.setHeader(QNetworkRequest::UserAgentHeader, QString("OneForAll/%1").arg(APP_VERSION));
     req.setRawHeader("Accept", "application/vnd.github+json");
     req.setRawHeader("X-GitHub-Api-Version", "2022-11-28");
+    req.setTransferTimeout(15000); // không để một kết nối treo giữ QNetworkReply sống suốt phiên chạy
 
     QNetworkReply* reply = m_nam->get(req);
     connect(reply, &QNetworkReply::finished, this, [this, reply] { onReplyFinished(reply); });
@@ -131,23 +133,39 @@ UpdateInfo parseLatestRelease(const QByteArray& json)
     if (tag.isEmpty())
         return info;
 
-    QString downloadUrl;
-    qint64 size = 0;
+    // "digest" (GitHub thêm từ 2025) có dạng "sha256:<hex>" - trả hex thường, rỗng nếu thiếu/khác thuật toán.
+    const auto sha256Of = [](const QJsonObject& asset) -> QString {
+        const QString digest = asset.value("digest").toString().trimmed();
+        if (!digest.startsWith(QStringLiteral("sha256:"), Qt::CaseInsensitive))
+            return QString();
+        const QString hex = digest.mid(7).trimmed().toLower();
+        static const QRegularExpression hex64(QStringLiteral("^[0-9a-f]{64}$"));
+        return hex64.match(hex).hasMatch() ? hex : QString();
+    };
+
+    QString downloadUrl, exeSha, msiUrl, msiSha;
+    qint64 size = 0, msiSize = 0;
     const QJsonArray assets = root.value("assets").toArray();
     for (const QJsonValue& v : assets)
     {
         const QJsonObject asset = v.toObject();
         const QString name = asset.value("name").toString();
+        const QString url = asset.value("browser_download_url").toString();
         // So KHỚP ĐÚNG TUYỆT ĐỐI tên file (biết trước chính xác - OutputBaseFilename=OneForAll_Setup
         // trong installer/OneForAll.iss luôn sinh ra đúng tên này) - KHÔNG dùng endsWith("Setup.exe")
         // lỏng lẻo như trước (có thể khớp nhầm "MyApp_Setup.exe" của một asset khác lỡ đính kèm cùng
-        // release, hoặc một bản tải lên lỗi/trùng tên gây chọn asset sai mà không rõ ràng cái nào thắng
-        // nếu khớp nhiều hơn một - phát hiện khi tự rà soát lại).
-        if (name.compare(QStringLiteral("OneForAll_Setup.exe"), Qt::CaseInsensitive) == 0)
+        // release). Lấy asset ĐẦU TIÊN khớp cho mỗi loại.
+        if (downloadUrl.isEmpty() && name.compare(QStringLiteral("OneForAll_Setup.exe"), Qt::CaseInsensitive) == 0)
         {
-            downloadUrl = asset.value("browser_download_url").toString();
+            downloadUrl = url;
             size = static_cast<qint64>(asset.value("size").toDouble());
-            break;
+            exeSha = sha256Of(asset);
+        }
+        else if (msiUrl.isEmpty() && name.compare(QStringLiteral("OneForAll_Setup.msi"), Qt::CaseInsensitive) == 0)
+        {
+            msiUrl = url;
+            msiSize = static_cast<qint64>(asset.value("size").toDouble());
+            msiSha = sha256Of(asset);
         }
     }
     if (downloadUrl.isEmpty())
@@ -156,8 +174,19 @@ UpdateInfo parseLatestRelease(const QByteArray& json)
     info.version = stripLeadingV(tag);
     info.downloadUrl = downloadUrl;
     info.downloadSize = size;
+    info.sha256 = exeSha;
+    info.msiUrl = msiUrl;
+    info.msiSize = msiSize;
+    info.msiSha256 = msiSha;
     info.releaseNotes = root.value("body").toString();
     return info;
+}
+
+bool isTrustedDownloadUrl(const QString& url)
+{
+    const QUrl u(url, QUrl::StrictMode);
+    return u.isValid() && u.scheme().compare(QStringLiteral("https"), Qt::CaseInsensitive) == 0 &&
+           u.host().compare(QStringLiteral("github.com"), Qt::CaseInsensitive) == 0 && u.userInfo().isEmpty();
 }
 
 } // namespace UpdateCheckerInternal

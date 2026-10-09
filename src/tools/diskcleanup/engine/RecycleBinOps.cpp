@@ -3,6 +3,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <shellapi.h>
+#include <string>
 
 #include <QDir>
 #include <QStorageInfo>
@@ -71,7 +72,68 @@ bool runFileOperation(const QStringList& paths, FILEOP_FLAGS extraFlags, QString
 
 bool RecycleBinOps::moveToRecycleBin(const QStringList& paths, QString* error)
 {
-    return runFileOperation(paths, FOF_ALLOWUNDO, error);
+    // FOF_WANTNUKEWARNING: nếu một mục KHÔNG vào Thùng rác được, Windows phải hỏi lại trước khi hủy hẳn
+    // (cờ này "ghi đè một phần" FOF_NOCONFIRMATION theo tài liệu SHFILEOPSTRUCT) - không có nó, lời
+    // hứa "có thể khôi phục" của giao diện thành xóa vĩnh viễn âm thầm với tệp lớn.
+    return runFileOperation(paths, FOF_ALLOWUNDO | FOF_WANTNUKEWARNING, error);
+}
+
+QString RecycleBinOps::internal::recycleVerdict(DriveKind kind, bool nukeOnDelete, qint64 maxCapacityMb, qint64 sizeBytes)
+{
+    if (kind == DriveKind::Network)
+        return "nằm trên ổ mạng (không có Thùng rác)";
+    if (kind == DriveKind::Removable)
+        return "nằm trên ổ tháo rời (không có Thùng rác)";
+    if (kind == DriveKind::Other)
+        return "nằm trên loại ổ đĩa không có Thùng rác";
+    if (nukeOnDelete)
+        return "Thùng rác đang bị tắt cho ổ đĩa này";
+    if (maxCapacityMb >= 0 && sizeBytes > maxCapacityMb * 1024 * 1024)
+        return QString("lớn hơn dung lượng tối đa của Thùng rác trên ổ này (%1 MB)").arg(maxCapacityMb);
+    return {};
+}
+
+QString RecycleBinOps::notRecyclableReason(const QString& path, qint64 sizeBytes)
+{
+    const std::wstring native = QDir::toNativeSeparators(path).toStdWString();
+    wchar_t volumeRoot[MAX_PATH + 1] = {};
+    if (!GetVolumePathNameW(native.c_str(), volumeRoot, MAX_PATH))
+        return {};
+
+    internal::DriveKind kind = internal::DriveKind::Other;
+    switch (GetDriveTypeW(volumeRoot))
+    {
+        case DRIVE_FIXED: kind = internal::DriveKind::Fixed; break;
+        case DRIVE_REMOVABLE: kind = internal::DriveKind::Removable; break;
+        case DRIVE_REMOTE: kind = internal::DriveKind::Network; break;
+        default: kind = internal::DriveKind::Other; break;
+    }
+
+    bool nukeOnDelete = false;
+    qint64 maxCapacityMb = -1;
+    wchar_t volumeGuidPath[64] = {};
+    if (kind == internal::DriveKind::Fixed && GetVolumeNameForVolumeMountPointW(volumeRoot, volumeGuidPath, 64))
+    {
+        // Tên ổ dạng Volume{GUID} - chỉ cần phần "{GUID}" để tìm khóa cấu hình Thùng rác của ổ đó.
+        const QString guidPath = QString::fromWCharArray(volumeGuidPath);
+        const int open = guidPath.indexOf(QLatin1Char('{'));
+        const int close = guidPath.indexOf(QLatin1Char('}'));
+        if (open >= 0 && close > open)
+        {
+            const std::wstring key =
+                (QStringLiteral("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\BitBucket\\Volume\\") +
+                 guidPath.mid(open, close - open + 1))
+                    .toStdWString();
+            DWORD value = 0;
+            DWORD size = sizeof(value);
+            if (RegGetValueW(HKEY_CURRENT_USER, key.c_str(), L"NukeOnDelete", RRF_RT_REG_DWORD, nullptr, &value, &size) == ERROR_SUCCESS)
+                nukeOnDelete = value != 0;
+            size = sizeof(value);
+            if (RegGetValueW(HKEY_CURRENT_USER, key.c_str(), L"MaxCapacity", RRF_RT_REG_DWORD, nullptr, &value, &size) == ERROR_SUCCESS)
+                maxCapacityMb = static_cast<qint64>(value);
+        }
+    }
+    return internal::recycleVerdict(kind, nukeOnDelete, maxCapacityMb, sizeBytes);
 }
 
 bool RecycleBinOps::permanentlyDelete(const QStringList& paths, QString* error)

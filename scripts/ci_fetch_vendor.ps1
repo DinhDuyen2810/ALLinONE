@@ -63,11 +63,20 @@ Invoke-WebRequest -Uri "https://raw.githubusercontent.com/yt-dlp/yt-dlp/master/L
 Write-Host "  Da cai dat vendor/yt-dlp/yt-dlp.exe"
 
 # ---- 3) ffmpeg/ffprobe (BtbN/FFmpeg-Builds, bản tĩnh "gpl") - dùng tag "latest" nổi (URL ổn định luôn
-# trỏ bản mới nhất) - KHÔNG có checksum riêng công khai cho tag này nên không xác minh SHA-256 được (bản
-# thân đây đã là thực tế đã chấp nhận từ trước khi vendor hóa thủ công, xem THIRD_PARTY.md) ----
+# trỏ bản mới nhất). Bản phát hành "latest" CÓ đính kèm `checksums.sha256` (đã xác nhận qua GitHub API:
+# dòng của ffmpeg-master-latest-win64-gpl.zip khớp đúng "digest" API trả về cho asset đó) - xác minh
+# giống scrcpy/yt-dlp. Giới hạn nêu rõ: checksum tải từ CÙNG nguồn với tệp nên chỉ bắt được tệp hỏng/tải
+# dở, không chống được việc chính kho nguồn bị thay nội dung. ----
 Write-Host "==> ffmpeg (BtbN latest win64 gpl)"
-$ffmpegZip = Join-Path $tmp "ffmpeg-win64-gpl.zip"
-Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" -OutFile $ffmpegZip
+$ffmpegZipName = "ffmpeg-master-latest-win64-gpl.zip"
+$ffmpegZip = Join-Path $tmp $ffmpegZipName
+Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/$ffmpegZipName" -OutFile $ffmpegZip
+Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/checksums.sha256" -OutFile (Join-Path $tmp "ffmpeg-checksums.sha256")
+$ffSums = Get-Content (Join-Path $tmp "ffmpeg-checksums.sha256")
+$ffExpectedLine = $ffSums | Where-Object { $_ -match "\s\*?$([regex]::Escape($ffmpegZipName))$" }
+if (-not $ffExpectedLine) { throw "Khong tim thay dong checksum cho $ffmpegZipName trong checksums.sha256" }
+$ffExpectedHash = (($ffExpectedLine | Select-Object -First 1) -split '\s+')[0]
+Assert-Sha256 $ffmpegZip $ffExpectedHash
 $ffmpegExtract = Join-Path $tmp "ffmpeg-extract"
 Expand-Archive -Path $ffmpegZip -DestinationPath $ffmpegExtract -Force
 $ffmpegExe = Get-ChildItem -Path $ffmpegExtract -Filter "ffmpeg.exe" -Recurse | Select-Object -First 1

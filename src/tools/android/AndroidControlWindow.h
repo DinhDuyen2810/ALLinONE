@@ -15,6 +15,10 @@ public:
     explicit AndroidControlWindow(QWidget* parent = nullptr);
     ~AndroidControlWindow() override;
 
+    /// Dừng mọi việc nền (phiên scrcpy, lệnh adb, daemon adb đóng gói kèm) - xem
+    /// DevicesTab::stopBackgroundWork(). Dùng cho AndroidControlTool::stopBackgroundWorkForQuit().
+    void stopBackgroundWork();
+
 protected:
     void closeEvent(QCloseEvent* event) override;
 

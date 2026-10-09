@@ -8,6 +8,7 @@
 
 #include <QCheckBox>
 #include <QColor>
+#include <QDir>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
@@ -59,6 +60,12 @@ bool CleanupTab::isCleaningNow() const
 bool CleanupTab::isBusy() const
 {
     return m_scanning || isCleaningNow();
+}
+
+void CleanupTab::stopScanIfRunning()
+{
+    if (m_scanner && m_scanner->isRunning())
+        m_scanner->requestStop();
 }
 
 void CleanupTab::buildUi()
@@ -254,7 +261,7 @@ void CleanupTab::onScanClicked()
     m_scanner->setCategories(m_categories);
     // Ưu tiên thấp: nhường CPU cho luồng giao diện, tránh bị Windows báo "Không phản hồi" khi gặp
     // hạng mục lớn (vd Windows.old hàng chục GB).
-    m_scanner->start(QThread::LowPriority);
+    m_scanner->startScan(QThread::LowPriority);
 }
 
 void CleanupTab::onCategoryStarted(QString name)
@@ -362,7 +369,11 @@ void CleanupTab::onCleanClicked()
         if (items.isEmpty())
             continue;
 
-        categoryNames << cat.name;
+        // Tên hạng mục + (các) thư mục gốc THẬT sẽ bị dọn - hiện trong hộp xác nhận bên dưới.
+        QString line = cat.name;
+        for (const QString& root : cat.rootPaths)
+            line += "\n        ↳ " + QDir::toNativeSeparators(root);
+        categoryNames << line;
         if (cat.risk == CleanupRisk::High)
             includesHighRisk = true;
         for (const CleanupItem& item : items)
@@ -380,13 +391,17 @@ void CleanupTab::onCleanClicked()
     }
 
     const bool permanent = m_permanentCheck->isChecked();
+    // Hộp xác nhận hiện RÕ thư mục gốc của từng hạng mục: người dùng phải thấy chính xác nơi sắp bị dọn
+    // (vd biến môi trường TEMP của máy bị trỏ sang một thư mục lạ) trước khi bấm Yes, không chỉ tên hạng mục.
     QString message = QString("Sẽ xóa %1 mục (%2) thuộc %3 hạng mục:\n\n  • %4\n\n")
                           .arg(paths.size())
                           .arg(DiskUi::formatBytes(total))
                           .arg(categoryNames.size())
                           .arg(categoryNames.join("\n  • "));
     message += permanent ? "⚠ XÓA VĨNH VIỄN - KHÔNG qua Thùng rác, không thể khôi phục."
-                         : "Các mục sẽ được chuyển vào Thùng rác và có thể khôi phục lại nếu cần.";
+                         : "Các mục sẽ được chuyển vào Thùng rác và có thể khôi phục lại nếu cần. Mục nào KHÔNG "
+                           "vào Thùng rác được (lớn hơn dung lượng Thùng rác, hoặc ổ đĩa không có Thùng rác) sẽ "
+                           "được GIỮ NGUYÊN, không bị xóa.";
     if (includesHighRisk)
         message += "\n\n⚠ Có hạng mục RỦI RO CAO (ví dụ Windows.old) - hãy chắc chắn trước khi tiếp tục.";
 

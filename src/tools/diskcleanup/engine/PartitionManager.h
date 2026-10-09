@@ -78,5 +78,19 @@ QString buildResizeScript(int diskNumber, int partitionNumber, qint64 newSizeByt
 /// chuẩn hóa cả hai trường hợp về cùng một danh sách.
 QList<PartitionInfo> parsePartitionsJson(const QByteArray& json, QString* error);
 SupportedSizeRange parseSupportedSizeJson(const QByteArray& json, QString* error);
+
+/// Đổi giá trị GB người dùng nhập sang byte rồi KẸP vào [minBytes, maxBytes]. Ô nhập chỉ có 2 chữ số
+/// thập phân (bước ~10,7 MB) nên giá trị làm tròn có thể lọt ra ngoài khoảng Windows cho phép vài MB.
+qint64 clampResizeBytes(double sizeGb, const SupportedSizeRange& range);
+
+/// Lớp kiểm tra CUỐI CÙNG trước khi chạy Resize-Partition, làm trên dữ liệu VỪA đọc lại từ Windows
+/// (currentPartitions/currentRange), không phải dữ liệu giao diện đang giữ: rỗng nếu được phép chạy,
+/// ngược lại là lý do từ chối. Từ chối khi phân vùng (disk, partition) không còn, kích thước hiện tại
+/// đã khác kích thước lúc người dùng tra và xác nhận (sizeAtQueryBytes) - tức số đĩa/số phân vùng có
+/// thể đã trỏ sang một phân vùng KHÁC (cắm/rút ổ, đổi phân vùng bằng công cụ khác) - hoặc kích thước
+/// mới nằm ngoài khoảng cho phép/không đổi gì.
+QString resizeBlockReason(int diskNumber, int partitionNumber, qint64 sizeAtQueryBytes,
+                          const QList<PartitionInfo>& currentPartitions, const SupportedSizeRange& currentRange,
+                          qint64 newSizeBytes);
 } // namespace internal
 } // namespace PartitionManager

@@ -14,7 +14,7 @@ public:
     explicit VpnControlWindow(QWidget* parent = nullptr);
     ~VpnControlWindow() override;
 
-    /// Dừng NGAY phiên rasdial.exe đang kết nối/ngắt kết nối (nếu có), KHÔNG hỏi xác nhận - khác
+    /// Dừng NGAY phiên RAS (VpnConnector) đang kết nối/ngắt kết nối (nếu có), KHÔNG hỏi xác nhận - khác
     /// closeEvent() bên dưới (có hộp thoại hỏi, dành cho người dùng chủ động bấm X). Gọi từ
     /// VpnControlTool::stopBackgroundWorkForQuit() khi ứng dụng thoát qua qApp->quit() ở nơi khác -
     /// hỏi xác nhận giữa một luồng thoát không thể hủy là vô nghĩa, chỉ cần dừng êm tiến trình ngoài.

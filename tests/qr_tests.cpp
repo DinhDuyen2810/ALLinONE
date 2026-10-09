@@ -83,6 +83,26 @@ int main(int argc, char** argv)
         CHECK(!tooLong.isValid() && !err.isEmpty());
         const QRMatrix empty = QRCodec::encode(QString(), QREcc::Low, &err);
         CHECK(!empty.isValid());
+
+        // Hồi quy: chuỗi TOÀN CHỮ SỐ dài hơn maxBytes() (giới hạn chế độ byte) vẫn vừa mã QR ở chế độ
+        // numeric - trước đây bị chặn oan bởi phép so với maxBytes().
+        const QString digits = QString(4000, QChar('7'));
+        CHECK(digits.size() > QRCodec::maxBytes(QREcc::Low));
+        err.clear();
+        const QRMatrix numeric = QRCodec::encode(digits, QREcc::Low, &err);
+        CHECK(numeric.isValid() && err.isEmpty());
+        CHECK(roundTrips(digits, QREcc::Low, style, "numeric 4000 digits"));
+        // ...nhưng vượt sức chứa thật thì vẫn phải báo lỗi rõ ràng (không ném ngoại lệ ra ngoài).
+        err.clear();
+        CHECK(!QRCodec::encode(QString(7090, QChar('7')), QREcc::Low, &err).isValid() && !err.isEmpty());
+        err.clear();
+        CHECK(!QRCodec::encode(QString(5000, QChar('7')), QREcc::High, &err).isValid() && !err.isEmpty());
+
+        // Hồi quy: nội dung có ký tự NUL (U+0000) ở giữa từng bị cắt cụt tại NUL khi mã hóa.
+        const QString withNul = QString("ab") + QChar(0) + QString("cd") + QChar(0) + QString("ef");
+        CHECK(withNul.size() == 8);
+        QRStyle plain;
+        CHECK(roundTrips(withNul, QREcc::Medium, plain, "embedded NUL"));
     }
 
     // 3. Màu sắc, kiểu ô bo tròn, kích thước nhỏ, viền hẹp
@@ -163,6 +183,12 @@ int main(int argc, char** argv)
             p.drawImage(2200, 1300, big.scaled(500, 500, Qt::KeepAspectRatio, Qt::SmoothTransformation));
         }
         CHECK(roundTrips("transform test 123", QREcc::Medium, style, "big canvas", &canvas));
+
+        // Hồi quy: mã bị lật gương (ảnh chụp qua gương/camera trước) - quirc_flip() rồi thử lại.
+        const QImage mirroredH = big.transformed(QTransform().scale(-1, 1));
+        CHECK(roundTrips("transform test 123", QREcc::Medium, style, "mirrored horizontally", &mirroredH));
+        const QImage mirroredV = big.transformed(QTransform().scale(1, -1));
+        CHECK(roundTrips("transform test 123", QREcc::Medium, style, "mirrored vertically", &mirroredV));
     }
 
     // 7. Nhiều mã trong một ảnh
@@ -183,6 +209,34 @@ int main(int argc, char** argv)
         for (const auto& r : res) texts << r.text;
         CHECK(texts.contains("first code") && texts.contains("second code"));
         CHECK(!res.isEmpty() && res.first().corners.size() == 4);
+
+        // Hồi quy: mã thứ hai RẤT NHỎ (~1,5 px/ô) - ở tỉ lệ gốc quirc nhìn thấy lưới nhưng không giải mã
+        // được, phải phóng to mới đọc ra. decode() cũ trả về ngay sau lượt đầu (chỉ 1 mã); nay thấy còn
+        // lưới chưa đọc được thì chạy tiếp lượt phóng to và gộp kết quả. (Kích thước 63/48 px lấy từ thực
+        // nghiệm với bản decode() cũ: cả hai đều chỉ ra 1 mã.)
+        const QRMatrix tinyMatrix = QRCodec::encode("second code - smaller one", QREcc::Medium);
+        QRStyle tinyStyle;
+        tinyStyle.targetSize = (tinyMatrix.size + 8) * 6;
+        const QImage tinySource = QRCodec::render(tinyMatrix, tinyStyle);
+        for (int tinySide : {63, 48})
+        {
+            QImage mixed(700, 340, QImage::Format_RGB32);
+            mixed.fill(Qt::white);
+            QPainter pm(&mixed);
+            pm.drawImage(10, 20, a);
+            pm.drawImage(380, 20, tinySource.scaled(tinySide, tinySide, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+            pm.end();
+            const QList<QRDecoded> both = QRCodec::decode(mixed);
+            QStringList bothTexts;
+            for (const auto& r : both) bothTexts << r.text;
+            CHECK(both.size() == 2);
+            CHECK(bothTexts.contains("first code") && bothTexts.contains("second code - smaller one"));
+            // Tọa độ góc của mã đọc được ở lượt phóng to vẫn phải quy về ảnh GỐC (nằm trong vùng mã nhỏ).
+            for (const auto& r : both)
+                if (r.text.startsWith("second"))
+                    for (const QPoint& c : r.corners)
+                        CHECK(c.x() >= 370 && c.x() <= 390 + tinySide && c.y() >= 10 && c.y() <= 30 + tinySide);
+        }
     }
 
     // 8. SVG render -> decode
@@ -207,6 +261,30 @@ int main(int argc, char** argv)
         style.logo = makeLogo();
         const QString svg2 = QRCodec::toSvg(QRCodec::encode("svg logo", QREcc::High), style);
         CHECK(QSvgRenderer(svg2.toUtf8()).isValid() && svg2.contains("<image"));
+
+        // Hồi quy: toSvg() từng bỏ qua roundedModules (SVG ra ô vuông dù bản xem trước bo tròn).
+        QRStyle round;
+        round.targetSize = 400;
+        round.roundedModules = true;
+        const QRMatrix mr = QRCodec::encode("svg rounded modules", QREcc::Quartile);
+        const QString svgRound = QRCodec::toSvg(mr, round);
+        QRStyle square = round;
+        square.roundedModules = false;
+        const QString svgSquare = QRCodec::toSvg(mr, square);
+        CHECK(svgRound != svgSquare);
+        CHECK(svgRound.contains("rx=\"0.32\"") && !svgSquare.contains("rx=\"0.32\""));
+        CHECK(svgSquare.contains("crispEdges") && !svgRound.contains("crispEdges"));
+        QSvgRenderer rr(svgRound.toUtf8());
+        CHECK(rr.isValid());
+        QImage imgRound(400, 400, QImage::Format_ARGB32);
+        imgRound.fill(Qt::white);
+        {
+            QPainter pr(&imgRound);
+            pr.setRenderHint(QPainter::Antialiasing);
+            rr.render(&pr);
+        }
+        const auto resRound = QRCodec::decode(imgRound);
+        CHECK(resRound.size() == 1 && resRound.first().text == "svg rounded modules");
     }
 
     // 9. Độ tương phản
@@ -228,6 +306,19 @@ int main(int argc, char** argv)
         CHECK(p.fields.value(0).second == w.ssid);
         CHECK(p.fields.value(2).second == w.password);
         CHECK(p.fields.value(3).second == "Có");
+        CHECK(p.secretField == 2 && p.fields.value(p.secretField).first == "Mật khẩu");
+
+        // Bản hiển thị: che đúng giá trị P:, mọi phần khác (kể cả ký tự escape trong SSID) giữ nguyên.
+        const QString masked = QRPayload::maskSecrets(s);
+        CHECK(masked != s);
+        CHECK(!masked.contains("ss\\;w") && !masked.contains("ord"));
+        CHECK(masked.contains(QRPayload::secretMask()));
+        CHECK(masked.startsWith("WIFI:T:WPA;S:" + QRPayload::escapeWifi(w.ssid) + ";P:" + QRPayload::secretMask() + ";"));
+        const ParsedPayload pm = QRPayload::parse(masked);
+        CHECK(pm.fields.value(0).second == w.ssid && pm.fields.value(2).second == QRPayload::secretMask());
+        CHECK(QRPayload::maskSecrets("https://example.com/?P:secret;") == "https://example.com/?P:secret;");
+        CHECK(QRPayload::maskSecrets("hello; P:world") == "hello; P:world");
+        CHECK(QRPayload::maskSecrets("wifi:S:x;t:WPA;p:abc12345;;") == "wifi:S:x;t:WPA;p:" + QRPayload::secretMask() + ";;");
 
         WifiInfo open;
         open.ssid = "Open";
@@ -235,6 +326,8 @@ int main(int argc, char** argv)
         const QString so = QRPayload::makeWifi(open);
         CHECK(!so.contains("P:"));
         CHECK(QRPayload::parse(so).fields.value(1).second == "nopass");
+        CHECK(QRPayload::parse(so).secretField == -1); // không có mật khẩu thì không có gì phải che
+        CHECK(QRPayload::maskSecrets(so) == so);
 
         EmailInfo e{"a@b.com", "Chào bạn & bạn", "Nội dung\nthứ hai"};
         const QString es = QRPayload::makeEmail(e);
@@ -274,6 +367,20 @@ int main(int argc, char** argv)
         const ParsedPayload vp = QRPayload::parse(vs);
         CHECK(vp.type == QRContentType::VCard);
         CHECK(vp.fields.value(0).second == "Văn Nguyễn");
+        // Hồi quy: makeVCard() xuất N trước FN - parse() từng thêm HAI dòng "Họ tên".
+        auto countName = [](const ParsedPayload& pp) {
+            int n = 0;
+            for (const auto& f : pp.fields)
+                if (f.first == "Họ tên") ++n;
+            return n;
+        };
+        CHECK(countName(vp) == 1);
+        const ParsedPayload fnFirst = QRPayload::parse("BEGIN:VCARD\nVERSION:3.0\nFN:Tên Đầy Đủ\nN:Ho;Ten;;;\nEND:VCARD");
+        CHECK(countName(fnFirst) == 1 && fnFirst.fields.value(0).second == "Tên Đầy Đủ");
+        const ParsedPayload nFirst = QRPayload::parse("BEGIN:VCARD\nVERSION:3.0\nN:Ho;Ten;;;\nTEL:123\nFN:Tên Đầy Đủ\nEND:VCARD");
+        CHECK(countName(nFirst) == 1 && nFirst.fields.value(0).second == "Tên Đầy Đủ"); // FN được ưu tiên
+        const ParsedPayload nOnly = QRPayload::parse("BEGIN:VCARD\nVERSION:3.0\nN:Ho;Ten;;;\nEND:VCARD");
+        CHECK(countName(nOnly) == 1 && nOnly.fields.value(0).second == "Ten Ho");
         bool hasOrg = false;
         for (const auto& f : vp.fields)
             if (f.first == "Công ty" && f.second.contains("Công ty")) hasOrg = true;
@@ -287,6 +394,15 @@ int main(int argc, char** argv)
         CHECK(QRPayload::parse("user@example.com").type == QRContentType::Email);
         CHECK(QRPayload::parse("+84 912 345 678").type == QRContentType::Phone);
         CHECK(QRPayload::parse("MECARD:N:Nguyen,Van;TEL:0912345678;;").type == QRContentType::VCard);
+
+        // Hồi quy: MATMSG có SUB/BODY đứng trước TO từng lấy tiêu đề làm địa chỉ mailto:.
+        const ParsedPayload mm = QRPayload::parse("MATMSG:SUB:Xin chao;BODY:noi dung;TO:nguoi@example.com;;");
+        CHECK(mm.type == QRContentType::Email);
+        CHECK(mm.actionUrl == "mailto:nguoi@example.com");
+        const ParsedPayload mmStd = QRPayload::parse("MATMSG:TO:a@b.com;SUB:s;BODY:b;;");
+        CHECK(mmStd.actionUrl == "mailto:a@b.com");
+        const ParsedPayload mmNoTo = QRPayload::parse("MATMSG:SUB:chi co tieu de;;");
+        CHECK(mmNoTo.actionUrl.isEmpty()); // không có người nhận thì không dựng mailto: từ trường khác
     }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);

@@ -109,7 +109,9 @@ void PeersTab::reload()
         autoLayout->addWidget(autoCheck);
         m_table->setCellWidget(i, 2, autoWrap);
 
-        const bool connected = m_connectionStatus.value(p.id, false);
+        // Hỏi thẳng controller (nguồn sự thật) thay vì sổ riêng dựng từ tín hiệu - sổ riêng lệch sau mỗi lần
+        // đóng/mở lại cửa sổ (controller dừng rồi chạy lại).
+        const bool connected = m_controller->isPeerConnected(p.id);
         auto* statusItem = new QTableWidgetItem(connected ? "● Đã kết nối" : "○ Ngoại tuyến");
         statusItem->setForeground(connected ? QColor("#1a7f37") : QColor("#8c959f"));
         statusItem->setFlags(statusItem->flags() & ~Qt::ItemIsEditable);
@@ -123,8 +125,9 @@ void PeersTab::reload()
 
 void PeersTab::onPeerConnectionChanged(QString peerId, bool connected)
 {
-    m_connectionStatus[peerId] = connected;
-    reload();
+    Q_UNUSED(peerId);
+    Q_UNUSED(connected);
+    reload(); // trạng thái từng dòng lấy thẳng từ controller->isPeerConnected() trong reload()
 }
 
 void PeersTab::onForgetClicked()
