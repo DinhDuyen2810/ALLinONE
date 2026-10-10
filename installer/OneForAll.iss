@@ -45,6 +45,16 @@ AppUpdatesURL={#MyAppURL}
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
+; Người dùng báo chạy setup.exe KHÔNG hỏi đường dẫn cài đặt - xác nhận thật bằng cách tự cài rồi chạy lại
+; installer trên cùng máy: Inno Setup mặc định "nhớ" bản cài trước đó (cùng AppId) và TỰ ĐỘNG BỎ QUA
+; trang "Select Destination Location" (dùng lại UsePreviousAppDir, mặc định yes) - đúng ý người dùng đã
+; từng cài qua rồi chạy lại .exe để cài đè, không phải lỗi dựng sai trang. DisableDirPage mặc định đã là
+; "no" (không khai thường không tự skip) nhưng khai TƯỜNG MINH ở đây để chắc chắn tuyệt đối trang này LUÔN
+; hiện ở chế độ cài đặt TƯƠNG TÁC (double-click .exe), không phụ thuộc máy đã từng cài hay chưa - KHÔNG
+; đổi UsePreviousAppDir (giữ mặc định yes): cơ chế tự cập nhật ngầm (UpdateInstaller, chạy installer này ở
+; chế độ /VERYSILENT) vẫn phải tự cài đúng vào vị trí ĐÃ CÀI TRƯỚC ĐÓ mà không hỏi gì (silent luôn bỏ qua
+; mọi trang bất kể DisableDirPage, nên không bị ảnh hưởng bởi thay đổi này).
+DisableDirPage=no
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 ; Tên Mutex PHẢI khớp CHÍNH XÁC với CreateMutexW() trong src/main.cpp - cho phép Setup/Windows Restart

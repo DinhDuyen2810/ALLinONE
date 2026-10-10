@@ -1660,6 +1660,44 @@ X trong sidebar vì cả hai cùng độ dài tên không phân biệt được)
 nhận đúng phiên bản mới) - không phải sửa gì thêm ở phần này, chỉ tăng độ tin cậy/khả năng chẩn đoán như
 trên để các trường hợp hiếm gặp (race condition Mutex, UAC, đĩa đầy...) không còn hoàn toàn im lặng.
 
+## 4u. setup.exe không hỏi đường dẫn cài đặt (2026-10-10, v1.19.6)
+
+Người dùng báo: "tại sao khi tôi chạy setup.exe nó không hỏi tôi lưu ở đường dẫn nào".
+
+**Đã xác nhận THẬT nguyên nhân** bằng cách tự cài + chạy lại installer thật trên máy (không chỉ đọc code):
+cài `OneForAll_Setup.exe` (v1.19.5) vào máy, rồi chạy LẠI installer trên CHÍNH MÁY ĐÓ - trang đầu tiên hiện
+ra thẳng là "Các thiết lập bổ sung" (Additional Tasks), **bỏ qua hoàn toàn** cả trang "Chọn Chế độ Cài đặt"
+(Select Setup Install Mode) lẫn trang chọn thư mục (Select Destination Location). Gỡ cài đặt sạch (qua
+uninstaller chính thức, xác nhận registry/thư mục không còn gì) rồi chạy lại installer **từ máy sạch**:
+trang đầu tiên đúng là "Chọn Chế độ Cài đặt" như thiết kế - xác nhận rõ đây là hành vi của chính Inno Setup
+(không phải lỗi dựng thiếu trang trong `.iss`): khi phát hiện CÙNG `AppId` đã được cài trước đó, Inno Setup
+mặc định (`UsePreviousAppDir=yes`, giá trị mặc định, không phải do dự án tự đặt) TỰ ĐỘNG dùng lại chế độ
+cài đặt + đường dẫn cũ, không hỏi lại gì cả, kể cả khi chạy ở chế độ TƯƠNG TÁC (không phải silent) - đúng
+mô tả người dùng: họ đã cài qua rồi chạy lại `.exe` để cài đè bản mới hơn.
+
+**Đã sửa (`installer/OneForAll.iss`)**: thêm tường minh `DisableDirPage=no` vào `[Setup]` - dù đây là giá
+trị MẶC ĐỊNH của Inno Setup (không khai thì vẫn là `no`), khai rõ ràng để loại trừ hoàn toàn khả năng một
+cấu hình/phiên bản Inno Setup nào đó suy ra `auto` (skip khi phát hiện cài trước) từ sự kết hợp với
+`UsePreviousAppDir`. **Có chủ đích KHÔNG đổi** `UsePreviousAppDir` (giữ nguyên mặc định `yes`): đây là
+thiết lập UpdateInstaller's cài ngầm (`/VERYSILENT`) dựa vào để tự cài ĐÚNG VÀO VỊ TRÍ CŨ mà không hỏi gì -
+nếu đổi thành `no`, cơ chế tự cập nhật (mục 4t) ở LẦN SAU sẽ cài vào `DefaultDirName` mặc định thay vì vị
+trí người dùng đã chọn ban đầu (nếu họ từng đổi khác mặc định lúc cài đầu) - tạo ra một bản cài THỨ HAI thay
+vì nâng cấp đúng bản đang chạy. Silent mode (dùng bởi tự cập nhật) luôn bỏ qua MỌI trang wizard bất kể
+`DisableDirPage`, nên thay đổi này không ảnh hưởng gì tới luồng tự cập nhật.
+
+**CHƯA xác nhận được bằng automation** rằng trang "Select Destination Location" THỰC SỰ hiện ra sau khi sửa
+(đúng tinh thần CLAUDE.md mục 2 - ghi rõ điều chưa kiểm chứng được): đã thử 3 cách tự động hóa UI khác nhau
+để bấm qua trang "Chọn Chế độ Cài đặt" (đứng trước trang cần kiểm tra) - UIA `InvokePattern` (control này
+không hỗ trợ bất kỳ pattern UIA nào, xác nhận qua `GetSupportedPatterns()` trả về rỗng), input injection
+chuột thật (`SetCursorPos`/`mouse_event` - từng dùng thành công cho sidebar của chính ứng dụng, nhưng không
+ảnh hưởng gì tới control này), và `PostMessage` gửi thẳng `WM_LBUTTONDOWN`/`WM_LBUTTONUP` vào hàng đợi
+message của cửa sổ - cả 3 đều không làm control (`TNewOptionButtonGroup`-kiểu Delphi/VCL tùy biến mà Inno
+Setup Modern Wizard dùng) phản hồi. Đây là giới hạn của công cụ tự động hóa với loại control đặc thù này
+trong môi trường làm việc hiện tại, không phải dấu hiệu bản sửa sai - `DisableDirPage` là thiết lập ĐÚNG,
+có tài liệu rõ ràng, theo đúng cơ chế Inno Setup dùng để kiểm soát chính xác việc này. Người dùng tự chạy
+`OneForAll_Setup.exe` (v1.19.6) trên máy SẠCH (chưa từng cài, hoặc đã gỡ cài đặt trước) để xác nhận trực
+tiếp bằng mắt thường.
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
@@ -1812,6 +1850,7 @@ Quy tắc đứng nằm ở `CLAUDE.md` (gốc dự án). Tóm tắt - mỗi l�
 | 2026-10-09 | SignPath từ chối - rà giảm rủi ro bị gắn cờ + metadata Win32 (v1.19.3) | SignPath Foundation từ chối cấp chứng chỉ (lý do: chưa đủ tín hiệu uy tín công khai, không phải chất lượng code) - chi tiết, nguyên văn lý do và hướng tiếp theo (Microsoft Store miễn phí là lựa chọn chính) ở mục 4r. Theo yêu cầu người dùng "rà mã nguồn đảm bảo không bị block": làm rõ trước là cảnh báo SmartScreen không nằm trong mã nguồn và không sửa code xóa được. Phần sửa được thật: thêm `VERSIONINFO` (Company/Product/Version/Copyright/Description) cho `OneForAll.exe` (trước đó RỖNG HOÀN TOÀN - xác nhận thật qua `VersionInfo` trước/sau khi sửa), cho `OneForAll_Setup.exe` và thuộc tính ARP của `OneForAll_Setup.msi`. Lỗi thật gặp khi viết: dùng tên `VS_VERSION_INFO` làm ID tài nguyên mà không `#include <winver.h>` khiến windres hiểu nhầm thành resource TÊN thay vì ID số 1, biên dịch không báo lỗi nhưng `GetFileVersionInfo` không tìm thấy gì - sửa bằng ID số `1` trực tiếp. Rà xác nhận KHÔNG có registry tự khởi động/cài service/bỏ qua UAC. Có chủ đích KHÔNG đổi cách gọi PowerShell hay các mẫu trong `CommandAnalyzer` để né AV - đó là evasion, ngoài ranh giới cho phép. Quét Defender thật trên `dist\` sau build: sạch. Build lại toàn bộ: 18 bộ test thường **3213 kiểm tra, 0 lỗi**. |
 | 2026-10-10 | Rà lỗi giao diện ghi đè/cắt mất + nút không hoạt động (v1.19.4) | Chi tiết đầy đủ ở mục 4s. Sửa panel "Cài đặt hành động" của Auto Click bị cắt mất (ảnh chụp thật người dùng gửi) + cột "Mô tả" bị bóp quá hẹp. Thêm `FlowLayout` dùng chung (`src/ui/widgets/`, lib `ui_widgets`) - áp dụng cho dãy thẻ ổ đĩa Disk Cleanup (không còn giới hạn/cắt mất khi máy có nhiều ổ, kể cả ổ ảo Google Drive) và 7 nút WiFi NetworksTab. Sửa lỗi CHỨC NĂNG thật: Downloader "Tải trực tiếp" - chuột phải vào hàng chưa chọn không hiện menu Bắt đầu/Tạm dừng/Hủy (trông như "nút không hoạt động"). Rà xác nhận KHÔNG có vấn đề ở Android Phone Control, QR Tools (ảnh chụp thật). Thêm `placeholder-text-color` cho 8 module (contrast tốt hơn, không phải fix cho nghi vấn PairingTab). Ghi nhận CHƯA giải quyết được nghi vấn hiển thị nhòe ở `PairingTab` đã biết từ v1.2.0 - thử 4 cách chẩn đoán khác nhau đều không đổi gì, nghiêng về khả năng là đặc điểm công cụ chụp ảnh tự động hơn là lỗi code, nhưng KHÔNG kết luận chắc. 11 bộ test liên quan: 2554 kiểm tra, 0 lỗi. |
 | 2026-10-10 | Luồng tự cập nhật: không cài được sau khi tải + kiểm tra thủ công (v1.19.5) | Chi tiết đầy đủ ở mục 4t. Người dùng tự test: tải 100% nhưng không tự lên bản mới, mở lại lại hỏi cập nhật. Đã TỰ CÀI installer v1.19.3 thật từ GitHub Release + test cập nhật thật qua tự động hóa UI (21 giây, thành công hoàn toàn trong môi trường test - không tái hiện được lỗi) nhưng xác định được điểm yếu thật: helper script PowerShell chạy sau khi app thoát hoàn toàn "mù" - không log, không kiểm tra exit code trình cài đặt, Sleep 500ms sau Wait-Process có thể không đủ tránh race condition AppMutex khiến Inno Setup tự hủy cài đặt trong im lặng. Sửa: tăng Sleep lên 1500ms, helper script tự ghi log + đánh dấu lỗi (exit code) vào %TEMP%, `UpdateInstaller::consumePreviousUpdateFailure()` đọc dấu vết đó lúc khởi động và báo rõ ràng thay vì im lặng hỏi lại từ đầu. Thêm nút "Kiểm tra cập nhật" thủ công (UpdateChecker::checkNow() đã có sẵn nhưng chưa có UI gọi) - xác nhận thật bằng tự động hóa UI. Tự mở lại app sau cập nhật đã hoạt động đúng từ trước, không cần sửa. CLAUDE.md: đổi rule - từ nay LUÔN tag+push+release sau mỗi lần sửa, không cần hỏi lại. |
+| 2026-10-10 | setup.exe không hỏi đường dẫn cài đặt (v1.19.6) | Chi tiết đầy đủ ở mục 4u. Xác nhận thật nguyên nhân bằng cách tự cài rồi chạy lại installer: Inno Setup mặc định (`UsePreviousAppDir=yes`) tự động nhớ cài đặt trước (cùng AppId), bỏ qua cả trang "Chọn Chế độ Cài đặt" lẫn trang chọn thư mục kể cả ở chế độ tương tác - xác nhận bằng cách gỡ sạch rồi cài lại (trang "Chọn Chế độ" xuất hiện đúng như thiết kế). Sửa bằng `DisableDirPage=no` tường minh trong `installer/OneForAll.iss` - không đổi `UsePreviousAppDir` để không phá cơ chế tự cập nhật silent (mục 4t) vốn cần tự cài đúng vào vị trí cũ. Chưa xác nhận được bằng automation rằng trang chọn thư mục thực sự hiện lại sau khi sửa - đã thử 3 cách tự động hóa UI (UIA InvokePattern, input injection chuột, PostMessage) đều không click được vào control tùy biến kiểu Delphi/VCL của Inno Setup Modern Wizard - giới hạn công cụ, không phải dấu hiệu sai. |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `
