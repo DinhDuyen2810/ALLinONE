@@ -77,6 +77,21 @@ UpdateInstaller::InstallKind UpdateInstaller::detectInstallKind()
                                                     localAppData + "/One for ALL", innoDir);
 }
 
+QString UpdateInstaller::consumePreviousUpdateFailure()
+{
+    const QString markerPath = QStandardPaths::writableLocation(QStandardPaths::TempLocation) +
+                               "/OneForAll_Update/update_failed.marker";
+    QFile f(markerPath);
+    if (!f.exists())
+        return QString();
+    QString reason;
+    if (f.open(QIODevice::ReadOnly | QIODevice::Text))
+        reason = QString::fromUtf8(f.readAll()).trimmed();
+    f.remove(); // không báo lặp lại mãi ở các lần mở sau - chỉ báo đúng một lần cho lần thất bại này
+    return reason.isEmpty() ? QStringLiteral("Không rõ lý do - xem %TEMP%\\OneForAll_Update\\update_helper.log")
+                            : reason;
+}
+
 void UpdateInstaller::downloadAndInstall(const UpdateInfo& info)
 {
     m_kind = detectInstallKind();
@@ -226,12 +241,31 @@ QString buildHelperScript(UpdateInstaller::InstallKind kind, const QString& inst
         return "'" + PowerShellRunner::quoteLiteral(QDir::toNativeSeparators(path)) + "'";
     };
 
+    // Script này chạy TÁCH RỜI, SAU KHI ứng dụng đã thoát (qApp->quit()) - không còn QObject/Logger nào
+    // ghi lại được chuyện gì xảy ra tiếp theo. Trước đây hoàn toàn "mù": nếu trình cài đặt âm thầm thất
+    // bại (vd UAC bị hủy vì không ai bấm kịp khi script chạy ẩn, file đích tạm thời bị khóa, đĩa đầy...),
+    // không có cách nào biết - người dùng chỉ thấy "tải 100% rồi vẫn bản cũ, mở lại lại hỏi cập nhật" mà
+    // không rõ vì sao (xem CLAUDE.md mục 5/PROJECT_OVERVIEW.md mục 4t, v1.19.5). Giờ tự ghi nhật ký riêng
+    // + để lại dấu vết lỗi cho chính ứng dụng (mở lại) tự đọc và báo rõ ràng thay vì im lặng hỏi lại từ đầu.
+    const QString updateDir = QFileInfo(installerPath).absolutePath();
+    const QString logPath = updateDir + "/update_helper.log";
+    const QString markerPath = updateDir + "/update_failed.marker";
+
     QString script;
     script += "$ErrorActionPreference='SilentlyContinue'\n";
+    script += QString("$logPath = %1\n").arg(q(logPath));
+    script += QString("$markerPath = %1\n").arg(q(markerPath));
+    script += "function Log($msg) { Add-Content -Path $logPath -Value \"$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $msg\" -ErrorAction SilentlyContinue }\n";
+    script += "Remove-Item $markerPath -ErrorAction SilentlyContinue\n";
+    script += QString("Log 'Cho PID %1 thoat (toi da 60s)...'\n").arg(appPid);
     // Chờ CHÍNH tiến trình ứng dụng thoát (tối đa 60 giây) - trình cài đặt không thể ghi đè exe/DLL đang
     // bị giữ, và Inno Setup tự hủy trong im lặng nếu còn thấy AppMutex.
     script += QString("Wait-Process -Id %1 -Timeout 60\n").arg(appPid);
-    script += "Start-Sleep -Milliseconds 500\n";
+    // 500ms trước đây đôi khi KHÔNG ĐỦ: Windows không đảm bảo named kernel object (AppMutex) được dọn sạch
+    // NGAY lúc Wait-Process trả về - Inno Setup kiểm tra Mutex đó ngay sau, thấy "còn" là tự hủy cài đặt
+    // trong im lặng (/SUPPRESSMSGBOXES không báo gì). Tăng lên 1500ms cho an toàn hơn.
+    script += "Start-Sleep -Milliseconds 1500\n";
+    script += "Log 'Bat dau chay trinh cai dat...'\n";
 
     if (kind == UpdateInstaller::InstallKind::Msi)
     {
@@ -251,10 +285,25 @@ QString buildHelperScript(UpdateInstaller::InstallKind kind, const QString& inst
                       .arg(q(installerPath));
     }
 
+    // Exit code 0 = thành công; 3010 = thành công nhưng cần khởi động lại MÁY (hiếm khi xảy ra với app
+    // này, không có file hệ thống bị khóa) - mọi giá trị khác coi là thất bại, để lại dấu vết cho ứng
+    // dụng tự đọc. UAC bị hủy (installer cần quyền cao hơn hiện có mà không ai bấm "Yes" kịp vì script
+    // chạy ẩn) trả ERROR_CANCELLED (1223) - trường hợp hay gặp nhất nếu còn tái diễn.
+    script += "Log \"Trinh cai dat ket thuc, ExitCode=$($p.ExitCode)\"\n";
+    script += "if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) {\n";
+    script += "  Log 'CAI DAT THAT BAI - ghi marker loi'\n";
+    script += "  Set-Content -Path $markerPath -Value \"ExitCode=$($p.ExitCode)\" -ErrorAction SilentlyContinue\n";
+    script += "} else {\n";
+    script += "  Log 'Cai dat thanh cong'\n";
+    script += "}\n";
+
     // Mở lại ứng dụng dù cài thành công hay thất bại: thành công thì là bản mới; thất bại thì bản cũ vẫn
-    // còn nguyên và sẽ tự hỏi cập nhật lại - người dùng không bị bỏ lại với một ứng dụng "biến mất".
+    // còn nguyên và sẽ tự hỏi cập nhật lại - người dùng không bị bỏ lại với một ứng dụng "biến mất". Nếu
+    // thất bại, ứng dụng (mở lại, dù bản nào) tự đọc update_failed.marker lúc khởi động để báo rõ lý do.
     const QString appDir = QFileInfo(appExePath).absolutePath();
+    script += "Log 'Mo lai ung dung...'\n";
     script += QString("Start-Process -FilePath %1 -WorkingDirectory %2\n").arg(q(appExePath), q(appDir));
+    script += "Log 'Hoan tat.'\n";
     return script;
 }
 

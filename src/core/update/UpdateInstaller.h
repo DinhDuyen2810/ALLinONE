@@ -41,6 +41,13 @@ public:
 
     static InstallKind detectInstallKind();
 
+    /// Đọc + XÓA dấu vết lỗi của LẦN CẬP NHẬT TRƯỚC (nếu tiến trình trợ giúp chạy xong nhưng trình cài đặt
+    /// thất bại sau khi đã tải xong thành công - xem buildHelperScript) - trả về chuỗi rỗng nếu không có
+    /// gì (lần mở trước không cập nhật, hoặc cập nhật thành công). Gọi MỘT LẦN lúc khởi động (trước đây
+    /// hoàn toàn im lặng trong trường hợp này - người dùng chỉ thấy "mở lại vẫn bản cũ, lại hỏi cập nhật"
+    /// không rõ vì sao, xem PROJECT_OVERVIEW.md mục 4t). Gọi hai lần liên tiếp thì lần thứ 2 luôn rỗng.
+    static QString consumePreviousUpdateFailure();
+
 signals:
     /// bytesTotal có thể là 0 nếu GitHub không trả kích thước trước - UI nên hiện dạng không xác định.
     void progress(qint64 bytesReceived, qint64 bytesTotal);

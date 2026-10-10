@@ -21,6 +21,7 @@
 #include <QProgressDialog>
 #include <QPushButton>
 #include <QStatusBar>
+#include <QTimer>
 
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
@@ -34,12 +35,29 @@ MainWindow::MainWindow(QWidget* parent)
         m_toolListWidget->setCurrentRow(0);
     }
 
+    // Lần mở TRƯỚC có thể đã tải xong bản mới nhưng trình cài đặt chạy ngầm sau khi ứng dụng thoát lại
+    // thất bại (UAC bị hủy vì không ai bấm kịp, file bị khóa...) - trước đây hoàn toàn im lặng, người
+    // dùng chỉ thấy "mở lại vẫn bản cũ, lại hỏi cập nhật" không rõ vì sao. Báo rõ MỘT LẦN nếu có dấu vết
+    // lỗi đó (xem UpdateInstaller::consumePreviousUpdateFailure/PROJECT_OVERVIEW.md mục 4t, v1.19.5).
+    const QString prevUpdateFailure = UpdateInstaller::consumePreviousUpdateFailure();
+    if (!prevUpdateFailure.isEmpty())
+    {
+        QTimer::singleShot(400, this, [this, prevUpdateFailure]() {
+            QMessageBox::warning(this, "Cập nhật lần trước thất bại",
+                                 "Lần cập nhật trước đã tải xong nhưng cài đặt không thành công:\n\n" +
+                                     prevUpdateFailure +
+                                     "\n\nVẫn đang dùng phiên bản cũ - bạn có thể thử \"Kiểm tra cập nhật\" lại.");
+        });
+    }
+
     // Tự kiểm tra cập nhật MỘT LẦN ngay lúc mở ứng dụng (UpdateChecker tự trễ vài giây rồi hỏi GitHub
     // Releases, không lặp định kỳ - theo đúng yêu cầu người dùng, xem UpdateChecker.h). Thất bại (mất
     // mạng, GitHub lỗi...) chỉ ghi log (xem UpdateChecker.cpp), không làm phiền bằng hộp thoại lỗi - đây
     // là việc chạy ngầm, không phải thao tác người dùng tự yêu cầu.
     m_updateChecker = new UpdateChecker(this);
     connect(m_updateChecker, &UpdateChecker::updateAvailable, this, &MainWindow::onUpdateAvailable);
+    connect(m_updateChecker, &UpdateChecker::upToDate, this, &MainWindow::onUpdateUpToDate);
+    connect(m_updateChecker, &UpdateChecker::checkFailed, this, &MainWindow::onUpdateCheckFailed);
 
     // Lưới an toàn CHUNG cho toàn bộ 9 tool: mỗi cửa sổ tool (AndroidControlWindow, DownloaderWindow...)
     // là một đối tượng KHÔNG cha (new Xxx() không gắn parent, giữ qua QPointer trong từng *Tool, tái
@@ -149,6 +167,17 @@ void MainWindow::setupUi()
     versionLabel->setStyleSheet("color: #8c959f; font-size: 11px;");
     versionLabel->setAlignment(Qt::AlignCenter);
     sidebarLayout->addWidget(versionLabel);
+
+    m_checkUpdateButton = new QPushButton("🔄 Kiểm tra cập nhật", this);
+    m_checkUpdateButton->setCursor(Qt::PointingHandCursor);
+    m_checkUpdateButton->setStyleSheet(
+        "QPushButton { background-color: transparent; color: #57606a; border: 1px solid #d0d7de; "
+        "border-radius: 8px; padding: 5px 10px; font-size: 11px; }"
+        "QPushButton:hover { background-color: #e4e7eb; color: #0969da; border-color: #0969da; }"
+        "QPushButton:disabled { color: #8c959f; }"
+    );
+    connect(m_checkUpdateButton, &QPushButton::clicked, this, &MainWindow::onCheckUpdateClicked);
+    sidebarLayout->addWidget(m_checkUpdateButton);
 
     mainLayout->addWidget(sidebarFrame);
 
@@ -297,8 +326,44 @@ void MainWindow::onOpenToolClicked()
     }
 }
 
+void MainWindow::onCheckUpdateClicked()
+{
+    m_manualUpdateCheckPending = true;
+    m_checkUpdateButton->setEnabled(false);
+    m_checkUpdateButton->setText("⏳ Đang kiểm tra...");
+    m_updateChecker->checkNow();
+}
+
+void MainWindow::onUpdateUpToDate()
+{
+    m_checkUpdateButton->setEnabled(true);
+    m_checkUpdateButton->setText("🔄 Kiểm tra cập nhật");
+    // Lần tự động lúc mở app không báo gì (không phải thao tác người dùng tự yêu cầu) - chỉ nút bấm thủ
+    // công mới cần phản hồi rõ ràng, nếu không người dùng không biết đã kiểm tra xong hay chưa.
+    if (!m_manualUpdateCheckPending)
+        return;
+    m_manualUpdateCheckPending = false;
+    QMessageBox::information(this, "Kiểm tra cập nhật",
+                             QString("Đang dùng bản mới nhất (v%1).").arg(APP_VERSION));
+}
+
+void MainWindow::onUpdateCheckFailed(QString error)
+{
+    m_checkUpdateButton->setEnabled(true);
+    m_checkUpdateButton->setText("🔄 Kiểm tra cập nhật");
+    if (!m_manualUpdateCheckPending)
+        return;
+    m_manualUpdateCheckPending = false;
+    QMessageBox::warning(this, "Kiểm tra cập nhật",
+                         "Không kiểm tra được bản cập nhật:\n" + error);
+}
+
 void MainWindow::onUpdateAvailable(UpdateInfo info)
 {
+    m_checkUpdateButton->setEnabled(true);
+    m_checkUpdateButton->setText("🔄 Kiểm tra cập nhật");
+    m_manualUpdateCheckPending = false;
+
     // Dung lượng hiển thị theo đúng asset sẽ tải (bản cài bằng .msi tải tệp .msi).
     const bool viaMsi = UpdateInstaller::detectInstallKind() == UpdateInstaller::InstallKind::Msi;
     const qint64 sizeBytes = viaMsi ? info.msiSize : info.downloadSize;

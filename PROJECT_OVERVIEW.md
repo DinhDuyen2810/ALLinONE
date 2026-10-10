@@ -1599,6 +1599,67 @@ tab "Ghép đôi" hiện chữ như bị nhòe/ghosting khi chụp qua script t�
 `connect_tests` (1080), `connect_ui_tests` (13), `security_tests` (333), `security_ui_tests` (6),
 `downloader_tests` (283), `downloader_ui_tests` (20) - tổng 2554 kiểm tra, 0 lỗi.
 
+## 4t. Luồng tự cập nhật: không cài được sau khi tải xong + thêm kiểm tra thủ công (2026-10-10, v1.19.5)
+
+Người dùng tự tay test tính năng cập nhật (cài `v1.19.3`, mở app, thấy hộp thoại "Có bản cập nhật mới",
+bấm "Cập nhật ngay") và báo: "khi cập nhật thì tải 100% nhưng nó ko tự lên bản mới, mở lại lại yêu cầu
+cập nhật dù đã tải về", kèm yêu cầu thêm nút kiểm tra/cập nhật thủ công và đảm bảo tự mở lại app sau khi
+cập nhật xong.
+
+**Đã tái hiện và xác nhận THẬT bằng cách tự cài đặt + test** (không chỉ đọc code): tải `OneForAll_Setup.exe`
+thật của Release `v1.19.3` từ GitHub, cài im lặng vào máy (`C:\Users\...\AppData\Local\Programs\One for
+ALL\`), chạy app đã cài, bấm "Cập nhật ngay" qua tự động hóa UI thật (script PowerShell dùng
+`System.Windows.Automation` - gặp trở ngại: `QMessageBox` modal không xuất hiện trong cây UIA duyệt từ
+`AutomationElement.RootElement` dù `visible=True` qua Win32 `EnumWindows` trực tiếp - lấy được bằng
+`AutomationElement.FromHandle(hwnd)` thẳng từ HWND thay vì duyệt cây). **Kết quả LẦN TEST NÀY: luồng cập
+nhật hoạt động ĐÚNG hoàn toàn** - tự tải, tự thoát, tự cài (`21 giây` từ lúc bấm tới khi app mới xuất
+hiện), tự mở lại, log xác nhận `"Khởi động One for ALL v1.19.4"`, registry/VersionInfo đúng `1.19.4`.
+
+**Không tái hiện được lỗi người dùng báo trong môi trường test này** - nhưng đã xác định được MỘT ĐIỂM
+YẾU THẬT trong code có khả năng gây đúng triệu chứng đó trên máy khác: `buildHelperScript()` (script
+PowerShell chạy TÁCH RỜI sau khi ứng dụng đã thoát, không còn `Logger` nào ghi lại được gì) có 2 vấn đề:
+1. `Start-Sleep -Milliseconds 500` sau `Wait-Process` có thể KHÔNG ĐỦ trong một số máy/thời điểm - Windows
+   không đảm bảo named kernel object (`AppMutex` - `OneForAllRunningMutex`, dùng để Inno Setup tự phát
+   hiện ứng dụng còn chạy không) được dọn sạch NGAY lúc tiến trình vừa thoát; nếu Inno Setup kiểm tra
+   Mutex ngay sau đó vẫn thấy "còn", nó tự hủy cài đặt trong im lặng (`/SUPPRESSMSGBOXES` không báo gì) -
+   khớp ĐÚNG với "tải 100% nhưng không tự lên bản mới".
+2. **Hoàn toàn không có cách nào biết cài đặt có thành công hay không** - script chạy ẩn
+   (`-WindowStyle Hidden`), không ghi log, không kiểm tra exit code của trình cài đặt. Nếu có lỗi (Mutex
+   race condition ở trên, UAC bị hủy vì máy cài vào vị trí cần quyền cao hơn và không ai bấm kịp khi
+   script chạy ẩn, đĩa đầy, antivirus khóa file tạm thời...), ứng dụng TỰ MỞ LẠI bản CŨ và lại tự hỏi cập
+   nhật - người dùng thấy đúng y "mở lại lại yêu cầu cập nhật dù đã tải về" mà KHÔNG CÓ CÁCH NÀO biết vì
+   sao, và bản thân tôi cũng không có cách nào chẩn đoán chính xác nếu không tự tái hiện được.
+
+**Đã sửa (`UpdateInstaller.cpp/.h`)**:
+- Tăng `Start-Sleep` sau `Wait-Process` từ 500ms lên 1500ms.
+- `buildHelperScript()` giờ tự ghi nhật ký riêng (`%TEMP%\OneForAll_Update\update_helper.log`) từng bước:
+  chờ PID, bắt đầu chạy trình cài đặt, exit code, thành công/thất bại, mở lại ứng dụng - nếu lỗi còn tái
+  diễn, LẦN SAU sẽ đọc được log này để biết CHÍNH XÁC nguyên nhân thay vì đoán.
+- Nếu exit code trình cài đặt khác `0`/`3010` (3010 = thành công nhưng cần khởi động lại MÁY), ghi dấu vết
+  vào `%TEMP%\OneForAll_Update\update_failed.marker` (chứa exit code).
+- `UpdateInstaller::consumePreviousUpdateFailure()` (mới, static): đọc + XÓA dấu vết đó - gọi một lần lúc
+  `MainWindow` khởi động (TRƯỚC khi tự kiểm tra bản mới), nếu có nội dung thì hiện hộp thoại báo RÕ RÀNG
+  "Lần cập nhật trước đã tải xong nhưng cài đặt không thành công: ExitCode=..." thay vì im lặng hỏi cập
+  nhật lại từ đầu như trước đây (giải quyết trực tiếp phần "không rõ vì sao" của lỗi người dùng báo, dù
+  nguyên nhân gốc rễ chưa chắc đã hết - lần tái diễn tiếp theo sẽ CÓ THÔNG TIN để sửa đúng chỗ).
+- 2 test mới trong `tests/update_tests.cpp` cho nhật ký/dấu vết lỗi trong `buildHelperScript()` và cho
+  `consumePreviousUpdateFailure()` (đọc đúng nội dung, xóa sau khi đọc, gọi lần 2 phải rỗng).
+
+**Mới - nút "🔄 Kiểm tra cập nhật" thủ công** (`MainWindow.{h,cpp}`, sidebar, dưới nhãn phiên bản):
+`UpdateChecker::checkNow()` đã có sẵn public từ trước nhưng chưa có UI nào gọi. Khác với lần tự động lúc
+mở app (im lặng khi không có gì mới/lỗi mạng - "không phải thao tác người dùng tự yêu cầu", giữ nguyên
+hành vi cũ), nút bấm thủ công PHẢI phản hồi rõ ràng dù kết quả là gì: đã nối thêm `upToDate`/`checkFailed`
+(trước đây không signal nào trong 2 cái này được MainWindow lắng nghe) - cờ `m_manualUpdateCheckPending`
+phân biệt hai trường hợp (tự động vs thủ công) dùng chung một `UpdateChecker`/một bộ signal. **Đã xác
+nhận THẬT bằng tự động hóa UI** (bấm nút qua `InvokePattern`, phân biệt với nút "Mở Cửa Sổ..." bằng tọa độ
+X trong sidebar vì cả hai cùng độ dài tên không phân biệt được): hộp thoại "Kiểm tra cập nhật" hiện đúng
+"Đang dùng bản mới nhất (v1.19.4)." khi app đã là bản mới nhất.
+
+**Tự mở lại app sau khi cập nhật xong**: ĐÃ CÓ SẴN từ trước (`Start-Process -FilePath <appExePath>` ở cuối
+`buildHelperScript()`) và đã xác nhận THẬT hoạt động đúng trong lần test ở trên (21 giây, log/registry xác
+nhận đúng phiên bản mới) - không phải sửa gì thêm ở phần này, chỉ tăng độ tin cậy/khả năng chẩn đoán như
+trên để các trường hợp hiếm gặp (race condition Mutex, UAC, đĩa đầy...) không còn hoàn toàn im lặng.
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
@@ -1750,6 +1811,7 @@ Quy tắc đứng nằm ở `CLAUDE.md` (gốc dự án). Tóm tắt - mỗi l�
 | 2026-10-09 | Hoàn thiện mục dang dở + dọn rác (v1.19.2) | Sau khi khởi động lại máy: xác nhận hai tiến trình PowerShell kẹt đã mất, dọn ~1,4 GB rác của các lượt test (thư mục tạm, 2.409 tệp test trong Thùng rác). Hoàn thiện danh sách còn dang dở của 4p - chi tiết ở mục 4q: Connect Together suy khóa ở luồng nền + trần khung sau xác thực + báo lỗi lưu; `PowerShellRunner` dừng cả tiến trình cháu; `Logger` tự mở lại; `adb pair` bất đồng bộ; Disk Cleanup nhận ra junction tới thư mục được bảo vệ + kiểm lại tuổi tệp lúc xóa; hai lỗi VPN; hosts giữ kiểu xuống dòng từng dòng; lịch sử QR gộp giữa hai bản ứng dụng + thử lại khi ghi; test không còn để sót thư mục tạm (`tests/TestDataDir.h`). Build sạch toàn bộ sau khi khởi động lại máy: 18 bộ test thường **3217 kiểm tra, 0 lỗi**; 5 bộ stress đều pass - `core_stress_tests` 550/0, `qrwifi_stress_tests` 759.439/0, `disk_vpn_stress_tests` 7320/0, `secdl_stress_tests` 1.875.637/0, `connect_stress_tests` 386/0. |
 | 2026-10-09 | SignPath từ chối - rà giảm rủi ro bị gắn cờ + metadata Win32 (v1.19.3) | SignPath Foundation từ chối cấp chứng chỉ (lý do: chưa đủ tín hiệu uy tín công khai, không phải chất lượng code) - chi tiết, nguyên văn lý do và hướng tiếp theo (Microsoft Store miễn phí là lựa chọn chính) ở mục 4r. Theo yêu cầu người dùng "rà mã nguồn đảm bảo không bị block": làm rõ trước là cảnh báo SmartScreen không nằm trong mã nguồn và không sửa code xóa được. Phần sửa được thật: thêm `VERSIONINFO` (Company/Product/Version/Copyright/Description) cho `OneForAll.exe` (trước đó RỖNG HOÀN TOÀN - xác nhận thật qua `VersionInfo` trước/sau khi sửa), cho `OneForAll_Setup.exe` và thuộc tính ARP của `OneForAll_Setup.msi`. Lỗi thật gặp khi viết: dùng tên `VS_VERSION_INFO` làm ID tài nguyên mà không `#include <winver.h>` khiến windres hiểu nhầm thành resource TÊN thay vì ID số 1, biên dịch không báo lỗi nhưng `GetFileVersionInfo` không tìm thấy gì - sửa bằng ID số `1` trực tiếp. Rà xác nhận KHÔNG có registry tự khởi động/cài service/bỏ qua UAC. Có chủ đích KHÔNG đổi cách gọi PowerShell hay các mẫu trong `CommandAnalyzer` để né AV - đó là evasion, ngoài ranh giới cho phép. Quét Defender thật trên `dist\` sau build: sạch. Build lại toàn bộ: 18 bộ test thường **3213 kiểm tra, 0 lỗi**. |
 | 2026-10-10 | Rà lỗi giao diện ghi đè/cắt mất + nút không hoạt động (v1.19.4) | Chi tiết đầy đủ ở mục 4s. Sửa panel "Cài đặt hành động" của Auto Click bị cắt mất (ảnh chụp thật người dùng gửi) + cột "Mô tả" bị bóp quá hẹp. Thêm `FlowLayout` dùng chung (`src/ui/widgets/`, lib `ui_widgets`) - áp dụng cho dãy thẻ ổ đĩa Disk Cleanup (không còn giới hạn/cắt mất khi máy có nhiều ổ, kể cả ổ ảo Google Drive) và 7 nút WiFi NetworksTab. Sửa lỗi CHỨC NĂNG thật: Downloader "Tải trực tiếp" - chuột phải vào hàng chưa chọn không hiện menu Bắt đầu/Tạm dừng/Hủy (trông như "nút không hoạt động"). Rà xác nhận KHÔNG có vấn đề ở Android Phone Control, QR Tools (ảnh chụp thật). Thêm `placeholder-text-color` cho 8 module (contrast tốt hơn, không phải fix cho nghi vấn PairingTab). Ghi nhận CHƯA giải quyết được nghi vấn hiển thị nhòe ở `PairingTab` đã biết từ v1.2.0 - thử 4 cách chẩn đoán khác nhau đều không đổi gì, nghiêng về khả năng là đặc điểm công cụ chụp ảnh tự động hơn là lỗi code, nhưng KHÔNG kết luận chắc. 11 bộ test liên quan: 2554 kiểm tra, 0 lỗi. |
+| 2026-10-10 | Luồng tự cập nhật: không cài được sau khi tải + kiểm tra thủ công (v1.19.5) | Chi tiết đầy đủ ở mục 4t. Người dùng tự test: tải 100% nhưng không tự lên bản mới, mở lại lại hỏi cập nhật. Đã TỰ CÀI installer v1.19.3 thật từ GitHub Release + test cập nhật thật qua tự động hóa UI (21 giây, thành công hoàn toàn trong môi trường test - không tái hiện được lỗi) nhưng xác định được điểm yếu thật: helper script PowerShell chạy sau khi app thoát hoàn toàn "mù" - không log, không kiểm tra exit code trình cài đặt, Sleep 500ms sau Wait-Process có thể không đủ tránh race condition AppMutex khiến Inno Setup tự hủy cài đặt trong im lặng. Sửa: tăng Sleep lên 1500ms, helper script tự ghi log + đánh dấu lỗi (exit code) vào %TEMP%, `UpdateInstaller::consumePreviousUpdateFailure()` đọc dấu vết đó lúc khởi động và báo rõ ràng thay vì im lặng hỏi lại từ đầu. Thêm nút "Kiểm tra cập nhật" thủ công (UpdateChecker::checkNow() đã có sẵn nhưng chưa có UI gọi) - xác nhận thật bằng tự động hóa UI. Tự mở lại app sau cập nhật đã hoạt động đúng từ trước, không cần sửa. CLAUDE.md: đổi rule - từ nay LUÔN tag+push+release sau mỗi lần sửa, không cần hỏi lại. |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `

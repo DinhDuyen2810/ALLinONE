@@ -28,11 +28,17 @@ Không coi một lần sửa là xong cho tới khi đã làm đủ, theo đúng
    thật rồi sửa, không đoán. Nếu có sửa `.github/workflows/*.yml` thì kiểm cú pháp TRƯỚC khi push
    (`python -c "import yaml,io; yaml.safe_load(io.open('.github/workflows/build-installer.yml',encoding='utf-8'))"`) -
    tệp workflow sai cú pháp cho ra lượt chạy "failure" với 0 job và không có log nào để đọc.
+6. **Gắn tag `vX.Y.Z` (đúng số trong `VERSION`) rồi push tag** để CI tự tạo GitHub Release kèm đủ 4 file -
+   LUÔN làm sau khi bước 5 xác nhận CI PASS, không cần hỏi lại mỗi lần (người dùng đã xác nhận muốn vậy
+   theo quy trình chuẩn, v1.19.5). `git tag vX.Y.Z <commit>` rồi `git push origin vX.Y.Z` - việc push tag
+   có thể bị hệ thống phân quyền tự động chặn ("[Create Public Surface]"); đó là rào chắn có chủ đích,
+   KHÔNG tìm cách lách qua - báo lại người dùng rõ ràng (tag đã tạo cục bộ, chỉ còn bước push) để họ tự
+   push hoặc xác nhận lại. Sau khi tag lên, đợi CI build-installer cho tag chạy xong rồi xác nhận GitHub
+   Release có đủ 4 asset đúng tên qua
+   `https://api.github.com/repos/DinhDuyen2810/ALLinONE/releases/tags/vX.Y.Z` - không coi là xong nếu
+   chưa xác nhận được.
 
 `dist\`, `obj\`, `build\`, `OneForAll_Release\`, `vendor\`, `logs\` không commit (xem `.gitignore`).
-
-Gắn tag `vX.Y.Z` / tạo GitHub Release KHÔNG nằm trong quy tắc này: đẩy tag làm CI tự tạo Release và mọi
-máy đã cài sẽ được mời cập nhật - chỉ làm khi người dùng yêu cầu rõ.
 
 ### 2. Xác nhận thật, không đoán
 

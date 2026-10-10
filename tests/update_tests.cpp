@@ -10,7 +10,9 @@
 #include "core/AppPaths.h"
 #include "core/PowerShellRunner.h"
 
+#include <QDir>
 #include <QFile>
+#include <QStandardPaths>
 #include <QTemporaryDir>
 #include "TestDataDir.h"
 
@@ -228,6 +230,14 @@ int main(int argc, char** argv)
         const QString curly(QChar(0x2019));
         const QString tricky = buildHelperScript(K::InnoSetup, "C:/Users/O'Bri" + curly + "en/s.exe", "C:/A/OneForAll.exe", 1);
         CHECK(tricky.contains(R"('C:\Users\O''Bri)" + curly + curly + R"(en\s.exe')"));
+
+        // Ghi nhật ký + dấu vết lỗi riêng (script chạy TÁCH RỜI sau khi ứng dụng đã thoát - không còn
+        // Logger nào ghi lại được, trước đây hoàn toàn "mù" nếu trình cài đặt thất bại sau khi tải xong).
+        CHECK(exe.contains("update_helper.log"));
+        CHECK(exe.contains("update_failed.marker"));
+        CHECK(exe.contains("Start-Sleep -Milliseconds 1500")); // tăng từ 500ms - race condition AppMutex
+        CHECK(exe.contains("ExitCode -ne 0 -and"));
+        CHECK(exe.indexOf("Remove-Item $markerPath") < exe.indexOf("Wait-Process")); // xóa dấu vết CŨ trước khi chạy lại
     }
 
     // ---- quoteLiteral: nhân đôi cả ' ASCII lẫn 4 biến thể Unicode mà PowerShell coi là dấu nháy đơn ----
@@ -250,6 +260,27 @@ int main(int argc, char** argv)
         CHECK(UpdateInstallerInternal::sha256OfFile(path) ==
               "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
         CHECK(UpdateInstallerInternal::sha256OfFile(dataDir.filePath("khong-ton-tai")).isEmpty());
+    }
+
+    // ---- consumePreviousUpdateFailure: đọc + XÓA dấu vết lỗi cập nhật lần trước (ghi bởi helper script
+    // chạy tách rời - xem buildHelperScript) - thao tác thật vào %TEMP%\OneForAll_Update\ (không qua
+    // AppPaths override vì marker phải đọc được bởi MỌI phiên bản ứng dụng, không riêng bản đang test),
+    // tự dọn sạch đúng tệp mình tạo, không đụng gì khác trong thư mục đó.
+    {
+        const QString dir = QStandardPaths::writableLocation(QStandardPaths::TempLocation) + "/OneForAll_Update";
+        QDir().mkpath(dir);
+        const QString markerPath = dir + "/update_failed.marker";
+
+        QFile::remove(markerPath);
+        CHECK(UpdateInstaller::consumePreviousUpdateFailure().isEmpty());
+
+        QFile f(markerPath);
+        CHECK(f.open(QIODevice::WriteOnly | QIODevice::Text));
+        f.write("ExitCode=1223");
+        f.close();
+        CHECK(UpdateInstaller::consumePreviousUpdateFailure() == "ExitCode=1223");
+        CHECK(!QFile::exists(markerPath)); // đã bị xóa - không báo lặp lại mãi ở các lần gọi sau
+        CHECK(UpdateInstaller::consumePreviousUpdateFailure().isEmpty());
     }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);
