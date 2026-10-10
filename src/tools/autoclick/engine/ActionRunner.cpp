@@ -135,8 +135,30 @@ bool ActionRunner::executeAction(const Action& action)
             break;
 
         case ActionType::Hotkey:
-            m_inputController->hotkey(action.modCtrl, action.modAlt, action.modShift, action.modWin, action.keyCode);
+        {
+            const std::vector<ModifierKey> order = action.effectiveModOrder();
+            switch (action.hotkeyTrigger)
+            {
+                case HotkeyTrigger::KeyPress:
+                    m_inputController->hotkey(order, action.keyCode);
+                    break;
+                case HotkeyTrigger::Scroll:
+                    // releaseModifiersOrdered() PHẢI luôn chạy dù scroll() bị dừng giữa chừng
+                    // (m_stopRequested) - không đặt trong điều kiện, nếu không sẽ để kẹt phím thật.
+                    m_inputController->pressModifiersOrdered(order);
+                    m_inputController->scroll(action.scrollDirection, action.scrollAmount, action.duration, &m_stopRequested);
+                    m_inputController->releaseModifiersOrdered(order);
+                    break;
+                case HotkeyTrigger::Click:
+                    m_inputController->pressModifiersOrdered(order);
+                    m_inputController->moveMouse(action.x, action.y);
+                    msleep(20);
+                    m_inputController->click(action.mouseButton);
+                    m_inputController->releaseModifiersOrdered(order);
+                    break;
+            }
             break;
+        }
 
         case ActionType::KeyPress:
             m_inputController->pressKey(action.keyCode);

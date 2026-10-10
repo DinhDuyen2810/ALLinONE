@@ -1,5 +1,57 @@
 #include "Action.h"
 #include <QStringList>
+#include <algorithm>
+
+namespace
+{
+QString modifierLabel(ModifierKey m)
+{
+    switch (m)
+    {
+        case ModifierKey::Ctrl:  return "Ctrl";
+        case ModifierKey::Alt:   return "Alt";
+        case ModifierKey::Shift: return "Shift";
+        case ModifierKey::Win:   return "Win";
+    }
+    return QString();
+}
+
+QString scrollDirectionLabel(ScrollDirection dir)
+{
+    switch (dir)
+    {
+        case ScrollDirection::Down:  return "xuống";
+        case ScrollDirection::Up:    return "lên";
+        case ScrollDirection::Left:  return "trái";
+        case ScrollDirection::Right: return "phải";
+    }
+    return QString();
+}
+} // namespace
+
+void Action::setModifiers(const std::vector<ModifierKey>& order)
+{
+    modOrder = order;
+    auto has = [&order](ModifierKey k) { return std::find(order.begin(), order.end(), k) != order.end(); };
+    modCtrl = has(ModifierKey::Ctrl);
+    modAlt = has(ModifierKey::Alt);
+    modShift = has(ModifierKey::Shift);
+    modWin = has(ModifierKey::Win);
+}
+
+std::vector<ModifierKey> Action::effectiveModOrder() const
+{
+    if (!modOrder.empty())
+        return modOrder;
+    // modOrder rỗng = hồ sơ cũ (trước v1.19.7) hoặc Action dựng tay chỉ gán 4 bool - suy luận lại ĐÚNG
+    // thứ tự cố định Ctrl→Alt→Shift→Win đã dùng trước đây, giữ hành vi y hệt.
+    std::vector<ModifierKey> order;
+    if (modCtrl) order.push_back(ModifierKey::Ctrl);
+    if (modAlt) order.push_back(ModifierKey::Alt);
+    if (modShift) order.push_back(ModifierKey::Shift);
+    if (modWin) order.push_back(ModifierKey::Win);
+    return order;
+}
 
 QString Action::typeName() const
 {
@@ -9,7 +61,7 @@ QString Action::typeName() const
         case ActionType::MouseDrag:  return "Kéo chuột";
         case ActionType::MouseHold:  return "Giữ chuột";
         case ActionType::TypeText:   return "Gõ văn bản";
-        case ActionType::Hotkey:     return "Phím tắt";
+        case ActionType::Hotkey:     return "Tổ hợp phím";
         case ActionType::KeyPress:   return "Nhấn phím";
         case ActionType::Scroll:     return "Cuộn";
     }
@@ -49,29 +101,34 @@ QString Action::description() const
 
         case ActionType::Hotkey:
         {
+            // Thứ tự THẬT người dùng đã bấm chọn (effectiveModOrder) - trước đây in cố định
+            // Ctrl→Alt→Shift→Win bất kể thứ tự thật, không đúng với tổ hợp đã bắt/chọn (v1.19.7).
             QStringList mods;
-            if (modCtrl)  mods << "Ctrl";
-            if (modAlt)   mods << "Alt";
-            if (modShift) mods << "Shift";
-            if (modWin)   mods << "Win";
-            mods << QString::fromStdString(keyName.empty() ? "Phím" : keyName);
-            return QString("Phím tắt %1").arg(mods.join(" + "));
+            for (ModifierKey m : effectiveModOrder())
+                mods << modifierLabel(m);
+
+            QString tail;
+            switch (hotkeyTrigger)
+            {
+                case HotkeyTrigger::KeyPress:
+                    tail = QString::fromStdString(keyName.empty() ? "Phím" : keyName);
+                    break;
+                case HotkeyTrigger::Scroll:
+                    tail = QString("Cuộn %1 (%2 bước)").arg(scrollDirectionLabel(scrollDirection)).arg(scrollAmount);
+                    break;
+                case HotkeyTrigger::Click:
+                    tail = QString("Click %1 tại (%2, %3)").arg(btnStr(mouseButton)).arg(x).arg(y);
+                    break;
+            }
+            mods << tail;
+            return QString("Tổ hợp phím %1").arg(mods.join(" + "));
         }
 
         case ActionType::KeyPress:
             return QString("Nhấn %1").arg(QString::fromStdString(keyName.empty() ? "Phím" : keyName));
 
         case ActionType::Scroll:
-        {
-            QString dir;
-            switch (scrollDirection) {
-                case ScrollDirection::Down:  dir = "xuống"; break;
-                case ScrollDirection::Up:    dir = "lên"; break;
-                case ScrollDirection::Left:  dir = "trái"; break;
-                case ScrollDirection::Right: dir = "phải"; break;
-            }
-            return QString("Cuộn %1, %2 bước").arg(dir).arg(scrollAmount);
-        }
+            return QString("Cuộn %1, %2 bước").arg(scrollDirectionLabel(scrollDirection)).arg(scrollAmount);
     }
     return "Hành động";
 }

@@ -3,6 +3,7 @@
 #include "DownloaderUiStyle.h"
 #include "engine/FileDownloader.h"
 #include "model/DownloadItem.h"
+#include "ui/widgets/ModernMenu.h"
 
 #include <QCheckBox>
 #include <QClipboard>
@@ -254,9 +255,10 @@ void DirectDownloadTab::onTableContextMenu(const QPoint& pos)
         return;
 
     QMenu menu(this);
-    QAction* startAct = menu.addAction("▶ Bắt đầu/Tiếp tục");
-    QAction* pauseAct = menu.addAction("⏸ Tạm dừng");
-    QAction* cancelAct = menu.addAction("✕ Hủy");
+    ModernMenu::style(&menu);
+    QAction* startAct = ModernMenu::addAction(menu, "Bắt đầu/Tiếp tục");
+    QAction* pauseAct = ModernMenu::addAction(menu, "Tạm dừng");
+    QAction* cancelAct = ModernMenu::addAction(menu, "Hủy");
     startAct->setEnabled(item->status != DownloadItem::Status::Downloading &&
                          item->status != DownloadItem::Status::Completed);
     pauseAct->setEnabled(item->status == DownloadItem::Status::Downloading);

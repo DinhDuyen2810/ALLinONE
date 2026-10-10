@@ -1698,6 +1698,86 @@ có tài liệu rõ ràng, theo đúng cơ chế Inno Setup dùng để kiểm s
 `OneForAll_Setup.exe` (v1.19.6) trên máy SẠCH (chưa từng cài, hoặc đã gỡ cài đặt trước) để xác nhận trực
 tiếp bằng mắt thường.
 
+## 4v. Auto Click: hiện đại hóa UI + tổ hợp phím có thứ tự (2026-10-10, v1.19.7)
+
+Người dùng gửi 5 ảnh chụp thật module Auto Click, nêu 8 vấn đề UI/UX. Quyết định chốt qua hỏi đáp: icon
+menu dùng chung đúng 1 biểu tượng ngón tay trỏ (👆) cho mọi mục (không phải icon riêng theo ngữ nghĩa); tổ
+hợp phím mở rộng hỗ trợ CẢ Cuộn chuột lẫn Click chuột làm thao tác kết thúc (không chỉ Cuộn).
+
+**1. Menu chuột phải hiện đại + icon 👆 dùng chung**: widget mới `src/ui/widgets/ModernMenu.{h,cpp}` (bo
+góc 10px, viền `#d0d7de`, hover xanh `#0969da` - đồng bộ phong cách phần còn lại ứng dụng thay vì menu mặc
+định OS không trang trí gì) + `ModernMenu::addAction()` tự thêm tiền tố "👆 " cho mọi mục. Áp dụng tại
+`ChainListWidget` (Chạy chuỗi này/Nhân bản/Đổi tên/Xóa), `ActionListWidget` (Sửa/Nhân bản/Xóa), và
+`DirectDownloadTab` của Downloader (Bắt đầu-Tiếp tục/Tạm dừng/Hủy - bỏ icon ▶⏸✕ cũ để đúng nghĩa "chung 1
+icon" theo yêu cầu áp dụng rộng).
+
+**2. Bỏ viền focus xấu**: `ActionListWidget` thêm `outline: none` cho `QTableWidget::item:selected` và
+`QTableWidget::item:focus` - chỉ CSS, không đổi hành vi chọn dòng.
+
+**3. Esc không hủy được "lấy mẫu" tọa độ**: `CoordinateOverlay` trước chỉ dựa `keyPressEvent` của Qt (phụ
+thuộc cửa sổ đang giữ focus bàn phím - không đáng tin khi overlay toàn màn hình vừa mới hiện ra). Thêm hook
+bàn phím toàn cục `WH_KEYBOARD_LL` CHỈ nuốt phím Esc (cùng mẫu `DragGestureCapture::onRawKey` đã có từ
+trước, không nuốt mọi phím như `HotkeyCapture`), gỡ hook trong destructor, cờ `m_finished` chống gọi hủy 2
+lần (hook + `keyPressEvent` dự phòng có thể trùng nhau). `keyPressEvent` cũ vẫn giữ làm lớp dự phòng nếu
+Windows từ chối cài hook.
+
+**4. Widget `DurationInput` dùng chung (ms/giây/phút/giờ)**: `src/ui/widgets/DurationInput.{h,cpp}` - số
+nhập tay (`QDoubleSpinBox`, ẩn nút mũi tên tăng/giảm qua `setButtonSymbols(NoButtons)`) + list chọn đơn vị.
+Lưu nội bộ nguyên mili-giây; đổi đơn vị CHỈ đổi cách hiển thị (không phát `valueChanged`), gõ số mới mới
+tính lại ms và phát tín hiệu. Áp dụng cho 3 ô Timing (Chờ trước/Chờ sau/Thời lượng) trong
+`ActionEditorWidget`, thay `QSpinBox` ms thô cũ.
+
+**5. Đơn giản trang "Kéo chuột"**: bỏ `m_captureDragStartBtn`/`m_captureDragEndBtn` + 2 nút "Lấy tọa độ"
+tay; 4 ô tọa độ (điểm đầu/cuối) chuyển sang chỉ đọc (`setReadOnly(true)` + `NoButtons` + `NoFocus`, nền xám
+`#eaeef2`) chỉ để HIỂN THỊ kết quả sau khi bắt bằng nút "🖐 Bắt thao tác kéo thật" - không còn đường nào để
+tự gõ tay tọa độ sai lệch với thao tác kéo thật đã ghi.
+
+**6. Tổ hợp phím có thứ tự**: `Action.h` thêm `enum class ModifierKey {Ctrl,Alt,Shift,Win}` và field
+`std::vector<ModifierKey> modOrder` (GIỮ NGUYÊN 4 bool `modCtrl/Alt/Shift/Win` cũ - `core_stress_tests` fuzz
+test trực tiếp 4 field này, không xóa được). Hàm `effectiveModOrder()`: trả `modOrder` nếu không rỗng; rỗng
+(hồ sơ cũ) thì tự suy luận thứ tự cố định Ctrl→Alt→Shift→Win từ 4 bool - MỌI nơi đọc thứ tự (mô tả, chạy
+chuỗi, lưu JSON) đều gọi hàm này, không bao giờ đọc `modOrder` thẳng. `HotkeyCapture` ghi lại đúng thứ tự
+NHẤN THẬT (không phải thứ tự đang giữ) khi bắt tổ hợp bằng hook bàn phím thật. UI: 4 checkbox Ctrl/Alt/
+Shift/Win đổi text thành "Ctrl (1)" theo đúng vị trí trong `m_hotkeyModOrder` khi đang check; bỏ chọn 1 ô ở
+giữa thì các số sau tự dồn lại (tính lại từ đầu mỗi lần, không giữ số cũ). `ActionSerializer` ghi thêm
+(không xóa 4 bool cũ) `"modOrder"` tường minh vào JSON; đọc JSON CŨ thiếu key này thì giữ `modOrder` rỗng -
+`effectiveModOrder()` tự suy luận đúng như hành vi trước khi có tính năng này, không vỡ tương thích ngược.
+
+**7. Đổi tên "Phím tắt" → "Tổ hợp phím" + mở rộng "Kết thúc bằng"**: `Action.h` thêm
+`enum class HotkeyTrigger {KeyPress,Scroll,Click}`. UI trang Hotkey thêm combo "Kết thúc bằng" (Phím chính/
+Cuộn chuột/Click chuột) + `QStackedWidget` 3 trang con - trang Cuộn/Click là widget instance RIÊNG nhưng
+tái dùng field có sẵn của `ActionType::Scroll` (`scrollDirection`/`scrollAmount`) và `ActionType::MouseClick`
+(`x`/`y`/`mouseButton`), không thêm cấu trúc dữ liệu trùng lặp. `ActionRunner` rẽ theo `hotkeyTrigger`:
+Scroll/Click thì giữ các phím bổ trợ (`pressModifiersOrdered`) → thực hiện cuộn/click → nhả phím
+(`releaseModifiersOrdered`) - **nhả phím LUÔN chạy vô điều kiện** kể cả khi thao tác giữa chừng bị dừng,
+tránh kẹt phím Ctrl/Alt/Shift/Win thật trên máy người dùng (lỗi nghiêm trọng khó phát hiện vì không crash).
+Ví dụ dùng được: Ctrl+Cuộn lên = zoom in.
+
+**8. HUD (`RuntimeOverlay`) tự quay về vị trí gốc**: trước đây né chuột đúng nhưng đứng yên mãi ở vị trí đã
+né dù chuột đã rời đi từ lâu. Thêm `m_homePos` (ghi nhận lúc khởi tạo) + `m_isDisplaced`: còn va chạm ở vị
+trí hiện tại thì né như cũ; hết va chạm VÀ đang ở trạng thái đã né thì kiểm tra lại vị trí gốc - nếu gốc
+không còn va chạm thì tự `move()` về đó.
+
+**Đã xác nhận**: build thành công không lỗi biên dịch; 109/109 test (`autoclick_tests`, +9 test mới cho thứ
+tự tổ hợp phím và tương thích JSON cũ - `effectiveModOrder()` đúng cả khi `modOrder` tường minh khác thứ tự
+cố định lẫn khi đọc hồ sơ cũ không có field này); `core_stress_tests` không có hồi quy ở phần liên quan
+(`ActionSerializer`/`ActionRunner`/giao diện Auto Click đều pass 100% trong lượt chạy stress - 2 lỗi còn lại
+thuộc `UpdateInstaller::buildHelperScript` và Android lister, hai module không đụng tới trong đợt sửa này);
+đã tự rà soát lại code `createHotkeyPage()`/`setAction()`/`getAction()` khớp đúng thiết kế.
+
+**CHƯA xác nhận được bằng ảnh chụp tự động** (đúng tinh thần CLAUDE.md mục 2): đã thử 3 cách qua UI
+Automation để đổi combo "Loại" sang "Tổ hợp phím" và chụp trang mới - click chuột vào tọa độ ước lượng
+trong popup dropdown, gửi phím mũi tên (`keybd_event`) sau khi mở dropdown, và `SelectionItemPattern.Select()`
+sau khi `ExpandCollapsePattern.Expand()` - cả 3 đều không đổi được giá trị combo thật sự dù UI Automation
+đọc đúng cấu trúc 7 item trong popup. Nguyên nhân: popup `QComboBox`/`QMenu` của Qt là một cửa sổ (HWND)
+RIÊNG BIỆT với cửa sổ chính - `PrintWindow` trên cửa sổ chính không chụp được nó, và việc chọn item qua UIA
+synthetic action không map đúng về `setCurrentIndex()` nội bộ của Qt trong môi trường không tương tác
+(headless/phiên không có desktop thật) này. Đã xác nhận riêng (không qua popup) rằng điểm 2 và điểm 4 hiển
+thị đúng bằng ảnh chụp cửa sổ chính (focus rect biến mất, `DurationInput` hiện số + đơn vị "ms"). Cần tự
+xác nhận bằng mắt thường trên máy thật: trang "Tổ hợp phím" (combo "Kết thúc bằng", 4 checkbox hiện số thứ
+tự, sub-trang Cuộn/Click), menu chuột phải mới (bo góc/icon 👆), Esc hủy capture tọa độ, HUD tự về vị trí
+gốc, và tổ hợp phím Cuộn/Click chuột thực thi đúng khi chạy chuỗi thật.
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
@@ -1851,6 +1931,7 @@ Quy tắc đứng nằm ở `CLAUDE.md` (gốc dự án). Tóm tắt - mỗi l�
 | 2026-10-10 | Rà lỗi giao diện ghi đè/cắt mất + nút không hoạt động (v1.19.4) | Chi tiết đầy đủ ở mục 4s. Sửa panel "Cài đặt hành động" của Auto Click bị cắt mất (ảnh chụp thật người dùng gửi) + cột "Mô tả" bị bóp quá hẹp. Thêm `FlowLayout` dùng chung (`src/ui/widgets/`, lib `ui_widgets`) - áp dụng cho dãy thẻ ổ đĩa Disk Cleanup (không còn giới hạn/cắt mất khi máy có nhiều ổ, kể cả ổ ảo Google Drive) và 7 nút WiFi NetworksTab. Sửa lỗi CHỨC NĂNG thật: Downloader "Tải trực tiếp" - chuột phải vào hàng chưa chọn không hiện menu Bắt đầu/Tạm dừng/Hủy (trông như "nút không hoạt động"). Rà xác nhận KHÔNG có vấn đề ở Android Phone Control, QR Tools (ảnh chụp thật). Thêm `placeholder-text-color` cho 8 module (contrast tốt hơn, không phải fix cho nghi vấn PairingTab). Ghi nhận CHƯA giải quyết được nghi vấn hiển thị nhòe ở `PairingTab` đã biết từ v1.2.0 - thử 4 cách chẩn đoán khác nhau đều không đổi gì, nghiêng về khả năng là đặc điểm công cụ chụp ảnh tự động hơn là lỗi code, nhưng KHÔNG kết luận chắc. 11 bộ test liên quan: 2554 kiểm tra, 0 lỗi. |
 | 2026-10-10 | Luồng tự cập nhật: không cài được sau khi tải + kiểm tra thủ công (v1.19.5) | Chi tiết đầy đủ ở mục 4t. Người dùng tự test: tải 100% nhưng không tự lên bản mới, mở lại lại hỏi cập nhật. Đã TỰ CÀI installer v1.19.3 thật từ GitHub Release + test cập nhật thật qua tự động hóa UI (21 giây, thành công hoàn toàn trong môi trường test - không tái hiện được lỗi) nhưng xác định được điểm yếu thật: helper script PowerShell chạy sau khi app thoát hoàn toàn "mù" - không log, không kiểm tra exit code trình cài đặt, Sleep 500ms sau Wait-Process có thể không đủ tránh race condition AppMutex khiến Inno Setup tự hủy cài đặt trong im lặng. Sửa: tăng Sleep lên 1500ms, helper script tự ghi log + đánh dấu lỗi (exit code) vào %TEMP%, `UpdateInstaller::consumePreviousUpdateFailure()` đọc dấu vết đó lúc khởi động và báo rõ ràng thay vì im lặng hỏi lại từ đầu. Thêm nút "Kiểm tra cập nhật" thủ công (UpdateChecker::checkNow() đã có sẵn nhưng chưa có UI gọi) - xác nhận thật bằng tự động hóa UI. Tự mở lại app sau cập nhật đã hoạt động đúng từ trước, không cần sửa. CLAUDE.md: đổi rule - từ nay LUÔN tag+push+release sau mỗi lần sửa, không cần hỏi lại. |
 | 2026-10-10 | setup.exe không hỏi đường dẫn cài đặt (v1.19.6) | Chi tiết đầy đủ ở mục 4u. Xác nhận thật nguyên nhân bằng cách tự cài rồi chạy lại installer: Inno Setup mặc định (`UsePreviousAppDir=yes`) tự động nhớ cài đặt trước (cùng AppId), bỏ qua cả trang "Chọn Chế độ Cài đặt" lẫn trang chọn thư mục kể cả ở chế độ tương tác - xác nhận bằng cách gỡ sạch rồi cài lại (trang "Chọn Chế độ" xuất hiện đúng như thiết kế). Sửa bằng `DisableDirPage=no` tường minh trong `installer/OneForAll.iss` - không đổi `UsePreviousAppDir` để không phá cơ chế tự cập nhật silent (mục 4t) vốn cần tự cài đúng vào vị trí cũ. Chưa xác nhận được bằng automation rằng trang chọn thư mục thực sự hiện lại sau khi sửa - đã thử 3 cách tự động hóa UI (UIA InvokePattern, input injection chuột, PostMessage) đều không click được vào control tùy biến kiểu Delphi/VCL của Inno Setup Modern Wizard - giới hạn công cụ, không phải dấu hiệu sai. |
+| 2026-10-10 | Auto Click: hiện đại hóa UI + tổ hợp phím có thứ tự (v1.19.7) | Chi tiết đầy đủ ở mục 4v. 8 điểm từ ảnh chụp thật người dùng gửi: menu chuột phải hiện đại + icon 👆 dùng chung (`ModernMenu`, áp dụng cả Downloader); bỏ viền focus xấu trong bảng hành động; Esc hủy capture tọa độ qua hook `WH_KEYBOARD_LL` thay vì `keyPressEvent` không đáng tin; ô Timing đổi sang `DurationInput` (số + đơn vị ms/s/m/h) dùng chung; trang "Kéo chuột" chỉ còn nút bắt thật; tổ hợp phím hiện số thứ tự đã bấm + tự dồn khi bỏ chọn giữa (field `modOrder` mới, `effectiveModOrder()` tự suy luận cho hồ sơ JSON cũ không vỡ tương thích); đổi tên "Phím tắt"→"Tổ hợp phím" + thêm "Kết thúc bằng" Cuộn chuột/Click chuột (vd Ctrl+Cuộn = zoom); HUD tự quay về vị trí gốc khi hết va chạm. 109/109 test (+9 mới), `core_stress_tests` không hồi quy ở phần Auto Click. Chưa xác nhận được bằng ảnh chụp tự động trang "Tổ hợp phím" mới và menu mới - popup `QComboBox`/`QMenu` là cửa sổ riêng, 3 cách UI Automation thử đều không đổi/chụp được nó trong môi trường này; đã xác nhận qua code review + unit test, cần tự xem bằng mắt thường. |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `

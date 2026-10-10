@@ -26,6 +26,17 @@ public:
 
     void pressKey(int keyCode);
     void hotkey(bool ctrl, bool alt, bool shift, bool win, int keyCode);
+    /// Overload MỚI - gửi phím bổ trợ theo ĐÚNG THỨ TỰ orderedMods (nhấn xuống theo thứ tự đó, nhả theo
+    /// thứ tự ngược) rồi phím chính, khác hàm trên luôn theo thứ tự cố định Ctrl→Alt→Shift→Win. KHÔNG đổi
+    /// chữ ký hàm cũ ở trên - CommandLauncher.cpp (Security Gateway) đang gọi nó.
+    void hotkey(const std::vector<ModifierKey>& orderedMods, int keyCode);
+    /// Giữ các modifier theo đúng thứ tự orderedMods, KHÔNG nhả - dùng trước khi thực hiện một thao tác
+    /// khác (cuộn/click) rồi gọi releaseModifiersOrdered() sau. No-op an toàn nếu orderedMods rỗng.
+    void pressModifiersOrdered(const std::vector<ModifierKey>& orderedMods);
+    /// Nhả các modifier theo thứ tự NGƯỢC với lúc giữ. PHẢI luôn được gọi sau pressModifiersOrdered(), kể
+    /// cả khi thao tác ở giữa thất bại/bị dừng - không gọi sẽ để kẹt phím Ctrl/Alt/Shift/Win thật trên
+    /// máy người dùng.
+    void releaseModifiersOrdered(const std::vector<ModifierKey>& orderedMods);
     void typeText(const std::string& text, TextTypeMode mode, std::chrono::milliseconds duration, const std::atomic_bool* stopFlag = nullptr);
     void scroll(ScrollDirection direction, int amount, std::chrono::milliseconds duration, const std::atomic_bool* stopFlag = nullptr);
 

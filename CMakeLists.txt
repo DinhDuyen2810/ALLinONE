@@ -66,12 +66,18 @@ add_library(input_core STATIC
 target_include_directories(input_core PUBLIC src)
 target_link_libraries(input_core PUBLIC Qt6::Core user32)
 
-# ---- FlowLayout dùng chung: dãy widget con tự xuống dòng khi hết chỗ ngang thay vì bị Qt cắt mất ngoài
-# tầm nhìn - dùng cho dãy có SỐ LƯỢNG đổi theo dữ liệu thật (thẻ ổ đĩa Disk Cleanup) và dãy nút cố định
-# nhưng nhiều hơn một hàng vừa ở kích thước cửa sổ thường dùng (WiFi NetworksTab). Xem CLAUDE.md mục 5.
+# ---- Widget dùng chung cho nhiều module: FlowLayout (dãy widget con tự xuống dòng khi hết chỗ ngang -
+# dùng cho dãy có SỐ LƯỢNG đổi theo dữ liệu thật như thẻ ổ đĩa Disk Cleanup, hoặc dãy nút cố định nhưng
+# nhiều hơn một hàng vừa ở kích thước cửa sổ thường dùng như WiFi NetworksTab - xem CLAUDE.md mục 5),
+# ModernMenu (style + icon dùng chung cho context menu chuột phải), DurationInput (ô nhập thời gian:
+# số + đơn vị ms/giây/phút/giờ, thay cho QSpinBox-ms thô kèm nút mũi tên - xem PROJECT_OVERVIEW.md v1.19.7).
 add_library(ui_widgets STATIC
     src/ui/widgets/FlowLayout.h
     src/ui/widgets/FlowLayout.cpp
+    src/ui/widgets/ModernMenu.h
+    src/ui/widgets/ModernMenu.cpp
+    src/ui/widgets/DurationInput.h
+    src/ui/widgets/DurationInput.cpp
 )
 target_include_directories(ui_widgets PUBLIC src)
 target_link_libraries(ui_widgets PUBLIC Qt6::Widgets)
@@ -459,7 +465,7 @@ add_library(downloader_ui STATIC
     src/tools/downloader/DownloaderWindow.cpp
 )
 target_include_directories(downloader_ui PUBLIC src)
-target_link_libraries(downloader_ui PUBLIC downloader_core Qt6::Widgets)
+target_link_libraries(downloader_ui PUBLIC downloader_core Qt6::Widgets ui_widgets)
 
 # ---- Kiểm thử "khói" UI Downloader: cmake --build build --target downloader_ui_tests ----
 add_executable(downloader_ui_tests EXCLUDE_FROM_ALL tests/downloader_ui_tests.cpp)
@@ -563,6 +569,7 @@ target_link_libraries(OneForAll PRIVATE
     update_core
     input_core
     core_shared
+    ui_widgets
     user32
     dwmapi
 )
@@ -599,7 +606,7 @@ add_executable(autoclick_tests EXCLUDE_FROM_ALL
     src/tools/autoclick/widgets/ActionEditorWidget.cpp
 )
 target_include_directories(autoclick_tests PRIVATE src)
-target_link_libraries(autoclick_tests PRIVATE Qt6::Widgets input_core core_shared user32)
+target_link_libraries(autoclick_tests PRIVATE Qt6::Widgets input_core core_shared ui_widgets user32)
 
 # ---- Kiểm thử CHỊU TẢI phần lõi dùng chung + Auto Click + Android: cmake --build build --target core_stress_tests ----
 # Nhiều luồng/dữ liệu ngẫu nhiên số lượng lớn/lặp hàng nghìn lần cho AppPaths, Logger, PowerShellRunner (chạy
@@ -637,4 +644,4 @@ add_executable(core_stress_tests EXCLUDE_FROM_ALL
     src/tools/autoclick/widgets/ActionEditorWidget.cpp
 )
 target_include_directories(core_stress_tests PRIVATE src)
-target_link_libraries(core_stress_tests PRIVATE update_core android_ui android_core input_core core_shared Qt6::Widgets user32)
+target_link_libraries(core_stress_tests PRIVATE update_core android_ui android_core input_core core_shared ui_widgets Qt6::Widgets user32)

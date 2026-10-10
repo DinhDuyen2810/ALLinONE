@@ -52,11 +52,15 @@ ActionEditorWidget::ActionEditorWidget(QWidget* parent)
     setupUi();
 
     connect(m_hotkeyCapture, &HotkeyCapture::hotkeyCaptured, this,
-            [this](bool ctrl, bool alt, bool shift, bool win, int vkCode) {
-        m_ctrlCheck->setChecked(ctrl);
-        m_altCheck->setChecked(alt);
-        m_shiftCheck->setChecked(shift);
-        m_winCheck->setChecked(win);
+            [this](const std::vector<ModifierKey>& order, int vkCode) {
+        m_syncingModifierChecks = true;
+        m_ctrlCheck->setChecked(std::find(order.begin(), order.end(), ModifierKey::Ctrl) != order.end());
+        m_altCheck->setChecked(std::find(order.begin(), order.end(), ModifierKey::Alt) != order.end());
+        m_shiftCheck->setChecked(std::find(order.begin(), order.end(), ModifierKey::Shift) != order.end());
+        m_winCheck->setChecked(std::find(order.begin(), order.end(), ModifierKey::Win) != order.end());
+        m_syncingModifierChecks = false;
+        m_hotkeyModOrder = order; // nguồn thật = đúng thứ tự hook ghi được, thắng mọi thứ tự cũ
+        refreshModifierCheckboxLabels();
 
         const int idx = m_hotkeyKeyCombo->findData(vkCode);
         if (idx >= 0)
@@ -112,7 +116,7 @@ void ActionEditorWidget::setupUi()
     auto* typeLabel = new QLabel("Loại:", this);
     typeLabel->setStyleSheet("color: #1f2328; font-weight: bold; font-size: 12px;");
     m_typeCombo = new QComboBox(this);
-    m_typeCombo->addItems({"Click chuột", "Kéo chuột", "Giữ chuột", "Gõ văn bản", "Phím tắt", "Nhấn phím", "Cuộn"});
+    m_typeCombo->addItems({"Click chuột", "Kéo chuột", "Giữ chuột", "Gõ văn bản", "Tổ hợp phím", "Nhấn phím", "Cuộn"});
     m_typeCombo->setStyleSheet(
         "QComboBox { background-color: #ffffff; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 6px 10px; font-size: 12px; }"
         "QComboBox:hover { border-color: #0969da; }"
@@ -162,27 +166,21 @@ void ActionEditorWidget::setupUi()
     timingLayout->setContentsMargins(12, 12, 12, 12);
     timingLayout->setSpacing(8);
 
-    auto styleSpin = [](QSpinBox* spin) {
-        spin->setRange(0, 3600000);
-        spin->setSuffix(" ms");
-        spin->setStyleSheet(
-            "QSpinBox { background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 4px 8px; font-size: 12px; }"
-            "QSpinBox:hover, QSpinBox:focus { border-color: #0969da; }"
-        );
-    };
+    // Trước đây QSpinBox hiển thị thẳng mili-giây thô kèm nút mũi tên tăng/giảm - khó đọc với khoảng thời
+    // gian dài, nút mũi tên không đồng bộ phong cách hiện đại của phần còn lại ứng dụng (yêu cầu người
+    // dùng, v1.19.7). DurationInput (src/ui/widgets/) cho nhập số + chọn đơn vị ms/giây/phút/giờ.
+    m_waitBeforeInput = new DurationInput(this);
+    m_waitBeforeInput->setObjectName("waitBeforeInput");
+    timingLayout->addRow("Chờ trước:", m_waitBeforeInput);
 
-    m_waitBeforeSpin = new QSpinBox(this);
-    styleSpin(m_waitBeforeSpin);
-    timingLayout->addRow("Chờ trước:", m_waitBeforeSpin);
+    m_waitAfterInput = new DurationInput(this);
+    m_waitAfterInput->setObjectName("waitAfterInput");
+    m_waitAfterInput->setValueMs(500);
+    timingLayout->addRow("Chờ sau:", m_waitAfterInput);
 
-    m_waitAfterSpin = new QSpinBox(this);
-    styleSpin(m_waitAfterSpin);
-    m_waitAfterSpin->setValue(500);
-    timingLayout->addRow("Chờ sau:", m_waitAfterSpin);
-
-    m_durationSpin = new QSpinBox(this);
-    styleSpin(m_durationSpin);
-    timingLayout->addRow("Thời lượng:", m_durationSpin);
+    m_durationInput = new DurationInput(this);
+    m_durationInput->setObjectName("durationInput");
+    timingLayout->addRow("Thời lượng:", m_durationInput);
 
     contentLayout->addWidget(timingGroup);
     contentLayout->addStretch();
@@ -218,9 +216,9 @@ void ActionEditorWidget::connectDirtyTracking()
     // thể sửa vào markDirty(). m_loadingAction chặn các lần gọi giả do chính setAction() tự đặt giá trị
     // (setValue/setCurrentIndex cũng phát tín hiệu valueChanged/currentIndexChanged như người dùng gõ thật).
     connect(m_typeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &ActionEditorWidget::markDirty);
-    connect(m_waitBeforeSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, &ActionEditorWidget::markDirty);
-    connect(m_waitAfterSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, &ActionEditorWidget::markDirty);
-    connect(m_durationSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, &ActionEditorWidget::markDirty);
+    connect(m_waitBeforeInput, &DurationInput::valueChanged, this, &ActionEditorWidget::markDirty);
+    connect(m_waitAfterInput, &DurationInput::valueChanged, this, &ActionEditorWidget::markDirty);
+    connect(m_durationInput, &DurationInput::valueChanged, this, &ActionEditorWidget::markDirty);
 
     connect(m_clickButtonCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &ActionEditorWidget::markDirty);
     connect(m_clickXSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, &ActionEditorWidget::markDirty);
@@ -238,16 +236,62 @@ void ActionEditorWidget::connectDirtyTracking()
     connect(m_textEdit, &QLineEdit::textChanged, this, &ActionEditorWidget::markDirty);
     connect(m_textModeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &ActionEditorWidget::markDirty);
 
+    // Mỗi checkbox nối CẢ HAI: markDirty() (như mọi điều khiển khác) VÀ onModifierToggled() (tự thêm/bớt
+    // khỏi m_hotkeyModOrder + đổi text hiện số thứ tự) - 2 việc độc lập, chạy song song.
     connect(m_ctrlCheck, &QCheckBox::toggled, this, &ActionEditorWidget::markDirty);
     connect(m_altCheck, &QCheckBox::toggled, this, &ActionEditorWidget::markDirty);
     connect(m_shiftCheck, &QCheckBox::toggled, this, &ActionEditorWidget::markDirty);
     connect(m_winCheck, &QCheckBox::toggled, this, &ActionEditorWidget::markDirty);
+    connect(m_ctrlCheck, &QCheckBox::toggled, this, [this](bool c) { onModifierToggled(ModifierKey::Ctrl, c); });
+    connect(m_altCheck, &QCheckBox::toggled, this, [this](bool c) { onModifierToggled(ModifierKey::Alt, c); });
+    connect(m_shiftCheck, &QCheckBox::toggled, this, [this](bool c) { onModifierToggled(ModifierKey::Shift, c); });
+    connect(m_winCheck, &QCheckBox::toggled, this, [this](bool c) { onModifierToggled(ModifierKey::Win, c); });
     connect(m_hotkeyKeyCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &ActionEditorWidget::markDirty);
+    connect(m_hotkeyTriggerCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &ActionEditorWidget::markDirty);
+    connect(m_hotkeyScrollDirectionCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &ActionEditorWidget::markDirty);
+    connect(m_hotkeyScrollAmountSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, &ActionEditorWidget::markDirty);
+    connect(m_hotkeyClickButtonCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &ActionEditorWidget::markDirty);
+    connect(m_hotkeyClickXSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, &ActionEditorWidget::markDirty);
+    connect(m_hotkeyClickYSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, &ActionEditorWidget::markDirty);
 
     connect(m_keyPressCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &ActionEditorWidget::markDirty);
 
     connect(m_scrollDirectionCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &ActionEditorWidget::markDirty);
     connect(m_scrollAmountSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, &ActionEditorWidget::markDirty);
+}
+
+void ActionEditorWidget::refreshModifierCheckboxLabels()
+{
+    auto applyLabel = [this](QCheckBox* box, const QString& name, ModifierKey key) {
+        const auto it = std::find(m_hotkeyModOrder.begin(), m_hotkeyModOrder.end(), key);
+        box->setText(it != m_hotkeyModOrder.end()
+                         ? QString("%1 (%2)").arg(name).arg(std::distance(m_hotkeyModOrder.begin(), it) + 1)
+                         : name);
+    };
+    applyLabel(m_ctrlCheck, "Ctrl", ModifierKey::Ctrl);
+    applyLabel(m_altCheck, "Alt", ModifierKey::Alt);
+    applyLabel(m_shiftCheck, "Shift", ModifierKey::Shift);
+    applyLabel(m_winCheck, "Win", ModifierKey::Win);
+}
+
+void ActionEditorWidget::onModifierToggled(ModifierKey key, bool checked)
+{
+    // Đang TỰ gán giá trị (setAction() hoặc kết quả HotkeyCapture) - nơi gọi đã tự quản lý
+    // m_hotkeyModOrder, không để nhánh này can thiệp thêm lần nữa.
+    if (m_loadingAction || m_syncingModifierChecks)
+        return;
+    if (checked)
+    {
+        // Bấm thêm - số MỚI luôn ở CUỐI danh sách (đúng yêu cầu: bấm theo thứ tự nào thì đánh số thứ tự đó).
+        if (std::find(m_hotkeyModOrder.begin(), m_hotkeyModOrder.end(), key) == m_hotkeyModOrder.end())
+            m_hotkeyModOrder.push_back(key);
+    }
+    else
+    {
+        // Bỏ chọn ở giữa - các số sau tự dồn vì refreshModifierCheckboxLabels() đánh lại số từ đầu mỗi lần.
+        m_hotkeyModOrder.erase(std::remove(m_hotkeyModOrder.begin(), m_hotkeyModOrder.end(), key), m_hotkeyModOrder.end());
+    }
+    refreshModifierCheckboxLabels();
 }
 
 void ActionEditorWidget::markDirty()
@@ -305,57 +349,41 @@ QWidget* ActionEditorWidget::createDragPage()
     layout->setContentsMargins(0, 6, 0, 6);
     layout->setSpacing(8);
 
-    QString spinStyle = "QSpinBox { background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 4px 6px; font-size: 12px; } QSpinBox:focus { border-color: #0969da; }";
+    // Trước đây có thêm 2 nút "Lấy tọa độ" riêng cho điểm đầu/cuối (bắt từng điểm bằng 1 cú click) cạnh
+    // nút "Bắt thao tác kéo thật" (bắt TRỌN cả 2 điểm bằng 1 lần kéo-thả thật) - thừa, dễ nhầm lẫn 2 cách
+    // nhập cùng lúc (yêu cầu người dùng, v1.19.7). Chỉ còn đúng 1 cách: bắt thao tác kéo thật. 4 ô tọa độ
+    // GIỮ LẠI làm hiển thị KẾT QUẢ (đọc-only) - readOnly không chặn gọi setValue() bằng code nên
+    // onDragGestureCaptured()/getAction()/setAction() không cần đổi gì.
+    QString spinStyle =
+        "QSpinBox { background-color: #eaeef2; color: #57606a; border: 1px solid #d0d7de; border-radius: 8px; padding: 4px 6px; font-size: 12px; }";
+    auto makeReadOnlyCoordSpin = [&](const QString& prefix) {
+        auto* spin = new QSpinBox(w);
+        spin->setRange(kMinScreenCoord, kMaxScreenCoord);
+        spin->setPrefix(prefix);
+        spin->setStyleSheet(spinStyle);
+        spin->setReadOnly(true);
+        spin->setButtonSymbols(QAbstractSpinBox::NoButtons);
+        spin->setFocusPolicy(Qt::NoFocus);
+        return spin;
+    };
 
     auto* startLayout = new QHBoxLayout();
-    m_dragStartXSpin = new QSpinBox(w);
-    m_dragStartXSpin->setRange(kMinScreenCoord, kMaxScreenCoord);
-    m_dragStartXSpin->setPrefix("X: ");
-    m_dragStartYSpin = new QSpinBox(w);
-    m_dragStartYSpin->setRange(kMinScreenCoord, kMaxScreenCoord);
-    m_dragStartYSpin->setPrefix("Y: ");
-    m_dragStartXSpin->setStyleSheet(spinStyle);
-    m_dragStartYSpin->setStyleSheet(spinStyle);
-
-    m_captureDragStartBtn = new QPushButton("🎯 Lấy tọa độ", w);
-    m_captureDragStartBtn->setCursor(Qt::PointingHandCursor);
-    m_captureDragStartBtn->setStyleSheet("QPushButton { background-color: #0969da; color: white; border: none; border-radius: 8px; padding: 5px 12px; font-size: 11px; font-weight: bold; } QPushButton:hover { background-color: #0854b0; }");
-    connect(m_captureDragStartBtn, &QPushButton::clicked, this, [this]() {
-        m_capturingField = 1;
-        emit captureRequested(1);
-    });
-
+    m_dragStartXSpin = makeReadOnlyCoordSpin("X: ");
+    m_dragStartYSpin = makeReadOnlyCoordSpin("Y: ");
     startLayout->addWidget(m_dragStartXSpin);
     startLayout->addWidget(m_dragStartYSpin);
-    startLayout->addWidget(m_captureDragStartBtn);
     layout->addRow("Điểm đầu:", startLayout);
 
     auto* endLayout = new QHBoxLayout();
-    m_dragEndXSpin = new QSpinBox(w);
-    m_dragEndXSpin->setRange(kMinScreenCoord, kMaxScreenCoord);
-    m_dragEndXSpin->setPrefix("X: ");
-    m_dragEndYSpin = new QSpinBox(w);
-    m_dragEndYSpin->setRange(kMinScreenCoord, kMaxScreenCoord);
-    m_dragEndYSpin->setPrefix("Y: ");
-    m_dragEndXSpin->setStyleSheet(spinStyle);
-    m_dragEndYSpin->setStyleSheet(spinStyle);
-
-    m_captureDragEndBtn = new QPushButton("🎯 Lấy tọa độ", w);
-    m_captureDragEndBtn->setCursor(Qt::PointingHandCursor);
-    m_captureDragEndBtn->setStyleSheet("QPushButton { background-color: #0969da; color: white; border: none; border-radius: 8px; padding: 5px 12px; font-size: 11px; font-weight: bold; } QPushButton:hover { background-color: #0854b0; }");
-    connect(m_captureDragEndBtn, &QPushButton::clicked, this, [this]() {
-        m_capturingField = 2;
-        emit captureRequested(2);
-    });
-
+    m_dragEndXSpin = makeReadOnlyCoordSpin("X: ");
+    m_dragEndYSpin = makeReadOnlyCoordSpin("Y: ");
     endLayout->addWidget(m_dragEndXSpin);
     endLayout->addWidget(m_dragEndYSpin);
-    endLayout->addWidget(m_captureDragEndBtn);
     layout->addRow("Điểm cuối:", endLayout);
 
-    // Bắt TRỌN thao tác kéo thật (nhấn-kéo-thả) thay vì phải bắt riêng từng điểm đầu/cuối: ứng dụng tự
-    // ẩn đi, người dùng kéo chuột thật như bình thường (màn hình/ứng dụng phía dưới vẫn nhận được thao
-    // tác thật), thả ra là xong - ứng dụng tự điền cả 2 điểm rồi tự hiện lại.
+    // Bắt TRỌN thao tác kéo thật (nhấn-kéo-thả): ứng dụng tự ẩn đi, người dùng kéo chuột thật như bình
+    // thường (màn hình/ứng dụng phía dưới vẫn nhận được thao tác thật), thả ra là xong - ứng dụng tự điền
+    // cả 2 điểm ở trên rồi tự hiện lại.
     m_captureDragGestureBtn = new QPushButton("🖐 Bắt thao tác kéo thật", w);
     m_captureDragGestureBtn->setCursor(Qt::PointingHandCursor);
     m_captureDragGestureBtn->setStyleSheet(
@@ -456,18 +484,86 @@ QWidget* ActionEditorWidget::createHotkeyPage()
     modsLayout->addWidget(m_winCheck);
     layout->addLayout(modsLayout);
 
-    auto* keyLayout = new QHBoxLayout();
-    auto* keyLabel = new QLabel("Phím:", w);
-    keyLabel->setStyleSheet("color: #1f2328; font-weight: bold; font-size: 12px;");
-    m_hotkeyKeyCombo = new QComboBox(w);
+    // "Kết thúc bằng" - trước đây tổ hợp phím CHỈ có thể kết thúc bằng 1 phím chính; giờ thêm Cuộn chuột/
+    // Click chuột (vd Ctrl+Cuộn lên = zoom in, yêu cầu người dùng v1.19.7). 3 trang con dùng CHUNG style
+    // với createClickPage()/createScrollPage() nhưng widget instance RIÊNG (1 widget chỉ thuộc 1 layout).
+    auto* triggerLayout = new QHBoxLayout();
+    auto* triggerLabel = new QLabel("Kết thúc bằng:", w);
+    triggerLabel->setStyleSheet("color: #1f2328; font-weight: bold; font-size: 12px;");
+    m_hotkeyTriggerCombo = new QComboBox(w);
+    m_hotkeyTriggerCombo->addItems({"Phím chính", "Cuộn chuột", "Click chuột"});
+    m_hotkeyTriggerCombo->setStyleSheet("background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 5px 8px; font-size: 12px;");
+    triggerLayout->addWidget(triggerLabel);
+    triggerLayout->addWidget(m_hotkeyTriggerCombo, 1);
+    layout->addLayout(triggerLayout);
+
+    m_hotkeyTriggerStack = new QStackedWidget(w);
+
+    // Trang 0: Phím chính (hành vi gốc, không đổi)
+    auto* keyPage = new QWidget(w);
+    auto* keyLayout = new QFormLayout(keyPage);
+    keyLayout->setContentsMargins(0, 0, 0, 0);
+    keyLayout->setSpacing(8);
+    m_hotkeyKeyCombo = new QComboBox(keyPage);
     for (const auto& k : KEY_LIST)
     {
         m_hotkeyKeyCombo->addItem(k.name, k.vk);
     }
     m_hotkeyKeyCombo->setStyleSheet("background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 5px 8px; font-size: 12px;");
-    keyLayout->addWidget(keyLabel);
-    keyLayout->addWidget(m_hotkeyKeyCombo, 1);
-    layout->addLayout(keyLayout);
+    keyLayout->addRow("Phím:", m_hotkeyKeyCombo);
+    m_hotkeyTriggerStack->addWidget(keyPage);
+
+    // Trang 1: Cuộn chuột - cùng kiểu điều khiển với createScrollPage()
+    auto* scrollPage = new QWidget(w);
+    auto* scrollLayout = new QFormLayout(scrollPage);
+    scrollLayout->setContentsMargins(0, 0, 0, 0);
+    scrollLayout->setSpacing(8);
+    m_hotkeyScrollDirectionCombo = new QComboBox(scrollPage);
+    m_hotkeyScrollDirectionCombo->addItems({"Down (Xuống)", "Up (Lên)", "Left (Trái)", "Right (Phải)"});
+    m_hotkeyScrollDirectionCombo->setStyleSheet("background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 5px 8px; font-size: 12px;");
+    scrollLayout->addRow("Hướng:", m_hotkeyScrollDirectionCombo);
+    m_hotkeyScrollAmountSpin = new QSpinBox(scrollPage);
+    m_hotkeyScrollAmountSpin->setRange(1, 100);
+    m_hotkeyScrollAmountSpin->setValue(5);
+    m_hotkeyScrollAmountSpin->setStyleSheet("background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 4px 8px; font-size: 12px;");
+    scrollLayout->addRow("Số bước:", m_hotkeyScrollAmountSpin);
+    m_hotkeyTriggerStack->addWidget(scrollPage);
+
+    // Trang 2: Click chuột - cùng kiểu điều khiển với createClickPage()
+    auto* clickPage = new QWidget(w);
+    auto* clickLayout = new QFormLayout(clickPage);
+    clickLayout->setContentsMargins(0, 0, 0, 0);
+    clickLayout->setSpacing(8);
+    m_hotkeyClickButtonCombo = new QComboBox(clickPage);
+    m_hotkeyClickButtonCombo->addItems({"Trái", "Phải", "Giữa"});
+    m_hotkeyClickButtonCombo->setStyleSheet("background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 5px 8px; font-size: 12px;");
+    clickLayout->addRow("Nút:", m_hotkeyClickButtonCombo);
+
+    auto* hotkeyClickPosLayout = new QHBoxLayout();
+    QString hotkeySpinStyle = "QSpinBox { background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 4px 6px; font-size: 12px; } QSpinBox:focus { border-color: #0969da; }";
+    m_hotkeyClickXSpin = new QSpinBox(clickPage);
+    m_hotkeyClickXSpin->setRange(kMinScreenCoord, kMaxScreenCoord);
+    m_hotkeyClickXSpin->setPrefix("X: ");
+    m_hotkeyClickXSpin->setStyleSheet(hotkeySpinStyle);
+    m_hotkeyClickYSpin = new QSpinBox(clickPage);
+    m_hotkeyClickYSpin->setRange(kMinScreenCoord, kMaxScreenCoord);
+    m_hotkeyClickYSpin->setPrefix("Y: ");
+    m_hotkeyClickYSpin->setStyleSheet(hotkeySpinStyle);
+    auto* captureHotkeyClickPosBtn = new QPushButton("🎯 Lấy tọa độ", clickPage);
+    captureHotkeyClickPosBtn->setCursor(Qt::PointingHandCursor);
+    captureHotkeyClickPosBtn->setStyleSheet("QPushButton { background-color: #0969da; color: white; border: none; border-radius: 8px; padding: 5px 12px; font-size: 11px; font-weight: bold; } QPushButton:hover { background-color: #0854b0; }");
+    connect(captureHotkeyClickPosBtn, &QPushButton::clicked, this, [this]() {
+        m_capturingField = 3;
+        emit captureRequested(3);
+    });
+    hotkeyClickPosLayout->addWidget(m_hotkeyClickXSpin);
+    hotkeyClickPosLayout->addWidget(m_hotkeyClickYSpin);
+    hotkeyClickPosLayout->addWidget(captureHotkeyClickPosBtn);
+    clickLayout->addRow("Vị trí:", hotkeyClickPosLayout);
+    m_hotkeyTriggerStack->addWidget(clickPage);
+
+    connect(m_hotkeyTriggerCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), m_hotkeyTriggerStack, &QStackedWidget::setCurrentIndex);
+    layout->addWidget(m_hotkeyTriggerStack);
 
     // Bắt tổ hợp phím THẬT (vd Ctrl+Shift+S) thay vì phải tự tick từng ô - bấm nút rồi nhấn tổ hợp
     // phím mong muốn một lần, ứng dụng tự điền đúng các ô bên trên. Checkbox vẫn độc lập với nhau nên
@@ -608,9 +704,9 @@ void ActionEditorWidget::setAction(const Action& action, int actionIndex)
     m_typeCombo->setCurrentIndex(static_cast<int>(action.type));
     m_pagesStack->setCurrentIndex(static_cast<int>(action.type));
 
-    m_waitBeforeSpin->setValue(static_cast<int>(action.waitBefore.count()));
-    m_waitAfterSpin->setValue(static_cast<int>(action.waitAfter.count()));
-    m_durationSpin->setValue(static_cast<int>(action.duration.count()));
+    m_waitBeforeInput->setValueMs(static_cast<int>(action.waitBefore.count()));
+    m_waitAfterInput->setValueMs(static_cast<int>(action.waitAfter.count()));
+    m_durationInput->setValueMs(static_cast<int>(action.duration.count()));
 
     m_clickButtonCombo->setCurrentIndex(static_cast<int>(action.mouseButton));
     m_clickXSpin->setValue(action.x);
@@ -628,14 +724,29 @@ void ActionEditorWidget::setAction(const Action& action, int actionIndex)
     m_textEdit->setText(QString::fromStdString(action.text));
     m_textModeCombo->setCurrentIndex(static_cast<int>(action.textMode));
 
-    m_ctrlCheck->setChecked(action.modCtrl);
-    m_altCheck->setChecked(action.modAlt);
-    m_shiftCheck->setChecked(action.modShift);
-    m_winCheck->setChecked(action.modWin);
+    m_hotkeyModOrder = action.effectiveModOrder();
+    m_syncingModifierChecks = true;
+    m_ctrlCheck->setChecked(std::find(m_hotkeyModOrder.begin(), m_hotkeyModOrder.end(), ModifierKey::Ctrl) != m_hotkeyModOrder.end());
+    m_altCheck->setChecked(std::find(m_hotkeyModOrder.begin(), m_hotkeyModOrder.end(), ModifierKey::Alt) != m_hotkeyModOrder.end());
+    m_shiftCheck->setChecked(std::find(m_hotkeyModOrder.begin(), m_hotkeyModOrder.end(), ModifierKey::Shift) != m_hotkeyModOrder.end());
+    m_winCheck->setChecked(std::find(m_hotkeyModOrder.begin(), m_hotkeyModOrder.end(), ModifierKey::Win) != m_hotkeyModOrder.end());
+    m_syncingModifierChecks = false;
+    refreshModifierCheckboxLabels();
 
     const QString keyName = QString::fromStdString(action.keyName);
     selectKeyInCombo(m_hotkeyKeyCombo, action.keyCode, keyName);
     selectKeyInCombo(m_keyPressCombo, action.keyCode, keyName);
+
+    m_hotkeyTriggerCombo->setCurrentIndex(static_cast<int>(action.hotkeyTrigger));
+    m_hotkeyTriggerStack->setCurrentIndex(static_cast<int>(action.hotkeyTrigger));
+    // Luôn nạp CẢ 2 sub-page từ field baseline của action (scrollDirection/scrollAmount, x/y/mouseButton)
+    // bất kể hotkeyTrigger hiện tại là gì - cùng kiểu "nạp đồng thời cho mọi trang" đã làm với x/y (dùng
+    // chung cho Click VÀ Hold) ở trên, tránh mất dữ liệu khi người dùng đổi qua lại giữa các lựa chọn.
+    m_hotkeyScrollDirectionCombo->setCurrentIndex(static_cast<int>(action.scrollDirection));
+    m_hotkeyScrollAmountSpin->setValue(action.scrollAmount);
+    m_hotkeyClickButtonCombo->setCurrentIndex(static_cast<int>(action.mouseButton));
+    m_hotkeyClickXSpin->setValue(action.x);
+    m_hotkeyClickYSpin->setValue(action.y);
 
     m_scrollDirectionCombo->setCurrentIndex(static_cast<int>(action.scrollDirection));
     m_scrollAmountSpin->setValue(action.scrollAmount);
@@ -657,9 +768,9 @@ Action ActionEditorWidget::getAction() const
     // tắt trong hồ sơ.
     act.enabled = m_loadedEnabled;
 
-    act.waitBefore = std::chrono::milliseconds(m_waitBeforeSpin->value());
-    act.waitAfter = std::chrono::milliseconds(m_waitAfterSpin->value());
-    act.duration = std::chrono::milliseconds(m_durationSpin->value());
+    act.waitBefore = std::chrono::milliseconds(m_waitBeforeInput->valueMs());
+    act.waitAfter = std::chrono::milliseconds(m_waitAfterInput->valueMs());
+    act.duration = std::chrono::milliseconds(m_durationInput->valueMs());
 
     act.mouseButton = static_cast<MouseButtonType>(m_clickButtonCombo->currentIndex());
     act.x = m_clickXSpin->value();
@@ -680,10 +791,7 @@ Action ActionEditorWidget::getAction() const
     act.text = m_textEdit->text().toStdString();
     act.textMode = static_cast<TextTypeMode>(m_textModeCombo->currentIndex());
 
-    act.modCtrl = m_ctrlCheck->isChecked();
-    act.modAlt = m_altCheck->isChecked();
-    act.modShift = m_shiftCheck->isChecked();
-    act.modWin = m_winCheck->isChecked();
+    act.setModifiers(m_hotkeyModOrder);
     act.keyCode = m_hotkeyKeyCombo->currentData().toInt();
     act.keyName = keyNameFromCombo(m_hotkeyKeyCombo).toStdString();
 
@@ -696,11 +804,27 @@ Action ActionEditorWidget::getAction() const
     act.scrollDirection = static_cast<ScrollDirection>(m_scrollDirectionCombo->currentIndex());
     act.scrollAmount = m_scrollAmountSpin->value();
 
+    act.hotkeyTrigger = static_cast<HotkeyTrigger>(m_hotkeyTriggerCombo->currentIndex());
+    if (act.type == ActionType::Hotkey && act.hotkeyTrigger == HotkeyTrigger::Scroll)
+    {
+        act.scrollDirection = static_cast<ScrollDirection>(m_hotkeyScrollDirectionCombo->currentIndex());
+        act.scrollAmount = m_hotkeyScrollAmountSpin->value();
+    }
+    else if (act.type == ActionType::Hotkey && act.hotkeyTrigger == HotkeyTrigger::Click)
+    {
+        act.mouseButton = static_cast<MouseButtonType>(m_hotkeyClickButtonCombo->currentIndex());
+        act.x = m_hotkeyClickXSpin->value();
+        act.y = m_hotkeyClickYSpin->value();
+    }
+
     return act;
 }
 
 void ActionEditorWidget::onPositionCaptured(int x, int y)
 {
+    // field 1/2 (điểm đầu/cuối Kéo chuột riêng lẻ) đã bỏ - trang Kéo chuột giờ chỉ còn "Bắt thao tác kéo
+    // thật" (dragGestureCaptureRequested, xem onDragGestureCaptured), không còn emit captureRequested(1)/
+    // (2) ở đâu nữa (v1.19.7).
     if (m_capturingField == 0) // click or hold
     {
         m_clickXSpin->setValue(x);
@@ -708,15 +832,10 @@ void ActionEditorWidget::onPositionCaptured(int x, int y)
         m_holdXSpin->setValue(x);
         m_holdYSpin->setValue(y);
     }
-    else if (m_capturingField == 1) // drag start
+    else if (m_capturingField == 3) // Tổ hợp phím + Click chuột
     {
-        m_dragStartXSpin->setValue(x);
-        m_dragStartYSpin->setValue(y);
-    }
-    else if (m_capturingField == 2) // drag end
-    {
-        m_dragEndXSpin->setValue(x);
-        m_dragEndYSpin->setValue(y);
+        m_hotkeyClickXSpin->setValue(x);
+        m_hotkeyClickYSpin->setValue(y);
     }
 }
 

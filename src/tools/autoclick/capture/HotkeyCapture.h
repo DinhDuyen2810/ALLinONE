@@ -2,6 +2,9 @@
 
 #include <QObject>
 #include <QString>
+#include <vector>
+
+#include "../model/Action.h"
 
 class QTimer;
 
@@ -28,8 +31,11 @@ public:
     bool isCapturing() const { return m_keyboardHook != nullptr; }
 
 signals:
+    /// modOrder = các modifier ĐANG BẬT lúc phím chính được nhấn, xếp theo ĐÚNG THỨ TỰ LẦN ĐẦU chúng
+    /// được bấm xuống (nhả ra rồi bấm lại KHÔNG dời vị trí trong danh sách) - trước đây chỉ trả 4 bool cố
+    /// định thứ tự Ctrl-Alt-Shift-Win, không phản ánh thứ tự người dùng bấm thật (v1.19.7).
     /// vkCode = mã phím Win32 (VK_*) của phím "chính" (không phải phím bổ trợ) đã bắt được.
-    void hotkeyCaptured(bool ctrl, bool alt, bool shift, bool win, int vkCode);
+    void hotkeyCaptured(const std::vector<ModifierKey>& modOrder, int vkCode);
     void captureCancelled();
 
 public:
@@ -45,6 +51,9 @@ private:
     bool m_altDown{false};
     bool m_shiftDown{false};
     bool m_winDown{false};
+    /// Thứ tự LẦN ĐẦU mỗi modifier được bấm xuống trong lượt bắt này (reset trong startCapture()) - nhả
+    /// ra không xóa khỏi danh sách, chỉ 4 bool ở trên đổi theo trạng thái đang giữ/đã nhả.
+    std::vector<ModifierKey> m_pressOrder;
 
     // Tự hủy bắt sau một khoảng thời gian nếu người dùng không gõ gì - hook bàn phím toàn cục này NUỐT
     // MỌI phím thật (kể cả của ứng dụng khác) trong lúc đang bắt, và có thể chặn luôn hook khác đã cài

@@ -46,4 +46,10 @@ private:
     int m_targetY{0};
     int m_totalCountdownMs{1000};
     qint64 m_lastRemainingMs{0};
+
+    // Vị trí mặc định (góc trên-phải màn hình chính, tính một lần trong constructor) - trước đây sau khi
+    // né sang góc đối diện để tránh che hành động, HUD đứng yên ở đó MÃI MÃI dù hành động kế tiếp không
+    // còn gì va chạm nữa. m_isDisplaced theo dõi có đang ở vị trí né hay không, xem updateOverlayPosition().
+    QPoint m_homePos;
+    bool m_isDisplaced{false};
 };

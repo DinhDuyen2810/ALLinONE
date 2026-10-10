@@ -4,6 +4,7 @@
 #include <windows.h>
 
 #include <QTimer>
+#include <algorithm>
 
 namespace
 {
@@ -65,6 +66,7 @@ void HotkeyCapture::startCapture()
         return; // đã đang bắt
 
     m_ctrlDown = m_altDown = m_shiftDown = m_winDown = false;
+    m_pressOrder.clear();
     g_instance = this;
     m_keyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, keyboardProc, GetModuleHandleW(nullptr), 0);
     if (!m_keyboardHook)
@@ -112,22 +114,37 @@ bool HotkeyCapture::onRawKey(int vkCode, bool pressed)
         const bool isAlt = (vkCode == VK_MENU || vkCode == VK_LMENU || vkCode == VK_RMENU);
         const bool isShift = (vkCode == VK_SHIFT || vkCode == VK_LSHIFT || vkCode == VK_RSHIFT);
         const bool isWin = (vkCode == VK_LWIN || vkCode == VK_RWIN);
+        const ModifierKey key = isCtrl ? ModifierKey::Ctrl : isAlt ? ModifierKey::Alt
+                                                             : isShift ? ModifierKey::Shift : ModifierKey::Win;
 
         if (isCtrl) m_ctrlDown = pressed;
         else if (isAlt) m_altDown = pressed;
         else if (isShift) m_shiftDown = pressed;
         else if (isWin) m_winDown = pressed;
+
+        // Ghi LẦN ĐẦU TIÊN modifier này được bấm xuống - nhả ra không xóa khỏi danh sách, bấm lại không
+        // dời vị trí (giữ đúng ngữ nghĩa "thứ tự đã bấm", khác "đang giữ" của 4 bool ở trên).
+        if (pressed && std::find(m_pressOrder.begin(), m_pressOrder.end(), key) == m_pressOrder.end())
+            m_pressOrder.push_back(key);
         return true;
     }
 
     // Phím "chính" (không phải phím bổ trợ) - chỉ bắt lúc NHẤN XUỐNG, bỏ qua lúc nhả ra.
     if (pressed)
     {
-        const bool ctrl = m_ctrlDown, alt = m_altDown, shift = m_shiftDown, win = m_winDown;
+        // Lọc m_pressOrder chỉ giữ modifier ĐANG BẬT lúc phím chính được nhấn (đúng rule cũ), nhưng xếp
+        // theo đúng thứ tự LẦN ĐẦU chúng được bấm (khác thứ tự cố định Ctrl-Alt-Shift-Win trước đây).
+        std::vector<ModifierKey> order;
+        for (ModifierKey k : m_pressOrder)
+        {
+            const bool down = (k == ModifierKey::Ctrl && m_ctrlDown) || (k == ModifierKey::Alt && m_altDown) ||
+                              (k == ModifierKey::Shift && m_shiftDown) || (k == ModifierKey::Win && m_winDown);
+            if (down)
+                order.push_back(k);
+        }
         uninstallHook();
         QMetaObject::invokeMethod(
-            this, [this, ctrl, alt, shift, win, vkCode]() { emit hotkeyCaptured(ctrl, alt, shift, win, vkCode); },
-            Qt::QueuedConnection);
+            this, [this, order, vkCode]() { emit hotkeyCaptured(order, vkCode); }, Qt::QueuedConnection);
     }
     return true;
 }

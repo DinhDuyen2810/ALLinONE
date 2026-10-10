@@ -1,4 +1,5 @@
 #include "ChainListWidget.h"
+#include "ui/widgets/ModernMenu.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -126,11 +127,12 @@ void ChainListWidget::onCustomContextMenuRequested(const QPoint& pos)
     if (row < 0) return;
 
     QMenu menu(this);
-    QAction* runAction = menu.addAction("Chạy chuỗi này");
-    QAction* cloneAction = menu.addAction("Nhân bản");
-    QAction* renameAction = menu.addAction("Đổi tên");
+    ModernMenu::style(&menu);
+    QAction* runAction = ModernMenu::addAction(menu, "Chạy chuỗi này");
+    QAction* cloneAction = ModernMenu::addAction(menu, "Nhân bản");
+    QAction* renameAction = ModernMenu::addAction(menu, "Đổi tên");
     menu.addSeparator();
-    QAction* deleteAction = menu.addAction("Xóa");
+    QAction* deleteAction = ModernMenu::addAction(menu, "Xóa");
 
     QAction* chosen = menu.exec(m_listWidget->mapToGlobal(pos));
     if (!chosen) return;

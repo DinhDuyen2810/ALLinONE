@@ -76,7 +76,8 @@ RuntimeOverlay::RuntimeOverlay(QWidget* parent)
     if (screen)
     {
         QRect screenGeom = screen->availableGeometry();
-        move(screenGeom.right() - width() - 20, screenGeom.top() + 40);
+        m_homePos = QPoint(screenGeom.right() - width() - 20, screenGeom.top() + 40);
+        move(m_homePos);
     }
 }
 
@@ -154,6 +155,22 @@ void RuntimeOverlay::updateOverlayPosition(int targetX, int targetY)
         int newY = (logicalY < screenGeom.center().y()) ? bottom : top;
 
         move(newX, newY);
+        m_isDisplaced = true;
+        return;
+    }
+
+    // Không còn va chạm ở vị trí hiện tại. Nếu đang né (không ở home) và HOME giờ cũng an toàn cho đích
+    // này thì quay về - trước đây không có nhánh này, HUD đứng yên vĩnh viễn ở góc đã né dù không còn lý
+    // do gì phải tránh nữa (xác nhận qua yêu cầu người dùng, v1.19.7).
+    if (m_isDisplaced)
+    {
+        QRect dangerRectHome = QRect(m_homePos, size()).adjusted(-60, -60, 60, 60);
+        if (!dangerRectHome.contains(logicalX, logicalY))
+        {
+            move(m_homePos);
+            m_isDisplaced = false;
+        }
+        // home vẫn nguy hiểm với đích này nhưng chỗ né hiện tại đang an toàn - đứng yên, không có lý do di chuyển.
     }
 }
 

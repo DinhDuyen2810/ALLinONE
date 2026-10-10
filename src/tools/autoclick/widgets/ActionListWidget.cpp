@@ -1,4 +1,5 @@
 #include "ActionListWidget.h"
+#include "ui/widgets/ModernMenu.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -100,9 +101,14 @@ ActionListWidget::ActionListWidget(QWidget* parent)
     reorderableTable->onRowMoved = [this](int from, int to) { emit actionMoved(from, to); };
 
     m_table->setStyleSheet(
-        "QTableWidget { background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 12px; gridline-color: transparent; padding: 4px; }"
+        "QTableWidget { background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 12px; gridline-color: transparent; padding: 4px; outline: none; }"
         "QTableWidget::item { padding: 8px 10px; color: #1f2328; border-bottom: 1px solid #eaeef2; font-size: 12px; }"
-        "QTableWidget::item:selected { background-color: #0969da; color: #ffffff; font-weight: bold; border-radius: 4px; }"
+        "QTableWidget::item:selected { background-color: #0969da; color: #ffffff; font-weight: bold; border-radius: 4px; outline: none; }"
+        // Qt vẽ thêm dotted focus rect (PE_FrameFocusRect) chồng lên ô "current" dù đã :selected - trước
+        // đây không tắt nên khi click chọn 1 ô, viền chấm xấu hiện quanh riêng ô đó (xác nhận qua ảnh
+        // người dùng gửi, v1.19.7). outline:none trên :focus là cách chuẩn Qt để tắt, không ảnh hưởng
+        // điều hướng bàn phím (mũi tên/Tab vẫn đổi currentItem bình thường).
+        "QTableWidget::item:focus { outline: none; border: none; }"
         "QHeaderView::section { background-color: #f6f8fa; color: #57606a; font-weight: bold; border: none; padding: 8px; border-bottom: 1px solid #d0d7de; font-size: 11px; }"
     );
     mainLayout->addWidget(m_table);
@@ -277,10 +283,11 @@ void ActionListWidget::onCustomContextMenuRequested(const QPoint& pos)
     if (row < 0) return;
 
     QMenu menu(this);
-    QAction* editAct = menu.addAction("Sửa");
-    QAction* cloneAct = menu.addAction("Nhân bản");
+    ModernMenu::style(&menu);
+    QAction* editAct = ModernMenu::addAction(menu, "Sửa");
+    QAction* cloneAct = ModernMenu::addAction(menu, "Nhân bản");
     menu.addSeparator();
-    QAction* delAct = menu.addAction("Xóa");
+    QAction* delAct = ModernMenu::addAction(menu, "Xóa");
 
     QAction* chosen = menu.exec(m_table->mapToGlobal(pos));
     if (!chosen) return;

@@ -38,6 +38,20 @@ INPUT makeKeyInput(int vk, bool keyUp)
     return in;
 }
 
+// Map ModifierKey -> VK_* CHỈ nằm ở đây (nơi duy nhất gọi Win32 Input API, đúng Rule 3 của dự án) -
+// ActionRunner/UI không cần biết gì về mã phím Windows.
+int vkForModifier(ModifierKey m)
+{
+    switch (m)
+    {
+        case ModifierKey::Ctrl:  return VK_CONTROL;
+        case ModifierKey::Alt:   return VK_MENU;
+        case ModifierKey::Shift: return VK_SHIFT;
+        case ModifierKey::Win:   return VK_LWIN;
+    }
+    return 0;
+}
+
 bool stopRequested(const std::atomic_bool* stopFlag)
 {
     return stopFlag && stopFlag->load();
@@ -233,6 +247,43 @@ void InputController::hotkey(bool ctrl, bool alt, bool shift, bool win, int keyC
     // Vẫn gửi lệnh NHẢ kể cả khi lệnh nhấn ở trên báo lỗi - SendInput có thể đã chèn được một phần (vd
     // chỉ các phím bổ trợ), không nhả thì Ctrl/Alt/Shift/Win kẹt ở trạng thái nhấn.
     sendInputs(upInputs.data(), static_cast<UINT>(upInputs.size()), "Nhả tổ hợp phím (SendInput)");
+}
+
+void InputController::hotkey(const std::vector<ModifierKey>& orderedMods, int keyCode)
+{
+    std::vector<INPUT> downInputs;
+    for (ModifierKey m : orderedMods)
+        downInputs.push_back(makeKeyInput(vkForModifier(m), false));
+    downInputs.push_back(makeKeyInput(keyCode, false));
+
+    std::vector<INPUT> upInputs;
+    upInputs.push_back(makeKeyInput(keyCode, true));
+    for (auto it = orderedMods.rbegin(); it != orderedMods.rend(); ++it)
+        upInputs.push_back(makeKeyInput(vkForModifier(*it), true));
+
+    sendInputs(downInputs.data(), static_cast<UINT>(downInputs.size()), "Nhấn tổ hợp phím (SendInput)");
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    sendInputs(upInputs.data(), static_cast<UINT>(upInputs.size()), "Nhả tổ hợp phím (SendInput)");
+}
+
+void InputController::pressModifiersOrdered(const std::vector<ModifierKey>& orderedMods)
+{
+    if (orderedMods.empty())
+        return;
+    std::vector<INPUT> downInputs;
+    for (ModifierKey m : orderedMods)
+        downInputs.push_back(makeKeyInput(vkForModifier(m), false));
+    sendInputs(downInputs.data(), static_cast<UINT>(downInputs.size()), "Giữ phím bổ trợ (SendInput)");
+}
+
+void InputController::releaseModifiersOrdered(const std::vector<ModifierKey>& orderedMods)
+{
+    if (orderedMods.empty())
+        return;
+    std::vector<INPUT> upInputs;
+    for (auto it = orderedMods.rbegin(); it != orderedMods.rend(); ++it)
+        upInputs.push_back(makeKeyInput(vkForModifier(*it), true));
+    sendInputs(upInputs.data(), static_cast<UINT>(upInputs.size()), "Nhả phím bổ trợ (SendInput)");
 }
 
 void InputController::typeText(const std::string& text, TextTypeMode mode, std::chrono::milliseconds duration, const std::atomic_bool* stopFlag)

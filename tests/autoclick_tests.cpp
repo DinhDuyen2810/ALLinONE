@@ -26,6 +26,7 @@
 #include "tools/autoclick/widgets/ActionEditorWidget.h"
 #include "tools/autoclick/widgets/ActionListWidget.h"
 #include "tools/autoclick/widgets/ChainListWidget.h"
+#include "ui/widgets/DurationInput.h"
 
 static int g_fail = 0, g_pass = 0;
 #define CHECK(cond)                                                            \
@@ -125,6 +126,51 @@ int main(int argc, char** argv)
             CHECK(b.waitBefore.count() == 123 && b.duration.count() == 4567);
             CHECK(b.text == "xin chào");
         }
+    }
+
+    // ---- Action::effectiveModOrder/setModifiers/description: THỨ TỰ thật, không cố định Ctrl-Alt-Shift-Win ----
+    {
+        Action a;
+        a.type = ActionType::Hotkey;
+        a.keyCode = 46; // Delete
+        a.keyName = "DELETE";
+        a.setModifiers({ModifierKey::Shift, ModifierKey::Ctrl}); // CỐ Ý ngược thứ tự "chuẩn"
+        CHECK((a.effectiveModOrder() == std::vector<ModifierKey>{ModifierKey::Shift, ModifierKey::Ctrl}));
+        CHECK(a.modShift && a.modCtrl && !a.modAlt && !a.modWin); // setModifiers vẫn đồng bộ 4 bool cũ
+        CHECK(a.description() == "Tổ hợp phím Shift + Ctrl + DELETE"); // ĐÚNG thứ tự đã gán, không phải Ctrl trước
+        CHECK(a.typeName() == "Tổ hợp phím"); // đổi tên hiển thị từ "Phím tắt" (v1.19.7)
+
+        // Action dựng tay CHỈ gán 4 bool (như demo chain/code cũ, không gọi setModifiers) - modOrder rỗng,
+        // effectiveModOrder() phải TỰ SUY LUẬN đúng thứ tự cố định Ctrl→Alt→Shift→Win như hành vi trước đây.
+        Action legacy;
+        legacy.type = ActionType::Hotkey;
+        legacy.modWin = true;
+        legacy.modCtrl = true;
+        legacy.keyName = "S";
+        CHECK((legacy.effectiveModOrder() == std::vector<ModifierKey>{ModifierKey::Ctrl, ModifierKey::Win}));
+
+        // Round-trip JSON: modOrder ghi ra PHẢI đọc lại đúng thứ tự Shift,Ctrl (không bị ActionSerializer
+        // tự sắp xếp lại) - kiểm tra riêng với round-trip đơn giản ở khối trên dùng modCtrl đơn lẻ.
+        ActionChain orderChain;
+        orderChain.id = "order";
+        orderChain.actions.push_back(a);
+        std::vector<ActionChain> orderOut;
+        QString orderErr;
+        CHECK(ActionSerializer::fromJsonString(ActionSerializer::toJsonString({orderChain}), orderOut, &orderErr));
+        if (orderOut.size() == 1 && orderOut[0].actions.size() == 1)
+            CHECK((orderOut[0].actions[0].effectiveModOrder() == std::vector<ModifierKey>{ModifierKey::Shift, ModifierKey::Ctrl}));
+
+        // Hồ sơ CŨ (trước v1.19.7) không có "modOrder" trong JSON - fromJsonString() vẫn phải đọc được,
+        // effectiveModOrder() suy đúng thứ tự cố định từ 4 bool cũ.
+        const QString legacyJson = QStringLiteral(
+            "{\"chains\":[{\"id\":\"legacy\",\"name\":\"x\",\"repeatCount\":1,\"actions\":["
+            "{\"type\":\"Hotkey\",\"enabled\":true,\"keyCode\":83,\"keyName\":\"S\","
+            "\"modCtrl\":true,\"modAlt\":false,\"modShift\":true,\"modWin\":false}]}]}");
+        std::vector<ActionChain> legacyOut;
+        QString legacyErr;
+        CHECK(ActionSerializer::fromJsonString(legacyJson, legacyOut, &legacyErr));
+        if (legacyOut.size() == 1 && legacyOut[0].actions.size() == 1)
+            CHECK((legacyOut[0].actions[0].effectiveModOrder() == std::vector<ModifierKey>{ModifierKey::Ctrl, ModifierKey::Shift}));
     }
 
     // ---- ActionSerializer: tệp hỏng/sai định dạng phải báo LỖI, không được coi là "hồ sơ rỗng hợp lệ" ----
@@ -382,13 +428,12 @@ int main(int argc, char** argv)
                 actionList->setSelectedActionIndex(0);
                 app.processEvents();
 
-                // Người dùng sửa dở một trường mà chưa bấm "Lưu hành động"
-                QSpinBox* waitSpin = nullptr;
-                for (auto* spin : editor->findChildren<QSpinBox*>())
-                    if (spin->suffix() == " ms") { waitSpin = spin; break; }
-                CHECK(waitSpin != nullptr);
-                if (waitSpin)
-                    waitSpin->setValue(7777);
+                // Người dùng sửa dở một trường mà chưa bấm "Lưu hành động" - QSpinBox-ms cũ đã đổi thành
+                // DurationInput (v1.19.7), tìm lại theo objectName thay vì suffix "ms" không còn tồn tại.
+                auto* waitInput = editor->findChild<DurationInput*>("waitBeforeInput");
+                CHECK(waitInput != nullptr);
+                if (waitInput)
+                    waitInput->setValueMs(7777);
                 const Action editing = editor->getAction();
 
                 int selectionChanges = 0; // (không dùng QSignalSpy - dự án không link Qt6::Test)

@@ -5,6 +5,7 @@
 #include <QJsonArray>
 #include <QFile>
 #include <QSaveFile>
+#include <algorithm>
 #include <climits>
 
 QString ActionSerializer::getDefaultProfilePath()
@@ -13,6 +14,27 @@ QString ActionSerializer::getDefaultProfilePath()
 }
 
 static int clampInt(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+static QString modifierKeyToString(ModifierKey m)
+{
+    switch (m)
+    {
+        case ModifierKey::Ctrl:  return "Ctrl";
+        case ModifierKey::Alt:   return "Alt";
+        case ModifierKey::Shift: return "Shift";
+        case ModifierKey::Win:   return "Win";
+    }
+    return QString();
+}
+
+static bool stringToModifierKey(const QString& s, ModifierKey& out)
+{
+    if (s == "Ctrl") { out = ModifierKey::Ctrl; return true; }
+    if (s == "Alt") { out = ModifierKey::Alt; return true; }
+    if (s == "Shift") { out = ModifierKey::Shift; return true; }
+    if (s == "Win") { out = ModifierKey::Win; return true; }
+    return false;
+}
 
 // Màn hình ảo Windows: tọa độ 16-bit có dấu (cùng miền với các ô X/Y của ActionEditorWidget).
 static constexpr int kMinScreenCoord = -32768;
@@ -102,6 +124,15 @@ QString ActionSerializer::toJsonString(const std::vector<ActionChain>& chains)
             actObj["modAlt"] = action.modAlt;
             actObj["modShift"] = action.modShift;
             actObj["modWin"] = action.modWin;
+            // modOrder: THỨ TỰ thật đã bấm chọn (v1.19.7) - ghi THÊM, không thay thế 4 bool ở trên (hồ sơ
+            // vẫn đọc được bởi code CŨ, chỉ mất thông tin thứ tự). Luôn ghi từ effectiveModOrder() (tường
+            // minh dù modOrder gốc rỗng) để hồ sơ lưu ra từ Action dựng tay (demo chain...) vẫn có thứ tự
+            // xác định khi đọc lại.
+            QJsonArray modOrderArr;
+            for (ModifierKey m : action.effectiveModOrder())
+                modOrderArr.append(modifierKeyToString(m));
+            actObj["modOrder"] = modOrderArr;
+            actObj["hotkeyTrigger"] = static_cast<int>(action.hotkeyTrigger);
 
             actObj["scrollDirection"] = static_cast<int>(action.scrollDirection);
             actObj["scrollAmount"] = action.scrollAmount;
@@ -187,6 +218,22 @@ bool ActionSerializer::fromJsonString(const QString& jsonStr, std::vector<Action
             action.modAlt = actObj["modAlt"].toBool(false);
             action.modShift = actObj["modShift"].toBool(false);
             action.modWin = actObj["modWin"].toBool(false);
+            // "modOrder" chỉ có trong hồ sơ lưu từ v1.19.7 trở đi - THẮNG TUYỆT ĐỐI nếu mâu thuẫn 4 bool ở
+            // trên (tệp sửa tay). THIẾU key này (hồ sơ cũ) thì giữ modOrder RỖNG - effectiveModOrder() tự
+            // suy luận lại đúng thứ tự cố định Ctrl→Alt→Shift→Win từ 4 bool vừa đọc, hành vi y hệt trước đây.
+            if (actObj["modOrder"].isArray())
+            {
+                std::vector<ModifierKey> order;
+                for (const auto& v : actObj["modOrder"].toArray())
+                {
+                    ModifierKey mk;
+                    if (stringToModifierKey(v.toString(), mk) &&
+                        std::find(order.begin(), order.end(), mk) == order.end()) // khử trùng (tệp sửa tay)
+                        order.push_back(mk);
+                }
+                action.setModifiers(order);
+            }
+            action.hotkeyTrigger = static_cast<HotkeyTrigger>(clampInt(actObj["hotkeyTrigger"].toInt(0), 0, 2));
 
             action.scrollDirection = static_cast<ScrollDirection>(clampInt(actObj["scrollDirection"].toInt(0), 0, 3));
             action.scrollAmount = actObj["scrollAmount"].toInt(5);

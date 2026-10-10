@@ -20,6 +20,22 @@ QPoint nativeCursorPos()
         return QPoint(pt.x, pt.y);
     return QCursor::pos();
 }
+
+// Cùng mẫu với DragGestureCapture: hook bàn phím toàn cục TẠM THỜI, chỉ sống trong lúc overlay đang mở,
+// chỉ nuốt đúng phím Esc - không ảnh hưởng gì tới phím khác hay hook khác đang chạy trong cùng tiến trình.
+CoordinateOverlay* g_instance = nullptr;
+
+LRESULT CALLBACK keyboardProc(int nCode, WPARAM wParam, LPARAM lParam)
+{
+    if (nCode == HC_ACTION && g_instance)
+    {
+        const auto* data = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
+        const bool pressed = (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN);
+        if (!(data->flags & LLKHF_INJECTED) && g_instance->onRawKey(static_cast<int>(data->vkCode), pressed))
+            return 1;
+    }
+    return CallNextHookEx(nullptr, nCode, wParam, lParam);
+}
 }
 
 CoordinateOverlay::CoordinateOverlay(QWidget* parent)
@@ -40,6 +56,62 @@ CoordinateOverlay::CoordinateOverlay(QWidget* parent)
     m_currentPos = nativeCursorPos();
     m_localPos = mapFromGlobal(QCursor::pos());
     setFocusPolicy(Qt::StrongFocus);
+    installEscapeHook();
+}
+
+CoordinateOverlay::~CoordinateOverlay()
+{
+    uninstallEscapeHook();
+}
+
+void CoordinateOverlay::installEscapeHook()
+{
+    g_instance = this;
+    m_keyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, keyboardProc, GetModuleHandleW(nullptr), 0);
+    if (!m_keyboardHook)
+        g_instance = nullptr; // không cài được - vẫn còn keyPressEvent() dự phòng
+}
+
+void CoordinateOverlay::uninstallEscapeHook()
+{
+    if (m_keyboardHook)
+    {
+        UnhookWindowsHookEx(static_cast<HHOOK>(m_keyboardHook));
+        m_keyboardHook = nullptr;
+    }
+    if (g_instance == this)
+        g_instance = nullptr;
+}
+
+bool CoordinateOverlay::onRawKey(int vkCode, bool pressed)
+{
+    if (vkCode != VK_ESCAPE || !pressed)
+        return false;
+    // Phát QUA HÀNG ĐỢI sự kiện: có thể đang chạy BÊN TRONG callback hook bàn phím - không nên đóng
+    // cửa sổ/emit signal khi Windows còn đang chờ callback trả về (cùng lý do đã ghi trong
+    // DragGestureCapture::cancelCapture()).
+    QMetaObject::invokeMethod(this, &CoordinateOverlay::requestCancel, Qt::QueuedConnection);
+    return true;
+}
+
+void CoordinateOverlay::requestCancel()
+{
+    if (m_finished)
+        return;
+    m_finished = true;
+    uninstallEscapeHook();
+    emit captureCancelled();
+    close(); // WA_DeleteOnClose đã đặt trong constructor
+}
+
+void CoordinateOverlay::requestCapture(int x, int y)
+{
+    if (m_finished)
+        return;
+    m_finished = true;
+    uninstallEscapeHook();
+    emit pointCaptured(x, y);
+    close();
 }
 
 void CoordinateOverlay::mouseMoveEvent(QMouseEvent* event)
@@ -54,18 +126,16 @@ void CoordinateOverlay::mousePressEvent(QMouseEvent* event)
     if (event->button() == Qt::LeftButton)
     {
         QPoint pt = nativeCursorPos();
-        emit pointCaptured(pt.x(), pt.y());
-        close();
+        requestCapture(pt.x(), pt.y());
     }
 }
 
 void CoordinateOverlay::keyPressEvent(QKeyEvent* event)
 {
+    // Lớp dự phòng nếu hook toàn cục cài thất bại (Windows từ chối) - bình thường ESC đã được hook ở
+    // trên xử lý trước khi tới đây.
     if (event->key() == Qt::Key_Escape)
-    {
-        emit captureCancelled();
-        close();
-    }
+        requestCancel();
 }
 
 void CoordinateOverlay::paintEvent(QPaintEvent* /*event*/)
