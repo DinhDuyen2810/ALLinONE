@@ -5,6 +5,7 @@
 #include "engine/CategoryRegistry.h"
 #include "engine/CleanupExecutor.h"
 #include "engine/DiskSpaceInfo.h"
+#include "ui/widgets/FlowLayout.h"
 
 #include <QCheckBox>
 #include <QColor>
@@ -79,9 +80,7 @@ void CleanupTab::buildUi()
     root->addWidget(overviewLabel);
 
     m_driveOverview = new QWidget(this);
-    m_driveOverviewLayout = new QHBoxLayout(m_driveOverview);
-    m_driveOverviewLayout->setContentsMargins(0, 0, 0, 0);
-    m_driveOverviewLayout->setSpacing(10);
+    m_driveOverviewLayout = new FlowLayout(m_driveOverview, 0, 10, 10);
     root->addWidget(m_driveOverview);
 
     auto* catLabel = new QLabel("HẠNG MỤC DỌN DẸP", this);
@@ -155,6 +154,9 @@ void CleanupTab::reloadDriveOverview()
     for (const DriveSpaceInfo& d : DiskSpaceInfo::listDrives())
     {
         auto* card = new QWidget(m_driveOverview);
+        // FlowLayout định kích thước mỗi thẻ theo sizeHint() của nó - QProgressBar co giãn ngang theo
+        // mặc định nên sizeHint() của card một mình sẽ rất hẹp nếu không ấn định độ rộng rõ ràng.
+        card->setFixedWidth(220);
         card->setStyleSheet("background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 10px;");
         auto* layout = new QVBoxLayout(card);
         layout->setContentsMargins(14, 10, 14, 10);
@@ -183,7 +185,6 @@ void CleanupTab::reloadDriveOverview()
 
         m_driveOverviewLayout->addWidget(card);
     }
-    m_driveOverviewLayout->addStretch();
 }
 
 void CleanupTab::onScanClicked()

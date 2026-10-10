@@ -6,8 +6,8 @@
 #include "engine/CleanupScanner.h"
 
 class CleanupExecutor;
+class FlowLayout;
 class QCheckBox;
-class QHBoxLayout;
 class QLabel;
 class QProgressBar;
 class QPushButton;
@@ -56,7 +56,10 @@ private:
     CleanupExecutor* m_executor{nullptr};
 
     QWidget* m_driveOverview{nullptr};
-    QHBoxLayout* m_driveOverviewLayout{nullptr};
+    // Số thẻ đổi theo số ổ đã mount trên máy (ổ vật lý + ổ ảo như Google Drive for Desktop) - không giới
+    // hạn trước được, nên dùng FlowLayout tự xuống dòng thay vì QHBoxLayout (cắt mất thẻ ngoài tầm nhìn
+    // khi nhiều ổ, xem CLAUDE.md mục 5 / PROJECT_OVERVIEW.md mục 4r, v1.19.4).
+    FlowLayout* m_driveOverviewLayout{nullptr};
 
     QTableWidget* m_table{nullptr}; // hàng = hạng mục: [checkbox][Tên][Rủi ro][Số mục][Dung lượng]
     QPushButton* m_scanBtn{nullptr};

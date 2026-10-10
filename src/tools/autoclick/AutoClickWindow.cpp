@@ -210,8 +210,12 @@ void AutoClickWindow::setupUi()
 {
     setWindowTitle("One for ALL - Auto Click Module");
     setWindowIcon(IconHelper::makeBadgedIcon(":/icons/autoclicker.jpg", 48, 10, 4));
-    resize(1050, 650);
-    setMinimumSize(850, 520);
+    // Kích thước mặc định/tối thiểu phải đủ cho CẢ BA panel của splitter bên dưới cùng lúc (panel phải
+    // "Cài đặt hành động" tự tính minimumWidth theo trang rộng nhất của nó - xem ActionEditorWidget -
+    // panel giữa cần đủ cho 6 cột bảng không phải cuộn ngang ở kích thước mặc định). Trước đây 1050x650
+    // không đủ, panel phải bị cắt mất (xem CLAUDE.md mục 5 / PROJECT_OVERVIEW.md mục 4r, v1.19.4).
+    resize(1250, 680);
+    setMinimumSize(1000, 560);
     setStyleSheet(
         "QWidget { background-color: #f6f8fa; color: #1f2328; font-family: 'Segoe UI', sans-serif; }"
         "QScrollBar:horizontal { height: 0px; background: transparent; }"
@@ -270,8 +274,10 @@ void AutoClickWindow::setupUi()
     m_actionListWidget = new ActionListWidget(m_splitter);
     m_actionListWidget->setMinimumWidth(320);
 
+    // KHÔNG ép setMinimumWidth() cố định ở đây - ActionEditorWidget tự tính minimumWidth đủ cho trang rộng
+    // nhất của chính nó trong setupUi() (panel này chủ ý không cho cuộn ngang, một con số đoán mò ở đây
+    // trước kia (220) nhỏ hơn nội dung thực tế và cắt mất phần bên phải, xem CLAUDE.md mục 5/README v1.19.4).
     m_actionEditorWidget = new ActionEditorWidget(m_splitter);
-    m_actionEditorWidget->setMinimumWidth(220);
 
     m_splitter->addWidget(m_chainListWidget);
     m_splitter->addWidget(m_actionListWidget);

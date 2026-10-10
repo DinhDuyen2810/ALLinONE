@@ -1501,6 +1501,104 @@ chạy thẳng vào trình cài đặt. Đã kiểm tra THẬT trên máy đó t
 Việc nên làm tiếp (duy trì, không phải sửa thêm): giữ nguyên các yếu tố metadata đã thêm ở trên cho mọi
 bản phát hành sau - xem rule mới trong `CLAUDE.md`.
 
+## 4s. Rà lỗi giao diện ghi đè/cắt mất khi nhiều dữ liệu + nút không hoạt động (2026-10-10, v1.19.4)
+
+Yêu cầu người dùng, kèm ảnh chụp Auto Click thật cho thấy panel "Cài đặt hành động" bị cắt mất bên phải:
+"sửa lỗi giao diện, tương đương sửa hết các lỗi giao diện có trong các tiện ích". Sau đó mở rộng: "đảm bảo
+toàn bộ giao diện ko lỗi ghi đè, phải tính đến trường hợp khó nhất, ví dụ 2 ổ đĩa và 4 gmail thì nó có đủ
+chỗ không" (người dùng dùng Google Drive for Desktop mount nhiều tài khoản Gmail thành ổ đĩa ảo - tổng 6 ổ
+hiển thị trong Disk Cleanup), và "trong phần tải về có các nút không hoạt động".
+
+**Đã sửa - Auto Click (`AutoClickWindow.cpp`, `widgets/ActionEditorWidget.cpp`, `widgets/ActionListWidget.cpp`)**:
+- Panel phải "Cài đặt hành động" dùng `QScrollArea` CHỦ Ý tắt cuộn ngang, nhưng bị ép
+  `setMinimumWidth(220)` ở `AutoClickWindow.cpp` - nhỏ hơn nội dung thật (trang "Kéo chuột" có 2 hàng tọa
+  độ, mỗi hàng 2 `QSpinBox` + nút "Lấy tọa độ"), nên phần dư bị cắt mất không cách nào xem được (xác nhận
+  bằng ảnh chụp thật người dùng gửi). Sửa: `ActionEditorWidget` tự đo `sizeHint()` của TRANG RỘNG NHẤT
+  trong 7 trang (trước khi add vào `QStackedWidget`) rồi tự `setMinimumWidth()` cho chính nó - không còn
+  số đoán mò, không "giật" kích thước khi đổi loại hành động.
+- Cột "Mô tả" trong bảng `ActionListWidget` (duy nhất `Stretch`) bị bóp gần về 0 khi panel phải cần nhiều
+  chỗ hơn, elide chỉ còn 1 ký tự. Sửa: `setMinimumSectionSize(70)` cho header + bật lại
+  `Qt::ScrollBarAsNeeded` cho cuộn ngang (trước đó tắt hẳn) - không bao giờ mất hẳn nội dung, có thể cuộn
+  khi cần.
+- Kích thước cửa sổ mặc định `1050x650`/tối thiểu `850x520` không đủ cho cả 3 panel cộng lại sau 2 thay
+  đổi trên - tăng lên `1250x680`/`1000x560`.
+- **Đã xác nhận THẬT bằng ảnh chụp** (không chỉ tin code): dựng script PowerShell dùng UI Automation
+  (`System.Windows.Automation`) tự mở app, điều hướng sidebar, bấm "Mở Cửa Sổ", rồi chụp cửa sổ đó qua
+  Win32 `PrintWindow` (API `CopyFromScreen`/`BitBlt` thường dùng thất bại trong phiên làm việc này - "The
+  handle is invalid" - môi trường không có desktop session tương tác đầy đủ để chụp màn hình trực tiếp).
+  Trước/sau khi sửa đều có ảnh đối chiếu.
+
+**Đã sửa - Disk Cleanup (nguyên nhân chính gây "2 ổ đĩa + 4 gmail không đủ chỗ")**: dãy thẻ "DUNG LƯỢNG Ổ
+ĐĨA" (`CleanupTab::reloadDriveOverview()`) dùng `QHBoxLayout` thẳng, KHÔNG giới hạn số thẻ
+(`DiskSpaceInfo::listDrives()` liệt kê MỌI ổ đã mount qua `QStorageInfo::mountedVolumes()` - ổ vật lý VÀ ổ
+ảo như Google Drive for Desktop), không có `QScrollArea` bọc ngoài - máy có từ 4-5 ổ trở lên (rất thường
+gặp khi dùng Google Drive nhiều tài khoản) sẽ có thẻ bị đẩy ra ngoài tầm nhìn, không cách nào xem được.
+Sửa bằng `FlowLayout` mới (xem dưới) thay cho `QHBoxLayout` - thẻ tự xuống dòng. **Đã xác nhận THẬT**: máy
+build chỉ có 2 ổ đĩa thật (C/D) + 1 ổ ảo Google Drive (G: - xác nhận chính máy này cũng có dùng Google
+Drive for Desktop, khớp with bối cảnh người dùng nêu), KHÔNG đủ để tái hiện "6 ổ" - tạm thời nhân bản danh
+sách ổ đĩa x3 (9 thẻ) CHỈ để chụp ảnh kiểm chứng, build, chụp (xác nhận: 9 thẻ tự xếp lưới 3×3 gọn gàng,
+không cắt/không cần cuộn), rồi revert đoạn nhân bản trước khi build bản thật.
+
+**Mới - `src/ui/widgets/FlowLayout.{h,cpp}` (thư viện CMake `ui_widgets` dùng chung)**: layout tự xuống
+dòng khi hết chỗ ngang, phỏng theo mẫu "Flow Layout" chính thức của Qt (Qt Examples/Widgets/Layouts/
+FlowLayout). Dùng cho dãy widget có SỐ LƯỢNG đổi theo dữ liệu thật (thẻ ổ đĩa) hoặc dãy nút cố định nhưng
+nhiều hơn một hàng vừa ở kích thước cửa sổ thường dùng. Áp dụng thêm cho:
+- **WiFi Connection** (`NetworksTab.cpp`): 7 nút full-text ("🔄 Quét lại" ... "💜 Love WiFi") trên một
+  `QHBoxLayout` không cuộn - đổi sang `FlowLayout`. Ở kích thước cửa sổ mặc định hiện tại vẫn vừa đủ một
+  hàng (xác nhận bằng ảnh), nhưng không còn rủi ro cắt mất nút khi DPI/font khác làm 7 nút rộng hơn.
+
+**Đã sửa - lỗi CHỨC NĂNG thật ở Downloader (khớp "trong phần tải về có các nút không hoạt động")**:
+`DirectDownloadTab::onTableContextMenu()` (tab "Tải trực tiếp") trước đây dựa thẳng vào
+`m_table->selectionModel()->selectedRows()` - bấm CHUỘT PHẢI thẳng vào một hàng CHƯA được chọn trước đó
+(trường hợp thường gặp nhất, không cần bấm trái chọn hàng rồi mới bấm phải) không tự đổi selection của
+`QTableWidget`, nên `selectedRows()` rỗng, hàm `return` ngay - KHÔNG hiện menu "Bắt đầu/Tiếp tục - Tạm
+dừng - Hủy" nào cả, im lặng hoàn toàn. Người dùng sẽ thấy giống hệt "nút không hoạt động" dù thực ra menu
+chưa từng hiện ra. Sửa: tự `m_table->rowAt(pos.y())` + `selectRow()` trước khi build menu, giống hành vi
+chuẩn của Windows Explorer.
+
+**Đã rà, XÁC NHẬN KHÔNG có vấn đề (ảnh chụp thật ở kích thước cửa sổ mặc định, không cần sửa)**: Android
+Phone Control (3 nút hàng đầu `DevicesTab`), QR Tools (cả tab "Tạo mã QR" và "Quét mã QR"). Một agent rà
+soát riêng (chỉ đọc code, không sửa) đã ước lượng các tool này "có khả năng" bị cắt dựa trên tính toán
+pixel - kiểm tra lại bằng ảnh chụp thật cho thấy ước lượng đó quá thận trọng, không có vấn đề thật.
+
+**Cải thiện kèm theo (không phải lỗi riêng lẻ, rà toàn dự án)**: không file `*UiStyle.h` nào trong 8 module
+đặt `placeholder-text-color` cho QSS của `QLineEdit`/`QComboBox`/`QSpinBox`/`QPlainTextEdit` - Qt dùng màu
+mặc định theo theme hệ thống, có thể có độ tương phản thấp hơn cần thiết trên nền trắng `#ffffff` đã chọn.
+Thêm `placeholder-text-color: #8c959f` (cùng tông xám đã dùng nhất quán cho text phụ/disabled trong toàn
+dự án) vào cả 8 file `*UiStyle.h` + 2 chỗ style riêng không dùng chung (`CommandGatewayTab.cpp`,
+`ActionEditorWidget.cpp`) - rà bằng `grep -rn setPlaceholderText src/` xác nhận phủ đủ cả 13 chỗ dùng
+placeholder trong dự án.
+
+**CHƯA xác định được - nghi vấn hiển thị ở `PairingTab` (Connect Together), ĐÃ GHI NHẬN TỪ v1.2.0 (mục 8,
+dòng "Còn 1 nghi vấn hiển thị nhỏ... chỉ thấy qua ảnh chụp tự động")**: ô "Địa chỉ IP"/"Mã ghép đôi" trong
+tab "Ghép đôi" hiện chữ như bị nhòe/ghosting khi chụp qua script tự động hóa - **đã thử nhiều cách chẩn
+đoán trong đợt này, không giải quyết được**:
+- Thêm `placeholder-text-color` (xem trên) - KHÔNG đổi gì, vẫn nhòe y hệt.
+- Thay `PrintWindow` flag `2` (`PW_RENDERFULLCONTENT`) bằng `0` - vẫn nhòe y hệt (chỉ khác viền cửa sổ
+  theme cổ điển do thiếu DWM frame).
+- Đợi thêm 5 giây + `InvalidateRect`/`UpdateWindow` ép vẽ lại trước khi chụp (loại trừ khả năng đang
+  re-layout/animation lúc mới mở) - vẫn nhòe y hệt.
+- Set TEXT THẬT (`setText("TEST-DEBUG-1234")`, không phải placeholder) vào `m_addressEdit` - CŨNG bị nhòe
+  y hệt, loại trừ hoàn toàn khả năng liên quan tới placeholder/màu sắc. Đã revert đoạn test này.
+- Trong CÙNG các ảnh chụp đó, mọi `QLabel`/`QComboBox`/`QSpinBox` khác (kể cả "IP: 42.113.162.72" ở VPN &
+  Location, placeholder "Dán lệnh PowerShell..." ở Security Gateway cùng dùng `placeholder-text-color` mới
+  sửa) đều hiển thị HOÀN TOÀN RÕ NÉT - loại trừ khả năng đây là giới hạn chung của việc chụp ảnh qua
+  `PrintWindow`/độ phân giải ảnh nói chung. Hiện tượng CHỈ xảy ra ở đúng 2 ô này.
+- Việc hiện tượng này giữ NGUYÊN qua rất nhiều phiên bản (từ v1.2.0 tới v1.19.4, hàng chục lần sửa code
+  không liên quan tới `PairingTab`) là một tín hiệu đáng chú ý - nếu là lỗi mã nguồn ngẫu nhiên, khả năng
+  nó biến mất/đổi dạng qua ngần ấy lần build thường cao hơn nhiều so với một artifact ổn định của riêng
+  công cụ chụp ảnh tự động hóa từ xa dùng trong các lần rà soát này.
+- **KHÔNG kết luận đây là lỗi ứng dụng thật** - chỉ ghi nhận hiện tượng quan sát được qua công cụ tự động,
+  CHƯA xác nhận được bằng mắt thường người dùng khi ngồi trực tiếp trước máy (CLAUDE.md mục 2: điều gì
+  không kiểm chứng được thì ghi rõ CHƯA kiểm chứng). Không sửa gì thêm ở đây vì không xác định được
+  nguyên nhân cụ thể để sửa đúng chỗ - sửa đoán mò có nguy cơ che giấu triệu chứng mà không giải quyết gốc
+  rễ (nếu gốc rễ là thật) hoặc chỉ tốn công vô ích (nếu là artifact môi trường).
+
+**Đã xác nhận THẬT bằng toàn bộ 11 bộ test liên quan** (không chỉ tin biên dịch): `autoclick_tests` (100),
+`diskcleanup_tests` (457), `diskcleanup_ui_tests` (53), `wifi_tests` (119), `wifi_ui_tests` (90),
+`connect_tests` (1080), `connect_ui_tests` (13), `security_tests` (333), `security_ui_tests` (6),
+`downloader_tests` (283), `downloader_ui_tests` (20) - tổng 2554 kiểm tra, 0 lỗi.
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
@@ -1651,6 +1749,7 @@ Quy tắc đứng nằm ở `CLAUDE.md` (gốc dự án). Tóm tắt - mỗi l�
 | 2026-10-09 | Rà soát độc lập lần hai + stress test (v1.19.1) | Năm người đọc độc lập rà lại từng nhóm công cụ và viết năm bộ stress/fuzz mới (`core`, `qrwifi`, `connect`, `disk_vpn`, `secdl`) - chi tiết ở mục 4p. Lỗi nặng nhất tìm thêm: Disk Cleanup xóa nhầm tệp bên cạnh khi tên có dấu chấm/khoảng trắng cuối hoặc ký tự đại diện; `CommandAnalyzer` treo với lệnh dài (regex bậc hai) và báo "An toàn" sai với ký tự UTF-16 hỏng; Connect Together hai máy cùng nhập mã cho nhau giữ hai khóa khác nhau; Downloader báo "Hoàn tất" với tệp cụt; WiFi ghi đè nhầm hồ sơ khi SSID có ký tự điều khiển; `AppPaths` xóa nhầm tệp đang dùng với đường dẫn tương đối/8.3/junction; phím dừng Ctrl+Alt+F8 không đăng ký được khi bị chương trình khác giữ (thêm tổ hợp dự phòng). Xóa `NEW_SESSION_SETUP.md` (ghi chú bàn giao phiên cũ, đã thay bằng `CLAUDE.md`). Build sạch toàn bộ trên máy rảnh: 18 bộ test thường **2967 kiểm tra, 0 lỗi**; 5 bộ stress đều pass - `core_stress_tests` 525/0 (95 s), `qrwifi_stress_tests` 759.893/0 (290 s), `disk_vpn_stress_tests` 7320/0 (162 s), `secdl_stress_tests` 1.876.772/0 (123 s), `connect_stress_tests` 386/0 (135 s). |
 | 2026-10-09 | Hoàn thiện mục dang dở + dọn rác (v1.19.2) | Sau khi khởi động lại máy: xác nhận hai tiến trình PowerShell kẹt đã mất, dọn ~1,4 GB rác của các lượt test (thư mục tạm, 2.409 tệp test trong Thùng rác). Hoàn thiện danh sách còn dang dở của 4p - chi tiết ở mục 4q: Connect Together suy khóa ở luồng nền + trần khung sau xác thực + báo lỗi lưu; `PowerShellRunner` dừng cả tiến trình cháu; `Logger` tự mở lại; `adb pair` bất đồng bộ; Disk Cleanup nhận ra junction tới thư mục được bảo vệ + kiểm lại tuổi tệp lúc xóa; hai lỗi VPN; hosts giữ kiểu xuống dòng từng dòng; lịch sử QR gộp giữa hai bản ứng dụng + thử lại khi ghi; test không còn để sót thư mục tạm (`tests/TestDataDir.h`). Build sạch toàn bộ sau khi khởi động lại máy: 18 bộ test thường **3217 kiểm tra, 0 lỗi**; 5 bộ stress đều pass - `core_stress_tests` 550/0, `qrwifi_stress_tests` 759.439/0, `disk_vpn_stress_tests` 7320/0, `secdl_stress_tests` 1.875.637/0, `connect_stress_tests` 386/0. |
 | 2026-10-09 | SignPath từ chối - rà giảm rủi ro bị gắn cờ + metadata Win32 (v1.19.3) | SignPath Foundation từ chối cấp chứng chỉ (lý do: chưa đủ tín hiệu uy tín công khai, không phải chất lượng code) - chi tiết, nguyên văn lý do và hướng tiếp theo (Microsoft Store miễn phí là lựa chọn chính) ở mục 4r. Theo yêu cầu người dùng "rà mã nguồn đảm bảo không bị block": làm rõ trước là cảnh báo SmartScreen không nằm trong mã nguồn và không sửa code xóa được. Phần sửa được thật: thêm `VERSIONINFO` (Company/Product/Version/Copyright/Description) cho `OneForAll.exe` (trước đó RỖNG HOÀN TOÀN - xác nhận thật qua `VersionInfo` trước/sau khi sửa), cho `OneForAll_Setup.exe` và thuộc tính ARP của `OneForAll_Setup.msi`. Lỗi thật gặp khi viết: dùng tên `VS_VERSION_INFO` làm ID tài nguyên mà không `#include <winver.h>` khiến windres hiểu nhầm thành resource TÊN thay vì ID số 1, biên dịch không báo lỗi nhưng `GetFileVersionInfo` không tìm thấy gì - sửa bằng ID số `1` trực tiếp. Rà xác nhận KHÔNG có registry tự khởi động/cài service/bỏ qua UAC. Có chủ đích KHÔNG đổi cách gọi PowerShell hay các mẫu trong `CommandAnalyzer` để né AV - đó là evasion, ngoài ranh giới cho phép. Quét Defender thật trên `dist\` sau build: sạch. Build lại toàn bộ: 18 bộ test thường **3213 kiểm tra, 0 lỗi**. |
+| 2026-10-10 | Rà lỗi giao diện ghi đè/cắt mất + nút không hoạt động (v1.19.4) | Chi tiết đầy đủ ở mục 4s. Sửa panel "Cài đặt hành động" của Auto Click bị cắt mất (ảnh chụp thật người dùng gửi) + cột "Mô tả" bị bóp quá hẹp. Thêm `FlowLayout` dùng chung (`src/ui/widgets/`, lib `ui_widgets`) - áp dụng cho dãy thẻ ổ đĩa Disk Cleanup (không còn giới hạn/cắt mất khi máy có nhiều ổ, kể cả ổ ảo Google Drive) và 7 nút WiFi NetworksTab. Sửa lỗi CHỨC NĂNG thật: Downloader "Tải trực tiếp" - chuột phải vào hàng chưa chọn không hiện menu Bắt đầu/Tạm dừng/Hủy (trông như "nút không hoạt động"). Rà xác nhận KHÔNG có vấn đề ở Android Phone Control, QR Tools (ảnh chụp thật). Thêm `placeholder-text-color` cho 8 module (contrast tốt hơn, không phải fix cho nghi vấn PairingTab). Ghi nhận CHƯA giải quyết được nghi vấn hiển thị nhòe ở `PairingTab` đã biết từ v1.2.0 - thử 4 cách chẩn đoán khác nhau đều không đổi gì, nghiêng về khả năng là đặc điểm công cụ chụp ảnh tự động hơn là lỗi code, nhưng KHÔNG kết luận chắc. 11 bộ test liên quan: 2554 kiểm tra, 0 lỗi. |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `

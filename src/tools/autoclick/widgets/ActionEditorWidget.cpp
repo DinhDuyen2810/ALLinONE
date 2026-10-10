@@ -6,6 +6,7 @@
 #include <QGroupBox>
 #include <QHideEvent>
 #include <QScrollArea>
+#include <algorithm>
 
 // Miền tọa độ của các ô X/Y: toàn bộ màn hình ảo Windows (tọa độ 16-bit có dấu). Trước đây là ±10000 - ba
 // màn hình 4K đặt ngang đã rộng 11520 px (ứng dụng chạy Per-Monitor DPI nên đây là pixel vật lý), tọa độ
@@ -123,15 +124,32 @@ void ActionEditorWidget::setupUi()
 
     connect(m_typeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &ActionEditorWidget::onTypeChanged);
 
-    // Stacked widget for action pages
+    // Stacked widget for action pages. Đo sizeHint() của TỪNG trang TRƯỚC khi add vào QStackedWidget (vẫn
+    // hợp lệ dù chưa add - sizeHint tính từ layout riêng của mỗi trang) để lấy trang rộng nhất (thường là
+    // "Kéo chuột": 2 hàng tọa độ, mỗi hàng 2 SpinBox + nút "Lấy tọa độ") làm minimumWidth cho CẢ panel -
+    // tránh set cố định một con số đoán mò rồi bị cắt mất khi nội dung thực tế rộng hơn (xem comment ở
+    // scrollArea->setHorizontalScrollBarPolicy bên trên: panel này CHỦ Ý không cho cuộn ngang, nên phải
+    // luôn đủ rộng cho trang rộng nhất, không được hẹp hơn).
+    QWidget* clickPage = createClickPage();
+    QWidget* dragPage = createDragPage();
+    QWidget* holdPage = createHoldPage();
+    QWidget* textPage = createTextPage();
+    QWidget* hotkeyPage = createHotkeyPage();
+    QWidget* keyPressPage = createKeyPressPage();
+    QWidget* scrollPage = createScrollPage();
+
+    int widestPageWidth = 0;
+    for (QWidget* page : {clickPage, dragPage, holdPage, textPage, hotkeyPage, keyPressPage, scrollPage})
+        widestPageWidth = std::max(widestPageWidth, page->sizeHint().width());
+
     m_pagesStack = new QStackedWidget(this);
-    m_pagesStack->addWidget(createClickPage());
-    m_pagesStack->addWidget(createDragPage());
-    m_pagesStack->addWidget(createHoldPage());
-    m_pagesStack->addWidget(createTextPage());
-    m_pagesStack->addWidget(createHotkeyPage());
-    m_pagesStack->addWidget(createKeyPressPage());
-    m_pagesStack->addWidget(createScrollPage());
+    m_pagesStack->addWidget(clickPage);
+    m_pagesStack->addWidget(dragPage);
+    m_pagesStack->addWidget(holdPage);
+    m_pagesStack->addWidget(textPage);
+    m_pagesStack->addWidget(hotkeyPage);
+    m_pagesStack->addWidget(keyPressPage);
+    m_pagesStack->addWidget(scrollPage);
     contentLayout->addWidget(m_pagesStack);
 
     // Common Timing Group
@@ -168,6 +186,12 @@ void ActionEditorWidget::setupUi()
 
     contentLayout->addWidget(timingGroup);
     contentLayout->addStretch();
+
+    // Panel KHÔNG được cuộn ngang (chủ ý, xem scrollArea->setHorizontalScrollBarPolicy ở trên) nên phải
+    // tự đủ rộng cho nội dung rộng nhất - cộng margin hai bên của mainLayout+contentLayout (8+8+0+4) và
+    // chỗ cho thanh cuộn dọc (luôn xuất hiện vì danh sách field dài hơn khung nhìn) + đệm an toàn.
+    const int widestContentWidth = std::max(widestPageWidth, timingGroup->sizeHint().width());
+    setMinimumWidth(widestContentWidth + 20 /*margins*/ + 18 /*thanh cuộn dọc*/ + 12 /*đệm an toàn*/);
 
     scrollArea->setWidget(scrollContent);
     mainLayout->addWidget(scrollArea, 1);
@@ -393,7 +417,7 @@ QWidget* ActionEditorWidget::createTextPage()
 
     m_textEdit = new QLineEdit(w);
     m_textEdit->setPlaceholderText("Nhập văn bản cần gõ...");
-    m_textEdit->setStyleSheet("background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 6px 10px; font-size: 12px;");
+    m_textEdit->setStyleSheet("background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 6px 10px; font-size: 12px; placeholder-text-color: #8c959f;");
     layout->addRow("Văn bản:", m_textEdit);
 
     m_textModeCombo = new QComboBox(w);

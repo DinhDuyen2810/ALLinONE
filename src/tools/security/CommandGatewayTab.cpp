@@ -40,7 +40,8 @@ void CommandGatewayTab::buildUi()
     m_commandEdit->setPlaceholderText("Dán lệnh PowerShell vào đây...");
     m_commandEdit->setStyleSheet(
         "QPlainTextEdit { background-color: #ffffff; color: #1f2328; border: 1px solid #d0d7de; "
-        "border-radius: 8px; padding: 8px; font-family: Consolas, monospace; font-size: 12px; }");
+        "border-radius: 8px; padding: 8px; font-family: Consolas, monospace; font-size: 12px; "
+        "placeholder-text-color: #8c959f; }");
     m_commandEdit->setMinimumHeight(140);
     connect(m_commandEdit, &QPlainTextEdit::textChanged, this, &CommandGatewayTab::onTextChanged);
     root->addWidget(m_commandEdit, 1);

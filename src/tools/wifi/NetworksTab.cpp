@@ -3,6 +3,7 @@
 #include "ConnectDialog.h"
 #include "WifiUiStyle.h"
 #include "engine/ConnectionWatcher.h"
+#include "ui/widgets/FlowLayout.h"
 
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -79,8 +80,9 @@ void NetworksTab::buildUi()
     m_banner->setText("Chưa kết nối WiFi nào.");
     root->addWidget(m_banner);
 
-    auto* bar = new QHBoxLayout();
-    bar->setSpacing(8);
+    // 7 nút full-text không rút gọn - có thể vượt chiều rộng cửa sổ kể cả ở kích thước mặc định (đã xác
+    // nhận thật bằng ảnh chụp ở DPI 125%). FlowLayout tự xuống dòng thay vì cắt mất nút ngoài tầm nhìn.
+    auto* bar = new FlowLayout(nullptr, 0, 8, 8);
     m_scanBtn = new QPushButton("🔄 Quét lại", this);
     m_connectBtn = new QPushButton("🔗 Kết nối", this);
     m_newPasswordBtn = new QPushButton("🔑 Mật khẩu khác...", this);
@@ -103,7 +105,6 @@ void NetworksTab::buildUi()
     m_forgetBtn->setEnabled(false);
     m_loveBtn->setEnabled(false);
     m_loveBtn->setToolTip("Chọn một mạng để bày tỏ tình cảm 💜");
-    bar->addStretch();
     root->addLayout(bar);
 
     connect(m_scanBtn, &QPushButton::clicked, this, &NetworksTab::onScanClicked);

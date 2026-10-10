@@ -235,10 +235,14 @@ void DirectDownloadTab::onStartAllClicked()
 
 void DirectDownloadTab::onTableContextMenu(const QPoint& pos)
 {
-    const auto rows = m_table->selectionModel() ? m_table->selectionModel()->selectedRows() : QModelIndexList();
-    if (rows.isEmpty())
+    // Bấm chuột phải thẳng vào một hàng CHƯA được chọn trước đó (trường hợp thường gặp nhất - người dùng
+    // không cần bấm trái chọn hàng rồi mới bấm phải) không tự đổi selection của QTableWidget - trước đây
+    // dựa thẳng vào selectedRows() nên gặp đúng trường hợp này sẽ rỗng, hàm return ngay, KHÔNG hiện menu
+    // gì cả: trông như "Tạm dừng/Hủy/Tiếp tục" không hoạt động trong khi thực ra menu chưa từng hiện ra.
+    const int row = m_table->rowAt(pos.y());
+    if (row < 0)
         return;
-    const int row = rows.first().row();
+    m_table->selectRow(row);
 
     int targetId = -1;
     for (auto it = m_idToRow.constBegin(); it != m_idToRow.constEnd(); ++it)

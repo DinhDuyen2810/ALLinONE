@@ -32,7 +32,7 @@ inline QString dangerButtonStyle()
 
 inline QString inputStyle()
 {
-    return "QLineEdit, QComboBox, QSpinBox { background-color: #ffffff; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 6px 8px; font-size: 12px; }"
+    return "QLineEdit, QComboBox, QSpinBox { background-color: #ffffff; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 6px 8px; font-size: 12px; placeholder-text-color: #8c959f; }"
            "QLineEdit:focus, QComboBox:focus, QSpinBox:focus { border-color: #0969da; }"
            "QComboBox QAbstractItemView { background-color: #ffffff; color: #1f2328; selection-background-color: #0969da; selection-color: #ffffff; }";
 }

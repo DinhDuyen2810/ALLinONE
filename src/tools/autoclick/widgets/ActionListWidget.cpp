@@ -71,7 +71,12 @@ ActionListWidget::ActionListWidget(QWidget* parent)
     m_table->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
     m_table->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
     m_table->horizontalHeader()->setStretchLastSection(false);
-    m_table->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    // Cột "Mô tả" (Stretch) có thể bị bóp gần về 0 khi panel giữa hẹp lại (vd khi panel "Cài đặt hành
+    // động" bên phải cần nhiều chỗ hơn) - ElideRight khi đó chỉ còn hiện "C..." không đọc được gì. Đặt
+    // sàn tối thiểu cho MỌI cột + bật lại thanh cuộn ngang khi cần, để luôn có cách xem đủ nội dung thay
+    // vì mất hẳn không hồi phục được.
+    m_table->horizontalHeader()->setMinimumSectionSize(70);
+    m_table->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     m_table->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     m_table->setTextElideMode(Qt::ElideRight);
     m_table->setWordWrap(false);

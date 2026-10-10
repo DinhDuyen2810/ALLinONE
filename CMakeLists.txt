@@ -66,6 +66,16 @@ add_library(input_core STATIC
 target_include_directories(input_core PUBLIC src)
 target_link_libraries(input_core PUBLIC Qt6::Core user32)
 
+# ---- FlowLayout dùng chung: dãy widget con tự xuống dòng khi hết chỗ ngang thay vì bị Qt cắt mất ngoài
+# tầm nhìn - dùng cho dãy có SỐ LƯỢNG đổi theo dữ liệu thật (thẻ ổ đĩa Disk Cleanup) và dãy nút cố định
+# nhưng nhiều hơn một hàng vừa ở kích thước cửa sổ thường dùng (WiFi NetworksTab). Xem CLAUDE.md mục 5.
+add_library(ui_widgets STATIC
+    src/ui/widgets/FlowLayout.h
+    src/ui/widgets/FlowLayout.cpp
+)
+target_include_directories(ui_widgets PUBLIC src)
+target_link_libraries(ui_widgets PUBLIC Qt6::Widgets)
+
 # ---- Lõi QR (không phụ thuộc widget) + thư viện bên thứ ba ----
 add_library(qr_core STATIC
     src/tools/qr/QRCodec.h
@@ -153,7 +163,7 @@ add_library(wifi_ui STATIC
     src/tools/wifi/WifiWindow.cpp
 )
 target_include_directories(wifi_ui PUBLIC src)
-target_link_libraries(wifi_ui PUBLIC wifi_core Qt6::Widgets Qt6::Network wlanapi core_shared)
+target_link_libraries(wifi_ui PUBLIC wifi_core Qt6::Widgets Qt6::Network wlanapi core_shared ui_widgets)
 
 # ---- Kiểm thử "khói" UI WiFi: cmake --build build --target wifi_ui_tests ----
 add_executable(wifi_ui_tests EXCLUDE_FROM_ALL tests/wifi_ui_tests.cpp)
@@ -267,7 +277,7 @@ add_library(diskcleanup_ui STATIC
     src/tools/diskcleanup/DiskCleanupWindow.cpp
 )
 target_include_directories(diskcleanup_ui PUBLIC src)
-target_link_libraries(diskcleanup_ui PUBLIC diskcleanup_core Qt6::Widgets)
+target_link_libraries(diskcleanup_ui PUBLIC diskcleanup_core Qt6::Widgets ui_widgets)
 
 # ---- Kiểm thử "khói" UI Disk Cleanup: cmake --build build --target diskcleanup_ui_tests ----
 # PartitionTab.cpp gọi ToolManager::instance() (chặn "chạy lại với quyền Admin" nếu tool khác đang bận
