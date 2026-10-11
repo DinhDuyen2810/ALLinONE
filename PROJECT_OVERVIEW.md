@@ -1851,6 +1851,73 @@ bản cập nhật THẬT kích hoạt (cần một bản phát hành mới hơn
 code + build sạch ở đây); con trỏ ngón tay thật trên menu; thao tác ghim lên + kéo-thả đổi thứ tự chuỗi bằng
 chuột thật.
 
+## 4x. Sửa lỗi tự cập nhật thất bại ngẫu nhiên, ExitCode=1 (2026-10-11, v1.19.9)
+
+Người dùng báo (kèm ảnh chụp 2 hộp thoại: "Cập nhật lần trước thất bại - ExitCode=1" và "Có bản cập nhật
+mới" hiện ra cùng lúc khi mở lại app): tải 100% để cập nhật "lúc thì cập nhật lên ok lúc thì không", yêu
+cầu xem lại và fix rõ lỗi.
+
+**Tìm nguyên nhân thật qua đọc code** (đúng CLAUDE.md mục 2 - không đoán, không chỉ tăng timeout/retry mù
+quáng mà không hiểu vì sao): 3 mảnh ghép cho ra lời giải chính xác.
+1. `src/main.cpp`: `CreateMutexW(nullptr, FALSE, L"OneForAllRunningMutex")` - comment tại chỗ gọi xác nhận
+   rõ ràng: mutex này **KHÔNG dùng để chặn chạy nhiều bản sao cùng lúc**, chỉ để Inno Setup/Restart Manager
+   phát hiện ứng dụng đang chạy. Nghĩa là người dùng HOÀN TOÀN có thể có 2+ cửa sổ/tiến trình OneForAll.exe
+   chạy song song (vd mở lại từ Start Menu trong khi bản cũ vẫn đang chạy nền) - xác nhận thêm bằng grep
+   toàn bộ `src/`: không có `QLocalServer`/`QSharedMemory`/cơ chế single-instance nào khác.
+2. `installer/OneForAll.iss`: `AppMutex=OneForAllRunningMutex` khớp tên ở trên - Inno Setup dùng mutex này
+   để phát hiện "ứng dụng đang chạy" ở bước khởi tạo (`InitializeSetup`), TRƯỚC CẢ khi bắt đầu cài thật.
+3. `UpdateInstaller::buildHelperScript()` gọi Setup với `/CLOSEAPPLICATIONS` (nhờ Restart Manager đóng ứng
+   dụng đang giữ tệp) nhưng **KHÔNG** có `/FORCECLOSEAPPLICATIONS`; đồng thời `UpdateInstaller.h` tự ghi rõ
+   "ứng dụng này không đăng ký [RegisterApplicationRestart]" - nghĩa là Restart Manager không có cách nào
+   đóng ÊM một bản sao OneForAll.exe khác (app không trả lời tín hiệu RM yêu cầu đóng), và vì thiếu cờ ép
+   buộc nên Inno Setup **tự hủy cài đặt ngay ở bước khởi tạo** khi vẫn thấy AppMutex - đây CHÍNH XÁC là
+   exit code 1 "Setup failed to initialize" theo tài liệu Inno Setup, khớp 100% với ảnh chụp người dùng gửi.
+
+Giải thích đúng "lúc được lúc không": chỉ xảy ra khi, tại đúng thời điểm `Wait-Process` xác nhận PID chính
+đã thoát, người dùng VẪN CÒN một bản sao OneForAll.exe KHÁC đang chạy (cửa sổ khác, hoặc instance còn sót
+từ một thao tác trước) - hoàn toàn ngẫu nhiên theo thói quen sử dụng của người dùng tại thời điểm đó, không
+liên quan gì tới mạng/đĩa/cấu hình máy.
+
+**Đã sửa (`UpdateInstaller::buildHelperScript`)**: SAU bước `Wait-Process`/`Start-Sleep 1500ms` hiện có,
+thêm vòng `while` chờ TỐI ĐA 30 giây, mỗi giây dùng `Get-Process -ErrorAction SilentlyContinue |
+Where-Object { $_.Path -eq <đường dẫn exe chính xác> }` để kiểm tra còn bản sao nào khác đang chạy không -
+thoát vòng ngay khi không còn. **CỐ Ý không thêm `/FORCECLOSEAPPLICATIONS`**: ép buộc đóng một cửa sổ khác
+mà người dùng có thể đang thao tác dở (vd đang chạy một chuỗi Auto Click, một phiên Connect Together) là
+không an toàn - cùng triết lý đã có sẵn với `ToolManager::anyToolWindowBusy()` (chặn tự cập nhật nếu CHÍNH
+tiến trình đang có thao tác không an toàn để hủy giữa chừng). Nếu hết 30 giây mà bản sao khác vẫn còn, vẫn
+tiến hành thử cài đặt như bình thường (không chặn vô thời hạn) - thêm **vòng thử lại tối đa 5 lần** (mỗi
+lần cách nhau 1.5 giây) nếu `ExitCode` không phải 0/3010, dự phòng phần dư của race còn sót (vd bản sao
+khác thoát ĐÚNG lúc Setup đang kiểm tra AppMutex). Tổng thời gian chờ thêm tối đa trong trường hợp xấu nhất
+(~30s chờ bản sao khác + ~7.5s thử lại) vẫn nằm trong khuôn khổ hợp lý của một tiến trình chạy ẩn, tách rời
+khỏi ứng dụng đã thoát.
+
+**Sửa thêm theo góp ý UX của người dùng** ("tải 100% tức là sẵn sàng rồi, phải mở được ngay"): hộp thoại
+tiến độ ở `MainWindow.cpp` đổi chữ thành "Đang cài đặt bản mới và tự khởi động lại - có thể mất vài giây,
+vui lòng không thao tác..." thay vì chỉ "Đang tự khởi động lại..." (nghe như tức thì). Về mặt kiến trúc,
+bước CÀI ĐẶT THẬT (chạy Setup.exe) bắt buộc phải diễn ra SAU KHI ứng dụng đã thoát hẳn (không thể tự ghi
+đè file .exe đang chạy của chính nó) - nên không có cách nào hiện thanh tiến trình LIVE cho bước này từ
+chính cửa sổ sắp đóng; cách khả thi duy nhất là đặt đúng kỳ vọng bằng chữ trước khi thoát.
+
+**Phát hiện và sửa luôn 1 lỗi pre-existing trong bộ test** (không phải do đợt sửa lần này gây ra - đã xác
+nhận lỗi này xuất hiện giống hệt ở MỌI lượt chạy `core_stress_tests` trước đó trong toàn bộ phiên làm việc,
+kể cả trước khi đụng tới `UpdateInstaller.cpp`): fuzz test `UpdateInstaller::buildHelperScript` trong
+`core_stress_tests.cpp` so sánh script sinh ra với một "đường cơ sở" (số câu lệnh, tên lệnh) HARDCODE viết
+tay từ v1.19.5 - đã lạc hậu từ lâu (script thật đã có thêm nhiều lệnh `Log(...)` từ v1.19.5 mà baseline
+hardcode "5 câu lệnh" chưa từng cập nhật theo). Sửa bằng cách thêm 2 ca "sạch" (đường dẫn bình thường,
+không fuzz) vào đầu danh sách ca kiểm thử, dùng kết quả phân tích cú pháp THẬT của 2 ca đó làm đường cơ sở
+ĐỘNG để so sánh với mọi ca fuzz còn lại theo đúng loại cài đặt (Inno/Msi) - không còn lạc hậu mỗi khi
+`buildHelperScript()` đổi cấu trúc trong tương lai.
+
+**Đã xác nhận**: build thành công; 95/95 test (`update_tests`, +6 test mới xác nhận có `Get-Process`/
+`Where-Object`/vòng `for` thử lại đúng vị trí, không có `/FORCECLOSEAPPLICATIONS`); `core_stress_tests`
+**551/551 pass sạch hoàn toàn** - lần đầu tiên trong suốt phiên làm việc không còn lỗi nào ở BẤT KỲ phần
+nào, bao gồm cả phần `buildHelperScript` trước đây luôn fail 2 lỗi ở mọi lượt chạy.
+
+**CHƯA xác nhận được bằng một lần cập nhật THẬT** trên máy có 2 bản sao OneForAll.exe chạy cùng lúc (cần
+dựng kịch bản thật: mở 2 cửa sổ, kích hoạt cập nhật, xác nhận vòng chờ hoạt động và cài đặt thành công) -
+chỉ sửa dựa trên phân tích code + đúng mã lỗi ExitCode=1 người dùng cung cấp qua ảnh chụp, khớp chính xác
+với ý nghĩa "Setup failed to initialize" của Inno Setup khi AppMutex còn bị giữ bởi bản sao khác.
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
@@ -2006,6 +2073,7 @@ Quy tắc đứng nằm ở `CLAUDE.md` (gốc dự án). Tóm tắt - mỗi l�
 | 2026-10-10 | setup.exe không hỏi đường dẫn cài đặt (v1.19.6) | Chi tiết đầy đủ ở mục 4u. Xác nhận thật nguyên nhân bằng cách tự cài rồi chạy lại installer: Inno Setup mặc định (`UsePreviousAppDir=yes`) tự động nhớ cài đặt trước (cùng AppId), bỏ qua cả trang "Chọn Chế độ Cài đặt" lẫn trang chọn thư mục kể cả ở chế độ tương tác - xác nhận bằng cách gỡ sạch rồi cài lại (trang "Chọn Chế độ" xuất hiện đúng như thiết kế). Sửa bằng `DisableDirPage=no` tường minh trong `installer/OneForAll.iss` - không đổi `UsePreviousAppDir` để không phá cơ chế tự cập nhật silent (mục 4t) vốn cần tự cài đúng vào vị trí cũ. Chưa xác nhận được bằng automation rằng trang chọn thư mục thực sự hiện lại sau khi sửa - đã thử 3 cách tự động hóa UI (UIA InvokePattern, input injection chuột, PostMessage) đều không click được vào control tùy biến kiểu Delphi/VCL của Inno Setup Modern Wizard - giới hạn công cụ, không phải dấu hiệu sai. |
 | 2026-10-10 | Auto Click: hiện đại hóa UI + tổ hợp phím có thứ tự (v1.19.7) | Chi tiết đầy đủ ở mục 4v. 8 điểm từ ảnh chụp thật người dùng gửi: menu chuột phải hiện đại + icon 👆 dùng chung (`ModernMenu`, áp dụng cả Downloader); bỏ viền focus xấu trong bảng hành động; Esc hủy capture tọa độ qua hook `WH_KEYBOARD_LL` thay vì `keyPressEvent` không đáng tin; ô Timing đổi sang `DurationInput` (số + đơn vị ms/s/m/h) dùng chung; trang "Kéo chuột" chỉ còn nút bắt thật; tổ hợp phím hiện số thứ tự đã bấm + tự dồn khi bỏ chọn giữa (field `modOrder` mới, `effectiveModOrder()` tự suy luận cho hồ sơ JSON cũ không vỡ tương thích); đổi tên "Phím tắt"→"Tổ hợp phím" + thêm "Kết thúc bằng" Cuộn chuột/Click chuột (vd Ctrl+Cuộn = zoom); HUD tự quay về vị trí gốc khi hết va chạm. 109/109 test (+9 mới), `core_stress_tests` không hồi quy ở phần Auto Click. Chưa xác nhận được bằng ảnh chụp tự động trang "Tổ hợp phím" mới và menu mới - popup `QComboBox`/`QMenu` là cửa sổ riêng, 3 cách UI Automation thử đều không đổi/chụp được nó trong môi trường này; đã xác nhận qua code review + unit test, cần tự xem bằng mắt thường. |
 | 2026-10-11 | Auto Click: dọn giao diện chính + con trỏ ngón tay + sửa đơn vị thời gian (v1.19.8) | Chi tiết đầy đủ ở mục 4w. 6 điểm tiếp theo từ ảnh chụp thật: thông báo "Đang tự khởi động lại..." trước khi thoát để cập nhật (trễ 1.5s, vẫn trong hạn 60s của tiến trình trợ giúp); menu chuột phải đổi CON TRỎ CHUỘT thành ngón tay trỏ thay vì icon 👆 vẽ trên từng dòng (v1.19.7 không đúng ý); bỏ nút Dừng + nhãn Trạng thái ở cửa sổ chính (trùng minibox/đã có cảnh báo lỗi riêng); `ChainListWidget` bỏ nút Nhân bản/Xóa dưới danh sách + "Chạy chuỗi này" trong chuột phải (trùng chức năng), thêm "Ghim lên"/"Bỏ ghim" (đưa lên đầu + nhãn 📌, không ép giữ mãi trên cùng) và kéo-thả đổi thứ tự chuỗi; `ActionListWidget` bỏ "Sửa" trong chuột phải (không có tác dụng gì khác click chọn hàng) + nút Nhân bản/Xóa dưới bảng; bỏ icon mũi tên ▾ trên MỌI QComboBox toàn bộ 9 công cụ (`ComboBoxStyle::noArrow()` mới); `DurationInput` đổi đơn vị không còn quy đổi số hiển thị (trước đây "500"→"0.5" khi chọn giây, giờ số giữ nguyên, chỉ đổi ý nghĩa đơn vị). 121/121 test (+12 mới), `core_stress_tests` 547/549 pass, phần Auto Click (76/76) không hồi quy - 2 lỗi còn lại thuộc `UpdateInstaller::buildHelperScript`, có từ trước v1.19.7, không liên quan đợt sửa này. Chưa xác nhận bằng mắt thường: thông báo restart khi có bản cập nhật thật, con trỏ ngón tay thật, ghim/kéo-thả chuột thật. |
+| 2026-10-11 | Sửa lỗi tự cập nhật thất bại ngẫu nhiên, ExitCode=1 (v1.19.9) | Chi tiết đầy đủ ở mục 4x. Người dùng báo kèm ảnh chụp "Cập nhật lần trước thất bại - ExitCode=1", tải 100% lúc cập nhật được lúc không. Nguyên nhân thật tìm qua đọc code (không đoán): app cố ý không giới hạn 1 bản sao (`CreateMutexW` trong main.cpp) + Inno Setup dùng cùng tên mutex (`AppMutex=OneForAllRunningMutex`) để phát hiện app đang chạy ở bước khởi tạo + `/CLOSEAPPLICATIONS` không có `/FORCECLOSEAPPLICATIONS` trong khi app chưa đăng ký Restart Manager -> không đóng êm được một cửa sổ OneForAll.exe KHÁC đang chạy -> Setup tự hủy ngay, đúng ExitCode=1 "Setup failed to initialize". Sửa `buildHelperScript`: thêm vòng chờ tối đa 30s (Get-Process/Where-Object theo đường dẫn exe) cho bản sao khác tự thoát (không ép đóng - không an toàn với thao tác người dùng đang dở ở cửa sổ khác) + thử lại cài đặt tối đa 5 lần nếu vẫn lỗi. Sửa chữ hộp thoại theo góp ý UX người dùng (không ngụ ý 100% tải = xong ngay). Phát hiện và sửa luôn 1 lỗi pre-existing trong fuzz test buildHelperScript (baseline hardcode lạc hậu từ v1.19.5 - đổi sang so sánh động). 95/95 test (+6 mới); core_stress_tests 551/551 pass sạch hoàn toàn - lần đầu tiên trong phiên không còn lỗi nào. Chưa xác nhận bằng một lần cập nhật thật trên máy có 2 bản sao chạy cùng lúc. |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `

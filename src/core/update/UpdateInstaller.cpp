@@ -265,25 +265,56 @@ QString buildHelperScript(UpdateInstaller::InstallKind kind, const QString& inst
     // NGAY lúc Wait-Process trả về - Inno Setup kiểm tra Mutex đó ngay sau, thấy "còn" là tự hủy cài đặt
     // trong im lặng (/SUPPRESSMSGBOXES không báo gì). Tăng lên 1500ms cho an toàn hơn.
     script += "Start-Sleep -Milliseconds 1500\n";
+
+    // NGUYÊN NHÂN THẬT của "lúc cập nhật được lúc không, ExitCode=1" (người dùng báo, v1.19.8): ứng dụng
+    // CỐ Ý không giới hạn một bản sao (xem comment CreateMutexW trong main.cpp) - người dùng có thể đang
+    // mở MỘT CỬA SỔ KHÁC của chính OneForAll.exe (PID khác PID vừa chờ ở trên). AppMutex vẫn bị bản sao đó
+    // giữ; Inno Setup nhận cờ /CLOSEAPPLICATIONS nhưng ứng dụng này KHÔNG đăng ký Restart Manager (xem
+    // UpdateInstaller.h) nên Inno không đóng được nó bằng cách êm - không có /FORCECLOSEAPPLICATIONS (cố
+    // ý không thêm: ép đóng một cửa sổ khác người dùng có thể đang thao tác dở là không an toàn, cùng lý
+    // do đã có ToolManager::anyToolWindowBusy() cho chính tiến trình này) nên Setup tự hủy ngay ở bước
+    // khởi tạo, trả ExitCode=1 ("Setup failed to initialize"). Thay vì ép đóng, CHỜ các bản sao khác (nếu
+    // có) tự thoát trong tối đa 30 giây - an toàn, không mất dữ liệu người dùng đang thao tác ở đó.
+    script += QString("$appExeForCheck = %1\n").arg(q(appExePath));
+    script += "Log 'Kiem tra con ban sao OneForAll.exe khac dang chay (ung dung khong gioi han 1 ban sao)...'\n";
+    script += "$otherDeadline = (Get-Date).AddSeconds(30)\n";
+    script += "while ((Get-Date) -lt $otherDeadline) {\n";
+    script += "  $others = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $appExeForCheck })\n";
+    script += "  if ($others.Count -eq 0) { break }\n";
+    script += "  Log \"Con $($others.Count) ban sao OneForAll.exe khac dang chay - cho them...\"\n";
+    script += "  Start-Sleep -Milliseconds 1000\n";
+    script += "}\n";
     script += "Log 'Bat dau chay trinh cai dat...'\n";
 
+    QString runInstallerLine;
     if (kind == UpdateInstaller::InstallKind::Msi)
     {
         // msiexec nhận đường dẫn gói trong dấu nháy KÉP của chính nó; /qn: không giao diện; /norestart:
         // không tự khởi động lại MÁY. MajorUpgrade trong Product.wxs tự gỡ bản cũ.
         const QString msiNative = QDir::toNativeSeparators(installerPath);
-        script += QString("$p = Start-Process -FilePath %1 -ArgumentList @('/i', %2, '/qn', '/norestart') -Wait -PassThru\n")
-                      .arg(q(AppPaths::systemExecutable("msiexec.exe")),
-                           "'\"" + PowerShellRunner::quoteLiteral(msiNative) + "\"'");
+        runInstallerLine = QString("  $p = Start-Process -FilePath %1 -ArgumentList @('/i', %2, '/qn', '/norestart') -Wait -PassThru\n")
+                               .arg(q(AppPaths::systemExecutable("msiexec.exe")),
+                                    "'\"" + PowerShellRunner::quoteLiteral(msiNative) + "\"'");
     }
     else
     {
         // /VERYSILENT: không hiện wizard. /SUPPRESSMSGBOXES: không hỏi gì giữa chừng. /NORESTART: không
         // tự khởi động lại MÁY. /CLOSEAPPLICATIONS: nhờ Restart Manager đóng một bản sao KHÁC của ứng
-        // dụng (nếu người dùng mở nhiều cửa sổ) đang giữ tệp.
-        script += QString("$p = Start-Process -FilePath %1 -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CLOSEAPPLICATIONS') -Wait -PassThru\n")
-                      .arg(q(installerPath));
+        // dụng (nếu người dùng mở nhiều cửa sổ) đang giữ tệp - xem vòng chờ ở trên, đây chỉ còn là lớp
+        // dự phòng cho trường hợp bản sao khác thoát đúng lúc giữa vòng chờ và lúc chạy installer.
+        runInstallerLine = QString("  $p = Start-Process -FilePath %1 -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CLOSEAPPLICATIONS') -Wait -PassThru\n")
+                               .arg(q(installerPath));
     }
+
+    // Thử lại tối đa 5 lần nếu trình cài đặt báo lỗi: dự phòng phần dư của race AppMutex/bản sao khác dù
+    // đã chờ ở trên (vd bản sao khác thoát ĐÚNG lúc Setup đang kiểm tra), không tốn kém vì Setup tự hủy ở
+    // bước khởi tạo gần như ngay lập tức khi gặp lỗi này - không chạm vào hệ thống.
+    script += "for ($i = 1; $i -le 5; $i++) {\n";
+    script += runInstallerLine;
+    script += "  if ($p.ExitCode -eq 0 -or $p.ExitCode -eq 3010) { break }\n";
+    script += "  Log \"Lan $i that bai, ExitCode=$($p.ExitCode) - thu lai...\"\n";
+    script += "  Start-Sleep -Milliseconds 1500\n";
+    script += "}\n";
 
     // Exit code 0 = thành công; 3010 = thành công nhưng cần khởi động lại MÁY (hiếm khi xảy ra với app
     // này, không có file hệ thống bị khóa) - mọi giá trị khác coi là thất bại, để lại dấu vết cho ứng

@@ -238,6 +238,21 @@ int main(int argc, char** argv)
         CHECK(exe.contains("Start-Sleep -Milliseconds 1500")); // tăng từ 500ms - race condition AppMutex
         CHECK(exe.contains("ExitCode -ne 0 -and"));
         CHECK(exe.indexOf("Remove-Item $markerPath") < exe.indexOf("Wait-Process")); // xóa dấu vết CŨ trước khi chạy lại
+
+        // v1.19.9: chờ các BẢN SAO KHÁC của chính ứng dụng tự thoát (app không giới hạn 1 bản sao - xem
+        // CreateMutexW trong main.cpp) trước khi chạy trình cài đặt - nguyên nhân thật của "cập nhật lúc
+        // được lúc không, ExitCode=1" người dùng báo (Inno Setup không đóng êm được một cửa sổ KHÁC chưa
+        // đăng ký Restart Manager). Chờ bằng Get-Process/Where-Object theo đúng đường dẫn exe, KHÔNG ép
+        // đóng (không dùng /FORCECLOSEAPPLICATIONS - ép đóng cửa sổ người dùng có thể đang thao tác dở là
+        // không an toàn).
+        CHECK(exe.contains("Get-Process"));
+        CHECK(exe.contains("Where-Object"));
+        CHECK(!exe.contains("FORCECLOSEAPPLICATIONS"));
+        CHECK(exe.indexOf("Get-Process") > exe.indexOf("Wait-Process")); // chờ PID chính thoát TRƯỚC
+
+        // Thử lại tối đa 5 lần nếu trình cài đặt báo lỗi - dự phòng phần dư của race dù đã chờ ở trên.
+        CHECK(exe.contains("for ($i = 1; $i -le 5; $i++)"));
+        CHECK(exe.indexOf("for (") < exe.indexOf("VERYSILENT")); // vòng thử lại BAO quanh lệnh chạy installer
     }
 
     // ---- quoteLiteral: nhân đôi cả ' ASCII lẫn 4 biến thể Unicode mà PowerShell coi là dấu nháy đơn ----

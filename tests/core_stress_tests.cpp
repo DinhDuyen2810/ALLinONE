@@ -1389,6 +1389,17 @@ void fuzzHelperScript()
         QString script;
     };
     std::vector<Case> cases;
+    // 2 ca "sạch" (đường dẫn bình thường, không fuzz) đặt NGAY ĐẦU - dùng làm đường cơ sở ĐÚNG cho số câu
+    // lệnh/tên lệnh THẬT SỰ của script hiện tại, thay vì hardcode một con số/chuỗi cố định (dễ lệch mỗi
+    // khi buildHelperScript() đổi cấu trúc - đã xảy ra thật, xem v1.19.8: thêm vòng chờ bản sao khác +
+    // vòng thử lại). Mọi ca fuzz bên dưới so sánh với ĐÚNG đường cơ sở theo kind của nó, không phải một
+    // chuỗi viết tay có thể lạc hậu.
+    cases.push_back({K::InnoSetup, "C:/Temp/OneForAll_Update/OneForAll_Setup.exe", "C:/Apps/One for ALL/OneForAll.exe", 4321, {}});
+    cases.push_back({K::Msi, "C:/Temp/OneForAll_Update/OneForAll_Setup.msi", "C:/Apps/One for ALL/OneForAll.exe", 4321, {}});
+    for (size_t i = 0; i < 2; ++i)
+        cases[i].script = buildHelperScript(cases[i].kind, cases[i].installer, cases[i].appExe, cases[i].pid);
+    const size_t baselineInno = 0, baselineMsi = 1;
+
     const auto randomDir = [&]() {
         QString path = "C:";
         const int depth = rnd(1, 4);
@@ -1456,6 +1467,19 @@ void fuzzHelperScript()
     CHECK(lines.size() == static_cast<qsizetype>(cases.size()));
 
     const auto b64 = [](const QString& s) { return QString::fromLatin1(s.toUtf8().toBase64()); };
+
+    // Đường cơ sở ĐÚNG lấy từ chính 2 ca sạch (không hardcode) - xem comment lúc tạo cases[baselineInno]/
+    // cases[baselineMsi] ở trên.
+    QString expectedStatementsInno, expectedCommandsInno, expectedStatementsMsi, expectedCommandsMsi;
+    {
+        const QStringList innoFields = lines[static_cast<qsizetype>(baselineInno)].split('|');
+        const QStringList msiFields = lines[static_cast<qsizetype>(baselineMsi)].split('|');
+        CHECK(innoFields.size() == 4 && innoFields[0] == "0");
+        CHECK(msiFields.size() == 4 && msiFields[0] == "0");
+        if (innoFields.size() == 4) { expectedStatementsInno = innoFields[1]; expectedCommandsInno = innoFields[2]; }
+        if (msiFields.size() == 4) { expectedStatementsMsi = msiFields[1]; expectedCommandsMsi = msiFields[2]; }
+    }
+
     int syntaxErrors = 0, wrongStatements = 0, wrongCommands = 0, wrongStrings = 0;
     for (size_t i = 0; i < cases.size() && static_cast<qsizetype>(i) < lines.size(); ++i)
     {
@@ -1468,9 +1492,10 @@ void fuzzHelperScript()
         }
         bool caseBad = false;
         if (fields[0] != "0") { ++syntaxErrors; caseBad = true; }
-        // Đúng 5 câu lệnh: gán $ErrorActionPreference, Wait-Process, Start-Sleep, $p = Start-Process, Start-Process.
-        if (fields[1] != "5") { ++wrongStatements; caseBad = true; }
-        if (fields[2] != "Wait-Process,Start-Sleep,Start-Process,Start-Process") { ++wrongCommands; caseBad = true; }
+        const QString& expectedStatements = (c.kind == K::Msi) ? expectedStatementsMsi : expectedStatementsInno;
+        const QString& expectedCommands = (c.kind == K::Msi) ? expectedCommandsMsi : expectedCommandsInno;
+        if (fields[1] != expectedStatements) { ++wrongStatements; caseBad = true; }
+        if (fields[2] != expectedCommands) { ++wrongCommands; caseBad = true; }
 
         // Mọi đường dẫn phải nằm NGUYÊN VẸN trong đúng một hằng chuỗi.
         const QStringList strings = fields[3].split(',');

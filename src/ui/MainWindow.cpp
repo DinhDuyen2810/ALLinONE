@@ -426,7 +426,12 @@ void MainWindow::onUpdateAvailable(UpdateInfo info)
         // sắp tự tắt rồi mở lại, dễ hiểu nhầm là treo/crash nếu thấy tiến trình biến mất đột ngột. Tiến
         // trình trợ giúp chờ tới 60 giây cho đúng PID này thoát (xem UpdateInstaller.h) nên còn dư thời
         // gian để hiện thông báo ngắn trước khi thoát thật.
-        progress->setLabelText("Đang tự khởi động lại, vui lòng không thao tác...");
+        //
+        // "Tải 100%" KHÔNG đồng nghĩa "đã cài xong" - bước cài đặt thật sự (chạy trình cài đặt) chỉ bắt
+        // đầu SAU KHI ứng dụng này thoát hẳn (không thể tự ghi đè file .exe đang chạy của chính nó), nên
+        // không có cách nào hiện tiến trình cài đặt thật trực tiếp trên cửa sổ này - đổi chữ rõ ràng hơn
+        // để người dùng không hiểu nhầm "đã xong, sắp mở ngay" (phản hồi người dùng, v1.19.9).
+        progress->setLabelText("Đang cài đặt bản mới và tự khởi động lại - có thể mất vài giây, vui lòng không thao tác...");
         progress->setCancelButton(nullptr);
         progress->setRange(0, 0);
         QTimer::singleShot(1500, progress, [progress]() {
