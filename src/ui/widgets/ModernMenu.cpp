@@ -15,10 +15,15 @@ void style(QMenu* menu)
         "QMenu::item:disabled { color: #8c959f; }"
         "QMenu::separator { height: 1px; background: #eaeef2; margin: 6px 8px; }"
     );
+    // Theo yêu cầu người dùng (v1.19.8): phân biệt mục bấm được bằng cách đổi CHÍNH CON TRỎ CHUỘT thành
+    // ngón tay trỏ khi di qua menu, không phải icon vẽ trong từng dòng (thử ở v1.19.7, người dùng phản
+    // hồi không đúng ý). QMenu tự vẽ các dòng bên trong (không phải widget con riêng) nên set cursor cho
+    // cả menu là đủ để áp dụng với mọi mục.
+    menu->setCursor(Qt::PointingHandCursor);
 }
 
 QAction* addAction(QMenu& menu, const QString& text)
 {
-    return menu.addAction(QString::fromUtf8("👆 ") + text);
+    return menu.addAction(text);
 }
 } // namespace ModernMenu

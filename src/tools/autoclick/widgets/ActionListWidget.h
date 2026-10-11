@@ -27,7 +27,6 @@ public:
 signals:
     void actionSelectionChanged(int index);
     void addActionClicked();
-    void editActionClicked(int index);
     void cloneActionClicked(int index);
     void deleteActionClicked(int index);
     /// Người dùng kéo-thả hàng từ vị trí `from` sang `to` (đã là chỉ số SAU khi kéo - nơi nhận tự làm
@@ -40,8 +39,6 @@ private slots:
 private:
     QTableWidget* m_table;
     QPushButton* m_addButton;
-    QPushButton* m_cloneButton;
-    QPushButton* m_deleteBtn;
     void refreshIndexCell(int row);
 
     int m_dirtyRow{-1};

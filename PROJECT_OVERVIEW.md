@@ -1778,6 +1778,79 @@ xác nhận bằng mắt thường trên máy thật: trang "Tổ hợp phím" (
 tự, sub-trang Cuộn/Click), menu chuột phải mới (bo góc/icon 👆), Esc hủy capture tọa độ, HUD tự về vị trí
 gốc, và tổ hợp phím Cuộn/Click chuột thực thi đúng khi chạy chuỗi thật.
 
+## 4w. Auto Click: dọn giao diện chính + con trỏ ngón tay + sửa đơn vị thời gian (2026-10-11, v1.19.8)
+
+Người dùng gửi thêm 2 ảnh chụp thật, phản hồi tiếp sau v1.19.7 với 6 điểm.
+
+**1. Thông báo trước khi tự khởi động lại sau cập nhật**: handler `UpdateInstaller::aboutToRestart` trong
+`MainWindow.cpp` trước đây đóng hộp thoại tiến độ và `qApp->quit()` ngay lập tức - không có gì báo cho
+người dùng biết ứng dụng sắp tự tắt rồi mở lại, dễ hiểu nhầm là treo/crash nếu thấy tiến trình biến mất đột
+ngột. Sửa: đổi nhãn hộp thoại thành "Đang tự khởi động lại, vui lòng không thao tác...", bỏ nút "Ẩn", chuyển
+thanh tiến trình sang dạng vô định, rồi `QTimer::singleShot(1500, ...)` mới thật sự đóng + thoát - vẫn nằm
+gọn trong hạn 60 giây mà tiến trình trợ giúp PowerShell chờ đúng PID này thoát (xem `UpdateInstaller.h`).
+
+**2. Menu chuột phải: con trỏ ngón tay thay vì icon trên từng dòng**: v1.19.7 thêm icon 👆 vào đầu mỗi dòng
+menu - người dùng phản hồi không đúng ý, họ muốn chính CON TRỎ CHUỘT đổi hình khi di qua menu (như đang bấm
+được), không phải icon vẽ trong nội dung dòng. `ModernMenu::style()` thêm `menu->setCursor(Qt::PointingHandCursor)`
+(QMenu tự vẽ các dòng bên trong, không phải widget con riêng, nên set cursor cho cả menu là đủ áp dụng mọi
+dòng); `ModernMenu::addAction()` bỏ hẳn tiền tố 👆. Áp dụng tự động cho toàn bộ context menu dùng chung 2 hàm
+này (`ChainListWidget`, `ActionListWidget`, `DirectDownloadTab`).
+
+**3+4. Dọn giao diện chính + thêm Ghim/kéo-thả chuỗi**: `AutoClickWindow` bỏ hẳn nút "■ Dừng lại (STOP)"
+(minibox `RuntimeOverlay` đã có nút Dừng riêng, nối cùng `onStopClicked()`) và nhãn "Trạng thái: ..." (lỗi
+nghiêm trọng đã có `QMessageBox::warning` riêng không phụ thuộc nhãn này, xác nhận qua grep: "Trạng thái"
+không xuất hiện ở bất kỳ widget con nào khác). `ChainListWidget`: bỏ nút Nhân bản/Xóa dưới danh sách (trùng
+chuột phải); chuột phải bỏ "Chạy chuỗi này" (chọn chuỗi rồi bấm RUN ở cửa sổ chính vẫn chạy đúng, không mất
+tính năng - signal `runChainClicked` xóa luôn), thêm "Ghim lên"/"Bỏ ghim" + kéo-thả đổi thứ tự
+(`ReorderableListWidget`, cùng khuôn `ReorderableTable` đã có trong `ActionListWidget`).
+
+Thiết kế "Ghim lên" CÓ CHỦ Ý không ép "luôn đứng trên mọi chuỗi chưa ghim" - nó là hành động "đưa lên đầu
+danh sách NGAY LÚC ghim" (dùng lại đúng phép dời một phần tử kiểu `std::rotate` của `onActionMoved()`) kèm
+nhãn ghi nhớ trực quan (tiền tố 📌), không phải ràng buộc sắp xếp tuyệt đối. Lý do: toàn bộ kiến trúc hiện
+tại coi chỉ số hàng hiển thị = chỉ số trong `std::vector<ActionChain> m_chains`, dùng xuyên suốt mọi signal/
+slot và cả `core_stress_tests`; ép một "nhóm luôn ở trên" đòi hỏi chặn/nắn lại kéo-thả và các đường thêm/
+nhân bản chuỗi mỗi khi chạm nhóm đã ghim - rủi ro hồi quy cao hơn nhiều so với lợi ích, trong khi nghĩa đen
+câu người dùng dùng ("ghim LÊN") đã khớp đúng với thiết kế đơn giản hơn này.
+
+`ActionChain` thêm field `bool pinned{false}` (ghi/đọc qua `ActionSerializer`, thiếu field = hồ sơ cũ = chưa
+ghim, tương thích ngược tự nhiên; `clone()` copy từng field thủ công nên phải thêm tay `copy.pinned = pinned`).
+
+`ActionListWidget`: bỏ "Sửa" trong chuột phải - xác nhận qua code, `onEditAction()` trước đây chỉ gọi
+`onActionSelected()`, Y HỆT việc click chọn hàng đã tự làm qua `actionSelectionChanged`, nên mục này không
+có tác dụng gì khác ngoài những gì click thường đã làm (xóa luôn `editActionClicked`/`onEditAction`). Bỏ nút
+Nhân bản/Xóa dưới bảng (trùng chuột phải), chỉ còn "+ Thêm hành động".
+
+**5. Bỏ icon mũi tên ▾ trên mọi QComboBox**: khảo sát phát hiện `QComboBox::drop-down { border: none; }`
+(đã dùng ở vài nơi) KHÔNG ẩn icon mũi tên - đó là sub-control `down-arrow` riêng, Qt vẫn tự vẽ. 8/9 công cụ
+dùng chung một hàm `inputStyle()` gần như giống hệt nhau trong `src/tools/<tool>/<Tool>UiStyle.h`; Auto Click
+(`ActionEditorWidget.cpp`, 9 combo lặp lại y hệt 1 chuỗi style - gom về 1 hằng cục bộ `kComboStyle` để tránh
+sửa sót) và `DurationInput.cpp` tự set stylesheet riêng. Tạo `src/ui/widgets/ComboBoxStyle.h` (header-only,
+theo đúng khuôn các `*UiStyle.h` hiện có) chứa `ComboBoxStyle::noArrow()`, nối vào CUỐI stylesheet hiện có ở
+cả 10 nơi - giữ nguyên màu/viền/bo góc đang có, chỉ thêm quy tắc ẩn mũi tên. Bấm vào bất kỳ đâu trên thân
+combo vẫn mở được danh sách như cũ (hành vi click mặc định của QComboBox không phụ thuộc icon mũi tên).
+
+**6. `DurationInput`: đổi đơn vị không còn quy đổi số hiển thị**: trước đây đổi combo đơn vị gọi lại
+`rebuildDisplay()` tính `setValue(m_valueMs / factor)` - số hiển thị bị quy đổi theo (vd gõ "500" ở ms, chọn
+"giây" thì tự đổi thành "0.5"), người dùng phản hồi không mong muốn. Thiết kế lại: bỏ hẳn `rebuildDisplay()`;
+`onUnitChanged()` không đụng tới `m_numberSpin` (số giữ nguyên tuyệt đối), chỉ tính lại `m_valueMs = số hiện
+tại × hệ số đơn vị mới` rồi phát `valueChanged` nếu đổi. `m_numberSpin->setDecimals(0)`/`setMaximum(m_maxMs)`
+cố định MỘT LẦN ở constructor, không còn đổi theo đơn vị (tránh Qt tự làm tròn/kẹp số đang gõ khi các hàm đó
+đổi theo đơn vị - nguồn quy đổi ẩn thứ hai). `setValueMs()` (nạp từ code, vd `ActionEditorWidget::setAction()`
+nạp lại hành động khác) vẫn là NGOẠI LỆ duy nhất: luôn ép đơn vị về ms + hiện đúng số mili-giây, vì đó là lúc
+TẢI dữ liệu từ model, không phải người dùng tự chọn đơn vị.
+
+**Đã xác nhận**: build thành công; 121/121 test (`autoclick_tests`, +12 test mới: `ActionChain::pinned`
+round-trip qua `clone()`/JSON kể cả đọc hồ sơ cũ thiếu field, và `DurationInput` giữ nguyên số khi đổi đơn vị
+qua 2 bước ms→giây→giờ kèm xác nhận giá trị thật bị kẹp đúng trần khi vượt mức); `core_stress_tests` 547/549
+pass, phần Auto Click (76/76, gồm fuzz 2 signal mới `togglePinClicked`/`chainMoved` với chỉ số ngoài miền
+tại đúng vị trí đã fuzz các signal chain khác) không hồi quy - 2 lỗi còn lại thuộc
+`UpdateInstaller::buildHelperScript` (đã tồn tại từ trước v1.19.7, không đụng tới file đó trong đợt sửa này).
+
+**CHƯA xác nhận được bằng mắt thường** (đúng tinh thần CLAUDE.md mục 2): thông báo tự khởi động lại khi có
+bản cập nhật THẬT kích hoạt (cần một bản phát hành mới hơn trên GitHub để trigger, chỉ xác nhận được qua đọc
+code + build sạch ở đây); con trỏ ngón tay thật trên menu; thao tác ghim lên + kéo-thả đổi thứ tự chuỗi bằng
+chuột thật.
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
@@ -1932,6 +2005,7 @@ Quy tắc đứng nằm ở `CLAUDE.md` (gốc dự án). Tóm tắt - mỗi l�
 | 2026-10-10 | Luồng tự cập nhật: không cài được sau khi tải + kiểm tra thủ công (v1.19.5) | Chi tiết đầy đủ ở mục 4t. Người dùng tự test: tải 100% nhưng không tự lên bản mới, mở lại lại hỏi cập nhật. Đã TỰ CÀI installer v1.19.3 thật từ GitHub Release + test cập nhật thật qua tự động hóa UI (21 giây, thành công hoàn toàn trong môi trường test - không tái hiện được lỗi) nhưng xác định được điểm yếu thật: helper script PowerShell chạy sau khi app thoát hoàn toàn "mù" - không log, không kiểm tra exit code trình cài đặt, Sleep 500ms sau Wait-Process có thể không đủ tránh race condition AppMutex khiến Inno Setup tự hủy cài đặt trong im lặng. Sửa: tăng Sleep lên 1500ms, helper script tự ghi log + đánh dấu lỗi (exit code) vào %TEMP%, `UpdateInstaller::consumePreviousUpdateFailure()` đọc dấu vết đó lúc khởi động và báo rõ ràng thay vì im lặng hỏi lại từ đầu. Thêm nút "Kiểm tra cập nhật" thủ công (UpdateChecker::checkNow() đã có sẵn nhưng chưa có UI gọi) - xác nhận thật bằng tự động hóa UI. Tự mở lại app sau cập nhật đã hoạt động đúng từ trước, không cần sửa. CLAUDE.md: đổi rule - từ nay LUÔN tag+push+release sau mỗi lần sửa, không cần hỏi lại. |
 | 2026-10-10 | setup.exe không hỏi đường dẫn cài đặt (v1.19.6) | Chi tiết đầy đủ ở mục 4u. Xác nhận thật nguyên nhân bằng cách tự cài rồi chạy lại installer: Inno Setup mặc định (`UsePreviousAppDir=yes`) tự động nhớ cài đặt trước (cùng AppId), bỏ qua cả trang "Chọn Chế độ Cài đặt" lẫn trang chọn thư mục kể cả ở chế độ tương tác - xác nhận bằng cách gỡ sạch rồi cài lại (trang "Chọn Chế độ" xuất hiện đúng như thiết kế). Sửa bằng `DisableDirPage=no` tường minh trong `installer/OneForAll.iss` - không đổi `UsePreviousAppDir` để không phá cơ chế tự cập nhật silent (mục 4t) vốn cần tự cài đúng vào vị trí cũ. Chưa xác nhận được bằng automation rằng trang chọn thư mục thực sự hiện lại sau khi sửa - đã thử 3 cách tự động hóa UI (UIA InvokePattern, input injection chuột, PostMessage) đều không click được vào control tùy biến kiểu Delphi/VCL của Inno Setup Modern Wizard - giới hạn công cụ, không phải dấu hiệu sai. |
 | 2026-10-10 | Auto Click: hiện đại hóa UI + tổ hợp phím có thứ tự (v1.19.7) | Chi tiết đầy đủ ở mục 4v. 8 điểm từ ảnh chụp thật người dùng gửi: menu chuột phải hiện đại + icon 👆 dùng chung (`ModernMenu`, áp dụng cả Downloader); bỏ viền focus xấu trong bảng hành động; Esc hủy capture tọa độ qua hook `WH_KEYBOARD_LL` thay vì `keyPressEvent` không đáng tin; ô Timing đổi sang `DurationInput` (số + đơn vị ms/s/m/h) dùng chung; trang "Kéo chuột" chỉ còn nút bắt thật; tổ hợp phím hiện số thứ tự đã bấm + tự dồn khi bỏ chọn giữa (field `modOrder` mới, `effectiveModOrder()` tự suy luận cho hồ sơ JSON cũ không vỡ tương thích); đổi tên "Phím tắt"→"Tổ hợp phím" + thêm "Kết thúc bằng" Cuộn chuột/Click chuột (vd Ctrl+Cuộn = zoom); HUD tự quay về vị trí gốc khi hết va chạm. 109/109 test (+9 mới), `core_stress_tests` không hồi quy ở phần Auto Click. Chưa xác nhận được bằng ảnh chụp tự động trang "Tổ hợp phím" mới và menu mới - popup `QComboBox`/`QMenu` là cửa sổ riêng, 3 cách UI Automation thử đều không đổi/chụp được nó trong môi trường này; đã xác nhận qua code review + unit test, cần tự xem bằng mắt thường. |
+| 2026-10-11 | Auto Click: dọn giao diện chính + con trỏ ngón tay + sửa đơn vị thời gian (v1.19.8) | Chi tiết đầy đủ ở mục 4w. 6 điểm tiếp theo từ ảnh chụp thật: thông báo "Đang tự khởi động lại..." trước khi thoát để cập nhật (trễ 1.5s, vẫn trong hạn 60s của tiến trình trợ giúp); menu chuột phải đổi CON TRỎ CHUỘT thành ngón tay trỏ thay vì icon 👆 vẽ trên từng dòng (v1.19.7 không đúng ý); bỏ nút Dừng + nhãn Trạng thái ở cửa sổ chính (trùng minibox/đã có cảnh báo lỗi riêng); `ChainListWidget` bỏ nút Nhân bản/Xóa dưới danh sách + "Chạy chuỗi này" trong chuột phải (trùng chức năng), thêm "Ghim lên"/"Bỏ ghim" (đưa lên đầu + nhãn 📌, không ép giữ mãi trên cùng) và kéo-thả đổi thứ tự chuỗi; `ActionListWidget` bỏ "Sửa" trong chuột phải (không có tác dụng gì khác click chọn hàng) + nút Nhân bản/Xóa dưới bảng; bỏ icon mũi tên ▾ trên MỌI QComboBox toàn bộ 9 công cụ (`ComboBoxStyle::noArrow()` mới); `DurationInput` đổi đơn vị không còn quy đổi số hiển thị (trước đây "500"→"0.5" khi chọn giây, giờ số giữ nguyên, chỉ đổi ý nghĩa đơn vị). 121/121 test (+12 mới), `core_stress_tests` 547/549 pass, phần Auto Click (76/76) không hồi quy - 2 lỗi còn lại thuộc `UpdateInstaller::buildHelperScript`, có từ trước v1.19.7, không liên quan đợt sửa này. Chưa xác nhận bằng mắt thường: thông báo restart khi có bản cập nhật thật, con trỏ ngón tay thật, ghim/kéo-thả chuột thật. |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `

@@ -1,4 +1,5 @@
 #include "ActionEditorWidget.h"
+#include "ui/widgets/ComboBoxStyle.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QFormLayout>
@@ -44,6 +45,12 @@ static const KeyInfo KEY_LIST[] = {
     {"P", 80}, {"Q", 81}, {"R", 82}, {"S", 83}, {"T", 84},
     {"U", 85}, {"V", 86}, {"W", 87}, {"X", 88}, {"Y", 89}, {"Z", 90}
 };
+
+// 9 combo trong file này đều lặp lại gần như y hệt 1 chuỗi style - dùng chung 1 hằng số để tránh sửa sót
+// khi cần đổi (vd thêm ComboBoxStyle::noArrow(), v1.19.8).
+static const QString kComboStyle =
+    QStringLiteral("background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 5px 8px; font-size: 12px;")
+    + ComboBoxStyle::noArrow();
 
 ActionEditorWidget::ActionEditorWidget(QWidget* parent)
     : QWidget(parent)
@@ -120,7 +127,7 @@ void ActionEditorWidget::setupUi()
     m_typeCombo->setStyleSheet(
         "QComboBox { background-color: #ffffff; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 6px 10px; font-size: 12px; }"
         "QComboBox:hover { border-color: #0969da; }"
-        "QComboBox::drop-down { border: none; }"
+        + ComboBoxStyle::noArrow()
     );
     typeLayout->addWidget(typeLabel);
     typeLayout->addWidget(m_typeCombo, 1);
@@ -311,7 +318,7 @@ QWidget* ActionEditorWidget::createClickPage()
 
     m_clickButtonCombo = new QComboBox(w);
     m_clickButtonCombo->addItems({"Trái", "Phải", "Giữa"});
-    m_clickButtonCombo->setStyleSheet("background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 5px 8px; font-size: 12px;");
+    m_clickButtonCombo->setStyleSheet(kComboStyle);
     layout->addRow("Nút:", m_clickButtonCombo);
 
     auto* posLayout = new QHBoxLayout();
@@ -406,7 +413,7 @@ QWidget* ActionEditorWidget::createHoldPage()
 
     m_holdButtonCombo = new QComboBox(w);
     m_holdButtonCombo->addItems({"Trái", "Phải", "Giữa"});
-    m_holdButtonCombo->setStyleSheet("background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 5px 8px; font-size: 12px;");
+    m_holdButtonCombo->setStyleSheet(kComboStyle);
     layout->addRow("Nút:", m_holdButtonCombo);
 
     auto* posLayout = new QHBoxLayout();
@@ -450,7 +457,7 @@ QWidget* ActionEditorWidget::createTextPage()
 
     m_textModeCombo = new QComboBox(w);
     m_textModeCombo->addItems({"Instant (Gõ lập tức)", "Char-by-Char (Gõ từng ký tự)"});
-    m_textModeCombo->setStyleSheet("background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 5px 8px; font-size: 12px;");
+    m_textModeCombo->setStyleSheet(kComboStyle);
     layout->addRow("Chế độ:", m_textModeCombo);
 
     return w;
@@ -492,7 +499,7 @@ QWidget* ActionEditorWidget::createHotkeyPage()
     triggerLabel->setStyleSheet("color: #1f2328; font-weight: bold; font-size: 12px;");
     m_hotkeyTriggerCombo = new QComboBox(w);
     m_hotkeyTriggerCombo->addItems({"Phím chính", "Cuộn chuột", "Click chuột"});
-    m_hotkeyTriggerCombo->setStyleSheet("background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 5px 8px; font-size: 12px;");
+    m_hotkeyTriggerCombo->setStyleSheet(kComboStyle);
     triggerLayout->addWidget(triggerLabel);
     triggerLayout->addWidget(m_hotkeyTriggerCombo, 1);
     layout->addLayout(triggerLayout);
@@ -509,7 +516,7 @@ QWidget* ActionEditorWidget::createHotkeyPage()
     {
         m_hotkeyKeyCombo->addItem(k.name, k.vk);
     }
-    m_hotkeyKeyCombo->setStyleSheet("background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 5px 8px; font-size: 12px;");
+    m_hotkeyKeyCombo->setStyleSheet(kComboStyle);
     keyLayout->addRow("Phím:", m_hotkeyKeyCombo);
     m_hotkeyTriggerStack->addWidget(keyPage);
 
@@ -520,7 +527,7 @@ QWidget* ActionEditorWidget::createHotkeyPage()
     scrollLayout->setSpacing(8);
     m_hotkeyScrollDirectionCombo = new QComboBox(scrollPage);
     m_hotkeyScrollDirectionCombo->addItems({"Down (Xuống)", "Up (Lên)", "Left (Trái)", "Right (Phải)"});
-    m_hotkeyScrollDirectionCombo->setStyleSheet("background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 5px 8px; font-size: 12px;");
+    m_hotkeyScrollDirectionCombo->setStyleSheet(kComboStyle);
     scrollLayout->addRow("Hướng:", m_hotkeyScrollDirectionCombo);
     m_hotkeyScrollAmountSpin = new QSpinBox(scrollPage);
     m_hotkeyScrollAmountSpin->setRange(1, 100);
@@ -536,7 +543,7 @@ QWidget* ActionEditorWidget::createHotkeyPage()
     clickLayout->setSpacing(8);
     m_hotkeyClickButtonCombo = new QComboBox(clickPage);
     m_hotkeyClickButtonCombo->addItems({"Trái", "Phải", "Giữa"});
-    m_hotkeyClickButtonCombo->setStyleSheet("background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 5px 8px; font-size: 12px;");
+    m_hotkeyClickButtonCombo->setStyleSheet(kComboStyle);
     clickLayout->addRow("Nút:", m_hotkeyClickButtonCombo);
 
     auto* hotkeyClickPosLayout = new QHBoxLayout();
@@ -607,7 +614,7 @@ QWidget* ActionEditorWidget::createKeyPressPage()
     {
         m_keyPressCombo->addItem(k.name, k.vk);
     }
-    m_keyPressCombo->setStyleSheet("background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 5px 8px; font-size: 12px;");
+    m_keyPressCombo->setStyleSheet(kComboStyle);
     layout->addRow("Phím:", m_keyPressCombo);
 
     return w;
@@ -622,7 +629,7 @@ QWidget* ActionEditorWidget::createScrollPage()
 
     m_scrollDirectionCombo = new QComboBox(w);
     m_scrollDirectionCombo->addItems({"Down (Xuống)", "Up (Lên)", "Left (Trái)", "Right (Phải)"});
-    m_scrollDirectionCombo->setStyleSheet("background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 5px 8px; font-size: 12px;");
+    m_scrollDirectionCombo->setStyleSheet(kComboStyle);
     layout->addRow("Hướng:", m_scrollDirectionCombo);
 
     m_scrollAmountSpin = new QSpinBox(w);

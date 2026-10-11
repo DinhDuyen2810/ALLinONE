@@ -422,11 +422,18 @@ void MainWindow::onUpdateAvailable(UpdateInfo info)
         QMessageBox::warning(this, "Cập nhật thất bại", error);
     });
     connect(m_updateInstaller, &UpdateInstaller::aboutToRestart, this, [progress]() {
-        progress->close();
-        progress->deleteLater();
-        // Tiến trình trợ giúp đã khởi chạy và đang CHỜ chính tiến trình này thoát rồi mới chạy trình cài
-        // đặt và mở lại ứng dụng (xem UpdateInstaller.h) - thoát ngay.
-        qApp->quit();
+        // Trước đây đóng hộp thoại và thoát NGAY LẬP TỨC - không có gì báo cho người dùng biết ứng dụng
+        // sắp tự tắt rồi mở lại, dễ hiểu nhầm là treo/crash nếu thấy tiến trình biến mất đột ngột. Tiến
+        // trình trợ giúp chờ tới 60 giây cho đúng PID này thoát (xem UpdateInstaller.h) nên còn dư thời
+        // gian để hiện thông báo ngắn trước khi thoát thật.
+        progress->setLabelText("Đang tự khởi động lại, vui lòng không thao tác...");
+        progress->setCancelButton(nullptr);
+        progress->setRange(0, 0);
+        QTimer::singleShot(1500, progress, [progress]() {
+            progress->close();
+            progress->deleteLater();
+            qApp->quit();
+        });
     });
 
     m_updateInstaller->downloadAndInstall(info);

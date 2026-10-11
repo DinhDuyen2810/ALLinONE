@@ -10,6 +10,7 @@ ActionChain ActionChain::clone() const
     copy.description = description;
     copy.enabled = enabled;
     copy.repeatCount = repeatCount;
+    copy.pinned = pinned;
     // Deep-copy vector of Action values
     copy.actions = actions;
     return copy;

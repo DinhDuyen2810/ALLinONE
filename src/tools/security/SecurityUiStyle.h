@@ -2,6 +2,8 @@
 
 #include <QString>
 
+#include "ui/widgets/ComboBoxStyle.h"
+
 /// Style dùng chung cho module Security Gateway (đồng bộ Light Theme chung của ứng dụng).
 /// Cùng mẫu src/tools/android/AndroidUiStyle.h, src/tools/diskcleanup/DiskUiStyle.h, src/tools/vpn/VpnUiStyle.h.
 namespace SecurityUi
@@ -34,7 +36,8 @@ inline QString inputStyle()
 {
     return "QLineEdit, QComboBox, QSpinBox { background-color: #ffffff; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 6px 8px; font-size: 12px; placeholder-text-color: #8c959f; }"
            "QLineEdit:focus, QComboBox:focus, QSpinBox:focus { border-color: #0969da; }"
-           "QComboBox QAbstractItemView { background-color: #ffffff; color: #1f2328; selection-background-color: #0969da; selection-color: #ffffff; }";
+           "QComboBox QAbstractItemView { background-color: #ffffff; color: #1f2328; selection-background-color: #0969da; selection-color: #ffffff; }"
+           + ComboBoxStyle::noArrow();
 }
 
 inline QString groupStyle()

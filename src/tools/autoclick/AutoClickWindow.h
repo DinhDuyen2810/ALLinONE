@@ -37,11 +37,12 @@ private slots:
     void onCloneChain(int index);
     void onDeleteChain(int index);
     void onRenameChain(int index, const QString& newName);
+    void onTogglePinChain(int index);
+    void onChainMoved(int from, int to);
 
     // Action slots
     void onActionSelected(int index);
     void onAddAction();
-    void onEditAction(int index);
     void onCloneAction(int index);
     void onDeleteAction(int index);
     void onActionMoved(int from, int to);
@@ -51,7 +52,6 @@ private slots:
     // Runner slots
     void onRunClicked();
     void onStopClicked();
-    void onRunnerStateChanged(RunnerState state);
     void onRunnerRoundStarted(int currentRound, int totalRounds);
     void onRunnerActionStarted(int currentRound, int totalRounds, int actionIndex, int totalActions,
                                const QString& currentDesc, const QString& nextDesc, int targetX, int targetY,
@@ -109,14 +109,12 @@ private:
 
     // Toolbar controls
     QPushButton* m_runButton;
-    QPushButton* m_stopButton;
     QSpinBox* m_repeatSpin;
     QCheckBox* m_infiniteCheck;
     QPushButton* m_saveButton;
     QPushButton* m_loadButton;
     QPushButton* m_exportButton;
     QPushButton* m_importButton;
-    QLabel* m_statusLabel;
 
     // Components
     ActionRunner* m_runner;

@@ -2,6 +2,8 @@
 
 #include <QString>
 
+#include "ui/widgets/ComboBoxStyle.h"
+
 /// Style dùng chung cho module QR (đồng bộ Light Theme của toàn ứng dụng).
 namespace QRUi
 {
@@ -26,7 +28,8 @@ inline QString inputStyle()
 {
     return "QLineEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox, QComboBox { background-color: #ffffff; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 6px 8px; font-size: 12px; placeholder-text-color: #8c959f; }"
            "QLineEdit:focus, QPlainTextEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus { border-color: #0969da; }"
-           "QComboBox QAbstractItemView { background-color: #ffffff; color: #1f2328; selection-background-color: #0969da; selection-color: #ffffff; }";
+           "QComboBox QAbstractItemView { background-color: #ffffff; color: #1f2328; selection-background-color: #0969da; selection-color: #ffffff; }"
+           + ComboBoxStyle::noArrow();
 }
 
 inline QString cardStyle()

@@ -1,4 +1,5 @@
 #include "DurationInput.h"
+#include "ComboBoxStyle.h"
 
 #include <QComboBox>
 #include <QDoubleSpinBox>
@@ -14,7 +15,12 @@ DurationInput::DurationInput(QWidget* parent)
 
     m_numberSpin = new QDoubleSpinBox(this);
     m_numberSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
+    // decimals/maximum CỐ ĐỊNH, không đổi theo đơn vị đang chọn (xem comment DurationInput.h) - đổi đơn
+    // vị không bao giờ được viết lại số đang hiện, kể cả gián tiếp qua Qt tự kẹp/làm tròn khi setDecimals/
+    // setMaximum đổi theo đơn vị.
+    m_numberSpin->setDecimals(0);
     m_numberSpin->setMinimum(0.0);
+    m_numberSpin->setMaximum(m_maxMs);
     m_numberSpin->setStyleSheet(
         "QDoubleSpinBox { background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 4px 8px; font-size: 12px; }"
         "QDoubleSpinBox:hover, QDoubleSpinBox:focus { border-color: #0969da; }"
@@ -29,10 +35,9 @@ DurationInput::DurationInput(QWidget* parent)
     m_unitCombo->setStyleSheet(
         "QComboBox { background-color: #ffffff; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 4px 8px; font-size: 12px; }"
         "QComboBox:hover { border-color: #0969da; }"
+        + ComboBoxStyle::noArrow()
     );
     layout->addWidget(m_unitCombo);
-
-    rebuildDisplay();
 
     connect(m_numberSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, &DurationInput::onNumberEdited);
     connect(m_unitCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &DurationInput::onUnitChanged);
@@ -50,24 +55,20 @@ double DurationInput::unitFactorMs(Unit u)
     return 1.0;
 }
 
-void DurationInput::rebuildDisplay()
+void DurationInput::onUnitChanged(int index)
 {
-    m_updatingDisplay = true;
-    const Unit unit = static_cast<Unit>(m_unitCombo->currentIndex());
-    const double factor = unitFactorMs(unit);
-    // ms: số nguyên, giữ đúng độ chính xác cũ. giây: tới 1ms (3 chữ số thập phân). phút/giờ: 2 chữ số -
-    // sai số làm tròn khi gõ phần lẻ không chia hết cho ms là chấp nhận được, không phải lỗi.
-    const int decimals = (unit == Unit::Milliseconds) ? 0 : (unit == Unit::Seconds) ? 3 : 2;
-    m_numberSpin->setDecimals(decimals);
-    m_numberSpin->setMaximum(m_maxMs / factor);
-    m_numberSpin->setValue(m_valueMs / factor);
-    m_updatingDisplay = false;
-}
-
-void DurationInput::onUnitChanged(int /*index*/)
-{
-    // Chỉ đổi CÁCH HIỂN THỊ số theo đơn vị mới - giá trị mili-giây thật không đổi, không phát valueChanged.
-    rebuildDisplay();
+    if (m_updatingDisplay) // setValueMs() đang tự đặt lại đơn vị về ms - không phải người dùng tự chọn
+        return;
+    // Theo yêu cầu người dùng (v1.19.8): đổi đơn vị KHÔNG được quy đổi/viết lại số đang hiện - số giữ
+    // nguyên y hệt, chỉ đổi Ý NGHĨA của nó (vd "500" đang là 500ms, chọn "giây" thì vẫn hiện "500" nhưng
+    // giờ là 500 giây). Mili-giây thật tính lại = số hiện tại × hệ số đơn vị mới.
+    const Unit unit = static_cast<Unit>(index);
+    const int newMs = qBound(0, static_cast<int>(qRound(m_numberSpin->value() * unitFactorMs(unit))), m_maxMs);
+    if (newMs != m_valueMs)
+    {
+        m_valueMs = newMs;
+        emit valueChanged(m_valueMs);
+    }
 }
 
 void DurationInput::onNumberEdited(double displayValue)
@@ -87,14 +88,14 @@ void DurationInput::setValueMs(int ms)
     ms = qBound(0, ms, m_maxMs);
     const bool changed = (ms != m_valueMs);
     m_valueMs = ms;
-    {
-        // Luôn đưa đơn vị hiển thị về "ms" khi set bằng code - đảm bảo round-trip setValueMs(x)/valueMs()
-        // tuyệt đối chính xác, không phụ thuộc đơn vị người dùng từng chọn trước đó (vd lúc
-        // ActionEditorWidget::setAction() nạp lại giá trị của một hành động khác trong danh sách).
-        const QSignalBlocker blocker(m_unitCombo);
-        m_unitCombo->setCurrentIndex(static_cast<int>(Unit::Milliseconds));
-    }
-    rebuildDisplay();
+    // Nạp giá trị từ code (vd ActionEditorWidget::setAction() nạp lại hành động khác) - LUÔN đưa đơn vị
+    // hiển thị về "ms" + hiện đúng số mili-giây nguyên, đảm bảo round-trip setValueMs(x)/valueMs() tuyệt
+    // đối chính xác bất kể đơn vị người dùng từng chọn trước đó. Đây là lúc TẢI dữ liệu, không phải người
+    // dùng tự chọn đơn vị, nên không vi phạm quy tắc "đổi đơn vị không quy đổi số".
+    m_updatingDisplay = true;
+    m_unitCombo->setCurrentIndex(static_cast<int>(Unit::Milliseconds));
+    m_numberSpin->setValue(ms);
+    m_updatingDisplay = false;
     if (changed)
         emit valueChanged(m_valueMs);
 }
@@ -102,12 +103,15 @@ void DurationInput::setValueMs(int ms)
 void DurationInput::setMaximumMs(int maxMs)
 {
     m_maxMs = maxMs;
+    m_updatingDisplay = true;
+    m_numberSpin->setMaximum(m_maxMs);
+    m_updatingDisplay = false;
     if (m_valueMs > m_maxMs)
     {
         m_valueMs = m_maxMs;
-        rebuildDisplay();
+        // Số đang hiện (ở đơn vị hiện tại) không nhất thiết còn khớp m_valueMs sau khi kẹp - không ép
+        // hiện lại (đổi đơn vị/kẹp trần không được viết lại số đang gõ, xem comment lớp), chỉ kẹp giá trị
+        // THẬT được lưu/emit.
         emit valueChanged(m_valueMs);
-        return;
     }
-    rebuildDisplay();
 }

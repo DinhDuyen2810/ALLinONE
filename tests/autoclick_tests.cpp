@@ -6,6 +6,7 @@
 #include <QApplication>
 #include <QComboBox>
 #include <QDir>
+#include <QDoubleSpinBox>
 #include <QFile>
 #include <QFileInfo>
 #include <QListWidget>
@@ -126,6 +127,29 @@ int main(int argc, char** argv)
             CHECK(b.waitBefore.count() == 123 && b.duration.count() == 4567);
             CHECK(b.text == "xin chào");
         }
+    }
+
+    // ---- ActionChain::pinned: round-trip clone()/JSON, hồ sơ CŨ thiếu field vẫn ra false ----
+    {
+        ActionChain chain;
+        chain.id = "c2";
+        chain.name = "Demo";
+        chain.pinned = true;
+
+        const ActionChain copy = chain.clone();
+        CHECK(copy.pinned); // clone() copy từng field thủ công - dễ sót field mới
+
+        std::vector<ActionChain> out;
+        QString error;
+        CHECK(ActionSerializer::fromJsonString(ActionSerializer::toJsonString({chain}), out, &error));
+        CHECK(out.size() == 1 && out[0].pinned);
+
+        // Hồ sơ cũ (trước v1.19.8) không có key "pinned" - mô phỏng bằng JSON viết tay, không qua
+        // toJsonString() (vốn LUÔN ghi field mới nên không mô phỏng được hồ sơ cũ thật).
+        const QByteArray oldJson = R"({"version":"1.0","chains":[{"id":"c3","name":"Cu","actions":[]}]})";
+        std::vector<ActionChain> outOld;
+        CHECK(ActionSerializer::fromJsonString(QString::fromUtf8(oldJson), outOld, &error));
+        CHECK(outOld.size() == 1 && !outOld[0].pinned);
     }
 
     // ---- Action::effectiveModOrder/setModifiers/description: THỨ TỰ thật, không cố định Ctrl-Alt-Shift-Win ----
@@ -306,6 +330,31 @@ int main(int argc, char** argv)
         CHECK(!fresh.empty());
     }
 
+    // ---- DurationInput: đổi đơn vị KHÔNG quy đổi số đang hiện (yêu cầu người dùng, v1.19.8) ----
+    {
+        DurationInput input;
+        input.setValueMs(500);
+        CHECK(input.valueMs() == 500);
+        auto* numberSpin = input.findChild<QDoubleSpinBox*>();
+        auto* unitCombo = input.findChild<QComboBox*>();
+        CHECK(numberSpin != nullptr && unitCombo != nullptr);
+        if (numberSpin && unitCombo)
+        {
+            CHECK(numberSpin->value() == 500.0); // nạp từ code: đơn vị ms, số = đúng mili-giây
+
+            unitCombo->setCurrentIndex(1); // "giây"
+            app.processEvents();
+            // Số hiện KHÔNG được đổi thành "0.5" - vẫn là "500", giờ nghĩa là 500 giây.
+            CHECK(numberSpin->value() == 500.0);
+            CHECK(input.valueMs() == 500000);
+
+            unitCombo->setCurrentIndex(3); // "giờ" - 500 giờ vượt xa trần mặc định 3.600.000ms (1 giờ)
+            app.processEvents();
+            CHECK(numberSpin->value() == 500.0); // số hiện vẫn không đổi
+            CHECK(input.valueMs() == 3600000);   // giá trị THẬT (emit/lưu) bị kẹp đúng trần
+        }
+    }
+
     // ---- "Khói" giao diện ----
     {
         AutoClickWindow win;
@@ -345,11 +394,12 @@ int main(int argc, char** argv)
             list->setCurrentRow(0);
             app.processEvents();
             CHECK(table->rowCount() >= 1);
-            if (auto* cloneBtn = buttonByText(chainList, "Nhân bản"))
             {
+                // Nhân bản/Xóa không còn nút riêng (v1.19.8 - đã chuyển hẳn vào menu chuột phải) - gọi
+                // thẳng signal như menu chuột phải tự làm.
                 const int beforeClone = list->count();
                 const int demoRows = table->rowCount();
-                cloneBtn->click();
+                emit chainList->cloneChainClicked(list->currentRow());
                 app.processEvents();
                 CHECK(list->count() == beforeClone + 1);
                 CHECK(list->currentRow() == beforeClone);   // bản sao được chọn
@@ -360,17 +410,12 @@ int main(int argc, char** argv)
                 CHECK(storedName.endsWith(" (Copy)"));
                 CHECK(list->item(beforeClone)->text().startsWith(storedName + " ("));
             }
-            else
-            {
-                CHECK(false);
-            }
 
             // -- Xóa chain cuối: chọn chain đứng ngay trước nó --
-            if (auto* deleteBtn = buttonByText(chainList, "Xóa"))
             {
                 const int beforeDelete = list->count();
                 CHECK(list->currentRow() == beforeDelete - 1);
-                deleteBtn->click();
+                emit chainList->deleteChainClicked(list->currentRow());
                 app.processEvents();
                 CHECK(list->count() == beforeDelete - 1);
                 CHECK(list->currentRow() == beforeDelete - 2);

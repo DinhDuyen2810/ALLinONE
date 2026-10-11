@@ -84,7 +84,6 @@ AutoClickWindow::AutoClickWindow(QWidget* parent)
     setupUi();
 
     // Wire runner signals
-    connect(m_runner, &ActionRunner::stateChanged, this, &AutoClickWindow::onRunnerStateChanged);
     connect(m_runner, &ActionRunner::roundStarted, this, &AutoClickWindow::onRunnerRoundStarted);
     connect(m_runner, &ActionRunner::actionStarted, this, &AutoClickWindow::onRunnerActionStarted);
     connect(m_runner, &ActionRunner::countdownTick, this, &AutoClickWindow::onRunnerCountdownTick);
@@ -135,7 +134,7 @@ void AutoClickWindow::closeEvent(QCloseEvent* event)
         // nay đều kiểm tra cờ dừng mỗi <=50ms nên bình thường luồng thoát gần như tức thì.
         if (!m_runner->wait(3000))
         {
-            m_statusLabel->setText("Trạng thái: Chưa dừng được chuỗi - thử đóng lại sau");
+            QMessageBox::warning(this, "Chưa dừng được", "Chuỗi thao tác chưa dừng kịp - thử đóng lại cửa sổ sau.");
             event->ignore();
             return;
         }
@@ -295,12 +294,12 @@ void AutoClickWindow::setupUi()
     connect(m_chainListWidget, &ChainListWidget::cloneChainClicked, this, &AutoClickWindow::onCloneChain);
     connect(m_chainListWidget, &ChainListWidget::deleteChainClicked, this, &AutoClickWindow::onDeleteChain);
     connect(m_chainListWidget, &ChainListWidget::renameChainClicked, this, &AutoClickWindow::onRenameChain);
-    connect(m_chainListWidget, &ChainListWidget::runChainClicked, this, [this](int index) { startChain(index); });
+    connect(m_chainListWidget, &ChainListWidget::togglePinClicked, this, &AutoClickWindow::onTogglePinChain);
+    connect(m_chainListWidget, &ChainListWidget::chainMoved, this, &AutoClickWindow::onChainMoved);
 
     // Wire Action signals
     connect(m_actionListWidget, &ActionListWidget::actionSelectionChanged, this, &AutoClickWindow::onActionSelected);
     connect(m_actionListWidget, &ActionListWidget::addActionClicked, this, &AutoClickWindow::onAddAction);
-    connect(m_actionListWidget, &ActionListWidget::editActionClicked, this, &AutoClickWindow::onEditAction);
     connect(m_actionListWidget, &ActionListWidget::cloneActionClicked, this, &AutoClickWindow::onCloneAction);
     connect(m_actionListWidget, &ActionListWidget::deleteActionClicked, this, &AutoClickWindow::onDeleteAction);
     connect(m_actionListWidget, &ActionListWidget::actionMoved, this, &AutoClickWindow::onActionMoved);
@@ -321,18 +320,9 @@ void AutoClickWindow::setupUi()
         "QPushButton:disabled { background-color: #eaeef2; color: #8c959f; }"
     );
     connect(m_runButton, &QPushButton::clicked, this, &AutoClickWindow::onRunClicked);
-
-    m_stopButton = new QPushButton("■ Dừng lại (STOP)", this);
-    m_stopButton->setFixedHeight(38);
-    m_stopButton->setEnabled(false);
-    m_stopButton->setCursor(Qt::PointingHandCursor);
-    m_stopButton->setStyleSheet(
-        "QPushButton { background-color: #cf222e; color: white; border: none; border-radius: 10px; font-weight: bold; font-size: 13px; padding: 0 20px; }"
-        "QPushButton:hover { background-color: #a40e26; }"
-        "QPushButton:pressed { background-color: #82071e; }"
-        "QPushButton:disabled { background-color: #eaeef2; color: #8c959f; }"
-    );
-    connect(m_stopButton, &QPushButton::clicked, this, &AutoClickWindow::onStopClicked);
+    // Nút Dừng ở cửa sổ chính đã bỏ (yêu cầu người dùng, v1.19.8) - minibox (RuntimeOverlay) có nút Dừng
+    // riêng, luôn hiện trong lúc chạy (cửa sổ chính bị thu nhỏ lúc đó - xem startChain()), nối thẳng vào
+    // onStopClicked() y hệt (xem connect(m_overlay, &RuntimeOverlay::stopClicked, ...) ở constructor).
 
     auto* repeatLabel = new QLabel("Lặp lại (Repeat):", this);
     repeatLabel->setStyleSheet("color: #1f2328; font-weight: bold; font-size: 12px;");
@@ -358,21 +348,15 @@ void AutoClickWindow::setupUi()
         updateRepeatFromUi();
     });
 
-    m_statusLabel = new QLabel("Trạng thái: Sẵn sàng (Idle)", this);
-    m_statusLabel->setStyleSheet(
-        "background-color: rgba(9, 105, 218, 0.1); color: #0969da; "
-        "border: 1px solid rgba(9, 105, 218, 0.3); border-radius: 10px; "
-        "padding: 6px 14px; font-weight: bold; font-size: 12px;"
-    );
+    // Nhãn "Trạng thái" đã bỏ (yêu cầu người dùng, v1.19.8) - lỗi nghiêm trọng đã có QMessageBox riêng
+    // (xem onRunnerFinished()), không phụ thuộc nhãn này; minibox là nơi theo dõi tiến trình trong lúc
+    // chạy.
 
     bottomBar->addWidget(m_runButton);
-    bottomBar->addWidget(m_stopButton);
     bottomBar->addSpacing(10);
     bottomBar->addWidget(repeatLabel);
     bottomBar->addWidget(m_repeatSpin);
     bottomBar->addWidget(m_infiniteCheck);
-    bottomBar->addSpacing(15);
-    bottomBar->addWidget(m_statusLabel);
     bottomBar->addStretch();
 
     mainLayout->addLayout(bottomBar);
@@ -434,7 +418,6 @@ void AutoClickWindow::loadDefaultProfile()
 
     if (!notice.isEmpty())
     {
-        m_statusLabel->setText("Trạng thái: Hồ sơ cũ bị hỏng - đã tạo hồ sơ mẫu");
         // Hàm này chạy trong constructor (cửa sổ chưa hiện) - hoãn hộp thoại tới khi vòng lặp sự kiện chạy.
         QTimer::singleShot(0, this, [this, notice]() {
             if (isVisible())
@@ -582,6 +565,58 @@ void AutoClickWindow::onRenameChain(int index, const QString& newName)
     }
 }
 
+void AutoClickWindow::onTogglePinChain(int index)
+{
+    if (index < 0 || index >= static_cast<int>(m_chains.size()))
+        return;
+
+    m_chains[index].pinned = !m_chains[index].pinned;
+
+    if (m_chains[index].pinned && index != 0)
+    {
+        // "Ghim lên": đưa NGAY lên đầu danh sách (xem comment ActionChain::pinned) - dùng lại đúng phép
+        // dời một phần tử của onChainMoved() (from=index, to=0), cờ pinned=true vừa đặt ở trên đi theo
+        // phần tử khi dời.
+        onChainMoved(index, 0);
+        return;
+    }
+
+    // Bỏ ghim, hoặc ghim chuỗi đã sẵn ở đầu danh sách: chỉ đổi cờ, không cần dời vị trí.
+    m_chainListWidget->setChains(m_chains);
+}
+
+void AutoClickWindow::onChainMoved(int from, int to)
+{
+    const int count = static_cast<int>(m_chains.size());
+    if (from < 0 || from >= count || to < 0 || to >= count || from == to)
+        return;
+
+    // m_currentChainIndex/m_runningChainIndex trỏ tới MỘT chain cụ thể, không phải một vị trí cố định -
+    // phải tính lại theo đúng phép hoán vị std::rotate() sẽ áp dụng bên dưới (cùng mẫu remap thủ công đã
+    // làm ở onDeleteChain(), chỉ khác đây là dời chứ không phải xóa).
+    auto remap = [from, to](int idx) {
+        if (idx < 0) return idx;
+        if (idx == from) return to;
+        if (from < to && idx > from && idx <= to) return idx - 1;
+        if (from > to && idx >= to && idx < from) return idx + 1;
+        return idx;
+    };
+    const int newSelected = remap(m_currentChainIndex);
+    const int newRunning = remap(m_runningChainIndex);
+
+    // Di chuyển đúng MỘT phần tử từ chỉ số from sang đúng chỉ số to - xem comment onActionMoved() (cùng
+    // kỹ thuật std::rotate, chỉ khác áp cho m_chains thay vì chain->actions).
+    if (from < to)
+        std::rotate(m_chains.begin() + from, m_chains.begin() + from + 1, m_chains.begin() + to + 1);
+    else
+        std::rotate(m_chains.begin() + to, m_chains.begin() + from, m_chains.begin() + from + 1);
+
+    m_runningChainIndex = newRunning;
+    m_currentChainIndex = newSelected;
+    m_chainListWidget->setChains(m_chains);
+    m_chainListWidget->setSelectedChainIndex(m_currentChainIndex);
+}
+
 void AutoClickWindow::onActionSelected(int index)
 {
     ActionChain* chain = currentChain();
@@ -603,11 +638,6 @@ void AutoClickWindow::onAddAction()
     m_actionListWidget->setActions(chain->actions);
     m_actionListWidget->setSelectedActionIndex(newIdx);
     m_actionEditorWidget->setAction(newAct, newIdx);
-}
-
-void AutoClickWindow::onEditAction(int index)
-{
-    onActionSelected(index);
 }
 
 void AutoClickWindow::onCloneAction(int index)
@@ -734,8 +764,6 @@ void AutoClickWindow::startChain(int index)
     chain->repeatCount = m_infiniteCheck->isChecked() ? -1 : m_repeatSpin->value();
 
     m_runButton->setEnabled(false);
-    m_stopButton->setEnabled(true);
-    m_statusLabel->setText("Trạng thái: Đang thực thi...");
 
     m_lastRunError.clear();
     m_runActive = true;
@@ -759,32 +787,7 @@ void AutoClickWindow::startChain(int index)
 
 void AutoClickWindow::onStopClicked()
 {
-    m_statusLabel->setText("Trạng thái: Đang dừng lại...");
     m_runner->requestStop();
-}
-
-void AutoClickWindow::onRunnerStateChanged(RunnerState state)
-{
-    switch (state)
-    {
-        case RunnerState::Running:
-            m_statusLabel->setText("Trạng thái: Đang thực thi (Running)");
-            break;
-        case RunnerState::Stopping:
-            m_statusLabel->setText("Trạng thái: Đang dừng (Stopping)");
-            break;
-        case RunnerState::Finished:
-            m_statusLabel->setText("Trạng thái: Hoàn tất (Finished)");
-            break;
-        case RunnerState::Idle:
-            m_statusLabel->setText("Trạng thái: Sẵn sàng (Idle)");
-            break;
-        case RunnerState::Error:
-            m_statusLabel->setText("Trạng thái: Đã dừng do lỗi (Error)");
-            break;
-        default:
-            break;
-    }
 }
 
 void AutoClickWindow::onRunnerRoundStarted(int currentRound, int totalRounds)
@@ -831,10 +834,7 @@ void AutoClickWindow::onRunnerFinished()
     clearRunningMarker();
 
     m_runButton->setEnabled(true);
-    m_stopButton->setEnabled(false);
     m_overlay->hide();
-    // Không đặt lại nhãn trạng thái ở đây: onRunnerStateChanged() vừa đặt "Hoàn tất"/"Sẵn sàng"/"Lỗi" ngay
-    // trước tín hiệu này - trước đây dòng ghi đè "Sẵn sàng (Idle)" làm "Hoàn tất" không bao giờ kịp hiện.
 
     // startChain() đã thu nhỏ cửa sổ này - chạy xong thì đưa nó trở lại (trước đây người dùng phải tự
     // tìm lại trên thanh tác vụ). Chỉ khi nó còn đang hiện-và-thu-nhỏ: nếu người dùng đã ĐÓNG cửa sổ giữa

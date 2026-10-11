@@ -23,7 +23,10 @@ signals:
     void cloneChainClicked(int index);
     void deleteChainClicked(int index);
     void renameChainClicked(int index, const QString& newName);
-    void runChainClicked(int index);
+    /// Bật/tắt cờ "ghim lên" của chuỗi tại `index` - xem comment `ActionChain::pinned`.
+    void togglePinClicked(int index);
+    /// Người dùng kéo-thả hàng từ vị trí `from` sang `to` (cùng khuôn `ActionListWidget::actionMoved`).
+    void chainMoved(int from, int to);
 
 private slots:
     void onCustomContextMenuRequested(const QPoint& pos);
@@ -34,6 +37,4 @@ private:
 
     QListWidget* m_listWidget;
     QPushButton* m_addButton;
-    QPushButton* m_cloneButton;
-    QPushButton* m_deleteButton;
 };

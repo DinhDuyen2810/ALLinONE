@@ -11,6 +11,11 @@ struct ActionChain
     std::string description{"Action chain description"};
     bool enabled{true};
     int repeatCount{1}; // -1 for infinite
+    /// Chuỗi đang được "ghim lên" - chỉ là một nhãn ghi nhớ + kích hoạt hành động "đưa lên đầu danh sách
+    /// NGAY LÚC ghim" (xem ChainListWidget::onCustomContextMenuRequested), KHÔNG phải ràng buộc sắp xếp
+    /// "luôn đứng trên mọi chuỗi chưa ghim" - người dùng vẫn kéo-thả tự do sau đó (yêu cầu người dùng,
+    /// v1.19.8).
+    bool pinned{false};
 
     std::vector<Action> actions;
 

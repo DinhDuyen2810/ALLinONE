@@ -71,6 +71,7 @@
 #include "tools/android/engine/ScrcpyLauncher.h"
 #include "tools/autoclick/AutoClickTool.h"
 #include "tools/autoclick/AutoClickWindow.h"
+#include "tools/autoclick/overlay/RuntimeOverlay.h"
 #include "tools/autoclick/engine/ActionRunner.h"
 #include "tools/autoclick/engine/StopHotkey.h"
 #include "tools/autoclick/model/ActionChain.h"
@@ -174,6 +175,18 @@ QPushButton* buttonByText(QWidget* parent, const QString& text)
     for (auto* b : parent->findChildren<QPushButton*>())
         if (b->text() == text)
             return b;
+    return nullptr;
+}
+
+/// Nút Dừng ở cửa sổ chính Auto Click đã bỏ (v1.19.8) - minibox (RuntimeOverlay) có nút Dừng riêng, là
+/// cửa sổ TOP-LEVEL RIÊNG (không có cha, không nằm trong findChildren của cửa sổ chính) nên phải tìm qua
+/// QApplication::topLevelWidgets(). Visibility của chính overlay (ẩn/hiện) thay cho việc trước đây đọc
+/// enabled/disabled của nút Dừng ở cửa sổ chính để biết "có đang chạy không".
+RuntimeOverlay* findOverlay()
+{
+    for (auto* w : QApplication::topLevelWidgets())
+        if (auto* o = qobject_cast<RuntimeOverlay*>(w))
+            return o;
     return nullptr;
 }
 
@@ -2359,11 +2372,10 @@ void stressAutoClickUi()
     if (!tool)
         return;
     const QString runText = QString::fromUtf8("▶ Bắt đầu chạy (RUN)");
-    const QString stopText = QString::fromUtf8("■ Dừng lại (STOP)");
 
     // ---- 30 vòng: tạo (hoặc tái dùng) -> hiện -> chạy chuỗi an toàn -> dừng -> đóng -> (mỗi 3 vòng) hủy ----
     CHECK(writeSafeDefaultProfile(15));
-    int notStopped = 0, unsafe = 0, stuckStatus = 0;
+    int notStopped = 0, unsafe = 0;
     for (int round = 0; round < 30; ++round)
     {
         QWidget* window = tool->createWindow();
@@ -2371,8 +2383,9 @@ void stressAutoClickUi()
         window->showNormal();
         QCoreApplication::processEvents();
         QPushButton* runBtn = buttonByText(window, runText);
-        QPushButton* stopBtn = buttonByText(window, stopText);
-        if (!runBtn || !stopBtn || !windowShowsOnlySafeActions(window))
+        RuntimeOverlay* overlay = findOverlay();
+        QPushButton* stopBtn = overlay ? overlay->findChild<QPushButton*>() : nullptr;
+        if (!runBtn || !overlay || !stopBtn || !windowShowsOnlySafeActions(window))
         {
             ++unsafe; // KHÔNG bấm Chạy nếu chưa xác nhận được chuỗi an toàn
             delete window;
@@ -2385,11 +2398,8 @@ void stressAutoClickUi()
             stopBtn->click();
         else
             ToolManager::instance().stopAllBackgroundWorkForQuit(); // đường thoát ứng dụng: dừng không hỏi
-        if (!spinUntil([&]() { return runBtn->isEnabled() && !stopBtn->isEnabled(); }, 5000))
+        if (!spinUntil([&]() { return runBtn->isEnabled() && !overlay->isVisible(); }, 5000))
             ++notStopped;
-        for (auto* label : window->findChildren<QLabel*>())
-            if (label->text().contains(QString::fromUtf8("Đang dừng")) || label->text().contains(QString::fromUtf8("Đang thực thi")))
-                ++stuckStatus;
 
         // Bấm Chạy hai lần liền + bấm Dừng dồn dập: không được sinh hai lượt chạy chồng nhau.
         runBtn->click();
@@ -2408,11 +2418,10 @@ void stressAutoClickUi()
             QCoreApplication::processEvents();
         }
     }
-    std::printf("  30 vong: %d lan khong dung duoc, %d lan khong xac nhan duoc chuoi an toan, %d nhan trang thai bi ket\n",
-                notStopped, unsafe, stuckStatus);
+    std::printf("  30 vong: %d lan khong dung duoc, %d lan khong xac nhan duoc chuoi an toan\n",
+                notStopped, unsafe);
     CHECK(notStopped == 0);
     CHECK(unsafe == 0);
-    CHECK(stuckStatus == 0);
 
     // ---- Chuỗi lặp vô hạn KHÔNG có khoảng chờ nào: luồng chạy không được làm nghẹt luồng giao diện ----
     {
@@ -2422,7 +2431,8 @@ void stressAutoClickUi()
         window->showNormal();
         QCoreApplication::processEvents();
         QPushButton* runBtn = buttonByText(window, runText);
-        QPushButton* stopBtn = buttonByText(window, stopText);
+        RuntimeOverlay* overlay = findOverlay();
+        QPushButton* stopBtn = overlay ? overlay->findChild<QPushButton*>() : nullptr;
         CHECK(runBtn && stopBtn && windowShowsOnlySafeActions(window));
         if (runBtn && stopBtn && windowShowsOnlySafeActions(window))
         {
@@ -2482,15 +2492,11 @@ void stressAutoClickUi()
             auto* list = chainList->findChild<QListWidget*>();
             auto* table = actionList->findChild<QTableWidget*>();
             QPushButton* addChain = buttonByText(chainList, QString::fromUtf8("+ Thêm"));
-            QPushButton* cloneChain = buttonByText(chainList, QString::fromUtf8("Nhân bản"));
-            QPushButton* deleteChain = buttonByText(chainList, QString::fromUtf8("Xóa"));
             QPushButton* addAction = buttonByText(actionList, QString::fromUtf8("+ Thêm hành động"));
-            QPushButton* cloneAction = buttonByText(actionList, QString::fromUtf8("Nhân bản"));
-            QPushButton* deleteAction = buttonByText(actionList, QString::fromUtf8("Xóa"));
             QPushButton* apply = buttonByText(editor, QString::fromUtf8("✓ Lưu hành động (Apply)"));
             QPushButton* save = buttonByText(window, QString::fromUtf8("💾 Lưu cấu hình (Save)"));
-            CHECK(list && table && addChain && cloneChain && deleteChain && addAction && cloneAction && deleteAction && apply && save);
-            if (list && table && addChain && cloneChain && deleteChain && addAction && cloneAction && deleteAction && apply && save)
+            CHECK(list && table && addChain && addAction && apply && save);
+            if (list && table && addChain && addAction && apply && save)
             {
                 int mismatches = 0, badSelection = 0;
                 const int dialogsBefore = g_dismissedDialogs;
@@ -2500,17 +2506,18 @@ void stressAutoClickUi()
                     switch (rnd(0, 13))
                     {
                         case 0: if (list->count() < 12) addChain->click(); break;
-                        case 1: if (list->count() < 12) cloneChain->click(); break;
-                        case 2: deleteChain->click(); break; // còn 1 chuỗi thì hiện cảnh báo (tự đóng) và giữ nguyên
+                        // Nhân bản/Xóa không còn nút riêng (v1.19.8 - đã chuyển hẳn vào menu chuột phải) -
+                        // gọi thẳng signal như menu chuột phải tự làm, đúng theo hàng ĐANG CHỌN.
+                        case 1: if (list->count() < 12 && list->currentRow() >= 0) emit chainList->cloneChainClicked(list->currentRow()); break;
+                        case 2: if (list->currentRow() >= 0) emit chainList->deleteChainClicked(list->currentRow()); break; // còn 1 chuỗi thì hiện cảnh báo (tự đóng) và giữ nguyên
                         case 3: list->setCurrentRow(rnd(0, list->count() - 1)); break;
                         case 4: if (table->rowCount() < 40) addAction->click(); break;
-                        case 5: if (table->rowCount() < 40) cloneAction->click(); break;
-                        case 6: deleteAction->click(); break;
+                        case 5: if (table->rowCount() < 40 && table->currentRow() >= 0) emit actionList->cloneActionClicked(table->currentRow()); break;
+                        case 6: if (table->currentRow() >= 0) emit actionList->deleteActionClicked(table->currentRow()); break;
                         case 7: emit actionList->actionMoved(rnd(-3, table->rowCount() + 3), wild); break;
                         case 8:
                             emit actionList->deleteActionClicked(wild);
                             emit actionList->cloneActionClicked(rnd(-3, table->rowCount() + 3));
-                            emit actionList->editActionClicked(rnd(-3, table->rowCount() + 3));
                             break;
                         case 9:
                             for (auto* spin : editor->findChildren<QSpinBox*>())
@@ -2526,6 +2533,8 @@ void stressAutoClickUi()
                             emit chainList->deleteChainClicked(rnd(-3, list->count() + 3));
                             emit chainList->cloneChainClicked(list->count() < 12 ? rnd(-3, list->count() + 3) : -1);
                             emit chainList->renameChainClicked(rnd(-3, list->count() + 3), randomText(g_rng, 4));
+                            emit chainList->togglePinClicked(rnd(-3, list->count() + 3));
+                            emit chainList->chainMoved(rnd(-3, list->count() + 3), rnd(-3, list->count() + 3));
                             break;
                         case 12:
                             editor->setAction(randomAction(g_rng), wild); // editor trỏ tới hàng không tồn tại

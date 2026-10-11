@@ -97,6 +97,7 @@ QString ActionSerializer::toJsonString(const std::vector<ActionChain>& chains)
         chainObj["description"] = QString::fromStdString(chain.description);
         chainObj["enabled"] = chain.enabled;
         chainObj["repeatCount"] = chain.repeatCount;
+        chainObj["pinned"] = chain.pinned;
 
         QJsonArray actionsArr;
         for (const auto& action : chain.actions)
@@ -188,6 +189,7 @@ bool ActionSerializer::fromJsonString(const QString& jsonStr, std::vector<Action
         chain.repeatCount = chainObj["repeatCount"].toInt(1);
         if (chain.repeatCount == 0 || chain.repeatCount < -1)
             chain.repeatCount = 1;
+        chain.pinned = chainObj["pinned"].toBool(false); // thiếu field = hồ sơ cũ -> chưa ghim
 
         QJsonArray actionsArr = chainObj["actions"].toArray();
         for (const auto& actVal : actionsArr)

@@ -11,9 +11,12 @@ class QComboBox;
 /// so với phần còn lại ứng dụng (yêu cầu người dùng, v1.19.7). Đặt trong `src/ui/widgets/` để dùng lại
 /// được cho module khác sau này, cùng chỗ với `FlowLayout`.
 ///
-/// Giá trị THẬT luôn lưu nội bộ theo mili-giây nguyên (`m_valueMs`) - đổi đơn vị trong combo chỉ đổi CÁCH
-/// HIỂN THỊ số, không đổi giá trị thật và KHÔNG phát valueChanged (chưa có gì thực sự thay đổi). Chỉ khi
-/// người dùng gõ số mới mới tính lại mili-giây và phát signal.
+/// Đổi đơn vị trong combo KHÔNG BAO GIỜ quy đổi/viết lại số đang hiện trong ô nhập (yêu cầu người dùng,
+/// v1.19.8 - trước đó đổi đơn vị từng tính lại số hiển thị theo mili-giây đã lưu, vd "500" ms thành "0.5"
+/// khi chọn "giây", bị phản hồi là quy đổi không mong muốn). Số trong ô nhập giữ nguyên tuyệt đối; chỉ Ý
+/// NGHĨA của nó đổi theo đơn vị mới (mili-giây thật = số hiện tại × hệ số đơn vị). `setValueMs()` (nạp từ
+/// code, vd nạp lại một hành động khác) là ngoại lệ DUY NHẤT: luôn đưa đơn vị về "ms" + hiện đúng số
+/// mili-giây, vì đó là lúc TẢI dữ liệu từ model chứ không phải người dùng tự chọn đơn vị.
 class DurationInput : public QWidget
 {
     Q_OBJECT
@@ -24,8 +27,10 @@ public:
     int valueMs() const { return m_valueMs; }
     void setValueMs(int ms);
 
-    /// Áp cho MỌI đơn vị (trần hiển thị = max / hệ số đơn vị hiện tại) - mặc định 3.600.000ms (1 giờ),
-    /// giữ đúng trần cũ của QSpinBox trước đây, không lặng lẽ nới rộng.
+    /// Trần số mili-giây thật (giá trị emit/lưu luôn bị kẹp trong [0, maxMs]) - mặc định 3.600.000ms (1
+    /// giờ). Cố định, không đổi theo đơn vị đang chọn (xem comment lớp): đổi theo đơn vị sẽ lại khiến
+    /// Qt tự kẹp/làm tròn số đang gõ mỗi khi chọn đơn vị khác - đúng kiểu quy đổi ẩn mà yêu cầu người
+    /// dùng muốn loại bỏ.
     void setMaximumMs(int maxMs);
 
 signals:
@@ -41,7 +46,6 @@ private:
     };
 
     static double unitFactorMs(Unit u); // số mili-giây trên 1 đơn vị
-    void rebuildDisplay();              // hiện lại số theo đơn vị đang chọn - KHÔNG phát valueChanged
     void onNumberEdited(double displayValue);
     void onUnitChanged(int index);
 
@@ -49,5 +53,5 @@ private:
     QComboBox* m_unitCombo;
     int m_valueMs{0};
     int m_maxMs{3600000};
-    bool m_updatingDisplay{false}; // chặn đệ quy khi tự set lại hiển thị (rebuildDisplay gọi setValue())
+    bool m_updatingDisplay{false}; // chặn đệ quy khi setValueMs() tự set lại số/đơn vị hiển thị
 };

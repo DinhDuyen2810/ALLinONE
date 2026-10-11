@@ -118,44 +118,23 @@ ActionListWidget::ActionListWidget(QWidget* parent)
     });
     connect(m_table, &QTableWidget::customContextMenuRequested, this, &ActionListWidget::onCustomContextMenuRequested);
 
-    // Chỉ còn 3 nút theo đúng yêu cầu: Thêm, Nhân bản, Xóa - "Chèn trước/sau" và "Lên/Xuống" trước đây
-    // được thay bằng kéo-thả trực tiếp trên danh sách, ít bước hơn và trực quan hơn.
+    // Chỉ còn "+ Thêm hành động" - Nhân bản/Xóa đã chuyển hẳn vào menu chuột phải (trùng chức năng, yêu
+    // cầu người dùng v1.19.8). "Chèn trước/sau" và "Lên/Xuống" trước đây được thay bằng kéo-thả trực
+    // tiếp trên danh sách, ít bước hơn và trực quan hơn.
     auto* btnLayout = new QHBoxLayout();
     btnLayout->setSpacing(6);
 
     m_addButton = new QPushButton("+ Thêm hành động", this);
-    m_cloneButton = new QPushButton("Nhân bản", this);
-    m_deleteBtn = new QPushButton("Xóa", this);
-
     m_addButton->setCursor(Qt::PointingHandCursor);
-    m_cloneButton->setCursor(Qt::PointingHandCursor);
-    m_deleteBtn->setCursor(Qt::PointingHandCursor);
-
-    QString btnStyle =
+    m_addButton->setStyleSheet(
         "QPushButton { background-color: #ffffff; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 6px 10px; font-size: 11px; font-weight: 600; }"
         "QPushButton:hover { background-color: #f3f4f6; color: #0969da; border-color: #0969da; }"
-        "QPushButton:pressed { background-color: #ebecf0; }";
-
-    m_addButton->setStyleSheet(btnStyle);
-    m_cloneButton->setStyleSheet(btnStyle);
-    m_deleteBtn->setStyleSheet(btnStyle);
-
+        "QPushButton:pressed { background-color: #ebecf0; }"
+    );
     btnLayout->addWidget(m_addButton);
-    btnLayout->addWidget(m_cloneButton);
-    btnLayout->addWidget(m_deleteBtn);
     mainLayout->addLayout(btnLayout);
 
     connect(m_addButton, &QPushButton::clicked, this, &ActionListWidget::addActionClicked);
-
-    connect(m_cloneButton, &QPushButton::clicked, this, [this]() {
-        int row = selectedActionIndex();
-        if (row >= 0) emit cloneActionClicked(row);
-    });
-
-    connect(m_deleteBtn, &QPushButton::clicked, this, [this]() {
-        int row = selectedActionIndex();
-        if (row >= 0) emit deleteActionClicked(row);
-    });
 }
 
 void ActionListWidget::setActions(const std::vector<Action>& actions)
@@ -284,7 +263,6 @@ void ActionListWidget::onCustomContextMenuRequested(const QPoint& pos)
 
     QMenu menu(this);
     ModernMenu::style(&menu);
-    QAction* editAct = ModernMenu::addAction(menu, "Sửa");
     QAction* cloneAct = ModernMenu::addAction(menu, "Nhân bản");
     menu.addSeparator();
     QAction* delAct = ModernMenu::addAction(menu, "Xóa");
@@ -292,7 +270,6 @@ void ActionListWidget::onCustomContextMenuRequested(const QPoint& pos)
     QAction* chosen = menu.exec(m_table->mapToGlobal(pos));
     if (!chosen) return;
 
-    if (chosen == editAct) emit editActionClicked(row);
-    else if (chosen == cloneAct) emit cloneActionClicked(row);
+    if (chosen == cloneAct) emit cloneActionClicked(row);
     else if (chosen == delAct) emit deleteActionClicked(row);
 }
