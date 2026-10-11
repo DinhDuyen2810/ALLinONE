@@ -6,6 +6,7 @@
 #include "PartitionTab.h"
 #include "core/IconHelper.h"
 #include "core/Logger.h"
+#include "ui/widgets/ComboBoxStyle.h"
 
 #include <QCloseEvent>
 #include <QMessageBox>
@@ -36,6 +37,8 @@ DiskCleanupWindow::DiskCleanupWindow(QWidget* parent)
     buildUi();
 
     Logger::instance().info("DiskCleanup", "Mở cửa sổ Disk Cleanup");
+
+    ComboBoxStyle::applyCursor(this);
 }
 
 DiskCleanupWindow::~DiskCleanupWindow() = default;

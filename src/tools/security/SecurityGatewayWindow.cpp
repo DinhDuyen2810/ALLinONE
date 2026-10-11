@@ -5,6 +5,7 @@
 #include "WebProtectionTab.h"
 #include "core/IconHelper.h"
 #include "core/Logger.h"
+#include "ui/widgets/ComboBoxStyle.h"
 
 #include <QCloseEvent>
 #include <QMessageBox>
@@ -35,6 +36,8 @@ SecurityGatewayWindow::SecurityGatewayWindow(QWidget* parent)
     buildUi();
 
     Logger::instance().info("Security", "Mở cửa sổ Security Gateway");
+
+    ComboBoxStyle::applyCursor(this);
 }
 
 SecurityGatewayWindow::~SecurityGatewayWindow() = default;

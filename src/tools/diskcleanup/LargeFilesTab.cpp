@@ -74,6 +74,7 @@ void LargeFilesTab::buildUi()
 
     m_minSizeSpin = new QSpinBox(this);
     m_minSizeSpin->setStyleSheet(DiskUi::inputStyle());
+    m_minSizeSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
     m_minSizeSpin->setRange(1, 102400);
     m_minSizeSpin->setValue(100);
     m_minSizeSpin->setSuffix(" MB");

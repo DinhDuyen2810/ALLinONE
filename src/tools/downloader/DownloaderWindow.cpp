@@ -6,6 +6,7 @@
 #include "engine/FileDownloader.h"
 #include "core/IconHelper.h"
 #include "core/Logger.h"
+#include "ui/widgets/ComboBoxStyle.h"
 
 #include <QCloseEvent>
 #include <QTabWidget>
@@ -35,6 +36,8 @@ DownloaderWindow::DownloaderWindow(QWidget* parent)
     buildUi();
 
     Logger::instance().info("Downloader", "Mở cửa sổ Downloader");
+
+    ComboBoxStyle::applyCursor(this);
 }
 
 DownloaderWindow::~DownloaderWindow() = default;

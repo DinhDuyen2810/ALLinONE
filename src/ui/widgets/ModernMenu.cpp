@@ -8,6 +8,11 @@ void style(QMenu* menu)
 {
     if (!menu)
         return;
+    // QMenu là cửa sổ top-level KHÔNG trong suốt theo mặc định - đặt border-radius qua QSS chỉ tô phần
+    // NẰM TRONG hình bo góc, 4 góc nằm NGOÀI hình đó (do bo tròn cắt đi) vẫn là nền cửa sổ gốc (đen) lộ
+    // ra ngoài appearance như vệt đen nhọn ở góc (xác nhận qua ảnh người dùng gửi, v1.19.10). Bật nền
+    // trong suốt cho cả cửa sổ popup để phần ngoài hình bo tròn trở thành TRONG SUỐT thay vì đen.
+    menu->setAttribute(Qt::WA_TranslucentBackground);
     menu->setStyleSheet(
         "QMenu { background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 10px; padding: 6px; }"
         "QMenu::item { padding: 6px 14px 6px 10px; border-radius: 6px; color: #1f2328; font-size: 12px; }"

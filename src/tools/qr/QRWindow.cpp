@@ -5,6 +5,7 @@
 #include "QRScanTab.h"
 #include "core/IconHelper.h"
 #include "core/Logger.h"
+#include "ui/widgets/ComboBoxStyle.h"
 
 #include <QCloseEvent>
 #include <QTabWidget>
@@ -51,6 +52,8 @@ QRWindow::QRWindow(QWidget* parent)
     });
 
     Logger::instance().info("QR", "Mở cửa sổ QR Tools");
+
+    ComboBoxStyle::applyCursor(this);
 }
 
 void QRWindow::recreateFromText(const QString& text)

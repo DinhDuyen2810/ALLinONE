@@ -1,6 +1,7 @@
 #include "AddVpnProfileDialog.h"
 
 #include "VpnUiStyle.h"
+#include "ui/widgets/ComboBoxStyle.h"
 
 #include <QComboBox>
 #include <QFormLayout>
@@ -78,6 +79,8 @@ AddVpnProfileDialog::AddVpnProfileDialog(QWidget* parent)
     btnRow->addWidget(cancelBtn);
     btnRow->addWidget(addBtn);
     root->addLayout(btnRow);
+
+    ComboBoxStyle::applyCursor(this);
 }
 
 VpnProfile AddVpnProfileDialog::profile() const

@@ -2,6 +2,7 @@
 
 #include "WifiUiStyle.h"
 #include "engine/ConnectionWatcher.h"
+#include "ui/widgets/ComboBoxStyle.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -135,6 +136,8 @@ void ConnectDialog::buildUi()
     m_pollTimer = new QTimer(this);
     m_pollTimer->setInterval(ConnectionWatcher::kPollIntervalMs);
     connect(m_pollTimer, &QTimer::timeout, this, &ConnectDialog::pollConnectionStatus);
+
+    ComboBoxStyle::applyCursor(this);
 }
 
 void ConnectDialog::onTogglePasswordVisibility()

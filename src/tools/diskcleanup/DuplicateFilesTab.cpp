@@ -62,6 +62,7 @@ void DuplicateFilesTab::buildUi()
 
     m_minSizeSpin = new QSpinBox(this);
     m_minSizeSpin->setStyleSheet(DiskUi::inputStyle());
+    m_minSizeSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
     m_minSizeSpin->setRange(1, 1048576); // 1 KB .. 1 GB
     m_minSizeSpin->setValue(100);
     m_minSizeSpin->setSuffix(" KB");

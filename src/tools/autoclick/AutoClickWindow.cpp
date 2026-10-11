@@ -2,6 +2,7 @@
 #include "storage/ActionSerializer.h"
 #include "engine/StopHotkey.h"
 #include "core/Logger.h"
+#include "ui/widgets/ComboBoxStyle.h"
 
 #include <algorithm>
 #include <QVBoxLayout>
@@ -246,17 +247,14 @@ void AutoClickWindow::setupUi()
     };
 
     m_saveButton = makeBtn("💾 Lưu cấu hình (Save)", "Lưu danh sách chain hiện tại vào profile mặc định");
-    m_loadButton = makeBtn("📂 Nạp cấu hình (Load)", "Tải lại danh sách chain từ profile mặc định");
     m_exportButton = makeBtn("📤 Xuất file (Export)", "Xuất chain ra file JSON");
     m_importButton = makeBtn("📥 Nhập file (Import)", "Nhập chain từ file JSON");
 
     connect(m_saveButton, &QPushButton::clicked, this, &AutoClickWindow::onSaveProfile);
-    connect(m_loadButton, &QPushButton::clicked, this, &AutoClickWindow::onLoadProfile);
     connect(m_exportButton, &QPushButton::clicked, this, &AutoClickWindow::onExportProfile);
     connect(m_importButton, &QPushButton::clicked, this, &AutoClickWindow::onImportProfile);
 
     topBar->addWidget(m_saveButton);
-    topBar->addWidget(m_loadButton);
     topBar->addWidget(m_exportButton);
     topBar->addWidget(m_importButton);
     topBar->addStretch();
@@ -360,6 +358,10 @@ void AutoClickWindow::setupUi()
     bottomBar->addStretch();
 
     mainLayout->addLayout(bottomBar);
+
+    // Toàn bộ combo con (Loại, Nút, Hướng, Kết thúc bằng...) đã dựng xong tại đây - đổi con trỏ ngón tay
+    // khi di chuột qua, đồng bộ với mọi tiện ích khác (yêu cầu người dùng, v1.19.10).
+    ComboBoxStyle::applyCursor(this);
 }
 
 bool AutoClickWindow::backupCorruptDefaultProfile(QString* backupPath)
@@ -889,46 +891,6 @@ void AutoClickWindow::onSaveProfile()
     }
 }
 
-void AutoClickWindow::onLoadProfile()
-{
-    QString path = ActionSerializer::getDefaultProfilePath();
-    std::vector<ActionChain> loaded;
-    QString error;
-    if (!ActionSerializer::loadFromFile(path, loaded, &error))
-    {
-        QMessageBox::critical(this, "Lỗi",
-                              QString("Không thể nạp cấu hình từ: %1\n\n%2").arg(QDir::toNativeSeparators(path), error));
-        return;
-    }
-    if (loaded.empty())
-    {
-        QMessageBox::warning(this, "Nạp cấu hình", "Tệp cấu hình đã lưu không có chuỗi hành động nào.");
-        return;
-    }
-
-    // Nạp lại THAY TOÀN BỘ danh sách chain đang có trong bộ nhớ - kể cả những gì chưa bấm Lưu cấu hình.
-    // Trước đây làm ngay không hỏi.
-    if (!m_chains.empty() &&
-        QMessageBox::question(this, "Nạp cấu hình",
-                              QString("Nạp lại sẽ thay toàn bộ %1 chuỗi đang có bằng %2 chuỗi trong tệp đã lưu. "
-                                      "Mọi thay đổi chưa lưu sẽ mất.\n\nTiếp tục?")
-                                  .arg(m_chains.size())
-                                  .arg(loaded.size()),
-                              QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
-    {
-        return;
-    }
-
-    m_chains = loaded;
-    m_runningChainIndex = -1; // chain đang chạy (nếu có) không còn nằm trong danh sách mới
-    clearRunningMarker();
-    m_chainListWidget->setChains(m_chains);
-    m_chainListWidget->setSelectedChainIndex(0);
-    m_currentChainIndex = 0;
-    syncUiWithCurrentChain();
-    QMessageBox::information(this, "Nạp cấu hình", "Đã nạp thành công cấu hình từ: " + QDir::toNativeSeparators(path));
-}
-
 void AutoClickWindow::onExportProfile()
 {
     QString path = QFileDialog::getSaveFileName(this, "Xuất cấu hình Auto Click",
@@ -966,7 +928,7 @@ void AutoClickWindow::onImportProfile()
         return;
     }
 
-    // Nhập THAY TOÀN BỘ danh sách chain đang có (không gộp thêm) - hỏi trước, xem onLoadProfile().
+    // Nhập THAY TOÀN BỘ danh sách chain đang có (không gộp thêm) - hỏi trước.
     if (!m_chains.empty() &&
         QMessageBox::question(this, "Nhập file",
                               QString("Nhập file sẽ thay toàn bộ %1 chuỗi đang có bằng %2 chuỗi trong file. "

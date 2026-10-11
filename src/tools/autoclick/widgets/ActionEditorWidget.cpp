@@ -47,9 +47,13 @@ static const KeyInfo KEY_LIST[] = {
 };
 
 // 9 combo trong file này đều lặp lại gần như y hệt 1 chuỗi style - dùng chung 1 hằng số để tránh sửa sót
-// khi cần đổi (vd thêm ComboBoxStyle::noArrow(), v1.19.8).
+// khi cần đổi (vd thêm ComboBoxStyle::noArrow(), v1.19.8). PHẢI bọc trong selector "QComboBox { ... }" -
+// một khối khai báo TRẦN (không selector) nối với các rule có selector khác (::drop-down/::down-arrow của
+// noArrow()) khiến Qt không còn áp dụng đúng các rule phía sau: ẩn mũi tên không có tác dụng dù CSS hợp lệ
+// riêng từng phần (xác nhận bằng ảnh chụp thật, v1.19.10 - "Nút"/"Phím"/"Hướng"... vẫn còn mũi tên trong
+// khi "ms" của DurationInput - vốn đã bọc đúng "QComboBox { ... }" từ đầu - thì không).
 static const QString kComboStyle =
-    QStringLiteral("background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 5px 8px; font-size: 12px;")
+    QStringLiteral("QComboBox { background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 5px 8px; font-size: 12px; }")
     + ComboBoxStyle::noArrow();
 
 ActionEditorWidget::ActionEditorWidget(QWidget* parent)
@@ -325,9 +329,11 @@ QWidget* ActionEditorWidget::createClickPage()
     m_clickXSpin = new QSpinBox(w);
     m_clickXSpin->setRange(kMinScreenCoord, kMaxScreenCoord);
     m_clickXSpin->setPrefix("X: ");
+    m_clickXSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
     m_clickYSpin = new QSpinBox(w);
     m_clickYSpin->setRange(kMinScreenCoord, kMaxScreenCoord);
     m_clickYSpin->setPrefix("Y: ");
+    m_clickYSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
 
     QString spinStyle = "QSpinBox { background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 4px 6px; font-size: 12px; } QSpinBox:focus { border-color: #0969da; }";
     m_clickXSpin->setStyleSheet(spinStyle);
@@ -420,9 +426,11 @@ QWidget* ActionEditorWidget::createHoldPage()
     m_holdXSpin = new QSpinBox(w);
     m_holdXSpin->setRange(kMinScreenCoord, kMaxScreenCoord);
     m_holdXSpin->setPrefix("X: ");
+    m_holdXSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
     m_holdYSpin = new QSpinBox(w);
     m_holdYSpin->setRange(kMinScreenCoord, kMaxScreenCoord);
     m_holdYSpin->setPrefix("Y: ");
+    m_holdYSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
     QString spinStyle = "QSpinBox { background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 4px 6px; font-size: 12px; } QSpinBox:focus { border-color: #0969da; }";
     m_holdXSpin->setStyleSheet(spinStyle);
     m_holdYSpin->setStyleSheet(spinStyle);
@@ -532,6 +540,7 @@ QWidget* ActionEditorWidget::createHotkeyPage()
     m_hotkeyScrollAmountSpin = new QSpinBox(scrollPage);
     m_hotkeyScrollAmountSpin->setRange(1, 100);
     m_hotkeyScrollAmountSpin->setValue(5);
+    m_hotkeyScrollAmountSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
     m_hotkeyScrollAmountSpin->setStyleSheet("background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 4px 8px; font-size: 12px;");
     scrollLayout->addRow("Số bước:", m_hotkeyScrollAmountSpin);
     m_hotkeyTriggerStack->addWidget(scrollPage);
@@ -551,10 +560,12 @@ QWidget* ActionEditorWidget::createHotkeyPage()
     m_hotkeyClickXSpin = new QSpinBox(clickPage);
     m_hotkeyClickXSpin->setRange(kMinScreenCoord, kMaxScreenCoord);
     m_hotkeyClickXSpin->setPrefix("X: ");
+    m_hotkeyClickXSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
     m_hotkeyClickXSpin->setStyleSheet(hotkeySpinStyle);
     m_hotkeyClickYSpin = new QSpinBox(clickPage);
     m_hotkeyClickYSpin->setRange(kMinScreenCoord, kMaxScreenCoord);
     m_hotkeyClickYSpin->setPrefix("Y: ");
+    m_hotkeyClickYSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
     m_hotkeyClickYSpin->setStyleSheet(hotkeySpinStyle);
     auto* captureHotkeyClickPosBtn = new QPushButton("🎯 Lấy tọa độ", clickPage);
     captureHotkeyClickPosBtn->setCursor(Qt::PointingHandCursor);
@@ -635,6 +646,7 @@ QWidget* ActionEditorWidget::createScrollPage()
     m_scrollAmountSpin = new QSpinBox(w);
     m_scrollAmountSpin->setRange(1, 100);
     m_scrollAmountSpin->setValue(5);
+    m_scrollAmountSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
     m_scrollAmountSpin->setStyleSheet("background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 4px 8px; font-size: 12px;");
     layout->addRow("Số bước:", m_scrollAmountSpin);
 

@@ -145,6 +145,7 @@ void PartitionTab::buildUi()
     m_sizeLabel->setStyleSheet("color: #1f2328; font-weight: bold; font-size: 12px;");
     m_newSizeSpin = new QDoubleSpinBox(this);
     m_newSizeSpin->setStyleSheet(DiskUi::inputStyle());
+    m_newSizeSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
     m_newSizeSpin->setSuffix(" GB");
     m_newSizeSpin->setDecimals(2);
     m_newSizeSpin->setVisible(false);

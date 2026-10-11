@@ -7,6 +7,7 @@
 #include "core/IconHelper.h"
 #include "core/Logger.h"
 #include "engine/WlanController.h"
+#include "ui/widgets/ComboBoxStyle.h"
 
 #include <QCloseEvent>
 #include <QComboBox>
@@ -57,6 +58,10 @@ WifiWindow::WifiWindow(QWidget* parent)
     }
 
     Logger::instance().info("WiFi", "Mở cửa sổ WiFi Connection");
+
+    // Mọi combo con đã dựng xong tại đây - đổi con trỏ ngón tay khi di chuột qua, đồng bộ toàn bộ tiện
+    // ích (yêu cầu người dùng, v1.19.10).
+    ComboBoxStyle::applyCursor(this);
 }
 
 WifiWindow::~WifiWindow() = default;

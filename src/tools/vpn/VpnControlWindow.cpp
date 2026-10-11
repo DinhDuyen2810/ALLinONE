@@ -3,6 +3,7 @@
 #include "VpnTab.h"
 #include "core/IconHelper.h"
 #include "core/Logger.h"
+#include "ui/widgets/ComboBoxStyle.h"
 
 #include <QCloseEvent>
 #include <QMessageBox>
@@ -28,6 +29,8 @@ VpnControlWindow::VpnControlWindow(QWidget* parent)
     buildUi();
 
     Logger::instance().info("Vpn", "Mở cửa sổ VPN & Location");
+
+    ComboBoxStyle::applyCursor(this);
 }
 
 VpnControlWindow::~VpnControlWindow() = default;

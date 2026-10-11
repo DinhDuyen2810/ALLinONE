@@ -6,6 +6,7 @@
 #include "core/IconHelper.h"
 #include "core/Logger.h"
 #include "engine/ConnectSessionController.h"
+#include "ui/widgets/ComboBoxStyle.h"
 
 #include <QCloseEvent>
 #include <QLabel>
@@ -47,6 +48,8 @@ ConnectWindow::ConnectWindow(QWidget* parent)
     startController(true);
 
     Logger::instance().info("Connect", "Mở cửa sổ Connect Together");
+
+    ComboBoxStyle::applyCursor(this);
 }
 
 ConnectWindow::~ConnectWindow() = default;

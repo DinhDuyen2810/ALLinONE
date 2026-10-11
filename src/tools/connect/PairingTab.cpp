@@ -120,8 +120,9 @@ void PairingTab::buildUi()
     m_portSpin = new QSpinBox(joinGroup);
     m_portSpin->setRange(1, 65535);
     m_portSpin->setValue(47632);
-    // QSpinBox cần đủ rộng cho 5 chữ số + nút tăng/giảm; stylesheet tùy chỉnh (padding) khiến
-    // sizeHint() mặc định tính thiếu, chữ số bị đè lên nút tăng/giảm nếu không đặt rộng tối thiểu.
+    m_portSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
+    // QSpinBox cần đủ rộng cho 5 chữ số; stylesheet tùy chỉnh (padding) khiến sizeHint() mặc định tính
+    // thiếu, chữ số bị cắt nếu không đặt rộng tối thiểu.
     m_portSpin->setMinimumWidth(110);
     form->addRow("Cổng:", m_portSpin);
 

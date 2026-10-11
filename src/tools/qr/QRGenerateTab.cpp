@@ -196,10 +196,12 @@ QWidget* QRGenerateTab::makeGeoPage()
     m_geoLat->setRange(-90.0, 90.0);
     m_geoLat->setDecimals(6);
     m_geoLat->setValue(21.028511);
+    m_geoLat->setButtonSymbols(QAbstractSpinBox::NoButtons);
     m_geoLon = new QDoubleSpinBox(w);
     m_geoLon->setRange(-180.0, 180.0);
     m_geoLon->setDecimals(6);
     m_geoLon->setValue(105.804817);
+    m_geoLon->setButtonSymbols(QAbstractSpinBox::NoButtons);
     connect(m_geoLat, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, &QRGenerateTab::scheduleRefresh);
     connect(m_geoLon, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, &QRGenerateTab::scheduleRefresh);
     f->addRow("Vĩ độ (Latitude):", m_geoLat);
@@ -301,6 +303,7 @@ void QRGenerateTab::buildUi()
     m_sizeSpin->setObjectName("sizeSpin");
     m_sizeSpin->setValue(512);
     m_sizeSpin->setSuffix(" px");
+    m_sizeSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
     connect(m_sizeSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, &QRGenerateTab::scheduleRefresh);
     optForm->addRow("Kích thước ảnh:", m_sizeSpin);
 
@@ -308,6 +311,7 @@ void QRGenerateTab::buildUi()
     m_quietSpin->setRange(0, 16);
     m_quietSpin->setValue(4);
     m_quietSpin->setSuffix(" ô");
+    m_quietSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
     connect(m_quietSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, &QRGenerateTab::scheduleRefresh);
     optForm->addRow("Viền trắng:", m_quietSpin);
 

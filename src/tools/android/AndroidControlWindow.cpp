@@ -3,6 +3,7 @@
 #include "DevicesTab.h"
 #include "core/IconHelper.h"
 #include "core/Logger.h"
+#include "ui/widgets/ComboBoxStyle.h"
 
 #include <QCloseEvent>
 #include <QVBoxLayout>
@@ -27,6 +28,8 @@ AndroidControlWindow::AndroidControlWindow(QWidget* parent)
     buildUi();
 
     Logger::instance().info("Android", "Mở cửa sổ Android Phone Control");
+
+    ComboBoxStyle::applyCursor(this);
 }
 
 AndroidControlWindow::~AndroidControlWindow() = default;

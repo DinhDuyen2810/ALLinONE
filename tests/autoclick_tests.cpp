@@ -373,6 +373,23 @@ int main(int argc, char** argv)
             auto* table = actionList->findChild<QTableWidget*>();
             CHECK(list && table);
 
+            // -- Mọi QComboBox trong editor phải có stylesheet bắt đầu bằng selector "QComboBox" - một
+            // khối khai báo TRẦN (không selector, vd "background-color: ...;") nối với các rule có
+            // selector khác (ComboBoxStyle::noArrow()) khiến Qt không áp dụng đúng các rule phía sau (ẩn
+            // mũi tên không có tác dụng dù CSS hợp lệ riêng từng phần) - xác nhận thật bằng ảnh chụp,
+            // v1.19.10. Cũng xác nhận cursor ngón tay đã được gán (ComboBoxStyle::applyCursor()).
+            int badComboStyle = 0, badComboCursor = 0;
+            for (auto* combo : editor->findChildren<QComboBox*>())
+            {
+                const QString sheet = combo->styleSheet().trimmed();
+                if (!sheet.isEmpty() && !sheet.startsWith("QComboBox"))
+                    ++badComboStyle;
+                if (combo->cursor().shape() != Qt::PointingHandCursor)
+                    ++badComboCursor;
+            }
+            CHECK(badComboStyle == 0);
+            CHECK(badComboCursor == 0);
+
             // -- Thêm / nhân bản chain phải CHỌN chain mới (trước đây vẫn nằm ở chain cũ) --
             const int before = list->count();
             CHECK(before >= 1);

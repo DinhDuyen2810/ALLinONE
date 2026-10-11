@@ -1918,6 +1918,75 @@ dựng kịch bản thật: mở 2 cửa sổ, kích hoạt cập nhật, xác n
 chỉ sửa dựa trên phân tích code + đúng mã lỗi ExitCode=1 người dùng cung cấp qua ảnh chụp, khớp chính xác
 với ý nghĩa "Setup failed to initialize" của Inno Setup khi AppMutex còn bị giữ bởi bản sao khác.
 
+## 4y. Sửa góc đen ở menu + mũi tên còn sót ở combo/spinbox + bỏ nút Nạp cấu hình (2026-10-11, v1.19.10)
+
+Người dùng gửi 2 ảnh chụp thật module Auto Click, nêu 3 điểm tiếp theo sau v1.19.9.
+
+**1. Góc đen ở menu chuột phải dù đã bo góc** (v1.19.7 bo góc qua QSS nhưng ảnh người dùng gửi vẫn thấy
+vệt đen nhọn ở 4 góc): `QMenu` là một cửa sổ top-level KHÔNG trong suốt theo mặc định. Đặt `border-radius`
+qua QSS chỉ tô phần NẰM TRONG hình bo tròn - 4 góc NẰM NGOÀI hình đó (bị bo tròn cắt đi) vẫn là nền cửa sổ
+gốc (đen, không được QSS vẽ gì) lộ ra ngoài. Sửa bằng `menu->setAttribute(Qt::WA_TranslucentBackground)`
+trong `ModernMenu::style()` - bật nền trong suốt cho CẢ cửa sổ popup, để phần ngoài hình bo tròn trở thành
+TRONG SUỐT thay vì đen; đây là kỹ thuật Qt chuẩn, được dùng rộng rãi cho đúng loại vấn đề này (shape widget/
+popup bo góc trên nền không composite riêng).
+
+**2. Combo "Nút"/"Phím"/"Hướng"... (Auto Click) vẫn còn mũi tên dù v1.19.8 đã thêm `ComboBoxStyle::noArrow()`**:
+đây là phát hiện quan trọng nhất của đợt sửa này, tìm được nhờ KHÔNG tin ngay vào code review mà tự chụp
+ảnh build thật để đối chiếu (đúng tinh thần CLAUDE.md mục 2). Ảnh chụp "Nút: Trái" sau khi build v1.19.9+
+thay đổi mới nhất VẪN hiện mũi tên - trong khi "Loại: Click chuột" (cũng trong `ActionEditorWidget`, cũng
+gọi `ComboBoxStyle::noArrow()`) thì KHÔNG. So sánh trực tiếp 2 đoạn code:
+- `m_typeCombo` (sạch): `"QComboBox { background-color: ...; }" "QComboBox:hover {...}" + noArrow()`
+- `kComboStyle` (lỗi, dùng cho 9 combo còn lại): `"background-color: ...;" + noArrow()` - **KHÔNG có
+  `QComboBox { }` bao ngoài**, chỉ là một khối khai báo thuộc tính TRẦN.
+
+Khi nối một khối khai báo TRẦN (không selector) với các rule CÓ selector (`QComboBox::drop-down {...}`/
+`QComboBox::down-arrow {...}` của `noArrow()`) trong CÙNG một chuỗi truyền cho `setStyleSheet()`, trình phân
+tích QSS của Qt không áp dụng đúng các rule phía sau nữa - màu nền/viền/bo góc của phần TRẦN vẫn hiện ra
+đúng (có thể do cascade từ nơi khác hoặc Qt xử lý khoan dung phần đầu), nhưng phần ẩn mũi tên bị mất tác
+dụng hoàn toàn, mặc dù CSS hợp lệ nếu xét riêng từng phần. Sửa bằng cách bọc đúng `QComboBox { ... }` cho
+`kComboStyle`. Xác nhận lại bằng ảnh chụp sau khi sửa: "Nút: Trái" sạch hoàn toàn, khớp với "Loại".
+
+Đã audit toàn bộ các nơi dùng `ComboBoxStyle::noArrow()` khác (8 file `*UiStyle.h` của các tool còn lại,
+`DurationInput.cpp`, `m_typeCombo`) - tất cả đều dùng đúng selector có bao `{ }` (hoặc danh sách selector
+phân tách bằng dấu phẩy `QLineEdit, QComboBox, QSpinBox { ... }`, cũng hợp lệ) nên KHÔNG dính lỗi này.
+
+**3. Mũi tên lên/xuống còn sót ở QSpinBox**: v1.19.8 chỉ tắt nút mũi tên cho `DurationInput` (ô thời gian)
+qua `setButtonSymbols(NoButtons)` - các `QSpinBox` khác (tọa độ X/Y, số bước...) chưa từng được xử lý. Rà
+soát toàn bộ `src/` (grep `new QSpinBox(`/`new QDoubleSpinBox(`) tìm thấy 17 ô còn thiếu: 8 ô trong
+`ActionEditorWidget.cpp` (Vị trí X/Y của Click/Giữ chuột/Hotkey Click, Số bước Cuộn/Hotkey Cuộn) + 9 ô ở
+tool khác (QR: vĩ độ, kinh độ, kích thước ảnh, viền trắng; Disk Cleanup: ngưỡng tệp lớn, ngưỡng trùng lặp,
+đổi kích thước phân vùng; Connect: cổng ghép đôi; Android: bitrate) - thêm `setButtonSymbols(NoButtons)`
+cho toàn bộ, đồng bộ với yêu cầu người dùng ("đồng bộ cho toàn bộ tiện ích").
+
+**4. Con trỏ ngón tay khi hover vào combo** (yêu cầu mới của người dùng, chưa làm ở các đợt trước): hàm mới
+`ComboBoxStyle::applyCursor(QWidget* root)` tự tìm mọi `QComboBox` hậu duệ qua `findChildren` (không cần
+widget cha trực tiếp, đi theo quan hệ QObject parent-child) và gán `Qt::PointingHandCursor` - chỉ cần gọi
+MỘT LẦN ở cấp cửa sổ cao nhất SAU KHI mọi combo con đã dựng xong. Áp dụng ở cuối constructor của cả 9 cửa
+sổ chính (`AutoClickWindow`, `WifiWindow`, `QRWindow`, `DiskCleanupWindow`, `AndroidControlWindow`,
+`VpnControlWindow`, `SecurityGatewayWindow`, `DownloaderWindow`, `ConnectWindow`) + 2 hộp thoại độc lập tạo
+SAU lúc cửa sổ chính đã dựng xong (`ConnectDialog`, `AddVpnProfileDialog` - combo của chúng không tồn tại
+tại thời điểm cửa sổ cha gọi `applyCursor()` nên phải tự gọi lại ở chính hộp thoại).
+
+**5. Bỏ nút "Nạp cấu hình"**: xóa hẳn nút, slot `onLoadProfile()`, kết nối, khai báo trong header - không
+để lại code chết. Chức năng "Lưu/Xuất/Nhập" vẫn còn nguyên.
+
+**Thêm test hồi quy** trong `autoclick_tests.cpp`: duyệt mọi `QComboBox` hậu duệ của `ActionEditorWidget`,
+xác nhận stylesheet (nếu có) LUÔN bắt đầu bằng `"QComboBox"` (bắt đúng kiểu lỗi "khối khai báo trần" vừa
+tìm ra, tránh tái diễn khi sửa code sau này) và cursor đã là `PointingHandCursor`.
+
+**Đã xác nhận**: build sạch; 123/123 test `autoclick_tests` (+2 mới); toàn bộ 16 bộ test các tool khác
+(qr/wifi/connect/diskcleanup/android/vpn/security/downloader, cả `_tests` lẫn `_ui_tests`) đều pass - không
+hồi quy dù lần sửa này trải rộng khắp 8 tool cùng lúc; `core_stress_tests` 551/551 pass sạch hoàn toàn. Đã
+xác nhận bằng ảnh chụp thật (trước/sau, cắt ảnh phóng to đối chiếu pixel): combo "Nút" và spinbox X/Y không
+còn mũi tên, khớp với combo "Loại"/"ms" đã đúng từ trước.
+
+**CHƯA xác nhận được bằng ảnh chụp** góc menu chuột phải sau khi sửa: đã thử 2 cách tự động hóa (UI
+Automation enumerate top-level windows của process, raw Win32 `EnumWindows` lọc theo PID) đều không bắt
+được popup window riêng biệt kịp lúc trước khi nó tự đóng - giới hạn công cụ tự động hóa trong môi trường
+này với loại cửa sổ popup thoáng qua, không phải dấu hiệu bản sửa sai. Tin tưởng vào `WA_TranslucentBackground`
+là kỹ thuật Qt chuẩn, được tài liệu hóa rõ ràng cho đúng vấn đề "góc đen quanh widget bo tròn trên popup
+không composite" - cần tự xác nhận bằng mắt thường trên máy thật.
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
@@ -2074,6 +2143,7 @@ Quy tắc đứng nằm ở `CLAUDE.md` (gốc dự án). Tóm tắt - mỗi l�
 | 2026-10-10 | Auto Click: hiện đại hóa UI + tổ hợp phím có thứ tự (v1.19.7) | Chi tiết đầy đủ ở mục 4v. 8 điểm từ ảnh chụp thật người dùng gửi: menu chuột phải hiện đại + icon 👆 dùng chung (`ModernMenu`, áp dụng cả Downloader); bỏ viền focus xấu trong bảng hành động; Esc hủy capture tọa độ qua hook `WH_KEYBOARD_LL` thay vì `keyPressEvent` không đáng tin; ô Timing đổi sang `DurationInput` (số + đơn vị ms/s/m/h) dùng chung; trang "Kéo chuột" chỉ còn nút bắt thật; tổ hợp phím hiện số thứ tự đã bấm + tự dồn khi bỏ chọn giữa (field `modOrder` mới, `effectiveModOrder()` tự suy luận cho hồ sơ JSON cũ không vỡ tương thích); đổi tên "Phím tắt"→"Tổ hợp phím" + thêm "Kết thúc bằng" Cuộn chuột/Click chuột (vd Ctrl+Cuộn = zoom); HUD tự quay về vị trí gốc khi hết va chạm. 109/109 test (+9 mới), `core_stress_tests` không hồi quy ở phần Auto Click. Chưa xác nhận được bằng ảnh chụp tự động trang "Tổ hợp phím" mới và menu mới - popup `QComboBox`/`QMenu` là cửa sổ riêng, 3 cách UI Automation thử đều không đổi/chụp được nó trong môi trường này; đã xác nhận qua code review + unit test, cần tự xem bằng mắt thường. |
 | 2026-10-11 | Auto Click: dọn giao diện chính + con trỏ ngón tay + sửa đơn vị thời gian (v1.19.8) | Chi tiết đầy đủ ở mục 4w. 6 điểm tiếp theo từ ảnh chụp thật: thông báo "Đang tự khởi động lại..." trước khi thoát để cập nhật (trễ 1.5s, vẫn trong hạn 60s của tiến trình trợ giúp); menu chuột phải đổi CON TRỎ CHUỘT thành ngón tay trỏ thay vì icon 👆 vẽ trên từng dòng (v1.19.7 không đúng ý); bỏ nút Dừng + nhãn Trạng thái ở cửa sổ chính (trùng minibox/đã có cảnh báo lỗi riêng); `ChainListWidget` bỏ nút Nhân bản/Xóa dưới danh sách + "Chạy chuỗi này" trong chuột phải (trùng chức năng), thêm "Ghim lên"/"Bỏ ghim" (đưa lên đầu + nhãn 📌, không ép giữ mãi trên cùng) và kéo-thả đổi thứ tự chuỗi; `ActionListWidget` bỏ "Sửa" trong chuột phải (không có tác dụng gì khác click chọn hàng) + nút Nhân bản/Xóa dưới bảng; bỏ icon mũi tên ▾ trên MỌI QComboBox toàn bộ 9 công cụ (`ComboBoxStyle::noArrow()` mới); `DurationInput` đổi đơn vị không còn quy đổi số hiển thị (trước đây "500"→"0.5" khi chọn giây, giờ số giữ nguyên, chỉ đổi ý nghĩa đơn vị). 121/121 test (+12 mới), `core_stress_tests` 547/549 pass, phần Auto Click (76/76) không hồi quy - 2 lỗi còn lại thuộc `UpdateInstaller::buildHelperScript`, có từ trước v1.19.7, không liên quan đợt sửa này. Chưa xác nhận bằng mắt thường: thông báo restart khi có bản cập nhật thật, con trỏ ngón tay thật, ghim/kéo-thả chuột thật. |
 | 2026-10-11 | Sửa lỗi tự cập nhật thất bại ngẫu nhiên, ExitCode=1 (v1.19.9) | Chi tiết đầy đủ ở mục 4x. Người dùng báo kèm ảnh chụp "Cập nhật lần trước thất bại - ExitCode=1", tải 100% lúc cập nhật được lúc không. Nguyên nhân thật tìm qua đọc code (không đoán): app cố ý không giới hạn 1 bản sao (`CreateMutexW` trong main.cpp) + Inno Setup dùng cùng tên mutex (`AppMutex=OneForAllRunningMutex`) để phát hiện app đang chạy ở bước khởi tạo + `/CLOSEAPPLICATIONS` không có `/FORCECLOSEAPPLICATIONS` trong khi app chưa đăng ký Restart Manager -> không đóng êm được một cửa sổ OneForAll.exe KHÁC đang chạy -> Setup tự hủy ngay, đúng ExitCode=1 "Setup failed to initialize". Sửa `buildHelperScript`: thêm vòng chờ tối đa 30s (Get-Process/Where-Object theo đường dẫn exe) cho bản sao khác tự thoát (không ép đóng - không an toàn với thao tác người dùng đang dở ở cửa sổ khác) + thử lại cài đặt tối đa 5 lần nếu vẫn lỗi. Sửa chữ hộp thoại theo góp ý UX người dùng (không ngụ ý 100% tải = xong ngay). Phát hiện và sửa luôn 1 lỗi pre-existing trong fuzz test buildHelperScript (baseline hardcode lạc hậu từ v1.19.5 - đổi sang so sánh động). 95/95 test (+6 mới); core_stress_tests 551/551 pass sạch hoàn toàn - lần đầu tiên trong phiên không còn lỗi nào. Chưa xác nhận bằng một lần cập nhật thật trên máy có 2 bản sao chạy cùng lúc. |
+| 2026-10-11 | Sửa góc đen ở menu + mũi tên còn sót ở combo/spinbox + bỏ nút Nạp cấu hình (v1.19.10) | Chi tiết đầy đủ ở mục 4y. Người dùng gửi 2 ảnh chụp thật, nêu 3 điểm. (1) Góc đen ở menu chuột phải dù đã bo góc - QMenu là popup không trong suốt mặc định, sửa bằng `Qt::WA_TranslucentBackground`. (2) Combo "Nút"/"Phím"/"Hướng" vẫn còn mũi tên dù v1.19.8 đã thêm ComboBoxStyle::noArrow() - tìm đúng nguyên nhân bằng ảnh chụp so sánh (không đoán): `kComboStyle` dùng khối CSS TRẦN không có selector `QComboBox {}` bao ngoài, nối với rule có selector của noArrow() khiến Qt không áp dụng đúng rule phía sau; xác nhận qua so sánh combo "Loại"/"ms" (đã bọc đúng) sạch còn "Nút" (thiếu bọc) thì không - sửa bằng cách bọc đúng selector, audit toàn bộ nơi khác dùng noArrow() đều đã đúng. Tiện thể bổ sung `setButtonSymbols(NoButtons)` cho 17 QSpinBox còn thiếu (8 ở Auto Click + 9 ở QR/Disk Cleanup/Connect/Android). Thêm `ComboBoxStyle::applyCursor()` đổi con trỏ ngón tay khi hover qua mọi combo, áp dụng 9 cửa sổ chính + 2 dialog độc lập. (3) Bỏ nút "Nạp cấu hình" theo yêu cầu người dùng. Thêm test hồi quy bắt đúng lỗi "CSS thiếu selector". 123/123 autoclick_tests (+2 mới) và toàn bộ 16 bộ test các tool khác đều pass - không hồi quy dù sửa trải khắp 8 tool; core_stress_tests 551/551 pass sạch. Đã xác nhận bằng ảnh chụp thật combo/spinbox hết mũi tên; chưa xác nhận được bằng ảnh chụp góc menu (môi trường không bắt được popup window kịp lúc) - tin vào kỹ thuật Qt chuẩn, cần tự xem trên máy thật. |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `

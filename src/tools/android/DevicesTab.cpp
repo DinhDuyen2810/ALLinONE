@@ -210,6 +210,7 @@ void DevicesTab::buildUi()
     m_bitRateSpin->setRange(1, 64);
     m_bitRateSpin->setValue(8);
     m_bitRateSpin->setSuffix(" Mbps");
+    m_bitRateSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
     optsLayout->addRow("Chất lượng hình (bitrate):", m_bitRateSpin);
 
     m_maxFpsCombo = new QComboBox(this);

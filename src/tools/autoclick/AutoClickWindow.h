@@ -62,7 +62,6 @@ private slots:
 
     // Storage slots
     void onSaveProfile();
-    void onLoadProfile();
     void onExportProfile();
     void onImportProfile();
 
@@ -112,7 +111,6 @@ private:
     QSpinBox* m_repeatSpin;
     QCheckBox* m_infiniteCheck;
     QPushButton* m_saveButton;
-    QPushButton* m_loadButton;
     QPushButton* m_exportButton;
     QPushButton* m_importButton;
 
