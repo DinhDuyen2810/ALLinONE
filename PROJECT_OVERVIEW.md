@@ -2117,6 +2117,35 @@ trắng; mã không tồn tại -> thông báo 404 riêng.
 **CHƯA kiểm chứng**: bấm bằng chuột thật trong app đang chạy (RDP không gửi được chuột/phím thật; logic đã kiểm bằng
 `click()` của Qt); trang đồng ý cookie của Google (EU) chưa gặp thật - chỉ có test chuỗi cho `continue=`.
 
+## 4zc. QR Vị trí: ô tọa độ rộng hơn + nút co vừa chữ; con trỏ ngón tay trên danh sách công cụ (2026-10-13, v1.19.14)
+
+Người dùng gửi ảnh trang QR Vị trí (giá trị tọa độ bị cắt: `21.00515'`, `105.8454'`) và yêu cầu: cho ô vĩ độ/kinh độ rộng
+ra, hai nút co vừa chữ để có chỗ; thêm con trỏ ngón tay khi rê lên các tiện ích trong danh sách; build + phát hành.
+
+**1. Ô tọa độ bị cắt chữ (sửa bố cục v1.19.13).** v1.19.13 cố định bề rộng hai ô theo `sizeHint()`, nhưng `sizeHint()`
+của `QDoubleSpinBox` lúc dựng chưa tính padding 8px/bên của stylesheet (stylesheet nhóm áp dụng SAU khi widget được tạo)
+nên ô hẹp hơn chữ 6 chữ số thập phân. Nay: bề rộng TỐI THIỂU = `horizontalAdvance("-180.000000")` + 16 (padding) + 2 (viền)
++ 20 (dư cho DPI/cỡ chữ khác) và ô được GIÃN theo cột (`QSizePolicy::Expanding`, lưới `QGridLayout` 3 cột: nhãn | ô
+giá trị cột giãn | nút canh trái); hai nút `QSizePolicy::Fixed` = đúng `sizeHint()` (co vừa chữ). Mục 4zb ghi "ô thu hẹp" là
+mô tả bố cục CŨ, đã được thay bằng mục này. `qr_ui_tests` kiểm ở 860x560 / 1020x660 / 1400x800: không widget nào vượt
+viewport cột trái, ô tọa độ không cắt chữ với giá trị dài nhất (`-179.999999`/`-89.999999`), nút bằng `sizeHint()`.
+
+**2. Con trỏ ngón tay trên danh sách công cụ.** Helper dùng chung `src/ui/widgets/ItemHoverCursor.h` (header-only,
+`ItemHoverCursor::install(QAbstractItemView*)`): bật mouse tracking, lọc `MouseMove` trên viewport và đặt
+`Qt::PointingHandCursor` CHỈ khi `indexAt(pos)` hợp lệ (vùng trống bên dưới danh sách giữ mũi tên - `viewport()->setCursor()`
+cố định sẽ phủ cả vùng trống); `Leave`/`Hide` trả lại mũi tên. Gắn vào `MainWindow::m_toolListWidget` bằng một dòng.
+Dùng lại được cho danh sách/bảng khác (chưa gắn - người dùng chỉ yêu cầu danh sách công cụ).
+
+**Phát hành**: bản đầu tiên được TAG sau v1.19.10 - các v1.19.11-v1.19.13 chưa từng được tag (Release cũ đã bị xóa), nên
+`v1.19.14` gồm toàn bộ nội dung các mục 4z, 4za, 4zb, 4zc.
+
+**Kiểm thử**: `autoclick_tests` 201/201 (thêm 7 cho helper: trên mục -> ngón tay; vùng trống -> mũi tên; rời -> mũi tên; null
+an toàn), `qr_ui_tests` 190/190, `qr_tests` 182/182, `qrwifi_stress_tests` 760.141/760.141.
+
+**CHƯA kiểm chứng**: con trỏ thật khi rê chuột trong cửa sổ chính (RDP không cho di chuyển chuột thật; helper kiểm bằng
+`MouseMove` giả, dòng gắn vào `MainWindow` chưa có test riêng vì `MainWindow` nằm trong exe, không có trong thư viện test);
+hiển thị ở DPI/cỡ chữ Windows khác.
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
@@ -2277,6 +2306,7 @@ Quy tắc đứng nằm ở `CLAUDE.md` (gốc dự án). Tóm tắt - mỗi l�
 | 2026-10-13 | Auto Click: làm lại "Ghi nhớ chuỗi" + cache chỉnh sửa chưa lưu trên nền v1.19.10 (v1.19.11) | Chi tiết đầy đủ ở mục 4z. Sau khi người dùng yêu cầu quay code về ĐÚNG v1.19.10 (xóa mọi commit/tag sau đó, lưu lịch sử yêu cầu ở `YEU_CAU_SAU_1.19.10.md`), người dùng gửi lại 2 yêu cầu Auto Click: (1) loại hành động "Ghi nhớ chuỗi" - ghi macro chuột+bàn phím thật toàn máy, minibox ĐỨNG YÊN lúc ghi / né chuột lúc chạy chuỗi; (2) chỉnh sửa chưa lưu không mất khi đổi sang hành động khác (cache theo từng hàng, dấu `*`, chỉ hỏi lúc RUN/đóng cửa sổ). Port CÓ CHỌN LỌC từ lịch sử git (`cherry-pick -n 51ac6ab` + phần cache của `ae232ec` + phần sửa minibox của bản cuối), KHÔNG mang theo cơ chế giao diện nào (không `PopupCornerFix`/`WindowTheme`/Fusion/`paintEvent`/sửa style) - giao diện giữ y hệt v1.19.10, `git diff v1.19.10` ngoài Auto Click chỉ khác `CMakeLists.txt` (thêm `ActionRecorder.cpp`). `autoclick_tests` 165/165, `core_stress_tests` 551/551; xác nhận thật trên app đang chạy: trang "Ghi nhớ chuỗi" hiển thị đúng phong cách, cache giữ `*` + nạp lại đúng bản dở khi quay lại hàng. CHƯA kiểm chứng được: ghi/phát lại macro thật bằng hook toàn cục + `SendInput`, hành vi minibox khi ghi/chạy (cần thử tay trên máy thật). |
 | 2026-10-13 | QR Tools: làm lại các cải tiến đã mất + con trỏ ngón tay cho mọi nút bấm (v1.19.12) | Chi tiết đầy đủ ở mục 4za. Người dùng gửi lại danh sách yêu cầu QR Tools + con trỏ đã mất khi quay về v1.19.10: WiFi chọn nhanh từ hồ sơ đã lưu + nút "Kết nối WiFi" khi quét ra mã WiFi; Vị trí có "Lấy vị trí hiện tại" (theo IP công khai) + "Mở bản đồ" (Google Maps) + dán link Google Maps; Quét ẩn khung "KẾT QUẢ" khi chỉ có 1 mã, nhận diện email/SĐT trong văn bản tự do, bảng bo góc đồng bộ; Tạo mã chỉ còn 5 loại; con trỏ ngón tay mở rộng sang mọi `QPushButton`. Port CÓ CHỌN LỌC từ `ae232ec` + phần dán link của `14baffc`, KHÔNG mang theo cơ chế giao diện nào (không `PopupCornerFix`/`WindowTheme`/Fusion/bản đồ nhúng). `qr_tests` 136/136, `qr_ui_tests` 165/165, `wifi_tests` 119/119, `qrwifi_stress_tests` 760.699/760.699, `disk_vpn_stress_tests` 7.320/7.320; xác nhận thật trên app đang chạy: 5 loại, 2 nút Vị trí + ô dán link, combo "WiFi đã lưu". CHƯA kiểm chứng: gọi thật `ipwho.is`, mở Google Maps thật, kết nối WiFi thật từ mã QR, hình ảnh thực tế trên máy thật. |
 | 2026-10-13 | Sửa lỗi bấm "Lưu hành động" 2 lần + gọn lại trang QR Vị trí + link rút gọn Google Maps (v1.19.13) | Chi tiết đầy đủ ở mục 4zb. Người dùng gửi ảnh + 3 yêu cầu: (1) trang QR Vị trí vượt chiều rộng - đã bố trí lại (ô giá trị thu hẹp, nút nằm cạnh, có test chống vượt cột trái ở 860/1020/1400px); (2) không đọc được link rút gọn `maps.app.goo.gl` - nay gửi 1 yêu cầu GET tới Google, đọc header `Location`, tách tọa độ (ưu tiên điểm ghim `!3d!4d`), chỉ theo host Google; xác nhận qua mạng thật với link của người dùng; (3) phải bấm Lưu 2 lần - nguyên nhân gốc: `setActions()` tự phát `currentCellChanged` ngay khi editor còn "dirty" nên bản vừa lưu bị chụp lại thành cache chưa lưu (lỗi do cache v1.19.11, không có ở v1.19.10), cùng lỗ hổng ở "Lưu lại trước khi chạy?" và Nhân bản/Xóa/Dời; tái hiện bằng test trước khi sửa, sửa bằng `ScopedFlag`. `autoclick_tests` 194/194, `core_stress_tests` 551/551, `qr_tests` 182/182, `qr_ui_tests` 172/172, `qrwifi_stress_tests` 760.292/760.292. CHƯA kiểm chứng: bấm chuột thật trong app, trang đồng ý cookie EU. |
+| 2026-10-13 | QR Vị trí: ô tọa độ rộng hơn + nút co vừa chữ; con trỏ ngón tay trên danh sách công cụ (v1.19.14) | Chi tiết đầy đủ ở mục 4zc. Người dùng gửi ảnh ô tọa độ bị cắt chữ số cuối: nguyên nhân là bề rộng cố định lấy từ `sizeHint()` (chưa tính padding stylesheet) - nay bề rộng tối thiểu tính theo chữ thật của `-180.000000`, ô giãn theo cột, hai nút co vừa chữ (lưới 3 cột), có test ở 860/1020/1400px. Thêm helper `ItemHoverCursor` (ngón tay trỏ khi rê lên MỘT MỤC của danh sách, vùng trống giữ mũi tên) gắn vào danh sách công cụ của cửa sổ chính. Bản đầu tiên được tag sau v1.19.10. `autoclick_tests` 201/201, `qr_ui_tests` 190/190, `qr_tests` 182/182, `qrwifi_stress_tests` 760.141/760.141. CHƯA kiểm chứng: con trỏ thật trong cửa sổ chính, DPI khác. |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `

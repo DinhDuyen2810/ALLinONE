@@ -16,6 +16,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QGridLayout>
 #include <QGroupBox>
 #include <QGuiApplication>
 #include <QHBoxLayout>
@@ -183,9 +184,11 @@ QWidget* QRGenerateTab::makePhonePage()
 QWidget* QRGenerateTab::makeGeoPage()
 {
     auto* w = new QWidget(this);
-    // Bố cục: MỖI hàng tọa độ = nhãn | ô giá trị | nút nằm ngay cạnh. Giá trị tọa độ chỉ cần ~12 ký tự nên ô
-    // được THU HẸP (tối đa 125px) nhường chỗ cho nút. Trước đây mỗi ô tọa độ chiếm trọn chiều ngang còn hai
-    // nút xếp thành một hàng riêng - tổng chiều ngang vượt cột trái (cột trái là QScrollArea TẮT thanh cuộn
+    // Bố cục: MỖI hàng tọa độ = nhãn | ô giá trị | nút nằm ngay cạnh. Nút CO VỪA CHỮ (không giãn) để nhường chỗ
+    // cho ô giá trị; ô giá trị có bề rộng tối thiểu tính theo ĐỘ RỘNG CHỮ THẬT của "-180.000000" (6 chữ số thập
+    // phân, không dựa vào sizeHint - sizeHint lúc dựng chưa tính padding của stylesheet nên làm ô quá hẹp, cắt
+    // mất chữ số cuối) và được giãn ra khi cột trái rộng hơn. Trước đây mỗi ô tọa độ chiếm trọn chiều ngang còn
+    // hai nút xếp thành một hàng riêng - tổng chiều ngang vượt cột trái (cột trái là QScrollArea TẮT thanh cuộn
     // ngang) nên phần bên phải bị cắt mất. Mọi hàng dưới đây phải VỪA bề rộng tối thiểu của cột trái.
     auto* v = new QVBoxLayout(w);
     v->setContentsMargins(0, 6, 0, 6);
@@ -204,7 +207,10 @@ QWidget* QRGenerateTab::makeGeoPage()
         sp->setDecimals(6);
         sp->setValue(value);
         sp->setButtonSymbols(QAbstractSpinBox::NoButtons);
-        sp->setMaximumWidth(125);
+        // Chữ rộng nhất ("-180.000000") + đệm ngang của stylesheet (8px mỗi bên) + viền (1px mỗi bên) + dư để
+        // chữ số cuối không bị cắt (kể cả khi người dùng chỉnh DPI/cỡ chữ Windows).
+        sp->setMinimumWidth(sp->fontMetrics().horizontalAdvance("-180.000000") + 16 + 2 + 20);
+        sp->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         return sp;
     };
     // Nút thu gọn đệm ngang (8px thay vì 14px) để vừa cột trái ở cỡ cửa sổ nhỏ nhất.
@@ -214,11 +220,6 @@ QWidget* QRGenerateTab::makeGeoPage()
     m_geoLon = makeCoordSpin(-180.0, 180.0, 105.804817);
     connect(m_geoLat, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, &QRGenerateTab::scheduleRefresh);
     connect(m_geoLon, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, &QRGenerateTab::scheduleRefresh);
-    // Hai ô CÙNG một bề rộng (theo ô rộng hơn - kinh độ có thêm 1 chữ số) để hai nút bên phải thẳng hàng.
-    const int spinWidth = qMin(125, qMax(m_geoLat->sizeHint().width(), m_geoLon->sizeHint().width()));
-    m_geoLat->setFixedWidth(spinWidth);
-    m_geoLon->setFixedWidth(spinWidth);
-
     // "Lấy vị trí hiện tại": KHÔNG phải GPS thật - Windows chỉ cấp quyền "System location" cho app MSIX đã
     // duyệt, Win32 không đóng gói không gọi được dù có quyền Administrator (đã xác nhận ở module VPN &
     // Location, xem PublicIpChecker.h) - đây là vị trí ƯỚC LƯỢNG theo vùng phủ của địa chỉ IP công khai
@@ -230,24 +231,25 @@ QWidget* QRGenerateTab::makeGeoPage()
     m_geoMapButton = new QPushButton("🗺 Mở bản đồ", w);
     m_geoMapButton->setToolTip("Mở Google Maps tại tọa độ đang nhập bằng trình duyệt mặc định");
     m_geoMapButton->setStyleSheet(compactButton);
+    // Nút CO VỪA CHỮ (đúng sizeHint, không giãn) - nhường chỗ cho hai ô tọa độ.
     for (QPushButton* b : {m_geoLocateButton, m_geoMapButton})
-        b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        b->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     connect(m_geoLocateButton, &QPushButton::clicked, this, &QRGenerateTab::onLocateMe);
     connect(m_geoMapButton, &QPushButton::clicked, this, &QRGenerateTab::onOpenMap);
 
-    auto* latRow = new QHBoxLayout();
-    latRow->setSpacing(8);
-    latRow->addWidget(makeCoordLabel("Vĩ độ:", "Vĩ độ (Latitude), từ -90 đến 90"));
-    latRow->addWidget(m_geoLat);
-    latRow->addWidget(m_geoLocateButton, 1);
-    v->addLayout(latRow);
-
-    auto* lonRow = new QHBoxLayout();
-    lonRow->setSpacing(8);
-    lonRow->addWidget(makeCoordLabel("Kinh độ:", "Kinh độ (Longitude), từ -180 đến 180"));
-    lonRow->addWidget(m_geoLon);
-    lonRow->addWidget(m_geoMapButton, 1);
-    v->addLayout(lonRow);
+    // Lưới 3 cột: nhãn | ô giá trị (cột giãn) | nút (co vừa chữ, canh trái) - hai ô tọa độ luôn cùng bề rộng
+    // và thẳng hàng với nhau dù hai nút dài ngắn khác nhau.
+    auto* coordGrid = new QGridLayout();
+    coordGrid->setHorizontalSpacing(8);
+    coordGrid->setVerticalSpacing(8);
+    coordGrid->setColumnStretch(1, 1);
+    coordGrid->addWidget(makeCoordLabel("Vĩ độ:", "Vĩ độ (Latitude), từ -90 đến 90"), 0, 0);
+    coordGrid->addWidget(m_geoLat, 0, 1);
+    coordGrid->addWidget(m_geoLocateButton, 0, 2, Qt::AlignLeft);
+    coordGrid->addWidget(makeCoordLabel("Kinh độ:", "Kinh độ (Longitude), từ -180 đến 180"), 1, 0);
+    coordGrid->addWidget(m_geoLon, 1, 1);
+    coordGrid->addWidget(m_geoMapButton, 1, 2, Qt::AlignLeft);
+    v->addLayout(coordGrid);
 
     // "Dán link Google Maps để lấy vị trí" (yêu cầu người dùng). Link ĐẦY ĐỦ: đọc tọa độ trực tiếp từ URL,
     // không gọi mạng. Link RÚT GỌN (maps.app.goo.gl/...): URL không chứa tọa độ nên phải mở 1 yêu cầu tới

@@ -30,6 +30,7 @@
 #include "tools/autoclick/widgets/ActionListWidget.h"
 #include "tools/autoclick/widgets/ChainListWidget.h"
 #include "ui/widgets/DurationInput.h"
+#include "ui/widgets/ItemHoverCursor.h"
 
 static int g_fail = 0, g_pass = 0;
 #define CHECK(cond)                                                            \
@@ -790,6 +791,39 @@ int main(int argc, char** argv)
                 CHECK(!win.isVisible());
             }
         }
+    }
+
+    // ---- ItemHoverCursor: ngón tay trỏ CHỈ khi chuột nằm trên một mục (danh sách công cụ ở cửa sổ chính) ----
+    {
+        QListWidget list;
+        for (const char* n : {"Auto Click", "QR Tools", "Disk Cleanup"})
+            list.addItem(n);
+        list.setAttribute(Qt::WA_DontShowOnScreen, true);
+        list.resize(220, 400);
+        list.show();
+        app.processEvents();
+        ItemHoverCursor::install(&list);
+        QWidget* vp = list.viewport();
+        CHECK(list.hasMouseTracking() && vp->hasMouseTracking()); // nhận MouseMove khi chưa bấm nút nào
+        CHECK(vp->cursor().shape() == Qt::ArrowCursor);
+        const QPoint onItem = list.visualItemRect(list.item(1)).center();
+        const QPoint emptyArea(vp->width() / 2, vp->height() - 5); // dưới mục cuối - không có gì để bấm
+        CHECK(!list.indexAt(emptyArea).isValid());
+        auto move = [&](const QPoint& p) {
+            QMouseEvent ev(QEvent::MouseMove, QPointF(p), QPointF(vp->mapToGlobal(p)), Qt::NoButton, Qt::NoButton,
+                           Qt::NoModifier);
+            QApplication::sendEvent(vp, &ev);
+        };
+        move(onItem);
+        CHECK(vp->cursor().shape() == Qt::PointingHandCursor);
+        move(emptyArea);
+        CHECK(vp->cursor().shape() == Qt::ArrowCursor); // vùng trống: trả lại mũi tên
+        move(onItem);
+        CHECK(vp->cursor().shape() == Qt::PointingHandCursor);
+        QEvent leave(QEvent::Leave);
+        QApplication::sendEvent(vp, &leave);
+        CHECK(vp->cursor().shape() == Qt::ArrowCursor); // rời khỏi danh sách: trả lại mũi tên
+        ItemHoverCursor::install(nullptr);               // null an toàn
     }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);

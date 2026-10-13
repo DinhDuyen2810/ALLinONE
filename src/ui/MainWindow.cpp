@@ -11,6 +11,7 @@
 #include "core/IconHelper.h"
 #include "core/Version.h"
 #include "core/update/UpdateInstaller.h"
+#include "ui/widgets/ItemHoverCursor.h"
 #include <QApplication>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
@@ -161,6 +162,9 @@ void MainWindow::setupUi()
         "QListWidget::item:hover { background-color: #e4e7eb; color: #1f2328; }"
         "QListWidget::item:selected { background-color: #0969da; color: #ffffff; font-weight: bold; }"
     );
+    // Con trỏ ngón tay trỏ khi rê lên một công cụ trong danh sách (yêu cầu người dùng) - chỉ trên mục, không
+    // phải vùng trống bên dưới (xem ItemHoverCursor.h).
+    ItemHoverCursor::install(m_toolListWidget);
     sidebarLayout->addWidget(m_toolListWidget, 1);
 
     auto* versionLabel = new QLabel(QString("Phiên bản %1 (C++20 & Qt 6)").arg(APP_VERSION), this);

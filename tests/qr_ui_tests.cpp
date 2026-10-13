@@ -631,6 +631,28 @@ int main(int argc, char** argv)
                 }
                 CHECK(checked >= 8); // có thật các widget để kiểm (nhãn, 2 ô tọa độ, 2 nút, ô link, nút link, trạng thái)
                 CHECK(overflow == 0);
+                // Ô tọa độ KHÔNG được cắt chữ (ảnh người dùng: "21.00515'" mất chữ số cuối) - thử với chuỗi DÀI
+                // NHẤT của từng ô; hai nút phải CO VỪA CHỮ (không giãn) để nhường chỗ cho ô tọa độ.
+                for (QDoubleSpinBox* sp : page->findChildren<QDoubleSpinBox*>())
+                {
+                    const double keep = sp->value();
+                    sp->setValue(sp->minimum() < -100.0 ? -179.999999 : -89.999999);
+                    app.processEvents();
+                    QLineEdit* le = sp->findChild<QLineEdit*>();
+                    CHECK(le && le->fontMetrics().horizontalAdvance(sp->text()) <= le->width() - 4);
+                    if (le && le->fontMetrics().horizontalAdvance(sp->text()) > le->width() - 4)
+                        std::printf("  ô tọa độ cắt chữ ở %dx%d: '%s' rộng %d > %d\n", size.width(), size.height(),
+                                    sp->text().toUtf8().constData(), le->fontMetrics().horizontalAdvance(sp->text()),
+                                    le->width() - 4);
+                    sp->setValue(keep);
+                }
+                for (const QString& t : {QString("📍 Lấy vị trí hiện tại"), QString("🗺 Mở bản đồ")})
+                {
+                    QPushButton* b = findButton(page, t);
+                    CHECK(b != nullptr);
+                    if (b)
+                        CHECK(b->width() <= b->sizeHint().width() + 2);
+                }
                 if (!shots.isEmpty())
                     win.grab().save(QString("%1/geo_%2x%3.png").arg(shots).arg(size.width()).arg(size.height()));
             }
