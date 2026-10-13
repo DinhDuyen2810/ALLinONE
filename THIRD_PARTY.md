@@ -53,6 +53,7 @@ Ghi chú tích hợp:
 - **Không commit** `vendor/` vào Git (xem `.gitignore`) - cùng lý do như `vendor/scrcpy/`. `build_app.bat` tự sao chép `vendor/yt-dlp/*` vào `OneForAll_Release/yt-dlp/` khi đóng gói.
 - Vì sao dùng yt-dlp có sẵn thay vì tự viết: trích xuất video từ hàng nghìn trang web khác nhau (mỗi trang một cách mã hóa/phân phối luồng riêng, thay đổi liên tục để chống tải) là bài toán cực lớn đã được yt-dlp (fork tích cực bảo trì của youtube-dl, cập nhật gần như hàng tuần) giải quyết - tự viết lại không khả thi và sẽ lỗi thời rất nhanh.
 - Đã xác nhận thật (không chỉ tin theo tài liệu): chạy `yt-dlp --dump-json`/tải thật một video ngắn công khai ("Me at the zoo", video YouTube đầu tiên) qua chính các lớp C++ của ứng dụng (`YtDlpInfoWorker`/`YtDlpDownloadWorker`) - lấy đúng thông tin định dạng, tải và ghép video+âm thanh thành công bằng ffmpeg bundled, tiến độ `--progress-template` đọc được chính xác.
+- **Trình duyệt ẩn (từ v1.19.16)**: tính năng quét sâu của Downloader chạy Microsoft Edge hoặc Google Chrome ĐÃ CÓ sẵn trên máy người dùng (`--headless=new`, hồ sơ tạm riêng) - ứng dụng KHÔNG đóng gói/phân phối trình duyệt nào, không thêm thư viện mới; không có Edge/Chrome thì bước này tự bỏ qua.
 
 ## Đã cân nhắc nhưng không dùng
 - **ZXing-cpp** (Apache-2.0, https://github.com/zxing-cpp/zxing-cpp): bộ đọc mạnh hơn, hỗ trợ nhiều loại mã vạch, nhưng lớn và cần thêm cấu hình build; có thể thay thế quirc sau nếu cần quét mã vạch 1D.

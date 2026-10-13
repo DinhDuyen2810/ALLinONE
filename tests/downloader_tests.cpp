@@ -15,6 +15,12 @@
 #include <memory>
 
 #include "tools/downloader/engine/FileDownloader.h"
+#include "tools/downloader/DownloadHistoryStore.h"
+#include "tools/downloader/DownloaderSettings.h"
+#include "tools/downloader/engine/DownloadQueue.h"
+#include "tools/downloader/engine/HeadlessBrowser.h"
+#include "tools/downloader/engine/LinkResolver.h"
+#include "tools/downloader/engine/LinkResolverCore.h"
 #include "tools/downloader/engine/PageMediaScanner.h"
 #include "tools/downloader/engine/YtDlpController.h"
 #include "tools/downloader/engine/YtDlpDownloadWorker.h"
@@ -23,70 +29,14 @@
 #include "tools/downloader/model/MediaLink.h"
 #include "tools/downloader/model/VideoInfo.h"
 
+#include "MiniHttpServer.h"
+
 static int g_fail = 0, g_pass = 0;
 #define CHECK(cond)                                                            \
     do {                                                                       \
         if (cond) { ++g_pass; }                                                \
         else { ++g_fail; std::printf("FAIL line %d: %s\n", __LINE__, #cond); } \
     } while (0)
-
-/// Máy chủ HTTP/1.1 tối thiểu trên 127.0.0.1 (cổng ngẫu nhiên): mỗi kết nối đọc MỘT yêu cầu, gọi
-/// `handler(phần đầu yêu cầu)` lấy nguyên văn các byte trả lời, ghi ra rồi đóng kết nối. Trả lời khai
-/// Content-Length lớn hơn số byte thật sự gửi = giả lập "đứt kết nối giữa chừng".
-struct MiniHttpServer
-{
-    QTcpServer server;
-    QList<QByteArray> requests; ///< Phần đầu (request line + header) của từng yêu cầu đã nhận, theo thứ tự
-    std::function<QByteArray(const QByteArray& head)> handler;
-
-    MiniHttpServer()
-    {
-        QObject::connect(&server, &QTcpServer::newConnection, &server, [this]() {
-            while (QTcpSocket* sock = server.nextPendingConnection())
-            {
-                auto buffer = std::make_shared<QByteArray>();
-                QObject::connect(sock, &QTcpSocket::readyRead, sock, [this, sock, buffer]() {
-                    buffer->append(sock->readAll());
-                    const int end = buffer->indexOf("\r\n\r\n");
-                    if (end < 0)
-                        return;
-                    const QByteArray head = buffer->left(end);
-                    buffer->clear();
-                    requests << head;
-                    sock->write(handler(head));
-                    sock->disconnectFromHost(); // ghi hết phần đã xếp hàng rồi mới đóng
-                });
-                QObject::connect(sock, &QTcpSocket::disconnected, sock, &QObject::deleteLater);
-            }
-        });
-        server.listen(QHostAddress::LocalHost, 0);
-    }
-
-    QString url(const QString& path) const { return QString("http://127.0.0.1:%1%2").arg(server.serverPort()).arg(path); }
-
-    /// Giá trị một header trong phần đầu yêu cầu (không phân biệt hoa thường), rỗng nếu không có.
-    static QByteArray header(const QByteArray& head, const QByteArray& name)
-    {
-        for (const QByteArray& line : head.split('\n'))
-        {
-            const int colon = line.indexOf(':');
-            if (colon > 0 && line.left(colon).trimmed().toLower() == name.toLower())
-                return line.mid(colon + 1).trimmed();
-        }
-        return {};
-    }
-    static QByteArray path(const QByteArray& head) { return head.split(' ').value(1); }
-
-    static QByteArray response(const QByteArray& statusLine, const QList<QByteArray>& headers, const QByteArray& body,
-                               qint64 declaredLength = -1)
-    {
-        QByteArray out = "HTTP/1.1 " + statusLine + "\r\nConnection: close\r\n";
-        for (const QByteArray& h : headers)
-            out += h + "\r\n";
-        out += "Content-Length: " + QByteArray::number(declaredLength >= 0 ? declaredLength : body.size()) + "\r\n\r\n";
-        return out + body;
-    }
-};
 
 /// Quay vòng lặp sự kiện tới khi `done()` đúng hoặc hết thời gian chờ.
 static bool waitUntil(const std::function<bool()>& done, int timeoutMs = 15000)
@@ -764,6 +714,666 @@ int main(int argc, char** argv)
         const VideoInfo huge = YtDlpInfoWorkerInternal::parseInfoJson(
             R"({"title":"x","duration":1e300,"formats":[{"format_id":"1","filesize":1e300}]})", &err);
         CHECK(err.isEmpty() && huge.formats.size() == 1 && huge.formats[0].approxSizeBytes == -1 && huge.durationSeconds == 0);
+    }
+
+    // ====================================================================================================
+    // LinkResolverCore - phần THUẦN của bộ phân giải link. Dữ liệu mẫu LẤY TỪ DỮ LIỆU THẬT thu thập khi thử
+    // các link người dùng gửi (trang phim motchill, trang Drive "không được phép tải", ảnh Facebook/TikTok
+    // do Edge dựng, JSON của yt-dlp, net-log của trình duyệt).
+    // ====================================================================================================
+    {
+        using namespace LinkResolverCore;
+
+        // ---- Nhập liệu: tách nhiều link từ đoạn văn dán vào (đúng 6 link người dùng đã gửi + chữ thừa) ----
+        const QString pasted =
+            "https://www.facebook.com/ctsvdhbkhn/videos/1068033449194736\n"
+            "https://www.facebook.com/qynhmaiiiz\r\n"
+            "  https://motchillt.one/phim/harry-potter-va-ten-tu-nhan-nguc-azkaban/tap-full-sv-0  \n"
+            "https://www.tiktok.com/@kiue.oahn/photo/7683433150571121940\n"
+            "https://www.studocu.vn/vn/document/university-of-transportation-hcmc/railway/giao-trinh-giai-tich-1/35467985?sid=6c5a5326-b09f-42ad-92b8-31908e5823df1791906882\n"
+            "https://drive.google.com/file/d/1ObltgwgTX8QHw7S36wFToyNJNUdosyKn/view\n"
+            "và các trang khác nữa\n"
+            "https://www.facebook.com/qynhmaiiiz\n"; // trùng -> bỏ
+        const QStringList urls = extractUrls(pasted);
+        CHECK(urls.size() == 6);
+        if (urls.size() == 6)
+        {
+            CHECK(urls[0].endsWith("/videos/1068033449194736"));
+            CHECK(urls[2].startsWith("https://motchillt.one/phim/"));
+            CHECK(urls[4].contains("?sid=6c5a5326"));
+            CHECK(urls[5].contains("drive.google.com"));
+        }
+        CHECK(extractUrls("(xem https://a.com/x), rồi www.b.com/y; c.org/z.").size() == 3);
+        CHECK(extractUrls("(xem https://a.com/x), rồi www.b.com/y; c.org/z.")[0] == "https://a.com/x");
+        CHECK(extractUrls("abc.jpg hello world file.txt").isEmpty()); // tên tệp KHÔNG phải link
+        CHECK(extractUrls("javascript:alert(1) file:///c:/x ftp://a/b").isEmpty());
+        CHECK(extractUrls("").isEmpty());
+
+        // ---- Google Drive / Docs ----
+        QString id;
+        CHECK(parseDriveFileId("https://drive.google.com/file/d/1ObltgwgTX8QHw7S36wFToyNJNUdosyKn/view", &id) &&
+              id == "1ObltgwgTX8QHw7S36wFToyNJNUdosyKn");
+        CHECK(parseDriveFileId("https://drive.google.com/open?id=1ObltgwgTX8QHw7S36wFToyNJNUdosyKn", &id) && id.size() == 33);
+        CHECK(parseDriveFileId("https://drive.google.com/uc?export=download&id=1ObltgwgTX8QHw7S36wFToyNJNUdosyKn", &id));
+        CHECK(parseDriveFileId("https://drive.google.com/u/0/file/d/1ObltgwgTX8QHw7S36wFToyNJNUdosyKn/edit", &id));
+        CHECK(!parseDriveFileId("https://drive.google.com/drive/folders/1ObltgwgTX8QHw7S36wFToyNJNUdosyKn", &id)); // thư mục
+        CHECK(!parseDriveFileId("https://example.com/file/d/1ObltgwgTX8QHw7S36wFToyNJNUdosyKn", &id)); // host lạ
+        CHECK(driveDirectUrl("ABC").contains("drive.usercontent.google.com/download?id=ABC") && driveDirectUrl("ABC").contains("confirm=t"));
+        QString exportUrl, ext;
+        CHECK(googleDocsExportUrl("https://docs.google.com/document/d/1ObltgwgTX8QHw7S36wFToyNJNUdosyKn/edit", &exportUrl, &ext) &&
+              ext == "pdf" && exportUrl.endsWith("/export?format=pdf"));
+        CHECK(googleDocsExportUrl("https://docs.google.com/spreadsheets/d/1ObltgwgTX8QHw7S36wFToyNJNUdosyKn/edit#gid=0", &exportUrl, &ext) && ext == "xlsx");
+        CHECK(googleDocsExportUrl("https://docs.google.com/presentation/d/1ObltgwgTX8QHw7S36wFToyNJNUdosyKn/edit", &exportUrl, &ext) && ext == "pptx");
+        CHECK(!googleDocsExportUrl("https://docs.google.com/forms/d/1ObltgwgTX8QHw7S36wFToyNJNUdosyKn", &exportUrl, &ext));
+
+        // Trang THẬT Drive trả khi chủ tệp không cho tải (đã thu qua GET): phải nhận ra là "không được phép".
+        const QString driveNoPerm =
+            "<!DOCTYPE html><html><head><title>Google Drive - Can&#39;t download file</title></head><body><div class=\"uc-main\">"
+            "<div id=\"uc-text\"><p class=\"uc-error-caption\">Sorry, the owner hasn&#39;t given you permission to download this file.</p>"
+            "<p class=\"uc-error-subcaption\">Only the owner and editors can download this file.</p></div></div></body></html>";
+        CHECK(classifyDriveHtml(driveNoPerm) == DriveBlock::NoPermission);
+        CHECK(!driveBlockMessage(DriveBlock::NoPermission).isEmpty() && driveBlockMessage(DriveBlock::None).isEmpty());
+        CHECK(classifyDriveHtml("<p>Quota exceeded for this file</p>") == DriveBlock::Quota);
+        CHECK(classifyDriveHtml("<html><body>ok file</body></html>") == DriveBlock::None);
+        const QString driveConfirm =
+            "<html><body><form id=\"download-form\" action=\"https://drive.usercontent.google.com/download\" method=\"get\">"
+            "<input type=\"hidden\" name=\"id\" value=\"1ABC\"><input type=\"hidden\" name=\"export\" value=\"download\">"
+            "<input type=\"hidden\" name=\"confirm\" value=\"t\"><input type=\"hidden\" name=\"uuid\" value=\"u-123\">"
+            "<input type=\"submit\" value=\"Download anyway\"></form></body></html>";
+        CHECK(classifyDriveHtml(driveConfirm) == DriveBlock::NeedsConfirm);
+        const QString confirmUrl = driveConfirmUrl(driveConfirm, "https://drive.google.com/uc?id=1ABC");
+        CHECK(confirmUrl.startsWith("https://drive.usercontent.google.com/download?") && confirmUrl.contains("id=1ABC") &&
+              confirmUrl.contains("confirm=t") && confirmUrl.contains("uuid=u-123") && !confirmUrl.contains("submit"));
+        CHECK(driveConfirmUrl("<html>không có form</html>", "https://x.com/").isEmpty());
+
+        // ---- Loại link ----
+        CHECK(siteOf("https://www.facebook.com/x") == Site::Facebook && siteOf("https://fb.watch/abc") == Site::Facebook);
+        CHECK(siteOf("https://www.tiktok.com/@a") == Site::TikTok && siteOf("https://youtu.be/abc") == Site::YouTube);
+        CHECK(siteOf("https://drive.google.com/file/d/x") == Site::GoogleDrive && siteOf("https://notfacebook.com/") == Site::Generic);
+        CHECK(isLikelyProfileOrCollectionUrl("https://www.tiktok.com/@kiue.oahn"));
+        CHECK(!isLikelyProfileOrCollectionUrl("https://www.tiktok.com/@kiue.oahn/photo/7683433150571121940"));
+        CHECK(!isLikelyProfileOrCollectionUrl("https://www.tiktok.com/@kiue.oahn/video/7696088359294291220"));
+        CHECK(isLikelyProfileOrCollectionUrl("https://www.youtube.com/@YouTube/videos"));
+        CHECK(isLikelyProfileOrCollectionUrl("https://www.youtube.com/channel/UC123456"));
+        CHECK(isLikelyProfileOrCollectionUrl("https://www.youtube.com/playlist?list=PL123"));
+        CHECK(!isLikelyProfileOrCollectionUrl("https://www.youtube.com/watch?v=abc&list=PL123")); // video trong danh sách
+        CHECK(isLikelyProfileOrCollectionUrl("https://www.instagram.com/instagram/"));
+        CHECK(!isLikelyProfileOrCollectionUrl("https://www.instagram.com/p/ABC123/") && !isLikelyProfileOrCollectionUrl("https://www.instagram.com/reel/ABC/"));
+        CHECK(isLikelyProfileOrCollectionUrl("https://www.facebook.com/qynhmaiiiz"));
+        CHECK(isLikelyProfileOrCollectionUrl("https://www.facebook.com/qynhmaiiiz/videos"));
+        CHECK(isLikelyProfileOrCollectionUrl("https://www.facebook.com/profile.php?id=100012345"));
+        CHECK(!isLikelyProfileOrCollectionUrl("https://www.facebook.com/ctsvdhbkhn/videos/1068033449194736")); // một video
+        CHECK(!isLikelyProfileOrCollectionUrl("https://www.facebook.com/photo/?fbid=1935618970974748&set=pcb.1935625414307437"));
+        CHECK(!isLikelyProfileOrCollectionUrl("https://www.facebook.com/watch?v=123"));
+        CHECK(!isLikelyProfileOrCollectionUrl("https://example.com/qynhmaiiiz"));
+        CHECK(isPhotoPostUrl("https://www.facebook.com/photo/?fbid=1935618970974748&set=pcb.1935625414307437"));
+        CHECK(isPhotoPostUrl("https://www.facebook.com/someone/photos/a.123/456/"));
+        CHECK(isPhotoPostUrl("https://www.tiktok.com/@kiue.oahn/photo/7683433150571121940"));
+        CHECK(!isPhotoPostUrl("https://www.facebook.com/ctsvdhbkhn/videos/1068033449194736") && !isPhotoPostUrl("https://example.com/photo/1"));
+        CHECK(isManifestUrl("https://s2.phim1280.tv/20240216/pIR2UX2P/index.m3u8?x=1") && isManifestUrl("https://a/b/manifest.mpd"));
+        CHECK(!isManifestUrl("https://a/b/video.mp4"));
+
+        // ---- deepScanHtml: trang phim THẬT - link m3u8 chỉ nằm trong mã script/iframe, thẻ HTML không có ----
+        const QString movieHtml =
+            "<html><head><title>Harry Potter - Xem phim</title><meta property=\"og:image\" content=\"https://img.example.com/poster.jpg\">"
+            "<script>var player = {\"sources\":[{\"file\":\"https:\\/\\/s2.phim1280.tv\\/20240216\\/pIR2UX2P\\/index.m3u8\",\"type\":\"hls\"}],"
+            "\"tracks\":[{\"file\":\"//sub.example.com/vi.vtt\"}]};</script></head><body>"
+            "<div id=\"main\"><iframe src=\"https://player.phimapi.com/player/?url=https://s2.phim1280.tv/20240216/pIR2UX2P/index.m3u8\"></iframe>"
+            "<iframe src=\"https://www.googletagmanager.com/ns.html?id=GTM-X\"></iframe><iframe src=\"about:blank\"></iframe>"
+            "<a href=\"/phim/khac\">phim khác</a><img src=\"/thumb/1.jpg\"></div></body></html>";
+        const DeepScan ds = deepScanHtml(movieHtml, "https://motchillt.one/phim/harry-potter/tap-full-sv-0");
+        int m3u8Count = 0;
+        bool sawPoster = false, sawThumb = false;
+        for (const MediaLink& l : ds.media)
+        {
+            if (l.url == "https://s2.phim1280.tv/20240216/pIR2UX2P/index.m3u8" && l.type == MediaLink::Type::Video) ++m3u8Count;
+            if (l.url == "https://img.example.com/poster.jpg") sawPoster = true;
+            if (l.url == "https://motchillt.one/thumb/1.jpg") sawThumb = true;
+        }
+        CHECK(m3u8Count == 1); // thấy ĐÚNG MỘT lần (iframe lồng url=... cũng trỏ cùng link, không nhân đôi)
+        CHECK(sawPoster && sawThumb);
+        CHECK(ds.title == "Harry Potter - Xem phim");
+        CHECK(ds.iframes.size() == 1 && ds.iframes[0].startsWith("https://player.phimapi.com/player/")); // bỏ GTM + about:blank
+        // URL mã hóa phần trăm lồng trong tham số, và đường dẫn tương đối trong chuỗi script.
+        const DeepScan ds2 = deepScanHtml(
+            "<script>load('https://p.example.com/embed?src=https%3A%2F%2Fcdn.example.com%2Fv%2Fmaster.m3u8%3Ftoken%3Dabc');"
+            "var rel=\"/hls/index.m3u8\"; var doc='https://files.example.com/g/bai-giang.pdf?dl=1';</script>",
+            "https://site.example.com/xem/1");
+        QStringList urls2;
+        for (const MediaLink& l : ds2.media) urls2 << l.url;
+        CHECK(urls2.contains("https://cdn.example.com/v/master.m3u8?token=abc"));
+        CHECK(urls2.contains("https://site.example.com/hls/index.m3u8"));
+        CHECK(urls2.contains("https://files.example.com/g/bai-giang.pdf?dl=1"));
+        CHECK(deepScanHtml("<html><body>chỉ có chữ</body></html>", "https://x.com/").media.isEmpty());
+        // Trang rác/nhị phân không làm crash và không sinh link.
+        CHECK(deepScanHtml(QString(5000, QChar(0xFFFD)), "https://x.com/").media.isEmpty());
+
+        CHECK(looksLikeChallengePage("<html><head><title>Just a moment...</title></head><body>cloudflare</body></html>"));
+        CHECK(looksLikeChallengePage("<script src=\"/cdn-cgi/challenge-platform/h/b/orchestrate\"></script>"));
+        CHECK(!looksLikeChallengePage("<html><head><title>Giáo trình</title></head></html>"));
+        CHECK(looksLikeLoginWall("<html><head><title>Log in to Facebook</title></head></html>"));
+        CHECK(looksLikeLoginWall("<form><input type=\"password\" name=\"p\"></form>"));
+        CHECK(!looksLikeLoginWall("<html><head><title>Bài viết</title></head><body>nội dung</body></html>"));
+        CHECK(metaContent("<meta property=\"og:title\" content=\"A &amp; B\">", "og:title") == "A & B");
+        CHECK(metaContent("<meta content=\"x\" name=\"description\">", "description") == "x");
+        CHECK(metaContent("<meta property=\"og:title\" content=\"A\">", "og:image").isEmpty());
+
+        // ---- Net-log của trình duyệt: manifest xếp TRƯỚC, bỏ đoạn .ts/.m4s ----
+        const QByteArray netLog =
+            R"({"events":[{"params":{"url":"https://motchillt.one/phim/x"}},)"
+            R"({"params":{"url":"https://s2.phim1280.tv/20240216/pIR2UX2P/3000kb/hls/4sqlp1HL.ts"}},)"
+            R"({"params":{"url":"https://cdn.example.com/a/video.mp4"}},)"
+            R"({"params":{"url":"https://s2.phim1280.tv/20240216/pIR2UX2P/index.m3u8"}},)"
+            R"({"params":{"url":"https://s2.phim1280.tv/20240216/pIR2UX2P/index.m3u8"}},)"
+            R"({"params":{"url":"https://cdn.example.com/seg/1.m4s"}},)"
+            R"({"params":{"url":"https://cdn.example.com/a/init.mp4"}},)"
+            R"({"params":{"url":"https:\/\/cdn.example.com\/escaped\/audio.mp3"}}]})";
+        const QStringList nl = mediaUrlsFromNetLog(netLog);
+        CHECK(nl.size() == 3);
+        if (nl.size() == 3)
+        {
+            CHECK(nl[0] == "https://s2.phim1280.tv/20240216/pIR2UX2P/index.m3u8"); // manifest đầu tiên, không trùng
+            CHECK(nl[1] == "https://cdn.example.com/a/video.mp4");
+            CHECK(nl[2] == "https://cdn.example.com/escaped/audio.mp3");
+        }
+        // Tệp media của GIAO DIỆN trang (video nền màn hình đăng nhập TikTok - rác THẬT gặp khi thử) bị loại.
+        CHECK(isJunkMediaUrl("https://sf16-website-login.neutral.ttwstatic.com/obj/tiktok_web_login_static/tiktok/webapp/main/webapp-desktop/playback1.mp4"));
+        CHECK(isJunkMediaUrl("https://static.example.com/a/b.mp4") && isJunkMediaUrl("https://x.com/static/intro.mp4"));
+        CHECK(!isJunkMediaUrl("https://s2.phim1280.tv/20240216/pIR2UX2P/index.m3u8") && !isJunkMediaUrl("https://cdn.example.com/a/video.mp4"));
+        CHECK(mediaUrlsFromNetLog(R"({"u":{"url":"https://sf16-website-login.neutral.ttwstatic.com/obj/x/playback1.mp4"}})").isEmpty());
+        CHECK(mediaUrlsFromNetLog("không phải json").isEmpty() && mediaUrlsFromNetLog("").isEmpty());
+        CHECK(mediaUrlsFromNetLog(netLog, 1).size() == 1);
+
+        // ---- Ảnh trong DOM do trình duyệt dựng (Facebook / TikTok): chỉ giữ ảnh NỘI DUNG ----
+        const QString fbDom =
+            "<img class=\"x16dsc37\" src=\"data:image/svg+xml,%3Csvg%3E\">"
+            "<img data-visualcompletion=\"media-vc-image\" alt=\"May be an image\" src=\"https://scontent.fhan14-1.fna.fbcdn.net/v/t39.30808-6/825279897_1935618984308080_7553907963909847904_n.jpg?stp=dst-jpg_tt6&amp;cstp=mx2048x1365&amp;ctp=s2048x1365\">"
+            "<img src=\"https://scontent.fhan2-5.fna.fbcdn.net/v/t39.30808-1/486156815_n.jpg?stp=cp0_dst-jpg_tt6&amp;cstp=mx100x100\">"
+            "<img src=\"https://static.xx.fbcdn.net/rsrc.php/v4/y5/r/icon.png\">";
+        const QList<MediaLink> fbPhotos = photosFromDom(fbDom, "https://www.facebook.com/photo/?fbid=1");
+        CHECK(fbPhotos.size() == 1);
+        if (fbPhotos.size() == 1)
+            CHECK(fbPhotos[0].url.contains("825279897_1935618984308080") && fbPhotos[0].url.contains("&cstp=mx2048x1365") && fbPhotos[0].type == MediaLink::Type::Image);
+        const QString ttDom =
+            "<img src=\"https://p19-common-sign.tiktokcdn.com/tos-alisg-i-photomode-sg/ba22b371f95a496d959371e9b9f3a284~tplv-photomode-image.jpeg?dr=14555&amp;x-expires=1\">"
+            "<img src=\"https://p16-common-sign.tiktokcdn.com/tos-alisg-i-photomode-sg/f98b95220e8545299647ceddcc155b72~tplv-photomode-image.jpeg?dr=14555\">"
+            "<img src=\"https://p19-common-sign.tiktokcdn.com/tos-alisg-i-photomode-sg/ba22b371f95a496d959371e9b9f3a284~tplv-photomode-image.jpeg?dr=999\">" // cùng ảnh, tham số khác
+            "<img src=\"https://p16-common-sign.tiktokcdn.com/tos-alisg-avt-0068/592a031e~tplv-tiktokx-cropcenter:100:100.jpeg?dr=14579\">";
+        const QList<MediaLink> ttPhotos = photosFromDom(ttDom, "https://www.tiktok.com/@kiue.oahn/photo/7683433150571121940");
+        CHECK(ttPhotos.size() == 2); // hai ảnh bài đăng; bỏ avatar cắt giữa và ảnh trùng
+        const QList<MediaLink> generic = photosFromDom(
+            "<img src=\"/a/chart.png\"><img src=\"/img/logo.png\"><img src=\"/u/avatar-1.jpg\"><img srcset=\"/p/s.jpg 1x, /p/big.jpg 2x\">",
+            "https://news.example.com/bai");
+        CHECK(generic.size() == 2 && generic[0].url == "https://news.example.com/a/chart.png" && generic[1].url == "https://news.example.com/p/big.jpg");
+        CHECK(photosFromDom(ttDom, "https://www.tiktok.com/x", 1).size() == 1);
+
+        // ---- yt-dlp: đối số + JSON + lỗi ----
+        const QStringList an = ytDlpAnalyzeArguments("https://www.facebook.com/x/videos/1", 50, {"--cookies-from-browser", "firefox"});
+        CHECK(an.contains("--dump-single-json") && an.contains("--flat-playlist") && an.contains("--no-playlist"));
+        CHECK(an.indexOf("--") > an.indexOf("--cookies-from-browser") && an.last() == "https://www.facebook.com/x/videos/1" && an[an.size() - 2] == "--");
+        CHECK(an.contains("--ignore-config") && an[an.indexOf("--playlist-end") + 1] == "50");
+        const QStringList an2 = ytDlpAnalyzeArguments("https://www.tiktok.com/@kiue.oahn", 20, {});
+        CHECK(!an2.contains("--no-playlist")); // hồ sơ: cần liệt kê nhiều mục
+        CHECK(ytDlpAnalyzeArguments("https://x.com/-evil", 5, {}).last() == "https://x.com/-evil");
+
+        // Video đơn (rút gọn từ JSON THẬT của một video Facebook).
+        const QByteArray fbJson = R"({"_type":"video","extractor_key":"Facebook","title":"Lễ kỷ niệm | CTSV","ext":"mp4",
+            "webpage_url":"https://www.facebook.com/ctsvdhbkhn/videos/1068033449194736","vcodec":"avc1","duration":62.5,
+            "formats":[{"format_id":"sd","filesize_approx":5000000},{"format_id":"hd","filesize_approx":12345678}]})";
+        const ResolveResult fbRes = parseYtDlpJson(fbJson, "https://fb.watch/abc", 100);
+        CHECK(fbRes.ok() && fbRes.items.size() == 1 && !fbRes.isCollection);
+        if (fbRes.items.size() == 1)
+        {
+            const ResolvedMedia& m = fbRes.items[0];
+            CHECK(m.kind == ResolvedMedia::Kind::YtDlp && m.url == "https://www.facebook.com/ctsvdhbkhn/videos/1068033449194736");
+            CHECK(m.mediaType == "Video" && m.size == 12345678 && m.note == "yt-dlp (Facebook)" && m.referer == "https://fb.watch/abc");
+            CHECK(m.fileName.endsWith(".mp4") && !m.fileName.contains('|') && m.title == "Lễ kỷ niệm | CTSV");
+        }
+        // Hồ sơ/danh sách phát (rút gọn từ JSON THẬT của hồ sơ TikTok), cắt theo giới hạn.
+        QByteArray plJson = R"({"_type":"playlist","extractor_key":"TikTokUser","title":"kiue.oahn","entries":[)";
+        for (int i = 0; i < 5; ++i)
+            plJson += QByteArray(i ? "," : "") + R"({"url":"https://www.tiktok.com/@kiue.oahn/video/769608835929429122)" + QByteArray::number(i) + R"(","title":"#xuhuong )" + QByteArray::number(i) + R"("})";
+        plJson += "]}";
+        const ResolveResult plRes = parseYtDlpJson(plJson, "https://www.tiktok.com/@kiue.oahn", 100);
+        CHECK(plRes.ok() && plRes.isCollection && plRes.items.size() == 5 && !plRes.truncated);
+        const ResolveResult plCut = parseYtDlpJson(plJson, "https://www.tiktok.com/@kiue.oahn", 3);
+        CHECK(plCut.ok() && plCut.items.size() == 3 && plCut.truncated);
+        // Mục YouTube chỉ có id + ie_key; mục có url không hợp lệ bị bỏ.
+        const ResolveResult ytRes = parseYtDlpJson(
+            R"({"_type":"playlist","entries":[{"id":"71ya_JC_IbM","ie_key":"Youtube","title":"A"},{"url":"javascript:x","title":"B"},{"url":"file:///c:/x"}]})",
+            "https://www.youtube.com/@YouTube/videos", 10);
+        CHECK(ytRes.ok() && ytRes.items.size() == 1 && ytRes.items[0].url == "https://www.youtube.com/watch?v=71ya_JC_IbM");
+        CHECK(!parseYtDlpJson(R"({"_type":"playlist","entries":[]})", "https://x.com/", 10).ok());
+        CHECK(!parseYtDlpJson("không phải json", "https://x.com/", 10).ok() && !parseYtDlpJson("", "https://x.com/", 10).error.isEmpty());
+        CHECK(!parseYtDlpJson("[1,2]", "https://x.com/", 10).ok());
+        // Âm thanh: vcodec = none.
+        const ResolveResult au = parseYtDlpJson(R"({"title":"Bài hát","ext":"m4a","vcodec":"none","webpage_url":"https://x.com/a"})", "https://x.com/a", 10);
+        CHECK(au.ok() && au.items[0].mediaType == "Âm thanh");
+
+        bool uns = false;
+        CHECK(translateYtDlpError("ERROR: Unsupported URL: https://www.facebook.com/photo/?fbid=1", &uns).contains("không hỗ trợ") && uns);
+        CHECK(translateYtDlpError("ERROR: [generic] 35467985: Unable to download webpage: HTTP Error 403: Forbidden", &uns).contains("403") && !uns);
+        // Lỗi không có mẫu riêng: trả NGUYÊN dòng ERROR cuối (không nuốt thông tin) và không coi là "không hỗ trợ".
+        CHECK(translateYtDlpError("ERROR: [GoogleDrive] x: Unable to download JSON metadata: HTTP Error 400: Bad Request", &uns).contains("HTTP Error 400") && !uns);
+        CHECK(translateYtDlpError("ERROR: [instagram:user] instagram: Unable to extract data; please report this issue", &uns).contains("đăng nhập"));
+        CHECK(translateYtDlpError("ERROR: [youtube] abc: Video unavailable", &uns).contains("không còn khả dụng"));
+        CHECK(translateYtDlpError("ERROR: Login required to view this", &uns).contains("Cài đặt"));
+        CHECK(translateYtDlpError("ERROR: HTTP Error 404: Not Found", &uns).contains("404"));
+        CHECK(!translateYtDlpError("", &uns).isEmpty() && !translateYtDlpError("lỗi lạ hoàn toàn", &uns).isEmpty());
+
+        // ---- Tên tệp từ Content-Disposition + nhãn loại ----
+        CHECK(fileNameFromContentDisposition("attachment; filename=\"bai giang.pdf\"") == "bai giang.pdf");
+        CHECK(fileNameFromContentDisposition("attachment; filename*=UTF-8''Gi%C3%A1o%20tr%C3%ACnh.pdf") == "Giáo trình.pdf");
+        CHECK(fileNameFromContentDisposition("attachment; filename=plain.zip; size=1") == "plain.zip");
+        CHECK(fileNameFromContentDisposition("attachment; filename=\"..\\\\..\\\\evil.bat\"") == "evil.bat"); // làm sạch đường dẫn
+        CHECK(fileNameFromContentDisposition("inline").isEmpty());
+        CHECK(friendlyTypeLabel("image/jpeg", "https://x/a") == "Ảnh" && friendlyTypeLabel("video/mp4", "") == "Video");
+        CHECK(friendlyTypeLabel("application/vnd.apple.mpegurl", "") == "Video" && friendlyTypeLabel("audio/mpeg", "") == "Âm thanh");
+        CHECK(friendlyTypeLabel("application/pdf", "") == "Tài liệu" && friendlyTypeLabel("application/octet-stream", "https://x/a.mp3") == "Âm thanh");
+        CHECK(friendlyTypeLabel("application/octet-stream", "https://x/a.bin") == "Tệp" && friendlyTypeLabel("", "https://x/i.m3u8") == "Video");
+    }
+
+    // ====================================================================================================
+    // LinkResolver (bất đồng bộ) + HeadlessBrowser (đối số) - chỉ nói chuyện với MiniHttpServer trên 127.0.0.1.
+    // yt-dlp và trình duyệt ẩn TẮT trong test này (không phụ thuộc exe ngoài); phần đó phải tự kiểm tra tay.
+    // ====================================================================================================
+    {
+        MiniHttpServer srv;
+        QList<QByteArray> heads;
+        srv.handler = [&](const QByteArray& head) -> QByteArray {
+            heads << head;
+            const QByteArray path = MiniHttpServer::path(head);
+            const QByteArray base = "http://127.0.0.1:" + QByteArray::number(srv.server.serverPort());
+            const QList<QByteArray> html = {"Content-Type: text/html; charset=utf-8"};
+            if (path == "/img.png")
+                return MiniHttpServer::response("200 OK", {"Content-Type: image/png"}, QByteArray(1000, 'x'));
+            if (path == "/dl?id=1")
+                return MiniHttpServer::response("200 OK", {"Content-Type: application/octet-stream",
+                                                            "Content-Disposition: attachment; filename=\"bao cao.pdf\""},
+                                                QByteArray(500, 'y'));
+            if (path == "/noext")
+                return MiniHttpServer::response("200 OK", {"Content-Type: image/jpeg"}, QByteArray(10, 'z'));
+            if (path == "/missing")
+                return MiniHttpServer::response("404 Not Found", html, "<html>khong co</html>");
+            if (path == "/page-hls")
+                return MiniHttpServer::response("200 OK", html,
+                    "<html><head><title>Phim hay</title></head><body><script>var p={\"file\":\"" + base + "\\/hls\\/index.m3u8\"};</script></body></html>");
+            if (path == "/page-frame")
+                return MiniHttpServer::response("200 OK", html, "<html><head><title>Co khung</title></head><body><iframe src=\"/frame\"></iframe></body></html>");
+            if (path == "/frame")
+                return MiniHttpServer::response("200 OK", html, "<html><script>play('" + base + "/v/video.mp4')</script></html>");
+            if (path == "/empty")
+                return MiniHttpServer::response("200 OK", html, "<html><body>chi co chu</body></html>");
+            if (path == "/cf")
+                return MiniHttpServer::response("403 Forbidden", html, "<html><head><title>Just a moment...</title></head><body>cloudflare</body></html>");
+            if (path == "/doc-page")
+                return MiniHttpServer::response("200 OK", html, "<html><body><a href=\"/files/giao-trinh.pdf\">tai</a></body></html>");
+            return MiniHttpServer::response("404 Not Found", html, "x");
+        };
+
+        auto resolveSync = [&](const QString& url, int* finishedCount = nullptr) {
+            LinkResolver r;
+            LinkResolver::Options o;
+            o.useYtDlp = false;
+            o.useBrowser = false;
+            r.setOptions(o);
+            ResolveResult out;
+            int count = 0;
+            QObject::connect(&r, &LinkResolver::finished, [&](ResolveResult res) { out = res; ++count; });
+            r.resolve(url);
+            waitUntil([&] { return count > 0; }, 20000);
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50); // chờ thêm xem có tín hiệu thứ hai không
+            if (finishedCount) *finishedCount = count;
+            return out;
+        };
+
+        int cnt = 0;
+        // Tệp trực tiếp: tên từ URL, kích thước từ Content-Length, nhãn loại từ Content-Type.
+        ResolveResult r = resolveSync(srv.url("/img.png"), &cnt);
+        CHECK(cnt == 1 && r.ok() && r.items.size() == 1);
+        if (r.ok())
+        {
+            CHECK(r.items[0].kind == ResolvedMedia::Kind::HttpFile && r.items[0].fileName == "img.png" && r.items[0].size == 1000);
+            CHECK(r.items[0].mediaType == "Ảnh" && r.items[0].url == srv.url("/img.png") && r.items[0].note == "tệp trực tiếp");
+        }
+        // Yêu cầu dùng UA giống trình duyệt (nhiều trang chặn UA lạ).
+        CHECK(!heads.isEmpty() && MiniHttpServer::header(heads.first(), "User-Agent").contains("Mozilla/5.0"));
+        // Content-Disposition quyết định tên tệp.
+        r = resolveSync(srv.url("/dl?id=1"));
+        CHECK(r.ok() && r.items[0].fileName == "bao cao.pdf" && r.items[0].size == 500 && r.items[0].mediaType == "Tài liệu");
+        // URL không có đuôi: suy đuôi từ Content-Type.
+        r = resolveSync(srv.url("/noext"));
+        CHECK(r.ok() && r.items[0].fileName.endsWith(".jpg"));
+        // 404 -> ERR ngay, nêu rõ mã.
+        r = resolveSync(srv.url("/missing"));
+        CHECK(!r.ok() && r.error.contains("404") && r.items.isEmpty());
+        // Link .m3u8 chỉ nằm trong chuỗi script (thẻ HTML không có) -> bắt được, giao cho yt-dlp, tên theo tiêu đề trang.
+        r = resolveSync(srv.url("/page-hls"));
+        CHECK(r.ok() && r.items.size() == 1);
+        if (r.ok() && r.items.size() == 1)
+        {
+            CHECK(r.items[0].kind == ResolvedMedia::Kind::YtDlp && r.items[0].url == srv.url("/hls/index.m3u8"));
+            CHECK(r.items[0].mediaType == "Video" && r.items[0].fileName == "Phim hay.mp4" && r.items[0].referer == srv.url("/page-hls"));
+            CHECK(r.items[0].note == "mã nguồn trang");
+        }
+        // Chỉ có iframe: tải tiếp khung, tìm thấy video; Referer gửi đi = trang cha, referer của mục = trang khung.
+        heads.clear();
+        r = resolveSync(srv.url("/page-frame"));
+        CHECK(r.ok() && r.items.size() == 1);
+        if (r.ok() && r.items.size() == 1)
+        {
+            CHECK(r.items[0].url == srv.url("/v/video.mp4") && r.items[0].kind == ResolvedMedia::Kind::HttpFile);
+            CHECK(r.items[0].referer == srv.url("/frame") && r.items[0].note == "khung nhúng");
+        }
+        bool frameReqHadReferer = false;
+        for (const QByteArray& h : heads)
+            if (MiniHttpServer::path(h) == "/frame" && MiniHttpServer::header(h, "Referer") == srv.url("/page-frame").toUtf8())
+                frameReqHadReferer = true;
+        CHECK(frameReqHadReferer);
+        // Liên kết tài liệu <a href=...pdf> trong trang.
+        r = resolveSync(srv.url("/doc-page"));
+        CHECK(r.ok() && r.items.size() == 1 && r.items[0].url == srv.url("/files/giao-trinh.pdf") && r.items[0].mediaType == "Tài liệu");
+        // Trang không có gì: ERR có thông điệp hữu ích (đã thử gì).
+        r = resolveSync(srv.url("/empty"));
+        CHECK(!r.ok() && r.error.contains("Không tìm thấy") && r.error.contains("quét mã nguồn"));
+        // Trang chặn kiểu Cloudflare: nói rõ lý do thay vì "không có gì".
+        r = resolveSync(srv.url("/cf"));
+        CHECK(!r.ok() && r.error.contains("Cloudflare"));
+        // URL không hợp lệ: ERR bất đồng bộ, đúng một tín hiệu.
+        for (const char* bad : {"", "ftp://x.com/a", "file:///c:/windows/win.ini", "javascript:alert(1)", "http://"})
+        {
+            r = resolveSync(bad, &cnt);
+            CHECK(cnt == 1 && !r.ok() && r.error.contains("không hợp lệ"));
+        }
+        // Máy chủ không tồn tại (cổng đóng): ERR, không treo.
+        r = resolveSync("http://127.0.0.1:1/x", &cnt);
+        CHECK(cnt == 1 && !r.ok() && r.error.contains("Không truy cập được"));
+
+        // Hủy giữa chừng: đúng một tín hiệu "Đã hủy.", không có tín hiệu thứ hai khi yêu cầu cũ về muộn.
+        {
+            LinkResolver rr;
+            LinkResolver::Options o;
+            o.useYtDlp = false;
+            o.useBrowser = false;
+            rr.setOptions(o);
+            int c = 0;
+            ResolveResult res;
+            QObject::connect(&rr, &LinkResolver::finished, [&](ResolveResult x) { res = x; ++c; });
+            rr.resolve(srv.url("/img.png"));
+            rr.cancel();
+            waitUntil([] { return false; }, 150);
+            CHECK(c == 1 && !res.ok() && res.error == "Đã hủy." && !rr.isRunning());
+            rr.cancel(); // hủy lại khi đã xong: không phát thêm
+            CHECK(c == 1);
+        }
+
+        // Trình duyệt ẩn: đối số (không chạy Edge thật trong test).
+        const QStringList ba = HeadlessBrowserInternal::buildArguments("https://x.com/a", "C:/tmp/profile", "C:/tmp/net.json");
+        CHECK(ba.contains("--headless=new") && ba.contains("--dump-dom") && ba.contains("--user-data-dir=C:/tmp/profile"));
+        CHECK(ba.contains("--log-net-log=C:/tmp/net.json") && ba.last() == "https://x.com/a");
+        CHECK(ba.contains("--autoplay-policy=no-user-gesture-required") && ba.contains("--disable-extensions"));
+        CHECK(!HeadlessBrowserInternal::candidatePaths().isEmpty());
+        (void)HeadlessBrowser::findBrowserExecutable(); // không được crash dù máy không có trình duyệt
+    }
+
+    // ====================================================================================================
+    // DownloaderSettings + DownloadHistoryStore + DownloadQueue (hàng đợi hợp nhất: thêm -> kiểm tra OK/ERR ->
+    // chọn -> tải). Chỉ nói chuyện với MiniHttpServer; yt-dlp/Edge không chạy (mục kiểm tra là tệp trực tiếp/404).
+    // ====================================================================================================
+    {
+        QTemporaryDir tmp;
+        CHECK(tmp.isValid());
+        const QString settingsFile = tmp.filePath("settings.json");
+
+        // ---- DownloaderSettings ----
+        {
+            DownloaderSettings s(settingsFile);
+            CHECK(!s.downloadFolder().isEmpty() && s.maxConcurrent() == 3 && s.profileMaxItems() == 100 && s.useBrowserFallback());
+            CHECK(s.cookieMode() == DownloaderSettings::CookieMode::None && s.ytDlpExtraArguments().isEmpty());
+            int changes = 0;
+            QObject::connect(&s, &DownloaderSettings::changed, [&] { ++changes; });
+            s.setDownloadFolder(tmp.filePath("Tai ve"));
+            s.setMaxConcurrent(100);
+            s.setProfileMaxItems(0);
+            s.setUseBrowserFallback(false);
+            CHECK(s.maxConcurrent() == 8 && s.profileMaxItems() == 1 && !s.useBrowserFallback() && changes == 4);
+            s.setMaxConcurrent(8); // không đổi -> không phát tín hiệu
+            CHECK(changes == 4);
+            s.setMaxConcurrent(-5);
+            CHECK(s.maxConcurrent() == 1);
+            s.setDownloadFolder("   "); // rỗng -> về mặc định
+            CHECK(s.downloadFolder() == DownloaderSettings::defaultDownloadFolder());
+            s.setDownloadFolder(tmp.filePath("Tai ve"));
+            // Cookie: trình duyệt hợp lệ / lạ -> firefox / tệp chưa có / tệp có thật.
+            s.setCookies(DownloaderSettings::CookieMode::Browser, "edge", QString());
+            CHECK(s.ytDlpExtraArguments() == QStringList({"--cookies-from-browser", "edge"}));
+            s.setCookies(DownloaderSettings::CookieMode::Browser, "--exec=calc", QString()); // không bao giờ lọt vào dòng lệnh
+            CHECK(s.cookieBrowser() == "firefox" && s.ytDlpExtraArguments() == QStringList({"--cookies-from-browser", "firefox"}));
+            s.setCookies(DownloaderSettings::CookieMode::File, "firefox", tmp.filePath("khong-co.txt"));
+            CHECK(s.ytDlpExtraArguments().isEmpty());
+            QFile cf(tmp.filePath("cookies.txt"));
+            CHECK(cf.open(QIODevice::WriteOnly) && cf.write("# Netscape HTTP Cookie File\n") > 0);
+            cf.close();
+            s.setCookies(DownloaderSettings::CookieMode::File, "firefox", tmp.filePath("cookies.txt"));
+            CHECK(s.ytDlpExtraArguments() == QStringList({"--cookies", tmp.filePath("cookies.txt")}));
+        }
+        {
+            DownloaderSettings again(settingsFile); // đọc lại từ đĩa: mọi thứ còn nguyên
+            CHECK(again.downloadFolder() == tmp.filePath("Tai ve") && again.maxConcurrent() == 1 && again.profileMaxItems() == 1);
+            CHECK(!again.useBrowserFallback() && again.cookieMode() == DownloaderSettings::CookieMode::File);
+            CHECK(again.cookieFile() == tmp.filePath("cookies.txt"));
+        }
+        {
+            // Tệp hỏng/sai kiểu: không crash, về mặc định, kẹp phạm vi.
+            QFile bad(tmp.filePath("bad.json"));
+            CHECK(bad.open(QIODevice::WriteOnly) && bad.write("{ khong phai json") > 0);
+            bad.close();
+            DownloaderSettings s(tmp.filePath("bad.json"));
+            CHECK(s.maxConcurrent() == 3 && s.profileMaxItems() == 100 && s.cookieMode() == DownloaderSettings::CookieMode::None);
+            QJsonObject o;
+            o["downloadFolder"] = 12345;
+            o["maxConcurrent"] = "nhieu";
+            o["profileMaxItems"] = 99999;
+            o["cookieMode"] = "lung tung";
+            o["cookieBrowser"] = "không-biết";
+            s.fromJson(o);
+            CHECK(s.downloadFolder() == DownloaderSettings::defaultDownloadFolder() && s.maxConcurrent() == 3 && s.profileMaxItems() == 1000);
+            CHECK(s.cookieMode() == DownloaderSettings::CookieMode::None && s.cookieBrowser() == "firefox");
+        }
+
+        // ---- DownloadHistoryStore ----
+        {
+            const QString hp = tmp.filePath("history.json");
+            DownloadHistoryStore h(hp);
+            CHECK(h.entries().isEmpty());
+            DownloadHistoryEntry e;
+            e.title = "A";
+            e.status = "Hoàn tất";
+            e.path = "C:/x/a.png";
+            e.size = 123;
+            h.add(e);
+            e.title = "B";
+            e.status = "Thất bại";
+            e.error = "lỗi";
+            h.add(e);
+            CHECK(h.entries().size() == 2 && h.entries()[0].title == "B" && h.entries()[1].title == "A"); // mới nhất đứng đầu
+            CHECK(h.entries()[0].time.isValid());
+            DownloadHistoryStore reload(hp);
+            CHECK(reload.entries().size() == 2 && reload.entries()[1].path == "C:/x/a.png" && reload.entries()[1].size == 123);
+            CHECK(reload.entries()[0].status == "Thất bại" && reload.entries()[0].error == "lỗi");
+            reload.removeAt(0);
+            reload.removeAt(99); // ngoài phạm vi: không làm gì
+            CHECK(reload.entries().size() == 1 && DownloadHistoryStore(hp).entries().size() == 1);
+            reload.clear();
+            CHECK(reload.entries().isEmpty() && DownloadHistoryStore(hp).entries().isEmpty());
+            // Giới hạn số mục.
+            DownloadHistoryStore big(tmp.filePath("big.json"));
+            for (int i = 0; i < DownloadHistoryStore::kMaxEntries + 5; ++i)
+            {
+                DownloadHistoryEntry x;
+                x.title = QString::number(i);
+                big.add(x);
+            }
+            CHECK(big.entries().size() == DownloadHistoryStore::kMaxEntries && big.entries()[0].title == QString::number(DownloadHistoryStore::kMaxEntries + 4));
+            // Tệp hỏng được đổi tên .bak, lịch sử bắt đầu rỗng.
+            QFile bad(tmp.filePath("h-bad.json"));
+            CHECK(bad.open(QIODevice::WriteOnly) && bad.write("[1,2, hong") > 0);
+            bad.close();
+            DownloadHistoryStore hb(tmp.filePath("h-bad.json"));
+            CHECK(hb.entries().isEmpty() && QFileInfo::exists(tmp.filePath("h-bad.json.bak")) && !QFileInfo::exists(tmp.filePath("h-bad.json")));
+        }
+
+        // ---- DownloadQueue ----
+        MiniHttpServer srv;
+        QList<QByteArray> heads;
+        srv.handler = [&](const QByteArray& head) -> QByteArray {
+            heads << head;
+            const QByteArray path = MiniHttpServer::path(head);
+            if (path.startsWith("/img.png")) // cả "/img.png?v=2" (cùng tên tệp, link khác)
+                return MiniHttpServer::response("200 OK", {"Content-Type: image/png"}, QByteArray(1000, 'x'));
+            if (path == "/doc.pdf")
+                return MiniHttpServer::response("200 OK", {"Content-Type: application/pdf"}, QByteArray(300, 'p'));
+            if (path.startsWith("/n"))
+                return MiniHttpServer::response("200 OK", {"Content-Type: image/png"}, QByteArray(50, 'n'));
+            return MiniHttpServer::response("404 Not Found", {"Content-Type: text/html"}, "<html>khong co</html>");
+        };
+        auto requestsFor = [&](const QByteArray& path) {
+            int n = 0;
+            for (const QByteArray& h : heads)
+                if (MiniHttpServer::path(h) == path) ++n;
+            return n;
+        };
+
+        const QString dlFolder = tmp.filePath("downloads");
+        DownloaderSettings qs(tmp.filePath("q-settings.json"));
+        qs.setDownloadFolder(dlFolder);
+        qs.setUseBrowserFallback(false);
+        DownloadHistoryStore qh(tmp.filePath("q-history.json"));
+        FileDownloader qd;
+        DownloadQueue q(&qs, &qh, &qd);
+        QStringList messages;
+        QObject::connect(&q, &DownloadQueue::message, [&](QString m) { messages << m; });
+        QList<int> addedIds, removedIds, finishedIds;
+        QObject::connect(&q, &DownloadQueue::itemAdded, [&](int id) { addedIds << id; });
+        QObject::connect(&q, &DownloadQueue::itemRemoved, [&](int id) { removedIds << id; });
+        QObject::connect(&q, &DownloadQueue::itemFinished, [&](int id, bool) { finishedIds << id; });
+        auto settled = [&](int id) {
+            const QueueItem* it = q.item(id);
+            return it && it->check != QueueItem::Check::Waiting && it->check != QueueItem::Check::Checking;
+        };
+
+        // 1) Thêm link: CHƯA tải gì (chỉ một yêu cầu kiểm tra), kết quả OK kèm thông tin tệp.
+        const int okId = q.addSource(srv.url("/img.png"));
+        CHECK(okId > 0 && addedIds.contains(okId));
+        CHECK(q.item(okId) && q.item(okId)->state == QueueItem::State::Idle);
+        CHECK(waitUntil([&] { return settled(okId); }));
+        waitUntil([] { return false; }, 300); // chờ xem có yêu cầu tải thứ hai lén xảy ra không
+        CHECK(q.item(okId)->check == QueueItem::Check::Ok && q.item(okId)->media.fileName == "img.png" && q.item(okId)->total == 1000);
+        CHECK(q.item(okId)->state == QueueItem::State::Idle && QueueItem::stateLabel(q.item(okId)->state) == "Chưa tải");
+        CHECK(requestsFor("/img.png") == 1);                 // đúng MỘT yêu cầu: kiểm tra, chưa tải
+        CHECK(!QFileInfo::exists(dlFolder + "/img.png"));    // chưa có tệp nào trên đĩa
+        CHECK(QueueItem::checkLabel(QueueItem::Check::Ok) == "OK" && QueueItem::checkLabel(QueueItem::Check::Err) == "ERR");
+
+        // 2) Link không ra tệp -> ERR kèm lý do; link trùng / không hợp lệ bị từ chối.
+        const int errId = q.addSource(srv.url("/missing"));
+        CHECK(waitUntil([&] { return settled(errId); }));
+        CHECK(q.item(errId)->check == QueueItem::Check::Err && q.item(errId)->checkNote.contains("404"));
+        CHECK(q.item(errId)->linkToOpen() == srv.url("/missing")); // vẫn mở được link trên trình duyệt
+        messages.clear();
+        CHECK(q.addSource(srv.url("/img.png")) == -1 && !messages.isEmpty() && messages.last().contains("đã có"));
+        CHECK(q.addSource("ftp://x.com/a") == -1 && q.addSource("") == -1 && q.addSource("javascript:alert(1)") == -1);
+        CHECK(q.allIds().size() == 2);
+
+        // 3) Chọn rồi mới tải: chỉ mục OK được tải, ERR bị bỏ qua và báo rõ.
+        messages.clear();
+        CHECK(q.startItems({okId, errId}) == 1);
+        CHECK(!messages.isEmpty() && messages.last().contains("1 mục ERR"));
+        CHECK(waitUntil([&] { return q.item(okId)->state == QueueItem::State::Completed; }));
+        CHECK(QFileInfo::exists(dlFolder + "/img.png") && QFileInfo(dlFolder + "/img.png").size() == 1000);
+        CHECK(requestsFor("/img.png") == 2);                 // lần 2 = tải thật, chỉ sau khi người dùng chọn tải
+        CHECK(q.item(errId)->state == QueueItem::State::Idle && !QFileInfo::exists(dlFolder + "/missing"));
+        CHECK(finishedIds.contains(okId) && q.item(okId)->destPath == dlFolder + "/img.png");
+        CHECK(qh.entries().size() == 1 && qh.entries()[0].status == "Hoàn tất" && qh.entries()[0].path == dlFolder + "/img.png");
+        CHECK(qh.entries()[0].size == 1000 && qh.entries()[0].kind == "http" && qh.entries()[0].sourceUrl == srv.url("/img.png"));
+        CHECK(!q.startItem(okId)); // đã hoàn tất: không tải lại
+
+        // 4) Hai link cùng tên tệp -> tên không trùng (không ghi đè).
+        ResolvedMedia dup;
+        dup.url = srv.url("/img.png?v=2");
+        dup.fileName = "img.png";
+        dup.mediaType = "Ảnh";
+        const int dupId = q.addResolved(dup);
+        CHECK(dupId > 0 && q.item(dupId)->check == QueueItem::Check::Ok && q.item(dupId)->state == QueueItem::State::Idle);
+        CHECK(q.addResolved(dup) == -1); // cùng link tệp -> không thêm lần nữa
+        CHECK(q.startItems({dupId}) == 1);
+        CHECK(waitUntil([&] { return q.item(dupId)->state == QueueItem::State::Completed; }));
+        CHECK(QFileInfo::exists(dlFolder + "/img (1).png") && QFileInfo::exists(dlFolder + "/img.png"));
+
+        // 5) Referer + User-Agent trình duyệt khi mục có trang nguồn.
+        heads.clear();
+        ResolvedMedia ref;
+        ref.url = srv.url("/doc.pdf");
+        ref.fileName = "bai giang.pdf";
+        ref.referer = "http://trang-nguon.example/xem/1";
+        const int refId = q.addResolved(ref, "http://trang-nguon.example/xem/1");
+        q.startItems({refId});
+        CHECK(waitUntil([&] { return q.item(refId)->state == QueueItem::State::Completed; }));
+        CHECK(!heads.isEmpty() && MiniHttpServer::header(heads.first(), "Referer") == "http://trang-nguon.example/xem/1");
+        CHECK(MiniHttpServer::header(heads.first(), "User-Agent").contains("Mozilla/5.0"));
+        CHECK(QFileInfo::exists(dlFolder + "/bai giang.pdf"));
+
+        // 6) Mục do nơi khác enqueue thẳng vào FileDownloader cũng hiện trong hàng đợi (phản chiếu), hủy được.
+        const int before = q.allIds().size();
+        const int fid = qd.enqueue(srv.url("/img.png?foreign"), dlFolder + "/ngoai.png");
+        CHECK(q.allIds().size() == before + 1);
+        const int foreignId = q.allIds().last();
+        CHECK(q.item(foreignId) && q.item(foreignId)->foreign && q.item(foreignId)->httpId == fid &&
+              q.item(foreignId)->check == QueueItem::Check::Ok && q.item(foreignId)->state == QueueItem::State::Queued);
+        CHECK(q.item(foreignId)->displayName() == "ngoai.png");
+        q.cancel(foreignId);
+        CHECK(q.item(foreignId)->state == QueueItem::State::Canceled);
+
+        // 7) Hủy khi đang kiểm tra: ERR "Đã hủy"; kiểm tra lại được.
+        const int cId = q.addSource(srv.url("/n-cancel"));
+        q.cancel(cId);
+        CHECK(waitUntil([&] { return settled(cId); }));
+        CHECK(q.item(cId)->check == QueueItem::Check::Err && q.item(cId)->checkNote.contains("hủy"));
+        q.recheck(cId);
+        CHECK(q.item(cId)->check == QueueItem::Check::Waiting || q.item(cId)->check == QueueItem::Check::Checking);
+        CHECK(waitUntil([&] { return settled(cId); }));
+        CHECK(q.item(cId)->check == QueueItem::Check::Ok); // /n-cancel trả 200 image/png
+
+        // 8) Nhiều link cùng lúc: tối đa 2 bộ phân giải chạy song song, tất cả đều xong.
+        QList<int> many;
+        for (int i = 0; i < 6; ++i)
+            many << q.addSource(srv.url(QString("/n%1").arg(i)));
+        int maxChecking = 0;
+        waitUntil([&] {
+            int checking = 0;
+            for (int id : many)
+                if (q.item(id)->check == QueueItem::Check::Checking) ++checking;
+            maxChecking = qMax(maxChecking, checking);
+            for (int id : many)
+                if (!settled(id)) return false;
+            return true;
+        });
+        CHECK(maxChecking >= 1 && maxChecking <= 2);
+        bool allOk = true;
+        for (int id : many) allOk = allOk && q.item(id)->check == QueueItem::Check::Ok;
+        CHECK(allOk && q.resolvingCount() == 0);
+
+        // 9) Xóa: mục hoàn tất; mục lỗi; mục không tồn tại bị bỏ qua.
+        removedIds.clear();
+        CHECK(q.removeFinished(false) == 3 && removedIds.contains(okId) && removedIds.contains(dupId) && removedIds.contains(refId));
+        CHECK(!q.item(okId) && q.item(errId));
+        CHECK(q.removeFinished(true) >= 1 && !q.item(errId) && q.item(many[0])); // ERR + hủy bị dọn, mục OK còn nguyên
+        q.remove({many[0], 99999});
+        CHECK(!q.item(many[0]) && q.item(many[1]));
+        // Xóa khi đang kiểm tra: không treo, không phát tín hiệu cho mục đã xóa.
+        const int rmId = q.addSource(srv.url("/n-remove"));
+        q.remove({rmId});
+        waitUntil([] { return false; }, 200);
+        CHECK(!q.item(rmId));
     }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);

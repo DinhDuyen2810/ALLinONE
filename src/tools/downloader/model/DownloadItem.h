@@ -10,6 +10,7 @@ struct DownloadItem
 
     QString url;
     QString destPath;      ///< Đường dẫn đầy đủ nơi lưu tệp
+    QString referer;       ///< Trang nguồn - gửi làm Referer (nhiều CDN chặn nếu thiếu); rỗng = không gửi
     Status status{Status::Queued};
     qint64 totalBytes{-1};    ///< -1 = chưa biết (server không trả Content-Length)
     qint64 receivedBytes{0};

@@ -33,6 +33,7 @@ này - muốn xóa sạch dữ liệu, tự xóa thư mục đó.
   chép ra nơi khác ngoài những gì bạn chủ động xuất (export).
 - **VPN & Location**: nhãn quốc gia/tên đăng nhập bạn tự khai báo (`profilespn_profiles.json`); mật khẩu
   VPN KHÔNG được ghi ra đĩa dưới bất kỳ hình thức nào.
+- **Downloader**: cài đặt (`profiles\downloader_settings.json`: thư mục tải xuống, số tệp đồng thời, giới hạn mục, bật/tắt trình duyệt ẩn, chế độ cookie cùng TÊN trình duyệt hoặc ĐƯỜNG DẪN tệp `cookies.txt` - ứng dụng KHÔNG đọc hay lưu nội dung cookie) và lịch sử tải (`profiles\downloader_history.json`, tối đa 2000 mục: tên, đường dẫn tệp, link nguồn, link tệp, thời gian, kích thước, kết quả). Link nguồn có thể chứa mã/token của trang bạn đã tải - xóa từng mục hoặc toàn bộ trong tab "Lịch sử". Các tệp đã tải nằm ở thư mục bạn chọn, không bị xóa khi xóa lịch sử.
 - **Log ứng dụng**: `logs\*.log` - nhật ký hoạt động/chẩn đoán lỗi, ở lại trên máy bạn, không gửi đi đâu
   (trừ khi chính bạn chủ động gửi để báo lỗi). Log không ghi nội dung văn bản Auto Click gõ hộ bạn.
 
@@ -46,8 +47,10 @@ phải máy chủ của nhóm phát triển, và chỉ gọi khi bạn chủ đ�
 | QR Tools - dán link RÚT GỌN Google Maps ở trang tạo mã QR Vị trí | `maps.app.goo.gl` (và các địa chỉ thuộc Google mà link chuyển hướng tới, tối đa 5 bước) | Chính đường dẫn rút gọn bạn dán (là nội dung yêu cầu HTTP) + địa chỉ IP công khai của bạn; chỉ đọc header chuyển hướng, không tải nội dung trang |
 | QR Tools - nút "Mở bản đồ" cho mã QR Vị trí | `google.com/maps` (mở bằng trình duyệt mặc định của bạn, không gọi ngầm) | Tọa độ nằm trong đường dẫn được mở - giống bấm vào bất kỳ liên kết Google Maps nào khác |
 | WiFi - đo tốc độ mạng | `speed.cloudflare.com` | Dữ liệu đo tốc độ tiêu chuẩn (giống mọi công cụ speedtest khác) |
-| Downloader - tải trực tiếp/quét trang/video nền tảng | URL/trang web do CHÍNH BẠN nhập | Yêu cầu HTTP tới đúng địa chỉ bạn dán vào |
+| Downloader - hàng đợi/quét trang/video nền tảng | Chỉ các địa chỉ do CHÍNH BẠN dán vào và những địa chỉ trang đó dẫn tới (tệp, ảnh, iframe/trình phát nhúng, luồng video, CDN); Google Drive/Docs → `google.com`/`googleusercontent.com`; `yt-dlp.exe` kết nối tới nền tảng tương ứng (YouTube, Facebook, TikTok, Instagram...) | Yêu cầu HTTP(S) tới đúng các địa chỉ đó, kèm `Referer` = trang nguồn và `User-Agent` giống trình duyệt để máy chủ ảnh/video không chặn. Nếu bạn BẬT "lấy cookie từ trình duyệt" hoặc chọn `cookies.txt`, yt-dlp (chạy cục bộ) đọc cookie đăng nhập của bạn và gửi kèm yêu cầu tới CHÍNH nền tảng đó như trình duyệt của bạn vẫn làm - không gửi tới nơi nào khác |
 | Android Phone Control, Connect Together | Thiết bị/máy khác trên mạng LAN của bạn (không qua Internet) | Dữ liệu điều khiển/màn hình - không rời khỏi mạng cục bộ |
+
+**Trình duyệt ẩn (Downloader)**: khi các cách khác không tìm ra tệp, ứng dụng chạy Microsoft Edge hoặc Google Chrome ĐÃ CÓ trên máy ở chế độ ẩn (`--headless`) với **hồ sơ tạm riêng** (không dùng hồ sơ, tài khoản hay cookie của bạn) để nạp trang và ghi nhật ký mạng, rồi xóa hồ sơ tạm. Trang đó thấy một trình duyệt mới như lần truy cập đầu tiên. Tắt tính năng này trong tab Cài đặt của Downloader.
 
 ## Mã nguồn mở - tự kiểm chứng được
 Toàn bộ mã nguồn công khai tại [github.com/DinhDuyen2810/ALLinONE](https://github.com/DinhDuyen2810/ALLinONE)

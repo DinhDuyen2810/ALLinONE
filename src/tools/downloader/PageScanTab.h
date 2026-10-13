@@ -9,19 +9,21 @@ class QLabel;
 class QLineEdit;
 class QPushButton;
 class QTableWidget;
-class FileDownloader;
+class DownloadQueue;
+class DownloaderSettings;
 class PageMediaScanner;
 
-/// Tab "Quét trang web": dán URL một TRANG web (không phải link tệp trực tiếp) - tải mã nguồn HTML
-/// trang đó và tìm các liên kết ảnh/video/âm thanh/tài liệu có trong trang, hiện danh sách có thể tick
-/// chọn để tải về (dùng chung FileDownloader/hàng đợi với tab "Tải trực tiếp"). Xem PageMediaScanner.h
-/// để biết giới hạn thật (không chạy JavaScript - có thể bỏ sót nội dung tải động/lazy-load).
+/// Tab "Quét trang web": dán URL một TRANG web (không phải link tệp trực tiếp) - tải mã nguồn HTML trang đó và tìm các
+/// liên kết ảnh/video/âm thanh/tài liệu có trong trang, hiện danh sách có thể tick chọn rồi "Thêm vào hàng đợi" (hàng đợi
+/// chung của tab "Tải trực tiếp" - KHÔNG tải ngay). Mỗi dòng có nút 🌐 mở link trên trình duyệt. Quét ở đây là phân tích
+/// HTML TĨNH (xem PageMediaScanner.h); trang động/chặn chuột phải thì dùng "Quét sâu" - đưa chính trang vào hàng đợi để bộ
+/// phân giải (yt-dlp + quét sâu + trình duyệt ẩn) xử lý.
 class PageScanTab : public QWidget
 {
     Q_OBJECT
 
 public:
-    explicit PageScanTab(FileDownloader* downloader, QWidget* parent = nullptr);
+    PageScanTab(DownloadQueue* queue, DownloaderSettings* settings, QWidget* parent = nullptr);
 
 private slots:
     void onScanClicked();
@@ -29,26 +31,27 @@ private slots:
     void onScanError(QString message);
     void onSelectAllClicked();
     void onSelectNoneClicked();
-    void onChooseFolderClicked();
-    void onDownloadSelectedClicked();
+    void onAddSelectedClicked();
+    void onDeepScanClicked();
 
 private:
     void buildUi();
-    QString suggestedDestPath(const MediaLink& link) const;
+    void refreshFolderLabel();
 
-    FileDownloader* m_downloader{nullptr};
+    DownloadQueue* m_queue{nullptr};
+    DownloaderSettings* m_settings{nullptr};
     PageMediaScanner* m_scanner{nullptr};
 
     QLineEdit* m_urlEdit{nullptr};
     QPushButton* m_scanBtn{nullptr};
+    QPushButton* m_deepBtn{nullptr};
     QLabel* m_statusLabel{nullptr};
     QLabel* m_folderLabel{nullptr};
-    QPushButton* m_chooseFolderBtn{nullptr};
     QTableWidget* m_table{nullptr};
     QPushButton* m_selectAllBtn{nullptr};
     QPushButton* m_selectNoneBtn{nullptr};
-    QPushButton* m_downloadSelectedBtn{nullptr};
+    QPushButton* m_addSelectedBtn{nullptr};
 
     QList<MediaLink> m_links;
-    QString m_saveFolder;
+    QString m_pageUrl; ///< Trang đã quét - gửi làm Referer khi tải các tệp tìm được
 };

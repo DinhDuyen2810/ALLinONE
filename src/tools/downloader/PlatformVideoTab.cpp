@@ -2,25 +2,36 @@
 
 #include "DownloaderUiStyle.h"
 #include "engine/YtDlpController.h"
+#include "DownloadHistoryStore.h"
+#include "DownloaderSettings.h"
 #include "engine/YtDlpDownloadWorker.h"
 #include "engine/YtDlpInfoWorker.h"
 
 #include <QComboBox>
+#include <QDir>
 #include <QFileDialog>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QDateTime>
 #include <QProgressBar>
 #include <QPushButton>
-#include <QStandardPaths>
 #include <QVBoxLayout>
 
-PlatformVideoTab::PlatformVideoTab(QWidget* parent)
+PlatformVideoTab::PlatformVideoTab(DownloaderSettings* settings, DownloadHistoryStore* history, QWidget* parent)
     : QWidget(parent)
+    , m_settings(settings)
+    , m_history(history)
 {
-    m_saveFolder = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
+    m_saveFolder = m_settings->downloadFolder();
     buildUi();
+    // Thư mục tải là cài đặt CHUNG (tab Cài đặt) - đổi ở đâu cũng cập nhật ở đây.
+    connect(m_settings, &DownloaderSettings::changed, this, [this] {
+        m_saveFolder = m_settings->downloadFolder();
+        m_folderLabel->setText(QDir::toNativeSeparators(m_saveFolder));
+        m_folderLabel->setToolTip(QDir::toNativeSeparators(m_saveFolder));
+    });
     updateBundleBanner();
 
     m_infoWorker = new YtDlpInfoWorker(this);
@@ -67,7 +78,7 @@ void PlatformVideoTab::buildUi()
 
     auto* introLabel = new QLabel(
         "Tải video từ YouTube/Facebook/TikTok và hơn 1000 trang khác (dựa trên yt-dlp, mã nguồn mở) - "
-        "dán URL video (không phải URL playlist/kênh).",
+        "dán URL một video. Muốn tải cả hồ sơ/kênh/danh sách phát: dán link vào tab \"Tải trực tiếp\".",
         this);
     introLabel->setWordWrap(true);
     introLabel->setStyleSheet(DownloaderUi::bannerStyle("info"));
@@ -114,10 +125,10 @@ void PlatformVideoTab::buildUi()
     auto* folderCaption = new QLabel("Thư mục lưu:", this);
     folderCaption->setStyleSheet("color: #57606a; font-size: 12px;");
     folderRow->addWidget(folderCaption);
-    m_folderLabel = new QLabel(m_saveFolder, this);
+    m_folderLabel = new QLabel(QDir::toNativeSeparators(m_saveFolder), this);
     m_folderLabel->setStyleSheet("color: #1f2328; font-size: 12px;");
     m_folderLabel->setWordWrap(true); // đường dẫn thư mục có thể rất dài - tránh bị cắt cụt không thấy hết
-    m_folderLabel->setToolTip(m_saveFolder);
+    m_folderLabel->setToolTip(QDir::toNativeSeparators(m_saveFolder));
     folderRow->addWidget(m_folderLabel, 1);
     m_chooseFolderBtn = new QPushButton("Đổi...", this);
     m_chooseFolderBtn->setStyleSheet(DownloaderUi::buttonStyle());
@@ -274,9 +285,7 @@ void PlatformVideoTab::onChooseFolderClicked()
     const QString dir = QFileDialog::getExistingDirectory(this, "Chọn thư mục lưu", m_saveFolder);
     if (dir.isEmpty())
         return;
-    m_saveFolder = dir;
-    m_folderLabel->setText(m_saveFolder);
-    m_folderLabel->setToolTip(m_saveFolder);
+    m_settings->setDownloadFolder(dir); // cập nhật nhãn qua tín hiệu changed()
 }
 
 void PlatformVideoTab::onDownloadClicked()
@@ -330,9 +339,23 @@ void PlatformVideoTab::onDownloadFinished(bool ok, QString error)
         return; // tín hiệu muộn của một worker cũ đã bị thay
     const bool canceled = m_downloadWorker && m_downloadWorker->wasCanceled();
     setBusyDownloading(false);
+    if (m_history)
+    {
+        DownloadHistoryEntry e;
+        e.time = QDateTime::currentDateTime();
+        e.title = m_currentInfo.title;
+        e.folder = m_saveFolder;
+        e.sourceUrl = m_infoUrl;
+        e.mediaUrl = m_infoUrl;
+        e.kind = "yt-dlp";
+        e.status = ok ? "Hoàn tất" : canceled ? "Đã hủy" : "Thất bại";
+        if (!ok && !canceled)
+            e.error = error;
+        m_history->add(e);
+    }
     if (ok)
     {
-        m_progressLabel->setText("✓ Đã tải xong, lưu tại: " + m_saveFolder);
+        m_progressLabel->setText("✓ Đã tải xong, lưu tại: " + QDir::toNativeSeparators(m_saveFolder));
     }
     else if (canceled)
     {

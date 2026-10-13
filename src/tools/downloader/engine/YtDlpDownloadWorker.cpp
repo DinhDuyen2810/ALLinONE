@@ -50,6 +50,16 @@ void YtDlpDownloadWorker::emitFinishedOnce(bool ok, const QString& error)
 
 void YtDlpDownloadWorker::start(const QString& url, const QString& formatSelector, const QString& destDir)
 {
+    Options o;
+    o.url = url;
+    o.formatSelector = formatSelector;
+    o.destDir = destDir;
+    startWithOptions(o);
+}
+
+void YtDlpDownloadWorker::startWithOptions(const Options& opts)
+{
+    const QString& url = opts.url;
     if (isRunning())
         return; // một worker chỉ chạy một lượt tải tại một thời điểm
 
@@ -75,8 +85,7 @@ void YtDlpDownloadWorker::start(const QString& url, const QString& formatSelecto
         m_process->deleteLater();
     m_process = new QProcess(this);
     m_process->setProgram(exe);
-    m_process->setArguments(YtDlpDownloadWorkerInternal::buildArguments(
-        url, formatSelector, destDir, YtDlpController::ffmpegDirectoryPath()));
+    m_process->setArguments(YtDlpDownloadWorkerInternal::buildArgumentsEx(opts, YtDlpController::ffmpegDirectoryPath()));
 
     QProcess* process = m_process;
     connect(process, &QProcess::readyReadStandardOutput, this, [this, process]() {
@@ -161,8 +170,22 @@ namespace YtDlpDownloadWorkerInternal
 QStringList buildArguments(const QString& url, const QString& formatSelector, const QString& destDir,
                            const QString& ffmpegDir)
 {
-    QString destDirLiteral = destDir;
+    YtDlpDownloadWorker::Options o;
+    o.url = url;
+    o.formatSelector = formatSelector;
+    o.destDir = destDir;
+    return buildArgumentsEx(o, ffmpegDir);
+}
+
+QStringList buildArgumentsEx(const YtDlpDownloadWorker::Options& options, const QString& ffmpegDir)
+{
+    const QString& url = options.url;
+    const QString& formatSelector = options.formatSelector;
+    QString destDirLiteral = options.destDir;
     destDirLiteral.replace('%', "%%"); // "%%" = một dấu % nguyên văn trong mẫu -o của yt-dlp
+    QString baseLiteral = options.outputBaseName;
+    baseLiteral.replace('%', "%%");
+    const QString nameTemplate = baseLiteral.isEmpty() ? QStringLiteral("%(title)s") : baseLiteral;
 
     QStringList args = {
         "--ignore-config",
@@ -172,12 +195,13 @@ QStringList buildArguments(const QString& url, const QString& formatSelector, co
         "--progress-template",
         "download:DLPROG|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|"
         "%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s",
-        "-o", destDirLiteral + "/%(title)s.%(ext)s",
+        "-o", destDirLiteral + "/" + nameTemplate + ".%(ext)s",
     };
     if (!formatSelector.isEmpty())
     {
         args << "-f" << formatSelector;
     }
+    args << options.extraArgs;
     args << "--" << url; // sau "--" chỉ còn địa chỉ - không bao giờ bị hiểu là tùy chọn
     return args;
 }

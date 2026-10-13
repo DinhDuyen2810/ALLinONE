@@ -5,8 +5,8 @@
 
 QString DownloaderTool::description() const
 {
-    return "Tải trực tiếp tệp từ URL, quét trang web tìm ảnh/video/tài liệu, và tải video từ YouTube/"
-           "Facebook/TikTok cùng hơn 1000 nền tảng khác.";
+    return "Dán link (tệp, video Facebook/TikTok/YouTube, Google Drive, trang phim, ảnh bài đăng, cả hồ sơ/kênh) vào "
+           "hàng đợi, xem OK/ERR rồi chọn tải; quét trang web; xem lịch sử; cài thư mục tải.";
 }
 
 QIcon DownloaderTool::icon() const

@@ -9,6 +9,8 @@ class QLabel;
 class QLineEdit;
 class QProgressBar;
 class QPushButton;
+class DownloadHistoryStore;
+class DownloaderSettings;
 class YtDlpInfoWorker;
 class YtDlpDownloadWorker;
 
@@ -19,7 +21,7 @@ class PlatformVideoTab : public QWidget
     Q_OBJECT
 
 public:
-    explicit PlatformVideoTab(QWidget* parent = nullptr);
+    PlatformVideoTab(DownloaderSettings* settings, DownloadHistoryStore* history, QWidget* parent = nullptr);
     ~PlatformVideoTab() override;
 
     /// Dừng NGAY phiên tải yt-dlp.exe đang chạy VÀ lượt lấy thông tin đang chạy (nếu có), không hỏi xác
@@ -48,6 +50,8 @@ private:
     bool isDownloading() const;
     void clearFetchedInfo();
 
+    DownloaderSettings* m_settings{nullptr};
+    DownloadHistoryStore* m_history{nullptr};
     QLabel* m_bundleBanner{nullptr};
     QLineEdit* m_urlEdit{nullptr};
     QPushButton* m_fetchBtn{nullptr};

@@ -43,7 +43,9 @@ public:
     /// Thêm một tệp vào hàng đợi (chưa tải ngay - gọi start() để bắt đầu/tiếp tục). Trả về ID duy nhất
     /// để theo dõi/điều khiển mục này về sau. Tải xong, tệp hoàn chỉnh nằm ĐÚNG tại destPath (ghi đè nếu
     /// lúc đó đã có tệp cùng tên).
-    int enqueue(const QString& url, const QString& destPath);
+    /// `referer` (tùy chọn): gửi kèm làm header Referer cùng User-Agent giống trình duyệt - nhiều CDN video/ảnh chặn
+    /// yêu cầu thiếu Referer của trang nguồn hoặc có User-Agent lạ.
+    int enqueue(const QString& url, const QString& destPath, const QString& referer = QString());
 
     void start(int id);
     void pause(int id);

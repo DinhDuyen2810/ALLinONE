@@ -25,6 +25,19 @@ public:
     /// MỌI lần gọi đều kết thúc bằng đúng một tín hiệu finished() - kể cả khi yt-dlp.exe không khởi chạy
     /// được (trước đây trường hợp đó không phát gì, giao diện kẹt mãi ở "Đang tải").
     void start(const QString& url, const QString& formatSelector, const QString& destDir);
+
+    /// Tùy chọn đầy đủ (dùng bởi hàng đợi tải): `outputBaseName` = tên tệp KHÔNG đuôi (đã làm sạch; rỗng = tên theo tiêu
+    /// đề video của yt-dlp); `extraArgs` = đối số thêm như cookie, --referer (đặt TRƯỚC "--" nên URL vẫn không bao giờ
+    /// bị hiểu là tùy chọn).
+    struct Options
+    {
+        QString url;
+        QString formatSelector;
+        QString destDir;
+        QString outputBaseName;
+        QStringList extraArgs;
+    };
+    void startWithOptions(const Options& options);
     void cancel();
 
     bool isRunning() const;
@@ -71,6 +84,9 @@ ParsedProgress parseProgressLine(const QByteArray& line);
 ///    hỏng mẫu.
 QStringList buildArguments(const QString& url, const QString& formatSelector, const QString& destDir,
                            const QString& ffmpegDir);
+
+/// Như buildArguments() nhưng có tên tệp đầu ra (không đuôi; "%" được nhân đôi, rỗng = "%(title)s") và đối số thêm.
+QStringList buildArgumentsEx(const YtDlpDownloadWorker::Options& options, const QString& ffmpegDir);
 
 /// Giá trị cho `-f` ứng với một định dạng người dùng chọn. Định dạng CHỈ CÓ HÌNH (YouTube chất lượng
 /// cao hầu hết là vậy) được ghép kèm luồng âm thanh tốt nhất ("<id>+bestaudio/best") - trước đây truyền

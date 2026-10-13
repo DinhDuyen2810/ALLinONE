@@ -107,12 +107,14 @@
 | `src/tools/downloader/engine/YtDlpController.*` | Đường dẫn/khả dụng của `yt-dlp.exe`/`ffmpeg.exe` đóng gói kèm theo (thư mục `yt-dlp/`) |
 | `src/tools/downloader/engine/YtDlpInfoWorker.*` | Lấy thông tin/định dạng video (`yt-dlp --dump-json`) trên QThread riêng |
 | `src/tools/downloader/engine/YtDlpDownloadWorker.*` | Tải video qua `yt-dlp.exe`, đọc tiến độ qua `--progress-template` |
-| `src/tools/downloader/{DirectDownloadTab,PageScanTab,PlatformVideoTab,DownloaderWindow}.*` | UI 3 tab Downloader |
+| `src/tools/downloader/engine/{DownloadQueue,LinkResolver,LinkResolverCore,HeadlessBrowser}.*` | Hàng đợi hợp nhất (kiểm tra OK/ERR, tải HTTP + yt-dlp, ghi lịch sử); bộ phân giải link bất đồng bộ; phần THUẦN của bộ phân giải (test bằng dữ liệu thật); trình duyệt ẩn Edge/Chrome (NetLog + DOM) |
+| `src/tools/downloader/{DownloaderSettings,DownloadHistoryStore}.*`, `model/ResolvedMedia.h` | Cài đặt dùng chung + lịch sử tải (JSON qua `AppPaths::profileFile`); struct kết quả phân giải |
+| `src/tools/downloader/{DirectDownloadTab,PageScanTab,PlatformVideoTab,DownloadHistoryTab,DownloaderSettingsTab,DownloaderWindow}.*` | UI 5 tab Downloader (Tải trực tiếp = hàng đợi, Quét trang web, Video nền tảng, Lịch sử, Cài đặt) |
 | `src/tools/downloader/DownloaderTool.*` | `ITool` của Downloader (một cửa sổ duy nhất) |
 | `src/third_party/` | qrcodegen (MIT), quirc (ISC), xem `THIRD_PARTY.md` |
 | `vendor/scrcpy/` | scrcpy + adb đóng gói (Apache-2.0, KHÔNG commit Git) - xem `THIRD_PARTY.md` |
 | `vendor/yt-dlp/` | yt-dlp + ffmpeg/ffprobe đóng gói (Unlicense/GPLv3+ kết hợp + GPL, KHÔNG commit Git) - xem `THIRD_PARTY.md` |
-| `tests/` | `qr_tests`/`qr_ui_tests`, `wifi_tests`/`wifi_ui_tests`, `connect_tests`/`connect_ui_tests` (506 + 2, ghép đôi 2 chiều thật qua TCP, ổn định qua 40+ lần chạy liên tiếp), `diskcleanup_tests`/`diskcleanup_ui_tests` (176 + 19 kiểm tra, có xóa file thật qua Thùng rác, liệt kê phân vùng thật), `android_tests`/`android_ui_tests` (45 + 7 kiểm tra, có gọi `adb devices` thật - chỉ đọc), `vpn_tests`/`vpn_ui_tests` (41 + 6 kiểm tra, có gọi `Get-VpnConnection` thật - chỉ đọc), `security_tests`/`security_ui_tests` (76 + 6 kiểm tra, có gọi `Get-MpComputerStatus`/đọc hosts file thật - chỉ đọc), `downloader_tests`/`downloader_ui_tests` (63 + 8 kiểm tra, có tải thật một tệp công khai nhỏ qua HTTP thật) |
+| `tests/` | `qr_tests`/`qr_ui_tests`, `wifi_tests`/`wifi_ui_tests`, `connect_tests`/`connect_ui_tests` (506 + 2, ghép đôi 2 chiều thật qua TCP, ổn định qua 40+ lần chạy liên tiếp), `diskcleanup_tests`/`diskcleanup_ui_tests` (176 + 19 kiểm tra, có xóa file thật qua Thùng rác, liệt kê phân vùng thật), `android_tests`/`android_ui_tests` (45 + 7 kiểm tra, có gọi `adb devices` thật - chỉ đọc), `vpn_tests`/`vpn_ui_tests` (41 + 6 kiểm tra, có gọi `Get-VpnConnection` thật - chỉ đọc), `security_tests`/`security_ui_tests` (76 + 6 kiểm tra, có gọi `Get-MpComputerStatus`/đọc hosts file thật - chỉ đọc), `downloader_tests`/`downloader_ui_tests` (510 + 57 kiểm tra từ v1.19.16: máy chủ HTTP 127.0.0.1 cho cả luồng hàng đợi lẫn giao diện, có tải thật một tệp công khai nhỏ qua HTTP thật) |
 | `assets/resources.qrc`, `icon/` | Icon nhúng vào exe |
 | `profiles/default.json` | Chuỗi Auto Click MẪU đóng gói kèm (lần chạy đầu được chép sang thư mục dữ liệu người dùng) |
 | `CLAUDE.md` | Quy tắc làm việc đứng cho Claude Code (build → commit → push sau mỗi lần sửa...) |
@@ -650,6 +652,8 @@ xác nhận THẬT thành công (không cần desktop tương tác, chỉ cần 
   tác đó đổi trạng thái hệ thống thật và/hoặc cần quyền Administrator.
 
 ## 4j. Downloader (đã hoàn thiện)
+
+> **Từ v1.19.16** tab "Tải trực tiếp" là hàng đợi hợp nhất có kiểm tra OK/ERR, kèm tab Lịch sử và Cài đặt - xem mục 4ze. Phần dưới mô tả thiết kế gốc (v1.0.x).
 Yêu cầu người dùng: tải ảnh/video/tài liệu từ các trang trình duyệt - hỏi nên dán link trực tiếp hay
 cách nào khác, yêu cầu đưa vào TOÀN BỘ các cách có thể tải về. Đã thiết kế 3 cơ chế bổ sung lẫn nhau,
 mỗi cơ chế phù hợp một tình huống khác nhau thay vì chỉ một cách duy nhất:
@@ -2196,6 +2200,50 @@ không mở rộng được ngay cả trên `QTableWidget` trần - đã đối 
 **CHƯA kiểm chứng**: Shift + bấm CHUỘT thật và menu chuột phải thật (RDP không gửi được chuột/phím thật); ảnh chụp màn hình
 thật ở DPI 125% (đã tái hiện bằng ảnh DPR 1,25 giả lập); cách hiểu "đẩy lùi về sau" của người dùng.
 
+## 4ze. Downloader: hàng đợi hợp nhất, phân giải mọi loại link, Lịch sử + Cài đặt (2026-10-14, v1.19.16)
+
+Người dùng gửi 6 yêu cầu, kèm 1 ảnh (menu chuột phải của JW Player: trang chặn "sao chép link") và danh sách link thật; yêu cầu build + release.
+
+**1. Tải trực tiếp thành hàng đợi.** Dán link -> "+ Thêm vào hàng đợi" (CHƯA tải) -> bộ phân giải kiểm tra -> cột **Kiểm tra** = OK/ERR -> chọn dòng -> "Tải các mục đã chọn". `DownloadQueue` (engine) giữ `QueueItem`
+(`check`: Waiting/Checking/Ok/Err; `state`: Idle/Queued/Downloading/Paused/Completed/Failed/Canceled). Tối đa vài bộ phân giải chạy đồng thời; một link có thể bung thành nhiều dòng (hồ sơ, bài đăng nhiều ảnh), dòng trùng link tệp bị bỏ.
+Tệp HTTP đi qua `FileDownloader` (gửi `Referer` + User-Agent trình duyệt - nhiều CDN chặn nếu thiếu), video/luồng đi qua `YtDlpDownloadWorker` (`-o <thư mục>/<tên>.%(ext)s`, đối số cookie chèn trước `--`). Mục do nơi khác `enqueue` thẳng vào `FileDownloader`
+được phản chiếu vào cùng bảng (`foreign`). Mỗi lần xong/lỗi/hủy ghi một dòng lịch sử.
+
+**2. Trang chặn chuột phải / quét không ra.** Chặn chuột phải chỉ chặn menu, không giấu được link trong mã nguồn hay luồng mạng. Bộ phân giải (`LinkResolver`) đi lần lượt, dừng ở bước đầu tiên ra kết quả:
+(a) GET dò 1 yêu cầu: tệp (Content-Type/Content-Disposition, tên tệp lấy từ header) hay HTML; (b) Google Drive/Docs: `/file/d/<ID>`, `open?id=`, `uc?id=` -> link tải, trang xác nhận "không quét được virus" dựng lại URL từ biểu mẫu, phân loại chặn
+(chủ không cho tải / hết hạn mức / cần đăng nhập); Docs/Sheets/Slides công khai -> xuất PDF/XLSX/PPTX; thư mục Drive không phải tệp; (c) yt-dlp `--dump-single-json --flat-playlist` (video đơn -> 1 mục, hồ sơ/danh sách -> nhiều mục, cắt theo giới hạn);
+(d) quét HTML SÂU `deepScanHtml`: thẻ img/video/audio/source/a, meta `og:video`/`og:image`/`twitter:player:stream`, chuỗi thô trong script/JSON (`"file":"https:\/\/…/index.m3u8"`, `\u0026`, URL lồng `player/?url=…m3u8`, mã hóa phần trăm, đường dẫn tương đối) và liệt kê iframe;
+(e) iframe (tối đa 3, `Referer` = trang cha); (f) **trình duyệt ẩn** `HeadlessBrowser`: `msedge`/`chrome` `--headless=new --dump-dom --log-net-log --net-log-capture-mode=Default --virtual-time-budget=15000 --autoplay-policy=no-user-gesture-required` với `--user-data-dir` tạm riêng (xóa sau khi xong),
+đọc NetLog lấy URL media đã được trang yêu cầu (m3u8/mpd trước, bỏ đoạn .ts/.m4s) và ảnh nội dung trong DOM (luật riêng cho Facebook `t39.30808-6`/`cstp=mx…`, TikTok `photomode`; lọc host/đường dẫn "static", "login_static"). Bài đăng ảnh chỉ trả ảnh; hồ sơ chỉ lấy được phần công khai kèm `warning`.
+Cloudflare "Just a moment…" và tường đăng nhập được nhận diện để báo ERR đúng lý do thay vì trả mã nguồn rác.
+
+**3. Kết quả thật trên các link người dùng gửi** (hàng đợi thật, tải vào thư mục tạm, kiểm tra không tải gì trước khi bấm tải):
+| Link | Kết quả |
+|---|---|
+| Ảnh Facebook `photo/?fbid=…&set=pcb…` | OK - 1 ảnh (jpg 294 KB) qua trình duyệt ẩn; yt-dlp không hỗ trợ loại link này |
+| Video Facebook `/ctsvdhbkhn/videos/…` | OK qua yt-dlp (Facebook); tải thử ra .mp4 2,7 GB trong ~227 s |
+| Ảnh TikTok `@kiue.oahn/photo/…` | OK - 2 ảnh `photomode` qua trình duyệt ẩn |
+| Trang phim motchillt.one | Link `.m3u8` nằm trong script/iframe -> bắt được bằng quét sâu; yt-dlp tải được HLS |
+| Hồ sơ Facebook `/qynhmaiiiz` | Chỉ phần công khai qua trình duyệt ẩn + cảnh báo (yt-dlp không hỗ trợ hồ sơ Facebook; đầy đủ cần đăng nhập) |
+| Hồ sơ TikTok `@kiue.oahn` | yt-dlp trả danh sách; đôi lúc lỗi thoáng qua nên thử lại tối đa 3 lần |
+| Tệp Google Drive `/1ObltgwgTX8QHw7S36wFToyNJNUdosyKn/view` | ERR - tệp do chủ sở hữu không cho tải (không phải lỗi ứng dụng) |
+| Studocu | ERR - Cloudflare/tường trả phí chặn cả yt-dlp lẫn trình duyệt ẩn |
+| Ảnh logo Google, YouTube "Me at the zoo" | OK, tải đúng (5969 byte; 474 KB .webm) |
+
+**4. Tab Cài đặt + Lịch sử.** `DownloaderSettings` (`profiles\downloader_settings.json`, `QSaveFile`): thư mục tải (mặc định Downloads), số tệp đồng thời 1-8, giới hạn mục hồ sơ 1-1000 (mặc định 100), bật/tắt trình duyệt ẩn, cookie (None/Browser/File; trình duyệt thuộc danh sách
+`--cookies-from-browser` hợp lệ; tệp không tồn tại -> không thêm đối số). Mọi setter tự lưu + phát `changed()`; các tab Tải trực tiếp, Quét trang, Video nền tảng, Cài đặt đều theo cùng một thư mục. `DownloadHistoryStore`
+(`profiles\downloader_history.json`, tối đa 2000, mới nhất đầu) + `DownloadHistoryTab` (lọc, mở tệp/thư mục/link nguồn, xóa mục/tất cả có hỏi xác nhận). `PlatformVideoTab` cũng ghi lịch sử.
+
+**5. Nút 🌐.** Mỗi dòng hàng đợi và quét trang có nút mở link trên trình duyệt mặc định (chỉ http/https); lịch sử có "Mở link nguồn". **6. Hồ sơ/kênh**: link hồ sơ YouTube/TikTok/Instagram/Facebook được nhận diện (`isLikelyProfileOrCollectionUrl`) và bung thành từng bài
+đăng theo giới hạn Cài đặt (đánh dấu `truncated` khi vượt).
+
+**Dừng sạch khi đóng.** `DownloadQueue::stopProcesses()` (gọi từ `DownloaderWindow::closeEvent`) hủy các mục chờ trước rồi mới hủy mục đang chạy (nếu đảo thứ tự, việc hủy sẽ kích hoạt mục chờ kế tiếp và sinh tiến trình mới); `LinkResolver::cancel()` kết thúc cả cây tiến trình
+yt-dlp/trình duyệt ẩn qua `WinProcessTree`.
+
+**Kiểm thử.** `downloader_tests` 510/510 (`tests/MiniHttpServer.h` tách ra dùng chung); `downloader_ui_tests` 57/57 (dán link vào `DirectDownloadTab` -> 2 dòng OK/ERR đúng tên từ Content-Disposition, thư mục trống sau bước kiểm tra, tick cả dòng ERR rồi tải: chỉ dòng OK được tải 5000 byte đúng,
+lịch sử 2 mục, quét trang HTML mẫu -> thêm vào hàng đợi -> toàn OK/"Chưa tải", đổi thư mục ở một nơi -> ≥4 nhãn đổi theo); `update_tests` 95/95 (dùng chung `FileDownloader`); `secdl_stress_tests` 1.869.830/1.869.830 (120 s); `core_stress_tests` đạt. Chạy hàng đợi THẬT qua mạng bằng chương trình thử tạm (đã xóa). Bố cục kiểm bằng ảnh chụp `QWidget::grab()` của từng tab (không hiện lên màn hình) - phát hiện và sửa: nút "Tải các mục đã chọn" bị cắt chữ ở cửa sổ hẹp (hàng nút nay là `FlowLayout`, tự xuống dòng), nút 🌐 bị Qt rút thành "..." (đặt cỡ cố định), cột trạng thái quá hẹp, đường dẫn thư mục hiện dấu `/` thay vì `\`.
+**CHƯA kiểm chứng**: bấm chuột/hộp thoại chọn thư mục thật và nút 🌐 mở trình duyệt thật (máy qua RDP), Shift+bấm chuột chọn dải, cookie đăng nhập Instagram/Facebook, hồ sơ Facebook đầy đủ, Smart App Control.
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
@@ -2358,6 +2406,7 @@ Quy tắc đứng nằm ở `CLAUDE.md` (gốc dự án). Tóm tắt - mỗi l�
 | 2026-10-13 | Sửa lỗi bấm "Lưu hành động" 2 lần + gọn lại trang QR Vị trí + link rút gọn Google Maps (v1.19.13) | Chi tiết đầy đủ ở mục 4zb. Người dùng gửi ảnh + 3 yêu cầu: (1) trang QR Vị trí vượt chiều rộng - đã bố trí lại (ô giá trị thu hẹp, nút nằm cạnh, có test chống vượt cột trái ở 860/1020/1400px); (2) không đọc được link rút gọn `maps.app.goo.gl` - nay gửi 1 yêu cầu GET tới Google, đọc header `Location`, tách tọa độ (ưu tiên điểm ghim `!3d!4d`), chỉ theo host Google; xác nhận qua mạng thật với link của người dùng; (3) phải bấm Lưu 2 lần - nguyên nhân gốc: `setActions()` tự phát `currentCellChanged` ngay khi editor còn "dirty" nên bản vừa lưu bị chụp lại thành cache chưa lưu (lỗi do cache v1.19.11, không có ở v1.19.10), cùng lỗ hổng ở "Lưu lại trước khi chạy?" và Nhân bản/Xóa/Dời; tái hiện bằng test trước khi sửa, sửa bằng `ScopedFlag`. `autoclick_tests` 194/194, `core_stress_tests` 551/551, `qr_tests` 182/182, `qr_ui_tests` 172/172, `qrwifi_stress_tests` 760.292/760.292. CHƯA kiểm chứng: bấm chuột thật trong app, trang đồng ý cookie EU. |
 | 2026-10-13 | QR Vị trí: ô tọa độ rộng hơn + nút co vừa chữ; con trỏ ngón tay trên danh sách công cụ (v1.19.14) | Chi tiết đầy đủ ở mục 4zc. Người dùng gửi ảnh ô tọa độ bị cắt chữ số cuối: nguyên nhân là bề rộng cố định lấy từ `sizeHint()` (chưa tính padding stylesheet) - nay bề rộng tối thiểu tính theo chữ thật của `-180.000000`, ô giãn theo cột, hai nút co vừa chữ (lưới 3 cột), có test ở 860/1020/1400px. Thêm helper `ItemHoverCursor` (ngón tay trỏ khi rê lên MỘT MỤC của danh sách, vùng trống giữ mũi tên) gắn vào danh sách công cụ của cửa sổ chính. Bản đầu tiên được tag sau v1.19.10. `autoclick_tests` 201/201, `qr_ui_tests` 190/190, `qr_tests` 182/182, `qrwifi_stress_tests` 760.141/760.141. CHƯA kiểm chứng: con trỏ thật trong cửa sổ chính, DPI khác. |
 | 2026-10-13 | QR: định dạng vị trí + khung nhận dạng khi quét màn hình; Auto Click: chọn nhiều để xóa/nhân bản (v1.19.15) | Chi tiết đầy đủ ở mục 4zd. 4 yêu cầu: (1) đọc đúng 3 định dạng vị trí - dữ liệu thật cho thấy KHÔNG cùng một điểm (link dài = lộ trình xuất phát + Hội Gym; link rút gọn = Hội Gym; độ-phút-giây = điểm xuất phát), nay link dài lấy điểm của địa điểm có mã địa điểm (trùng link rút gọn) và báo điểm còn lại, thêm đọc tọa độ viết tay (độ-phút-giây, độ thập phân, cặp số); (2) khung nhận dạng nhỏ hơn mã - tái hiện: ảnh dpr 1,25 cho khung 79,8% do `padWhite()` vẽ theo kích thước logic, sửa bằng chuẩn hóa dpr về 1; (3) đếm số lần quét mã đã tạo - KHÔNG làm được (mã tĩnh, không có máy chủ); (4) chọn nhiều hành động/chuỗi bằng Ctrl/Shift để xóa/nhân bản (nhiều hành động: cụm bản sao lùi về sau hành động chọn cuối). `qr_tests` 241/241, `qr_ui_tests` 197/197, `autoclick_tests` 251/251, `core_stress_tests` 551/551, `qrwifi_stress_tests` 760.298/760.298. CHƯA kiểm chứng: Shift + bấm chuột thật, menu chuột phải thật, ảnh chụp màn hình thật ở DPI 125%. Chỉ push code, không tạo release. |
+| 2026-10-14 | Downloader: hàng đợi hợp nhất + phân giải mọi loại link + Lịch sử + Cài đặt (v1.19.16) | Chi tiết đầy đủ ở mục 4ze. 6 yêu cầu: (1) Tải trực tiếp = hàng đợi (thêm -> kiểm tra OK/ERR -> chọn -> tải; thư mục đích trống sau bước kiểm tra); (2) trang chặn chuột phải vẫn đọc được qua quét sâu mã nguồn + trình duyệt ẩn (NetLog); (3) phủ Facebook ảnh/video, TikTok ảnh, trang phim HLS, Google Drive/Docs, Studocu (ERR vì Cloudflare); (4) tab Lịch sử + Cài đặt (thư mục tải dùng chung); (5) nút 🌐 mở link; (6) hồ sơ/kênh bung thành từng bài (Instagram/Facebook cần cookie). `downloader_tests` 510/510, `downloader_ui_tests` 57/57, `update_tests` 95/95, `secdl_stress_tests` 1.869.830/1.869.830, `core_stress_tests` đạt; hàng đợi chạy thật qua mạng. CHƯA kiểm chứng: bấm chuột/hộp thoại thật, cookie Instagram/Facebook, hồ sơ Facebook đầy đủ. Có tạo release. |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `

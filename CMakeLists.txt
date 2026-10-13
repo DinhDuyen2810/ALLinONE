@@ -425,10 +425,23 @@ add_library(downloader_core STATIC
     src/tools/downloader/model/MediaLink.h
     src/tools/downloader/model/VideoFormatInfo.h
     src/tools/downloader/model/VideoInfo.h
+    src/tools/downloader/model/ResolvedMedia.h
     src/tools/downloader/engine/FileDownloader.h
     src/tools/downloader/engine/FileDownloader.cpp
     src/tools/downloader/engine/PageMediaScanner.h
     src/tools/downloader/engine/PageMediaScanner.cpp
+    src/tools/downloader/engine/LinkResolverCore.h
+    src/tools/downloader/engine/LinkResolverCore.cpp
+    src/tools/downloader/engine/LinkResolver.h
+    src/tools/downloader/engine/LinkResolver.cpp
+    src/tools/downloader/engine/HeadlessBrowser.h
+    src/tools/downloader/engine/HeadlessBrowser.cpp
+    src/tools/downloader/engine/DownloadQueue.h
+    src/tools/downloader/engine/DownloadQueue.cpp
+    src/tools/downloader/DownloaderSettings.h
+    src/tools/downloader/DownloaderSettings.cpp
+    src/tools/downloader/DownloadHistoryStore.h
+    src/tools/downloader/DownloadHistoryStore.cpp
     src/tools/downloader/engine/YtDlpController.h
     src/tools/downloader/engine/YtDlpController.cpp
     src/tools/downloader/engine/YtDlpInfoWorker.h
@@ -466,6 +479,10 @@ add_library(downloader_ui STATIC
     src/tools/downloader/DownloaderUiStyle.h
     src/tools/downloader/DirectDownloadTab.h
     src/tools/downloader/DirectDownloadTab.cpp
+    src/tools/downloader/DownloadHistoryTab.h
+    src/tools/downloader/DownloadHistoryTab.cpp
+    src/tools/downloader/DownloaderSettingsTab.h
+    src/tools/downloader/DownloaderSettingsTab.cpp
     src/tools/downloader/PageScanTab.h
     src/tools/downloader/PageScanTab.cpp
     src/tools/downloader/PlatformVideoTab.h

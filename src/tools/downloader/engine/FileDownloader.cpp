@@ -90,12 +90,13 @@ FileDownloader::~FileDownloader()
     }
 }
 
-int FileDownloader::enqueue(const QString& url, const QString& destPath)
+int FileDownloader::enqueue(const QString& url, const QString& destPath, const QString& referer)
 {
     const int id = m_nextId++;
     DownloadItem item;
     item.url = url;
     item.destPath = destPath;
+    item.referer = referer;
     item.status = DownloadItem::Status::Queued;
     m_items[id] = item;
     m_order << id;
@@ -235,7 +236,16 @@ void FileDownloader::startNetworkRequest(int id)
     }
 
     QNetworkRequest req((QUrl(it.url)));
-    req.setHeader(QNetworkRequest::UserAgentHeader, "OneForAll-Downloader/1.0");
+    if (!it.referer.isEmpty())
+    {
+        req.setRawHeader("Referer", it.referer.toUtf8());
+        req.setHeader(QNetworkRequest::UserAgentHeader,
+                      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36");
+    }
+    else
+    {
+        req.setHeader(QNetworkRequest::UserAgentHeader, "OneForAll-Downloader/1.0");
+    }
     req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
     req.setTransferTimeout(kTransferTimeoutMs);
     // LUÔN xin bản KHÔNG nén. Để mặc định thì Qt tự xin gzip/deflate rồi tự giải nén, và khi đó nó bỏ

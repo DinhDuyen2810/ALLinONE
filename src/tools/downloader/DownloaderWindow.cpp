@@ -1,8 +1,13 @@
 #include "DownloaderWindow.h"
 
 #include "DirectDownloadTab.h"
+#include "DownloadHistoryStore.h"
+#include "DownloadHistoryTab.h"
+#include "DownloaderSettings.h"
+#include "DownloaderSettingsTab.h"
 #include "PageScanTab.h"
 #include "PlatformVideoTab.h"
+#include "engine/DownloadQueue.h"
 #include "engine/FileDownloader.h"
 #include "core/IconHelper.h"
 #include "core/Logger.h"
@@ -46,13 +51,15 @@ void DownloaderWindow::closeEvent(QCloseEvent* event)
 {
     // QUAN TRỌNG: cửa sổ này được DownloaderTool giữ qua QPointer và TÁI DÙNG ở lần mở sau (không có
     // WA_DeleteOnClose) - đóng cửa sổ (bấm X) mặc định CHỈ ẨN đi, KHÔNG hủy đối tượng. Nếu không tự dừng
-    // ở đây, một phiên tải video nền tảng đang chạy (yt-dlp.exe, có thể tự sinh ffmpeg.exe lúc ghép) sẽ
-    // tiếp tục chạy ngầm vô thời hạn dù người dùng tưởng đã "đóng" công cụ này - đúng lớp lỗi đã gặp với
-    // Android (xem AndroidControlWindow::closeEvent/ScrcpyLauncher.cpp). Tải trực tiếp/quét trang
-    // (FileDownloader, thuần QNetworkAccessManager) không cần xử lý ở đây - không có tiến trình ngoài nào
-    // có thể mồ côi, tự dừng sạch khi tiến trình ứng dụng thoát.
+    // ở đây, một phiên tải video nền tảng (yt-dlp.exe, có thể tự sinh ffmpeg.exe lúc ghép), một lượt kiểm tra link
+    // trong hàng đợi (yt-dlp.exe / Edge-Chrome ẩn) sẽ tiếp tục chạy ngầm vô thời hạn dù người dùng tưởng đã "đóng"
+    // công cụ này - đúng lớp lỗi đã gặp với Android (xem AndroidControlWindow::closeEvent/ScrcpyLauncher.cpp).
+    // Tải tệp HTTP (FileDownloader, thuần QNetworkAccessManager) không có tiến trình ngoài nào có thể mồ côi nên
+    // không cần dừng ở đây.
     if (m_platformTab)
         m_platformTab->cancelActiveDownload();
+    if (m_queue)
+        m_queue->stopProcesses();
     event->accept();
 }
 
@@ -62,14 +69,21 @@ void DownloaderWindow::buildUi()
     root->setContentsMargins(14, 12, 14, 14);
     root->setSpacing(10);
 
+    m_settings = new DownloaderSettings(this);
+    m_history = new DownloadHistoryStore(this);
     m_downloader = new FileDownloader(this);
+    m_queue = new DownloadQueue(m_settings, m_history, m_downloader, this);
 
     m_tabs = new QTabWidget(this);
-    m_directTab = new DirectDownloadTab(m_downloader, this);
-    m_pageScanTab = new PageScanTab(m_downloader, this);
-    m_platformTab = new PlatformVideoTab(this);
+    m_directTab = new DirectDownloadTab(m_queue, m_settings, this);
+    m_pageScanTab = new PageScanTab(m_queue, m_settings, this);
+    m_platformTab = new PlatformVideoTab(m_settings, m_history, this);
+    m_historyTab = new DownloadHistoryTab(m_history, this);
+    m_settingsTab = new DownloaderSettingsTab(m_settings, this);
     m_tabs->addTab(m_directTab, "⬇️  Tải trực tiếp");
     m_tabs->addTab(m_pageScanTab, "🔍  Quét trang web");
     m_tabs->addTab(m_platformTab, "🎬  Video nền tảng");
+    m_tabs->addTab(m_historyTab, "🕘  Lịch sử");
+    m_tabs->addTab(m_settingsTab, "⚙️  Cài đặt");
     root->addWidget(m_tabs, 1);
 }
