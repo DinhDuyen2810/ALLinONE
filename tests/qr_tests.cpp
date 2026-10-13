@@ -5,6 +5,8 @@
 #include <QPainter>
 #include <QSvgRenderer>
 #include <QTransform>
+#include <QUrl>
+#include <cmath>
 #include <cstdio>
 
 #include "tools/qr/QRCodec.h"
@@ -413,6 +415,81 @@ int main(int argc, char** argv)
         CHECK(mmStd.actionUrl == "mailto:a@b.com");
         const ParsedPayload mmNoTo = QRPayload::parse("MATMSG:SUB:chi co tieu de;;");
         CHECK(mmNoTo.actionUrl.isEmpty()); // không có người nhận thì không dựng mailto: từ trường khác
+    }
+
+    // ---- Link Google Maps: tách tọa độ / nhận diện link rút gọn / giới hạn host chuyển hướng ----
+    {
+        auto coords = [](const QString& text, double* la, double* lo) {
+            return QRPayload::parseGoogleMapsCoordinates(text, la, lo);
+        };
+        auto near = [](double a, double b) { return std::abs(a - b) < 1e-6; };
+        double la = 0, lo = 0;
+
+        // Link thật (đích chuyển hướng của https://maps.app.goo.gl/DM9Xt5AkRLgG6Sbo7): có CẢ "@" (tâm khung
+        // nhìn 21.006303,105.8405801) LẪN điểm ghim "!3d..!4d.." (21.006298,105.843155) - phải lấy ĐIỂM GHIM.
+        const QString real =
+            "https://www.google.com/maps/place/21%C2%B000'22.7%22N+105%C2%B050'35.4%22E/@21.006303,105.8405801,17z/"
+            "data=!3m1!4b1!4m4!3m3!8m2!3d21.006298!4d105.843155!5m1!1e4?entry=tts&g_ep=EgoyMDI2MTAwNy4wIPu8ASoASAFQAw%3D%3D";
+        CHECK(coords(real, &la, &lo) && near(la, 21.006298) && near(lo, 105.843155));
+
+        // Chỉ có "@lat,lon" (copy từ thanh địa chỉ).
+        CHECK(coords("https://www.google.com/maps/@10.762622,106.660172,15z", &la, &lo) && near(la, 10.762622) && near(lo, 106.660172));
+        // "query=" (link do nút "Mở bản đồ" tạo ra), "q=" tọa độ âm, "ll=", "center=".
+        CHECK(coords("https://www.google.com/maps/search/?api=1&query=21.028511,105.804817", &la, &lo) && near(la, 21.028511) && near(lo, 105.804817));
+        CHECK(coords("https://maps.google.com/?q=-33.868820,151.209296", &la, &lo) && near(la, -33.868820) && near(lo, 151.209296));
+        CHECK(coords("https://maps.google.com/?ll=48.8584,2.2945&z=15", &la, &lo) && near(la, 48.8584) && near(lo, 2.2945));
+        CHECK(coords("https://www.google.com/maps?center=35.6762,139.6503", &la, &lo) && near(la, 35.6762) && near(lo, 139.6503));
+        // Dấu phẩy bị mã hóa phần trăm.
+        CHECK(coords("https://maps.google.com/?q=21.0285%2C105.8048", &la, &lo) && near(la, 21.0285) && near(lo, 105.8048));
+        // Trang đồng ý cookie bọc link thật trong continue=.
+        CHECK(coords("https://consent.google.com/m?continue=https%3A%2F%2Fwww.google.com%2Fmaps%2F%4021.0%2C105.8%2C15z&gl=VN", &la, &lo) && near(la, 21.0) && near(lo, 105.8));
+        // Khoảng trắng đầu/cuối.
+        CHECK(coords("  https://www.google.com/maps/@1.5,2.5,10z \n", &la, &lo) && near(la, 1.5) && near(lo, 2.5));
+        // Ngoài phạm vi / rác / rỗng / link rút gọn (không chứa tọa độ) -> false và KHÔNG sửa tham số ra.
+        la = 7; lo = 8;
+        CHECK(!coords("https://x.com/@95.0,200.0", &la, &lo));
+        CHECK(!coords("hello world", &la, &lo));
+        CHECK(!coords("", &la, &lo));
+        CHECK(!coords("https://maps.app.goo.gl/DM9Xt5AkRLgG6Sbo7", &la, &lo));
+        CHECK(la == 7 && lo == 8);
+        CHECK(!QRPayload::parseGoogleMapsCoordinates("https://www.google.com/maps/@1,2,3z", nullptr, &lo));
+
+        // Nhận diện link rút gọn (chỉ các host rút gọn của Google Maps).
+        CHECK(QRPayload::isGoogleMapsShortLink("https://maps.app.goo.gl/DM9Xt5AkRLgG6Sbo7"));
+        CHECK(QRPayload::isGoogleMapsShortLink("maps.app.goo.gl/DM9Xt5AkRLgG6Sbo7")); // thiếu scheme
+        CHECK(QRPayload::isGoogleMapsShortLink("  http://maps.app.goo.gl/abc  "));
+        CHECK(QRPayload::isGoogleMapsShortLink("https://goo.gl/maps/abcdef"));
+        CHECK(QRPayload::isGoogleMapsShortLink("https://g.co/kgs/abcdef"));
+        CHECK(!QRPayload::isGoogleMapsShortLink("https://maps.app.goo.gl/"));           // không có mã
+        CHECK(!QRPayload::isGoogleMapsShortLink("https://goo.gl/other/abc"));           // goo.gl không phải maps
+        CHECK(!QRPayload::isGoogleMapsShortLink("https://evil.com/maps.app.goo.gl/abc")); // host khác
+        CHECK(!QRPayload::isGoogleMapsShortLink("https://maps.app.goo.gl.evil.com/abc"));
+        CHECK(!QRPayload::isGoogleMapsShortLink("https://www.google.com/maps/@1,2,3z")); // link đầy đủ, không phải rút gọn
+        CHECK(!QRPayload::isGoogleMapsShortLink(""));
+        CHECK(!QRPayload::isGoogleMapsShortLink("maps.app.goo.gl/a b"));                 // có khoảng trắng giữa
+
+        // Chuẩn hóa: luôn https, từ chối scheme lạ.
+        CHECK(QRPayload::normalizeLinkUrl("http://maps.app.goo.gl/abc").scheme() == "https");
+        CHECK(QRPayload::normalizeLinkUrl("maps.app.goo.gl/abc").toString() == "https://maps.app.goo.gl/abc");
+        CHECK(QRPayload::normalizeLinkUrl("ftp://maps.app.goo.gl/abc").isEmpty());
+        CHECK(QRPayload::normalizeLinkUrl("file:///c:/x").isEmpty());
+
+        // Chỉ theo chuyển hướng tới host Google qua https.
+        CHECK(QRPayload::isAllowedMapsRedirectUrl(QUrl("https://www.google.com/maps/place/x")));
+        CHECK(QRPayload::isAllowedMapsRedirectUrl(QUrl("https://maps.google.com.vn/maps?q=1,2")));
+        CHECK(QRPayload::isAllowedMapsRedirectUrl(QUrl("https://www.google.co.uk/maps")));
+        CHECK(QRPayload::isAllowedMapsRedirectUrl(QUrl("https://consent.google.com/m?continue=x")));
+        CHECK(QRPayload::isAllowedMapsRedirectUrl(QUrl("https://maps.app.goo.gl/abc")));
+        CHECK(QRPayload::isAllowedMapsRedirectUrl(QUrl("https://goo.gl/maps/abc")));
+        CHECK(QRPayload::isAllowedMapsRedirectUrl(QUrl("https://g.co/kgs/abc")));
+        CHECK(!QRPayload::isAllowedMapsRedirectUrl(QUrl("http://www.google.com/maps")));          // không phải https
+        CHECK(!QRPayload::isAllowedMapsRedirectUrl(QUrl("https://evil.com/")));
+        CHECK(!QRPayload::isAllowedMapsRedirectUrl(QUrl("https://evilgoogle.com/")));            // không phải nhãn trọn vẹn
+        CHECK(!QRPayload::isAllowedMapsRedirectUrl(QUrl("https://google.com.evil.com/")));        // google.com chỉ là tiền tố
+        CHECK(!QRPayload::isAllowedMapsRedirectUrl(QUrl("https://www.google.evil.co/")));         // TLD giả 4 chữ cái
+        CHECK(!QRPayload::isAllowedMapsRedirectUrl(QUrl("https://goo.gl.evil.com/")));
+        CHECK(!QRPayload::isAllowedMapsRedirectUrl(QUrl("https://127.0.0.1/")));
+        CHECK(!QRPayload::isAllowedMapsRedirectUrl(QUrl()));
     }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);

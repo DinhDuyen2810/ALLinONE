@@ -131,12 +131,16 @@ private:
     /// LUÔN rỗng khi đổi sang chain khác (đổi chain tự áp dụng/làm sạch cache trước, xem onChainSelected()
     /// và các chỗ khác đổi m_currentChainIndex) - không cần một map lồng theo từng chain.
     std::map<int, Action> m_pendingEdits;
-    /// true trong lúc một hàm RESTRUCTURE (syncUiWithCurrentChain()/onActionMoved()/onCloneAction()/
-    /// onDeleteAction()/onAddAction()) đang TỰ gọi setSelectedActionIndex() sau khi đã tự lo capture/remap
-    /// m_pendingEdits của riêng nó - chặn captureEditorIfDirty() khỏi bị gọi THÊM LẦN NỮA một cách sai chỉ
-    /// số bởi chính onActionSelected() lan truyền qua currentCellChanged (bảng đã đổi sang hàng MỚI trước
-    /// khi slot chạy, nên lúc đó capture sẽ ghi nhầm nội dung cũ vào đúng chỉ số vừa remap xong - đã xác
-    /// nhận qua suy luận kỹ, không phải giả thuyết).
+    /// true trong lúc một hàm RESTRUCTURE/LƯU (syncUiWithCurrentChain()/onActionMoved()/onCloneAction()/
+    /// onDeleteAction()/onAddAction()/onActionSaved()/applyPendingEdits()) đang TỰ vẽ lại bảng
+    /// (setActions()) và TỰ gọi setSelectedActionIndex() sau khi đã tự lo capture/remap m_pendingEdits của
+    /// riêng nó - chặn captureEditorIfDirty() khỏi bị gọi THÊM LẦN NỮA một cách sai bởi chính
+    /// onActionSelected() lan truyền qua currentCellChanged. CẢ setActions() (setRowCount(0) rồi
+    /// setCurrentCell) LẪN setSelectedActionIndex() đều phát tín hiệu đó, nên cờ phải bao TRỌN đoạn vẽ lại
+    /// bảng chứ không chỉ riêng setSelectedActionIndex(): nếu hở, (a) sau khi Lưu hành động editor còn
+    /// "dirty" nên bản vừa lưu bị chụp lại thành cache "chưa lưu" ma - dấu "*" hiện lại, phải bấm Lưu LẦN
+    /// THỨ HAI mới hết; (b) sau Nhân bản/Xóa/Dời, nội dung editor bị ghi nhầm vào chỉ số vừa remap xong.
+    /// Đặt qua ScopedFlag (AutoClickWindow.cpp) để luôn được trả về giá trị cũ, kể cả khi return sớm.
     bool m_suppressPendingCapture{false};
 
     // UI Widgets

@@ -1852,6 +1852,21 @@ static void stressQrUi(const QTemporaryDir& tmp, int opens, int fuzzRounds)
     // (e) "Tạo lại mã" phải đưa NGUYÊN VĂN nội dung đã quét sang tab Tạo (kể cả xuống dòng kiểu CRLF của
     // vCard, khoảng trắng không ngắt, U+2028...) - mã tạo lại phải mang đúng nội dung của mã gốc.
     {
+        // Tùy chọn của tab Tạo lúc này là thứ SÓT LẠI từ vòng fuzz ngẫu nhiên ở (c) (kích thước 100..700px, "Ô bo
+        // tròn" bật 40%, viền trắng 0..16...). Phần (e) kiểm "Tạo lại mã giữ đúng nội dung", KHÔNG kiểm độ bền giải
+        // mã theo tùy chọn - nhưng ảnh được giải mã lại ở cuối vòng lặp bên dưới nên tùy chọn "xấu" làm hỏng
+        // NGẪU NHIÊN vài % lần chạy. Tái hiện tất định (probe tạm): kích thước 150px + "Ô bo tròn" -> đúng 4/9 mẫu
+        // ngắn không giải mã lại được (hạn chế có sẵn của bộ tạo mã ở tỉ lệ pixel/ô không nguyên, ứng dụng đã có
+        // cảnh báo "ảnh không tự đọc lại được" cho trường hợp này), mọi cấu hình mặc định/lớn đều 0/9. Đưa tùy chọn
+        // về mặc định để phép kiểm tất định.
+        sizeSpin->setValue(512);
+        for (QSpinBox* s : gen->findChildren<QSpinBox*>())
+            if (s != sizeSpin && s->maximum() == 16)
+                s->setValue(4); // viền trắng
+        for (QCheckBox* c : gen->findChildren<QCheckBox*>())
+            if (c->text().contains("bo tròn"))
+                c->setChecked(false);
+        gen->refresh();
         const QStringList probes = {
             "mot dong",
             "dong1\r\ndong2\r\n",

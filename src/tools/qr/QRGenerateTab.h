@@ -14,6 +14,8 @@ class QComboBox;
 class QDoubleSpinBox;
 class QLabel;
 class QLineEdit;
+class QNetworkAccessManager;
+class QNetworkReply;
 class QPlainTextEdit;
 class QPushButton;
 class QSlider;
@@ -63,11 +65,13 @@ private slots:
     void onApplyMapsLink();
 
 private:
-    /// Thử đọc tọa độ từ một link Google Maps dán vào (các dạng ".../@lat,lon,..", "?q=lat,lon",
-    /// "?query=lat,lon" - xem onApplyMapsLink()). Trả về false nếu không khớp dạng nào hoặc tọa độ đọc
-    /// được ra ngoài phạm vi hợp lệ (link rút gọn maps.app.goo.gl không chứa tọa độ trong chuỗi URL nên
-    /// không đọc được).
-    bool parseGoogleMapsLink(const QString& text, double* lat, double* lon) const;
+    /// Điền tọa độ đã đọc được từ link Google Maps vào hai ô Vĩ độ/Kinh độ + báo kết quả ở nhãn trạng thái.
+    void applyMapsCoordinates(double lat, double lon, const QString& what);
+    /// Mở một link RÚT GỌN (maps.app.goo.gl/...) bằng MỘT yêu cầu GET, KHÔNG theo chuyển hướng tự động: chỉ
+    /// đọc header Location (đích chuyển hướng - URL đầy đủ có tọa độ), không tải nội dung trang. Mỗi bước
+    /// chuyển hướng chỉ được đi tiếp nếu còn thuộc Google (QRPayload::isAllowedMapsRedirectUrl), tối đa 5 bước.
+    void resolveShortMapsLink(const QUrl& url, int hop);
+    void cancelMapsLookup();
 
     void buildUi();
     QWidget* makeTextPage();
@@ -111,6 +115,8 @@ private:
     QLabel* m_geoLocateStatus{nullptr};
     QLineEdit* m_mapsLinkEdit{nullptr};          // dán link Google Maps vào đây để đọc tọa độ
     QPushButton* m_mapsLinkApplyButton{nullptr};
+    QNetworkAccessManager* m_mapsNet{nullptr};   // tạo lười - chỉ khi dán link RÚT GỌN lần đầu
+    QNetworkReply* m_mapsReply{nullptr};         // yêu cầu đang chạy (nullptr nếu không có)
 
     // Options
     QComboBox* m_eccCombo{nullptr};

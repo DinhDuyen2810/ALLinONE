@@ -22,6 +22,9 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRegularExpression>
@@ -180,56 +183,95 @@ QWidget* QRGenerateTab::makePhonePage()
 QWidget* QRGenerateTab::makeGeoPage()
 {
     auto* w = new QWidget(this);
-    auto* f = makeForm(w);
-    m_geoLat = new QDoubleSpinBox(w);
-    m_geoLat->setRange(-90.0, 90.0);
-    m_geoLat->setDecimals(6);
-    m_geoLat->setValue(21.028511);
-    m_geoLat->setButtonSymbols(QAbstractSpinBox::NoButtons);
-    m_geoLon = new QDoubleSpinBox(w);
-    m_geoLon->setRange(-180.0, 180.0);
-    m_geoLon->setDecimals(6);
-    m_geoLon->setValue(105.804817);
-    m_geoLon->setButtonSymbols(QAbstractSpinBox::NoButtons);
+    // Bố cục: MỖI hàng tọa độ = nhãn | ô giá trị | nút nằm ngay cạnh. Giá trị tọa độ chỉ cần ~12 ký tự nên ô
+    // được THU HẸP (tối đa 125px) nhường chỗ cho nút. Trước đây mỗi ô tọa độ chiếm trọn chiều ngang còn hai
+    // nút xếp thành một hàng riêng - tổng chiều ngang vượt cột trái (cột trái là QScrollArea TẮT thanh cuộn
+    // ngang) nên phần bên phải bị cắt mất. Mọi hàng dưới đây phải VỪA bề rộng tối thiểu của cột trái.
+    auto* v = new QVBoxLayout(w);
+    v->setContentsMargins(0, 6, 0, 6);
+    v->setSpacing(8);
+
+    auto makeCoordLabel = [w](const QString& text, const QString& tip) {
+        auto* l = new QLabel(text, w);
+        l->setToolTip(tip);
+        // Cùng một bề rộng nhãn cho cả hai hàng để các ô giá trị thẳng hàng với nhau.
+        l->setFixedWidth(l->fontMetrics().horizontalAdvance("Kinh độ:") + 6);
+        return l;
+    };
+    auto makeCoordSpin = [w](double lo, double hi, double value) {
+        auto* sp = new QDoubleSpinBox(w);
+        sp->setRange(lo, hi);
+        sp->setDecimals(6);
+        sp->setValue(value);
+        sp->setButtonSymbols(QAbstractSpinBox::NoButtons);
+        sp->setMaximumWidth(125);
+        return sp;
+    };
+    // Nút thu gọn đệm ngang (8px thay vì 14px) để vừa cột trái ở cỡ cửa sổ nhỏ nhất.
+    const QString compactButton = QRUi::buttonStyle() + "QPushButton { padding: 7px 8px; }";
+
+    m_geoLat = makeCoordSpin(-90.0, 90.0, 21.028511);
+    m_geoLon = makeCoordSpin(-180.0, 180.0, 105.804817);
     connect(m_geoLat, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, &QRGenerateTab::scheduleRefresh);
     connect(m_geoLon, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, &QRGenerateTab::scheduleRefresh);
-    f->addRow("Vĩ độ (Latitude):", m_geoLat);
-    f->addRow("Kinh độ (Longitude):", m_geoLon);
+    // Hai ô CÙNG một bề rộng (theo ô rộng hơn - kinh độ có thêm 1 chữ số) để hai nút bên phải thẳng hàng.
+    const int spinWidth = qMin(125, qMax(m_geoLat->sizeHint().width(), m_geoLon->sizeHint().width()));
+    m_geoLat->setFixedWidth(spinWidth);
+    m_geoLon->setFixedWidth(spinWidth);
 
     // "Lấy vị trí hiện tại": KHÔNG phải GPS thật - Windows chỉ cấp quyền "System location" cho app MSIX đã
     // duyệt, Win32 không đóng gói không gọi được dù có quyền Administrator (đã xác nhận ở module VPN &
     // Location, xem PublicIpChecker.h) - đây là vị trí ƯỚC LƯỢNG theo vùng phủ của địa chỉ IP công khai
-    // (độ chính xác cỡ thành phố), ghi rõ trong nhãn/thông báo để không gây hiểu nhầm là định vị chính xác.
-    auto* geoBtnRow = new QHBoxLayout();
-    m_geoLocateButton = new QPushButton("📍 Lấy vị trí hiện tại (ước lượng theo IP)", w);
-    m_geoLocateButton->setStyleSheet(QRUi::buttonStyle());
+    // (độ chính xác cỡ thành phố). Chữ trên nút được rút gọn cho vừa chiều ngang; lời cảnh báo "ước lượng
+    // theo IP, không phải GPS" nằm ở tooltip, dòng chú thích bên dưới và thông báo kết quả.
+    m_geoLocateButton = new QPushButton("📍 Lấy vị trí hiện tại", w);
+    m_geoLocateButton->setToolTip("Ước lượng theo địa chỉ IP công khai (độ chính xác cỡ thành phố, KHÔNG phải GPS)");
+    m_geoLocateButton->setStyleSheet(compactButton);
     m_geoMapButton = new QPushButton("🗺 Mở bản đồ", w);
-    m_geoMapButton->setStyleSheet(QRUi::buttonStyle());
-    geoBtnRow->addWidget(m_geoLocateButton, 1);
-    geoBtnRow->addWidget(m_geoMapButton);
+    m_geoMapButton->setToolTip("Mở Google Maps tại tọa độ đang nhập bằng trình duyệt mặc định");
+    m_geoMapButton->setStyleSheet(compactButton);
+    for (QPushButton* b : {m_geoLocateButton, m_geoMapButton})
+        b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     connect(m_geoLocateButton, &QPushButton::clicked, this, &QRGenerateTab::onLocateMe);
     connect(m_geoMapButton, &QPushButton::clicked, this, &QRGenerateTab::onOpenMap);
-    f->addRow("", geoBtnRow);
 
-    m_geoLocateStatus = new QLabel(w);
-    m_geoLocateStatus->setWordWrap(true);
-    m_geoLocateStatus->setStyleSheet("color: #57606a; font-size: 11px; border: none; background: transparent;");
-    f->addRow("", m_geoLocateStatus);
+    auto* latRow = new QHBoxLayout();
+    latRow->setSpacing(8);
+    latRow->addWidget(makeCoordLabel("Vĩ độ:", "Vĩ độ (Latitude), từ -90 đến 90"));
+    latRow->addWidget(m_geoLat);
+    latRow->addWidget(m_geoLocateButton, 1);
+    v->addLayout(latRow);
 
-    // "Dán link Google Maps để lấy vị trí" (yêu cầu người dùng) - đọc tọa độ trực tiếp từ URL, không cần
-    // gọi dịch vụ nào. Chỉ nhận link ĐẦY ĐỦ (có "@lat,lon" hoặc "q=/query=lat,lon" trong chuỗi URL) - link
-    // rút gọn kiểu maps.app.goo.gl không chứa tọa độ trong URL nên không đọc được bằng cách này.
+    auto* lonRow = new QHBoxLayout();
+    lonRow->setSpacing(8);
+    lonRow->addWidget(makeCoordLabel("Kinh độ:", "Kinh độ (Longitude), từ -180 đến 180"));
+    lonRow->addWidget(m_geoLon);
+    lonRow->addWidget(m_geoMapButton, 1);
+    v->addLayout(lonRow);
+
+    // "Dán link Google Maps để lấy vị trí" (yêu cầu người dùng). Link ĐẦY ĐỦ: đọc tọa độ trực tiếp từ URL,
+    // không gọi mạng. Link RÚT GỌN (maps.app.goo.gl/...): URL không chứa tọa độ nên phải mở 1 yêu cầu tới
+    // Google để đọc đích chuyển hướng - xem resolveShortMapsLink().
+    auto* linkCaption = new QLabel("Link Google Maps (kể cả link rút gọn maps.app.goo.gl):", w);
+    linkCaption->setWordWrap(true);
+    v->addWidget(linkCaption);
     auto* mapsLinkRow = new QHBoxLayout();
+    mapsLinkRow->setSpacing(8);
     m_mapsLinkEdit = new QLineEdit(w);
-    m_mapsLinkEdit->setPlaceholderText("Dán link Google Maps (vd: .../maps/@21.028511,105.804817,15z)");
+    m_mapsLinkEdit->setPlaceholderText("Dán link Google Maps vào đây");
     m_mapsLinkEdit->setStyleSheet(QRUi::inputStyle());
     m_mapsLinkApplyButton = new QPushButton("Dùng link này", w);
-    m_mapsLinkApplyButton->setStyleSheet(QRUi::buttonStyle());
+    m_mapsLinkApplyButton->setStyleSheet(compactButton);
     mapsLinkRow->addWidget(m_mapsLinkEdit, 1);
     mapsLinkRow->addWidget(m_mapsLinkApplyButton);
     connect(m_mapsLinkApplyButton, &QPushButton::clicked, this, &QRGenerateTab::onApplyMapsLink);
     connect(m_mapsLinkEdit, &QLineEdit::returnPressed, this, &QRGenerateTab::onApplyMapsLink);
-    f->addRow("Link Google Maps:", mapsLinkRow);
+    v->addLayout(mapsLinkRow);
+
+    m_geoLocateStatus = new QLabel("Vị trí hiện tại lấy theo IP công khai (cỡ thành phố, không phải GPS).", w);
+    m_geoLocateStatus->setWordWrap(true);
+    m_geoLocateStatus->setStyleSheet("color: #57606a; font-size: 11px; border: none; background: transparent;");
+    v->addWidget(m_geoLocateStatus);
     return w;
 }
 
@@ -894,44 +936,94 @@ void QRGenerateTab::onOpenMap()
         m_geoLocateStatus->setText("⚠ Không mở được trình duyệt để xem bản đồ.");
 }
 
-bool QRGenerateTab::parseGoogleMapsLink(const QString& text, double* lat, double* lon) const
+void QRGenerateTab::cancelMapsLookup()
 {
-    // Thứ tự thử: "@lat,lon" (link mở từ một vị trí/địa điểm trên Google Maps - dạng phổ biến nhất khi
-    // người dùng copy link từ thanh địa chỉ), rồi "q=lat,lon"/"query=lat,lon" (link "chia sẻ vị trí" hoặc
-    // chính link do onOpenMap() ở trên tạo ra - cho phép dán lại link do chính ứng dụng này tạo).
-    static const QRegularExpression kPatterns[] = {
-        QRegularExpression(R"(@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?))"),
-        QRegularExpression(R"([?&]q=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?))"),
-        QRegularExpression(R"([?&]query=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?))"),
-    };
-    for (const QRegularExpression& re : kPatterns)
+    if (m_mapsReply)
     {
-        const QRegularExpressionMatch m = re.match(text);
-        if (!m.hasMatch())
-            continue;
-        const double la = m.captured(1).toDouble();
-        const double lo = m.captured(2).toDouble();
-        if (la < -90.0 || la > 90.0 || lo < -180.0 || lo > 180.0)
-            continue; // khớp mẫu regex nhưng ra ngoài phạm vi hợp lệ - không phải tọa độ thật, bỏ qua
-        *lat = la;
-        *lon = lo;
-        return true;
+        QNetworkReply* r = m_mapsReply;
+        m_mapsReply = nullptr; // đặt TRƯỚC abort(): finished() phát đồng bộ, lambda thấy khác m_mapsReply và thoát
+        r->abort();
     }
-    return false;
+    if (m_mapsLinkApplyButton)
+        m_mapsLinkApplyButton->setEnabled(true);
+}
+
+void QRGenerateTab::applyMapsCoordinates(double lat, double lon, const QString& what)
+{
+    m_geoLat->setValue(lat);
+    m_geoLon->setValue(lon);
+    m_geoLocateStatus->setText(
+        QString("✓ Đã đọc tọa độ (%1, %2) từ %3.").arg(lat, 0, 'f', 6).arg(lon, 0, 'f', 6).arg(what));
 }
 
 void QRGenerateTab::onApplyMapsLink()
 {
+    cancelMapsLookup(); // đang dở một lần mở link rút gọn trước đó thì bỏ, ưu tiên link vừa bấm
+    const QString text = m_mapsLinkEdit->text().trimmed();
     double lat = 0.0, lon = 0.0;
-    if (!parseGoogleMapsLink(m_mapsLinkEdit->text(), &lat, &lon))
+    if (QRPayload::parseGoogleMapsCoordinates(text, &lat, &lon))
     {
-        m_geoLocateStatus->setText(
-            "⚠ Không đọc được tọa độ từ link này - cần link ĐẦY ĐỦ dạng \".../@vĩ_độ,kinh_độ,...\" hoặc "
-            "\"?q=vĩ_độ,kinh_độ\" (link rút gọn maps.app.goo.gl không chứa tọa độ trong URL).");
+        applyMapsCoordinates(lat, lon, "link Google Maps");
         return;
     }
-    m_geoLat->setValue(lat);
-    m_geoLon->setValue(lon);
+    if (QRPayload::isGoogleMapsShortLink(text))
+    {
+        resolveShortMapsLink(QRPayload::normalizeLinkUrl(text), 0);
+        return;
+    }
     m_geoLocateStatus->setText(
-        QString("✓ Đã đọc tọa độ (%1, %2) từ link Google Maps.").arg(lat, 0, 'f', 6).arg(lon, 0, 'f', 6));
+        "⚠ Không đọc được tọa độ từ link này - hãy dán link Google Maps dạng \".../@vĩ_độ,kinh_độ,...\", "
+        "\"?q=vĩ_độ,kinh_độ\" hoặc link rút gọn maps.app.goo.gl.");
+}
+
+void QRGenerateTab::resolveShortMapsLink(const QUrl& url, int hop)
+{
+    if (!m_mapsNet)
+        m_mapsNet = new QNetworkAccessManager(this);
+    QNetworkRequest req(url);
+    // KHÔNG tự theo chuyển hướng: chỉ cần header Location của từng bước (không tải trang đích), và mỗi bước
+    // phải được kiểm host Google trước khi đi tiếp (isAllowedMapsRedirectUrl).
+    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
+    req.setTransferTimeout(10000);
+    m_mapsLinkApplyButton->setEnabled(false);
+    m_geoLocateStatus->setText("Đang mở link rút gọn để đọc tọa độ...");
+
+    QNetworkReply* reply = m_mapsNet->get(req);
+    m_mapsReply = reply;
+    connect(reply, &QNetworkReply::finished, this, [this, reply, hop]() {
+        reply->deleteLater();
+        if (reply != m_mapsReply)
+            return; // đã bị hủy / thay bằng yêu cầu mới
+        m_mapsReply = nullptr;
+        m_mapsLinkApplyButton->setEnabled(true);
+
+        const QVariant redirect = reply->attribute(QNetworkRequest::RedirectionTargetAttribute);
+        if (!redirect.isValid())
+        {
+            const int http = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            if (http == 404 || http == 410)
+                m_geoLocateStatus->setText("⚠ Link rút gọn này không tồn tại hoặc đã hết hạn - kiểm tra lại link.");
+            else if (reply->error() != QNetworkReply::NoError)
+                m_geoLocateStatus->setText(
+                    QString("⚠ Không mở được link rút gọn (%1) - kiểm tra kết nối mạng hoặc dán link đầy đủ.")
+                        .arg(reply->errorString()));
+            else
+                m_geoLocateStatus->setText("⚠ Link rút gọn này không dẫn tới vị trí nào.");
+            return;
+        }
+        const QUrl target = reply->url().resolved(redirect.toUrl());
+        double lat = 0.0, lon = 0.0;
+        if (QRPayload::parseGoogleMapsCoordinates(target.toString(QUrl::FullyEncoded), &lat, &lon))
+        {
+            applyMapsCoordinates(lat, lon, "link rút gọn Google Maps");
+            return;
+        }
+        if (hop < 5 && QRPayload::isAllowedMapsRedirectUrl(target))
+        {
+            resolveShortMapsLink(target, hop + 1);
+            return;
+        }
+        m_geoLocateStatus->setText("⚠ Link rút gọn này không chứa tọa độ (không phải link địa điểm?) - "
+                                   "hãy mở nó trên trình duyệt rồi dán link đầy đủ.");
+    });
 }

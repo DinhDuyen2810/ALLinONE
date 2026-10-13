@@ -14,7 +14,9 @@
 #include <QPainter>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QSpinBox>
+#include <QStackedWidget>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTemporaryDir>
@@ -549,7 +551,7 @@ int main(int argc, char** argv)
         gen->refresh();
         CHECK(gen->currentContent().startsWith("geo:")); // đã sang trang Vị trí
         CHECK(findButton(gen, "🗺 Mở bản đồ") != nullptr);
-        CHECK(findButton(gen, "📍 Lấy vị trí hiện tại (ước lượng theo IP)") != nullptr);
+        CHECK(findButton(gen, "📍 Lấy vị trí hiện tại") != nullptr);
 
         const auto spins = gen->findChildren<QDoubleSpinBox*>();
         CHECK(spins.size() == 2);
@@ -580,8 +582,10 @@ int main(int argc, char** argv)
             link->setText("https://maps.google.com/?q=-33.868820,151.209296");
             apply->click();
             CHECK(qAbs(spins[0]->value() + 33.868820) < 1e-6 && qAbs(spins[1]->value() - 151.209296) < 1e-6);
-            // Link rút gọn / rác / ngoài phạm vi -> báo lỗi, KHÔNG đổi tọa độ đang có.
-            for (const char* bad : {"https://maps.app.goo.gl/AbCdEf123", "hello world", "https://x.com/@95.0,200.0", ""})
+            // Link rác / ngoài phạm vi / host lạ -> báo lỗi, KHÔNG đổi tọa độ đang có và KHÔNG gọi mạng. (Link
+            // rút gọn maps.app.goo.gl thật sẽ gọi mạng nên KHÔNG đưa vào test tự động - xem qr_tests cho phần
+            // nhận diện/giới hạn host, còn việc mở link thật phải thử tay.)
+            for (const char* bad : {"hello world", "https://x.com/@95.0,200.0", "https://evil.com/maps.app.goo.gl/abc", ""})
             {
                 link->setText(bad);
                 apply->click();
@@ -590,6 +594,50 @@ int main(int argc, char** argv)
             }
         }
         type->setCurrentIndex(0); // trả về mặc định cho các phần sau
+    }
+
+    // ---- Trang Vị trí KHÔNG được vượt bề rộng cột trái (cột trái là QScrollArea TẮT thanh cuộn ngang nên phần
+    // dư bị cắt mất) - kiểm ở cỡ cửa sổ NHỎ NHẤT (setMinimumSize 860x560), mặc định và lớn ----
+    {
+        auto* type = gen->findChild<QComboBox*>("typeCombo");
+        auto* pages = gen->findChild<QStackedWidget*>();
+        auto* leftScroll = gen->findChild<QScrollArea*>();
+        CHECK(type && pages && leftScroll);
+        if (type && pages && leftScroll)
+        {
+            win.tabs()->setCurrentWidget(gen);
+            type->setCurrentIndex(4);
+            const QString shots = qEnvironmentVariable("QR_UI_SHOTS");
+            for (const QSize size : {QSize(860, 560), QSize(1020, 660), QSize(1400, 800)})
+            {
+                win.resize(size);
+                app.processEvents();
+                QWidget* page = pages->currentWidget();
+                QWidget* vp = leftScroll->viewport();
+                int overflow = 0, checked = 0;
+                for (QWidget* w : page->findChildren<QWidget*>())
+                {
+                    if (!w->isVisibleTo(page))
+                        continue;
+                    ++checked;
+                    const QRect r(w->mapTo(vp, QPoint(0, 0)), w->size());
+                    if (r.left() < 0 || r.right() >= vp->width())
+                    {
+                        ++overflow;
+                        std::printf("  vượt cột trái ở %dx%d: %s '%s' [%d..%d] > %d\n", size.width(), size.height(),
+                                    w->metaObject()->className(), w->objectName().toUtf8().constData(), r.left(),
+                                    r.right(), vp->width());
+                    }
+                }
+                CHECK(checked >= 8); // có thật các widget để kiểm (nhãn, 2 ô tọa độ, 2 nút, ô link, nút link, trạng thái)
+                CHECK(overflow == 0);
+                if (!shots.isEmpty())
+                    win.grab().save(QString("%1/geo_%2x%3.png").arg(shots).arg(size.width()).arg(size.height()));
+            }
+            win.resize(1020, 660);
+            type->setCurrentIndex(0);
+            app.processEvents();
+        }
     }
 
     // ---- Con trỏ ngón tay trỏ cho MỌI QPushButton của cửa sổ QR Tools (ComboBoxStyle::applyCursor) ----

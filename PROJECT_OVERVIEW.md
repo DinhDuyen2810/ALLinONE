@@ -204,7 +204,7 @@
     gương Android, dán lệnh PowerShell).
 
 ## 4b. QR Tools
-- **Tạo mã:** 5 loại nội dung (Văn bản, URL, WiFi, Điện thoại, Vị trí) - bỏ Email/SMS/vCard khỏi danh sách tạo từ v1.19.12. WiFi: combo "WiFi đã lưu" điền nhanh SSID/bảo mật/mật khẩu từ hồ sơ WiFi trên máy. Vị trí: nút "Lấy vị trí hiện tại" (ước lượng theo IP công khai qua `ipwho.is`), "Mở bản đồ" (Google Maps) và ô dán link Google Maps để đọc tọa độ. Tùy chọn: mức sửa lỗi L/M/Q/H, kích thước ảnh, viền trắng, màu mã/nền, ô bo tròn, logo giữa mã (tự dùng mức H). Xem trước trực tiếp, cảnh báo độ tương phản, tự giải mã lại ảnh vừa tạo để bảo đảm quét được. Lưu PNG/JPG/BMP/SVG, sao chép vào clipboard.
+- **Tạo mã:** 5 loại nội dung (Văn bản, URL, WiFi, Điện thoại, Vị trí) - bỏ Email/SMS/vCard khỏi danh sách tạo từ v1.19.12. WiFi: combo "WiFi đã lưu" điền nhanh SSID/bảo mật/mật khẩu từ hồ sơ WiFi trên máy. Vị trí: nút "Lấy vị trí hiện tại" (ước lượng theo IP công khai qua `ipwho.is`), "Mở bản đồ" (Google Maps) và ô dán link Google Maps (kể cả link rút gọn maps.app.goo.gl) để đọc tọa độ. Tùy chọn: mức sửa lỗi L/M/Q/H, kích thước ảnh, viền trắng, màu mã/nền, ô bo tròn, logo giữa mã (tự dùng mức H). Xem trước trực tiếp, cảnh báo độ tương phản, tự giải mã lại ảnh vừa tạo để bảo đảm quét được. Lưu PNG/JPG/BMP/SVG, sao chép vào clipboard.
 - **Quét mã:** từ file ảnh, clipboard (Ctrl+V), kéo-thả, chụp vùng màn hình, camera. Nhận nhiều mã trong một ảnh, vẽ viền quanh mã, phân tích nội dung (URL, WiFi, Email, vCard...; nhận cả email/SĐT nằm rải rác trong văn bản tự do), nút Sao chép / Mở (có hỏi xác nhận) / Lưu .txt / Tạo lại mã; mã WiFi có thêm nút "Kết nối WiFi"; khung "KẾT QUẢ (nhiều mã)" chỉ hiện khi ảnh có hơn 1 mã.
 - **Lịch sử:** ghi mã đã tạo (khi lưu hoặc sao chép) và đã quét; sao chép, tạo lại, xóa.
 - **Kiểm thử:** `cmake --build build --target qr_tests qr_ui_tests`, rồi chạy `build\qr_tests.exe` và `build\qr_ui_tests.exe` (cần Qt bin trong PATH).
@@ -2071,6 +2071,52 @@ chạy (UI Automation): danh sách "Nội dung" đúng 5 loại, trang Vị trí
 **CHƯA kiểm chứng**: bấm "Lấy vị trí hiện tại" gọi thật `ipwho.is`; mở Google Maps thật; kết nối WiFi thật từ mã QR
 (cần adapter WiFi); hình ảnh/hover/con trỏ thực tế trên máy thật.
 
+## 4zb. Sửa lỗi bấm "Lưu hành động" 2 lần + gọn lại trang QR Vị trí + link rút gọn Google Maps (2026-10-13, v1.19.13)
+
+Người dùng gửi ảnh trang QR Vị trí và 3 yêu cầu:
+
+**1. Trang QR Vị trí vượt chiều rộng.** Cột trái của tab Tạo mã là `QScrollArea` TẮT thanh cuộn ngang, trang Vị trí có
+hàng 2 nút + hàng "Link Google Maps" rộng hơn cột nên phần bên phải bị cắt. Bố cục mới: mỗi hàng tọa độ = nhãn |
+ô giá trị (thu hẹp, cùng bề rộng) | nút nằm ngay cạnh ("📍 Lấy vị trí hiện tại", "🗺 Mở bản đồ"); chú thích
+"Link Google Maps (kể cả link rút gọn maps.app.goo.gl):" rồi ô dán link + "Dùng link này"; dòng trạng thái. Lời cảnh
+báo "ước lượng theo IP, không phải GPS" chuyển xuống tooltip + dòng chú thích + thông báo kết quả để chữ nút ngắn lại.
+`qr_ui_tests` kiểm MỌI widget của trang nằm trong viewport cột trái ở 860x560 (cỡ tối thiểu), 1020x660 và 1400x800.
+
+**2. Link rút gọn `https://maps.app.goo.gl/...`.** Link này KHÔNG chứa tọa độ: Google trả HTTP 302 với header
+`Location` là URL đầy đủ (vd `.../maps/place/.../@21.006303,105.8405801,17z/data=!3m1!4b1!4m4!3m3!8m2!3d21.006298!4d105.843155...`).
+App gửi MỘT yêu cầu GET (`ManualRedirectPolicy` - không tự theo chuyển hướng, không tải trang đích), đọc `Location`
+và tách tọa độ; nếu chưa có thì đi tiếp CHỈ khi đích còn thuộc host Google qua https
+(`QRPayload::isAllowedMapsRedirectUrl`: google.com/co.xx/com.xx/xx, goo.gl, g.co - từ chối `google.evil.co`,
+`evilgoogle.com`, `google.com.evil.com`), tối đa 5 bước, timeout 10 giây. Logic thuần nằm ở lõi `QRPayload`
+(`parseGoogleMapsCoordinates`, `isGoogleMapsShortLink`, `normalizeLinkUrl`, `isAllowedMapsRedirectUrl`) để test được.
+Ưu tiên điểm ghim `!3d<lat>!4d<lon>` (chính xác) hơn tâm khung nhìn `@lat,lon`; hiểu `q=`/`query=`/`ll=`/`center=`, `%2C`,
+và `continue=` (trang đồng ý cookie của Google bọc link thật). HTTP 404/410 báo "không tồn tại hoặc đã hết hạn".
+
+**3. Lỗi phải bấm "Lưu hành động" 2 lần (nguyên nhân gốc).** Do cache chỉnh sửa chưa lưu thêm ở v1.19.11, KHÔNG có ở
+v1.19.10. `onApplyClicked()` phát `actionSaved` TRƯỚC khi reset `m_dirty`; `AutoClickWindow::onActionSaved()` gọi
+`setActions()` - `setRowCount(0)` rồi `setCurrentCell()` đều phát `currentCellChanged` -> `onActionSelected()` ->
+`captureEditorIfDirty()`; editor lúc đó vẫn "dirty" nên GHI LẠI đúng bản vừa lưu vào `m_pendingEdits` (cache "chưa
+lưu" ma) -> dấu `*` hiện lại. Lần Lưu thứ hai editor đã sạch (đã được `setAction()` nạp lại) nên mới hết. Lúc 1 lúc 2: hàng
+vừa nạp từ cache có `m_dirty=false` nên Lưu 1 lần là đủ; sửa trực tiếp thì cần 2 lần. Cờ `m_suppressPendingCapture`
+trước đó chỉ bao quanh `setSelectedActionIndex()` chứ không bao `setActions()`. Cùng lỗ hổng ở: `applyPendingEdits()`
+(chọn "Có" ở hộp thoại "Lưu lại trước khi chạy?" xong lần RUN kế tiếp hỏi lại), và Nhân bản/Xóa/Dời hàng (nội dung editor
+bị ghi nhầm vào chỉ số vừa remap, test cũ không bắt được). Đã TÁI HIỆN bằng test trước khi sửa (4 kiểm tra fail), sửa
+bằng `ScopedFlag` (RAII) bao TRỌN đoạn vẽ lại bảng ở `onActionSaved/onAddAction/onCloneAction/onDeleteAction/
+onActionMoved/applyPendingEdits`; `onDeleteAction` capture hàng đang sửa dở (nếu khác hàng bị xóa) TRƯỚC khi remap.
+
+**Quyền riêng tư**: dán link ĐẦY ĐỦ chỉ đọc chuỗi, không gọi mạng. Dán link RÚT GỌN mới gửi yêu cầu HTTPS tới
+`maps.app.goo.gl` (Google) và chỉ đọc header chuyển hướng. Đã cập nhật `PRIVACY.md`.
+
+**Kiểm thử**: `autoclick_tests` 194/194 (thêm: Lưu đúng 1 lần, quay lại hàng vẫn đúng, Nhân bản/Xóa khi hàng khác đang
+sửa dở), `core_stress_tests` 551/551, `qr_tests` 182/182 (thêm: phân tích link thật, `@`/`q=`/`query=`/`ll=`/`center=`,
+`%2C`, `continue=`, ngoài phạm vi/rác, nhận diện link rút gọn, chuẩn hóa, giới hạn host), `qr_ui_tests` 172/172,
+`wifi_ui_tests` 94/94, `qrwifi_stress_tests` 760.292/760.292. Xác nhận qua mạng thật bằng harness tạm (không commit):
+`https://maps.app.goo.gl/DM9Xt5AkRLgG6Sbo7` -> (21.006298, 105.843155) ~1,4 giây, kể cả thiếu `https://`/thừa khoảng
+trắng; mã không tồn tại -> thông báo 404 riêng.
+
+**CHƯA kiểm chứng**: bấm bằng chuột thật trong app đang chạy (RDP không gửi được chuột/phím thật; logic đã kiểm bằng
+`click()` của Qt); trang đồng ý cookie của Google (EU) chưa gặp thật - chỉ có test chuỗi cho `continue=`.
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
@@ -2230,6 +2276,7 @@ Quy tắc đứng nằm ở `CLAUDE.md` (gốc dự án). Tóm tắt - mỗi l�
 | 2026-10-11 | Sửa góc đen ở menu + mũi tên còn sót ở combo/spinbox + bỏ nút Nạp cấu hình (v1.19.10) | Chi tiết đầy đủ ở mục 4y. Người dùng gửi 2 ảnh chụp thật, nêu 3 điểm. (1) Góc đen ở menu chuột phải dù đã bo góc - QMenu là popup không trong suốt mặc định, sửa bằng `Qt::WA_TranslucentBackground`. (2) Combo "Nút"/"Phím"/"Hướng" vẫn còn mũi tên dù v1.19.8 đã thêm ComboBoxStyle::noArrow() - tìm đúng nguyên nhân bằng ảnh chụp so sánh (không đoán): `kComboStyle` dùng khối CSS TRẦN không có selector `QComboBox {}` bao ngoài, nối với rule có selector của noArrow() khiến Qt không áp dụng đúng rule phía sau; xác nhận qua so sánh combo "Loại"/"ms" (đã bọc đúng) sạch còn "Nút" (thiếu bọc) thì không - sửa bằng cách bọc đúng selector, audit toàn bộ nơi khác dùng noArrow() đều đã đúng. Tiện thể bổ sung `setButtonSymbols(NoButtons)` cho 17 QSpinBox còn thiếu (8 ở Auto Click + 9 ở QR/Disk Cleanup/Connect/Android). Thêm `ComboBoxStyle::applyCursor()` đổi con trỏ ngón tay khi hover qua mọi combo, áp dụng 9 cửa sổ chính + 2 dialog độc lập. (3) Bỏ nút "Nạp cấu hình" theo yêu cầu người dùng. Thêm test hồi quy bắt đúng lỗi "CSS thiếu selector". 123/123 autoclick_tests (+2 mới) và toàn bộ 16 bộ test các tool khác đều pass - không hồi quy dù sửa trải khắp 8 tool; core_stress_tests 551/551 pass sạch. Đã xác nhận bằng ảnh chụp thật combo/spinbox hết mũi tên; chưa xác nhận được bằng ảnh chụp góc menu (môi trường không bắt được popup window kịp lúc) - tin vào kỹ thuật Qt chuẩn, cần tự xem trên máy thật. |
 | 2026-10-13 | Auto Click: làm lại "Ghi nhớ chuỗi" + cache chỉnh sửa chưa lưu trên nền v1.19.10 (v1.19.11) | Chi tiết đầy đủ ở mục 4z. Sau khi người dùng yêu cầu quay code về ĐÚNG v1.19.10 (xóa mọi commit/tag sau đó, lưu lịch sử yêu cầu ở `YEU_CAU_SAU_1.19.10.md`), người dùng gửi lại 2 yêu cầu Auto Click: (1) loại hành động "Ghi nhớ chuỗi" - ghi macro chuột+bàn phím thật toàn máy, minibox ĐỨNG YÊN lúc ghi / né chuột lúc chạy chuỗi; (2) chỉnh sửa chưa lưu không mất khi đổi sang hành động khác (cache theo từng hàng, dấu `*`, chỉ hỏi lúc RUN/đóng cửa sổ). Port CÓ CHỌN LỌC từ lịch sử git (`cherry-pick -n 51ac6ab` + phần cache của `ae232ec` + phần sửa minibox của bản cuối), KHÔNG mang theo cơ chế giao diện nào (không `PopupCornerFix`/`WindowTheme`/Fusion/`paintEvent`/sửa style) - giao diện giữ y hệt v1.19.10, `git diff v1.19.10` ngoài Auto Click chỉ khác `CMakeLists.txt` (thêm `ActionRecorder.cpp`). `autoclick_tests` 165/165, `core_stress_tests` 551/551; xác nhận thật trên app đang chạy: trang "Ghi nhớ chuỗi" hiển thị đúng phong cách, cache giữ `*` + nạp lại đúng bản dở khi quay lại hàng. CHƯA kiểm chứng được: ghi/phát lại macro thật bằng hook toàn cục + `SendInput`, hành vi minibox khi ghi/chạy (cần thử tay trên máy thật). |
 | 2026-10-13 | QR Tools: làm lại các cải tiến đã mất + con trỏ ngón tay cho mọi nút bấm (v1.19.12) | Chi tiết đầy đủ ở mục 4za. Người dùng gửi lại danh sách yêu cầu QR Tools + con trỏ đã mất khi quay về v1.19.10: WiFi chọn nhanh từ hồ sơ đã lưu + nút "Kết nối WiFi" khi quét ra mã WiFi; Vị trí có "Lấy vị trí hiện tại" (theo IP công khai) + "Mở bản đồ" (Google Maps) + dán link Google Maps; Quét ẩn khung "KẾT QUẢ" khi chỉ có 1 mã, nhận diện email/SĐT trong văn bản tự do, bảng bo góc đồng bộ; Tạo mã chỉ còn 5 loại; con trỏ ngón tay mở rộng sang mọi `QPushButton`. Port CÓ CHỌN LỌC từ `ae232ec` + phần dán link của `14baffc`, KHÔNG mang theo cơ chế giao diện nào (không `PopupCornerFix`/`WindowTheme`/Fusion/bản đồ nhúng). `qr_tests` 136/136, `qr_ui_tests` 165/165, `wifi_tests` 119/119, `qrwifi_stress_tests` 760.699/760.699, `disk_vpn_stress_tests` 7.320/7.320; xác nhận thật trên app đang chạy: 5 loại, 2 nút Vị trí + ô dán link, combo "WiFi đã lưu". CHƯA kiểm chứng: gọi thật `ipwho.is`, mở Google Maps thật, kết nối WiFi thật từ mã QR, hình ảnh thực tế trên máy thật. |
+| 2026-10-13 | Sửa lỗi bấm "Lưu hành động" 2 lần + gọn lại trang QR Vị trí + link rút gọn Google Maps (v1.19.13) | Chi tiết đầy đủ ở mục 4zb. Người dùng gửi ảnh + 3 yêu cầu: (1) trang QR Vị trí vượt chiều rộng - đã bố trí lại (ô giá trị thu hẹp, nút nằm cạnh, có test chống vượt cột trái ở 860/1020/1400px); (2) không đọc được link rút gọn `maps.app.goo.gl` - nay gửi 1 yêu cầu GET tới Google, đọc header `Location`, tách tọa độ (ưu tiên điểm ghim `!3d!4d`), chỉ theo host Google; xác nhận qua mạng thật với link của người dùng; (3) phải bấm Lưu 2 lần - nguyên nhân gốc: `setActions()` tự phát `currentCellChanged` ngay khi editor còn "dirty" nên bản vừa lưu bị chụp lại thành cache chưa lưu (lỗi do cache v1.19.11, không có ở v1.19.10), cùng lỗ hổng ở "Lưu lại trước khi chạy?" và Nhân bản/Xóa/Dời; tái hiện bằng test trước khi sửa, sửa bằng `ScopedFlag`. `autoclick_tests` 194/194, `core_stress_tests` 551/551, `qr_tests` 182/182, `qr_ui_tests` 172/172, `qrwifi_stress_tests` 760.292/760.292. CHƯA kiểm chứng: bấm chuột thật trong app, trang đồng ý cookie EU. |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `

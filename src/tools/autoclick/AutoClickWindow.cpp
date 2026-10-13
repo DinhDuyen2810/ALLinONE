@@ -118,6 +118,20 @@ void remapPendingEditsMove(std::map<int, Action>& edits, int from, int to)
         remapped[remapIdx(kv.first)] = std::move(kv.second);
     edits = std::move(remapped);
 }
+/// Bật một cờ bool trong đúng phạm vi khối rồi tự trả về giá trị cũ khi ra khỏi (kể cả return sớm) - dùng
+/// cho AutoClickWindow::m_suppressPendingCapture (xem comment ở khai báo cờ đó).
+class ScopedFlag
+{
+public:
+    explicit ScopedFlag(bool& flag) : m_flag(flag), m_old(flag) { m_flag = true; }
+    ~ScopedFlag() { m_flag = m_old; }
+    ScopedFlag(const ScopedFlag&) = delete;
+    ScopedFlag& operator=(const ScopedFlag&) = delete;
+
+private:
+    bool& m_flag;
+    bool m_old;
+};
 } // namespace
 
 AutoClickWindow::AutoClickWindow(QWidget* parent)
@@ -312,6 +326,11 @@ void AutoClickWindow::applyPendingEdits()
     }
     m_pendingEdits.clear();
     m_actionListWidget->setDirtyRows({}); // XÓA TRƯỚC khi setActions() vẽ lại - không để "*" hiện sai
+    // setActions() vẽ lại bảng và tự phát currentCellChanged -> onActionSelected() -> captureEditorIfDirty():
+    // editor LÚC NÀY vẫn "dirty" (nội dung vừa được áp dụng ở trên, nhưng cờ chỉ reset khi setAction() nạp
+    // lại) nên nếu không chặn, đúng bản VỪA lưu bị chụp lại thành cache "chưa lưu" ma - dấu "*" hiện lại và
+    // lần RUN kế tiếp lại hỏi "Lưu lại?" một lần nữa dù vừa chọn "Có".
+    ScopedFlag noCapture(m_suppressPendingCapture);
     if (chain)
         m_actionListWidget->setActions(chain->actions);
 }
@@ -814,17 +833,16 @@ void AutoClickWindow::onAddAction()
     if (!chain) return;
 
     captureEditorIfDirty(); // giữ cache hành động đang sửa dở (nếu có) trước khi nạp hành động MỚI vào editor
+    // Đã tự capture ở trên - từ đây setActions()/setSelectedActionIndex() tự phát currentCellChanged ->
+    // onActionSelected() không được capture THÊM LẦN NỮA (xem comment m_suppressPendingCapture).
+    ScopedFlag noCapture(m_suppressPendingCapture);
     noteActionsRestructured();
     Action newAct;
     chain->actions.push_back(newAct); // thêm ở CUỐI - không làm lệch chỉ số của m_pendingEdits đã có
     int newIdx = static_cast<int>(chain->actions.size()) - 1;
     m_actionListWidget->setActions(chain->actions);
     refreshDirtyMarkersFromPendingEdits(); // setActions() vừa vẽ lại bảng - tô lại dấu "*" đã cache
-    // setSelectedActionIndex() lan truyền qua onActionSelected() (currentCellChanged) - đã tự capture ở
-    // trên rồi, chặn nó capture THÊM LẦN NỮA (xem comment m_suppressPendingCapture).
-    m_suppressPendingCapture = true;
     m_actionListWidget->setSelectedActionIndex(newIdx);
-    m_suppressPendingCapture = false;
     m_actionEditorWidget->setAction(newAct, newIdx);
 }
 
@@ -834,17 +852,17 @@ void AutoClickWindow::onCloneAction(int index)
     if (chain && index >= 0 && index < static_cast<int>(chain->actions.size()))
     {
         captureEditorIfDirty();
+        // Từ đây tới hết hàm: setActions()/setSelectedActionIndex() tự phát currentCellChanged ->
+        // onActionSelected() - chặn nó capture THÊM LẦN NỮA bằng chỉ số CŨ (sai, vì m_pendingEdits vừa được
+        // remap theo hàng chèn) - xem m_suppressPendingCapture.
+        ScopedFlag noCapture(m_suppressPendingCapture);
         noteActionsRestructured();
         Action cloned = chain->actions[index];
         chain->actions.insert(chain->actions.begin() + index + 1, cloned);
         remapPendingEditsInsert(m_pendingEdits, index + 1);
         m_actionListWidget->setActions(chain->actions);
         refreshDirtyMarkersFromPendingEdits();
-        // Đã tự capture + remap ở trên - chặn onActionSelected() (lan truyền qua setSelectedActionIndex)
-        // capture THÊM LẦN NỮA bằng chỉ số CŨ (sai, vì vừa remap xong) - xem m_suppressPendingCapture.
-        m_suppressPendingCapture = true;
         m_actionListWidget->setSelectedActionIndex(index + 1);
-        m_suppressPendingCapture = false;
         m_actionEditorWidget->setAction(cloned, index + 1);
     }
 }
@@ -854,6 +872,15 @@ void AutoClickWindow::onDeleteAction(int index)
     ActionChain* chain = currentChain();
     if (chain && index >= 0 && index < static_cast<int>(chain->actions.size()))
     {
+        // Editor đang sửa dở một hàng KHÁC hàng bị xóa -> giữ chỉnh sửa đó vào cache TRƯỚC khi chỉ số dời
+        // chỗ (remap bên dưới sẽ đẩy nó về đúng hàng mới). Nếu chính hàng bị xóa đang hiện trong editor thì
+        // không cần/không nên capture (sắp bị bỏ).
+        if (m_actionEditorWidget->currentActionIndex() != index)
+            captureEditorIfDirty();
+        // Từ đây tới hết hàm: setActions()/setSelectedActionIndex() tự phát currentCellChanged ->
+        // onActionSelected() - chặn nó capture bằng chỉ số CŨ (không còn đúng nghĩa sau remap) - xem
+        // m_suppressPendingCapture.
+        ScopedFlag noCapture(m_suppressPendingCapture);
         noteActionsRestructured();
         chain->actions.erase(chain->actions.begin() + index);
         remapPendingEditsErase(m_pendingEdits, index); // hàng bị xóa thì cache của nó (nếu có) cũng bỏ theo
@@ -863,12 +890,7 @@ void AutoClickWindow::onDeleteAction(int index)
         if (nextIdx >= 0)
         {
             auto it = m_pendingEdits.find(nextIdx);
-            // Hàng bị xóa chính là hàng editor đang hiển thị (xóa luôn thao tác qua menu chuột phải của
-            // HÀNG ĐANG CHỌN) - không cần/không nên capture nó (sắp bị bỏ), và remap vừa làm ở trên khiến
-            // chỉ số cũ không còn đúng nghĩa - chặn onActionSelected() tự capture sai (xem m_suppressPendingCapture).
-            m_suppressPendingCapture = true;
             m_actionListWidget->setSelectedActionIndex(nextIdx);
-            m_suppressPendingCapture = false;
             m_actionEditorWidget->setAction(it != m_pendingEdits.end() ? it->second : chain->actions[nextIdx], nextIdx);
             if (it != m_pendingEdits.end())
                 m_actionListWidget->setRowDirty(nextIdx, true);
@@ -895,6 +917,10 @@ void AutoClickWindow::onActionMoved(int from, int to)
         return;
 
     captureEditorIfDirty(); // giữ cache hành động ĐANG SỬA DỞ (nếu có) trước khi dữ liệu dời chỗ
+    // Từ đây tới hết hàm: setActions()/setSelectedActionIndex() tự phát currentCellChanged ->
+    // onActionSelected() - chặn nó capture THÊM LẦN NỮA bằng chỉ số CŨ (không còn đúng nghĩa sau remap) -
+    // xem m_suppressPendingCapture.
+    ScopedFlag noCapture(m_suppressPendingCapture);
     // Di chuyển đúng MỘT phần tử từ chỉ số from sang đúng chỉ số to (giữ nguyên thứ tự tương đối của
     // mọi phần tử còn lại) - cách chuẩn dùng std::rotate, tránh tính sai lệch chỉ số dễ gặp nếu tự
     // erase() rồi insert() thủ công (chỉ số to đổi ý nghĩa ngay sau khi erase phần tử phía trước nó).
@@ -908,11 +934,7 @@ void AutoClickWindow::onActionMoved(int from, int to)
 
     m_actionListWidget->setActions(chain->actions);
     refreshDirtyMarkersFromPendingEdits();
-    // Đã tự capture + remap ở trên - chặn onActionSelected() capture THÊM LẦN NỮA bằng chỉ số CŨ (from,
-    // không còn đúng nghĩa sau remap) - xem m_suppressPendingCapture.
-    m_suppressPendingCapture = true;
     m_actionListWidget->setSelectedActionIndex(to);
-    m_suppressPendingCapture = false;
 }
 
 void AutoClickWindow::onActionSaved(const Action& action, int actionIndex)
@@ -920,19 +942,21 @@ void AutoClickWindow::onActionSaved(const Action& action, int actionIndex)
     ActionChain* chain = currentChain();
     if (!chain) return;
 
+    // onActionSaved() chạy TRONG LÚC emit actionSaved() của ActionEditorWidget::onApplyClicked() - cờ m_dirty
+    // của editor CHƯA kịp reset về false (chỉ reset SAU khi emit trả về, hoặc khi setAction() nạp lại).
+    // setActions() vẽ lại bảng và CẢ setActions() LẪN setSelectedActionIndex() đều tự phát
+    // currentCellChanged -> onActionSelected() -> captureEditorIfDirty(): editor coi như vẫn "dirty" nên
+    // GHI LẠI đúng entry vừa erase() bên dưới vào m_pendingEdits - dấu "*" hiện lại dù vừa Lưu xong, người
+    // dùng phải bấm Lưu LẦN THỨ HAI (lúc đó editor đã sạch nên mới hết). Phải chặn capture cho TRỌN hàm,
+    // không chỉ quanh setSelectedActionIndex().
+    ScopedFlag noCapture(m_suppressPendingCapture);
     if (actionIndex >= 0 && actionIndex < static_cast<int>(chain->actions.size()))
     {
         chain->actions[actionIndex] = action;
         m_pendingEdits.erase(actionIndex); // vừa Apply - khớp dữ liệu thật rồi, không còn là "chưa lưu" nữa
         m_actionListWidget->setActions(chain->actions);
         refreshDirtyMarkersFromPendingEdits();
-        // onActionSaved() chạy TRONG LÚC emit actionSaved() của ActionEditorWidget::onApplyClicked() - cờ
-        // m_dirty của editor CHƯA kịp reset về false (chỉ reset SAU khi emit trả về), nên nếu không chặn,
-        // setSelectedActionIndex() lan truyền qua onActionSelected()->captureEditorIfDirty() sẽ coi editor
-        // vẫn đang "dirty" và GHI LẠI đúng entry vừa erase() ở trên - để sót dấu "*" dù vừa Lưu xong.
-        m_suppressPendingCapture = true;
         m_actionListWidget->setSelectedActionIndex(actionIndex);
-        m_suppressPendingCapture = false;
     }
     else
     {

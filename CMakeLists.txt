@@ -127,7 +127,7 @@ add_library(qr_ui STATIC
     src/tools/qr/QRUiStyle.h
 )
 target_include_directories(qr_ui PUBLIC src)
-target_link_libraries(qr_ui PUBLIC qr_core Qt6::Widgets Qt6::Multimedia core_shared)
+target_link_libraries(qr_ui PUBLIC qr_core Qt6::Widgets Qt6::Multimedia Qt6::Network core_shared)
 
 # ---- Kiểm thử UI QR: cmake --build build --target qr_ui_tests ----
 add_executable(qr_ui_tests EXCLUDE_FROM_ALL tests/qr_ui_tests.cpp)

@@ -670,6 +670,94 @@ int main(int argc, char** argv)
                 CHECK(cached.waitBefore == editing.waitBefore);
                 CHECK(table->item(0, 0)->text().contains("*"));
 
+                // -- "✓ Lưu hành động (Apply)" khi đang sửa dở: PHẢI lưu xong NGAY LẦN BẤM ĐẦU --
+                // (lỗi thật người dùng báo: phải bấm Lưu 2 lần dấu "*" mới hết. Nguyên nhân gốc: onActionSaved()
+                // gọi setActions() - vẽ lại bảng - và setActions() tự phát currentCellChanged; editor LÚC ĐÓ còn
+                // "dirty" (m_dirty chỉ reset SAU khi emit actionSaved() trả về) nên captureEditorIfDirty() ghi
+                // LẠI đúng bản vừa Lưu vào m_pendingEdits - bản chụp "chưa lưu" ma, dấu "*" hiện lại.)
+                {
+                    actionList->setSelectedActionIndex(2);
+                    app.processEvents();
+                    CHECK(!table->item(2, 0)->text().contains("*")); // hàng 2 sạch
+                    auto* w2 = editor->findChild<DurationInput*>("waitBeforeInput");
+                    CHECK(w2 != nullptr);
+                    if (w2)
+                        w2->setValueMs(4321);
+                    CHECK(editor->isDirty());
+                    CHECK(table->item(2, 0)->text().contains("*"));
+                    QPushButton* apply = nullptr;
+                    for (QPushButton* b : editor->findChildren<QPushButton*>())
+                        if (b->text().contains("Lưu hành động"))
+                            apply = b;
+                    CHECK(apply != nullptr);
+                    if (apply)
+                    {
+                        apply->click(); // ĐÚNG MỘT lần bấm
+                        app.processEvents();
+                        CHECK(!table->item(2, 0)->text().contains("*")); // hết dấu "chưa lưu" ngay lần đầu
+                        CHECK(table->item(2, 3)->text().contains("4321")); // dữ liệu đã vào bảng
+                        CHECK(!editor->isDirty());
+                        CHECK(table->item(0, 0)->text().contains("*")); // cache của hàng KHÁC (hàng 0) không bị đụng
+                        // Hàng 2 đã lưu thật - rời đi rồi quay lại vẫn nạp đúng 4321, không phải cache cũ/bản gốc.
+                        actionList->setSelectedActionIndex(1);
+                        app.processEvents();
+                        actionList->setSelectedActionIndex(2);
+                        app.processEvents();
+                        CHECK(editor->getAction().waitBefore.count() == 4321);
+                        CHECK(!table->item(2, 0)->text().contains("*"));
+                    }
+                }
+
+                // -- Nhân bản một hàng KHI hàng KHÁC đang sửa dở: cache phải đi theo hàng bị dời chỗ --
+                {
+                    actionList->setSelectedActionIndex(2);
+                    app.processEvents();
+                    auto* w3 = editor->findChild<DurationInput*>("waitBeforeInput");
+                    if (w3)
+                        w3->setValueMs(5555); // sửa dở hàng 2, CHƯA lưu
+                    CHECK(editor->isDirty());
+                    const int rowsBefore = table->rowCount();
+                    // Nhân bản hàng 0 -> bản sao chèn ở hàng 1, hàng sửa dở dời từ 2 xuống 3.
+                    CHECK(QMetaObject::invokeMethod(&win, "onCloneAction", Qt::DirectConnection, Q_ARG(int, 0)));
+                    app.processEvents();
+                    CHECK(table->rowCount() == rowsBefore + 1);
+                    CHECK(table->item(0, 0)->text().contains("*")); // cache cũ của hàng 0 (7777) vẫn ở hàng 0
+                    CHECK(!table->item(1, 0)->text().contains("*")); // bản sao sạch
+                    CHECK(!table->item(2, 0)->text().contains("*")); // hàng 2 MỚI (cũ là hàng 1) sạch - không dính cache nhầm
+                    CHECK(table->item(3, 0)->text().contains("*"));  // cache đi theo hàng bị dời (2 -> 3)
+                    actionList->setSelectedActionIndex(3);
+                    app.processEvents();
+                    CHECK(editor->getAction().waitBefore.count() == 5555);
+                    actionList->setSelectedActionIndex(2);
+                    app.processEvents();
+                    CHECK(editor->getAction().waitBefore.count() != 5555);
+                }
+
+                // -- Xóa một hàng KHI hàng KHÁC đang sửa dở: chỉnh sửa dở đó không được mất / lệch hàng --
+                {
+                    // Trạng thái: cache hàng 0 (7777) + hàng 3 (5555). Sửa dở thêm hàng 4 (6666), CHƯA lưu.
+                    actionList->setSelectedActionIndex(4);
+                    app.processEvents();
+                    auto* w4 = editor->findChild<DurationInput*>("waitBeforeInput");
+                    if (w4)
+                        w4->setValueMs(6666);
+                    CHECK(editor->isDirty());
+                    CHECK(QMetaObject::invokeMethod(&win, "onDeleteAction", Qt::DirectConnection, Q_ARG(int, 1)));
+                    app.processEvents();
+                    // Sau xóa hàng 1: hàng 0 giữ cache, 5555 dời 3 -> 2, 6666 dời 4 -> 3; hàng 1 và 4 sạch.
+                    CHECK(table->item(0, 0)->text().contains("*"));
+                    CHECK(!table->item(1, 0)->text().contains("*"));
+                    CHECK(table->item(2, 0)->text().contains("*"));
+                    CHECK(table->item(3, 0)->text().contains("*"));
+                    CHECK(!table->item(4, 0)->text().contains("*"));
+                    actionList->setSelectedActionIndex(3);
+                    app.processEvents();
+                    CHECK(editor->getAction().waitBefore.count() == 6666);
+                    actionList->setSelectedActionIndex(2);
+                    app.processEvents();
+                    CHECK(editor->getAction().waitBefore.count() == 5555);
+                }
+
                 // -- Đóng cửa sổ khi còn cache chưa lưu: PHẢI HỎI (Hủy -> không đóng, giữ nguyên cache) --
                 bool dialogSeen = false;
                 QTimer::singleShot(0, &win, [&dialogSeen] {

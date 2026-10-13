@@ -23,7 +23,9 @@ này - muốn xóa sạch dữ liệu, tự xóa thư mục đó.
   module WiFi Connection, đúng MỘT mật khẩu lấy từ chính mã QR, không dò/thử gì thêm); tạo mã QR WiFi có thể
   chọn nhanh từ hồ sơ WiFi đã lưu trên máy (đọc trực tiếp từ Windows, không gửi đi đâu); tạo mã QR Vị trí có
   nút "Lấy vị trí hiện tại" gọi dịch vụ `ipwho.is` để ước lượng tọa độ theo IP công khai (xem bảng bên dưới);
-  dán link Google Maps chỉ đọc tọa độ từ chuỗi bạn dán, không gọi mạng.
+  dán link Google Maps ĐẦY ĐỦ chỉ đọc tọa độ từ chuỗi bạn dán, không gọi mạng; dán link RÚT GỌN
+  (`maps.app.goo.gl/...`) thì ứng dụng gửi MỘT yêu cầu HTTPS tới Google để đọc địa chỉ chuyển hướng (chỉ đọc
+  header, không tải trang; chỉ đi theo các địa chỉ thuộc Google, tối đa 5 bước).
 - **Connect Together**: danh sách thiết bị đã ghép đôi + khóa dài hạn của từng cặp máy
   (`profiles\connect_peers.json`, khóa được bảo vệ bằng Windows DPAPI theo tài khoản của bạn), định danh máy
   bạn tự sinh ngẫu nhiên (`profiles\connect_identity.json`, không gắn với danh tính thật).
@@ -41,6 +43,7 @@ phải máy chủ của nhóm phát triển, và chỉ gọi khi bạn chủ đ�
 |---|---|---|
 | Tự kiểm tra bản cập nhật (1 lần/lúc mở ứng dụng) | GitHub Releases API (`api.github.com`); khi bạn bấm "Cập nhật ngay" thì tải tệp cài đặt từ `github.com` | Không gì ngoài yêu cầu HTTP tiêu chuẩn (không gửi kèm thông tin máy/định danh) |
 | VPN & Location - xem vị trí theo IP; QR Tools - nút "Lấy vị trí hiện tại" khi tạo mã QR Vị trí | `ipwho.is` (dịch vụ tra cứu IP công khai) | Địa chỉ IP công khai hiện tại của bạn (vốn đã lộ với MỌI trang web bạn truy cập, không riêng gì tính năng này) |
+| QR Tools - dán link RÚT GỌN Google Maps ở trang tạo mã QR Vị trí | `maps.app.goo.gl` (và các địa chỉ thuộc Google mà link chuyển hướng tới, tối đa 5 bước) | Chính đường dẫn rút gọn bạn dán (là nội dung yêu cầu HTTP) + địa chỉ IP công khai của bạn; chỉ đọc header chuyển hướng, không tải nội dung trang |
 | QR Tools - nút "Mở bản đồ" cho mã QR Vị trí | `google.com/maps` (mở bằng trình duyệt mặc định của bạn, không gọi ngầm) | Tọa độ nằm trong đường dẫn được mở - giống bấm vào bất kỳ liên kết Google Maps nào khác |
 | WiFi - đo tốc độ mạng | `speed.cloudflare.com` | Dữ liệu đo tốc độ tiêu chuẩn (giống mọi công cụ speedtest khác) |
 | Downloader - tải trực tiếp/quét trang/video nền tảng | URL/trang web do CHÍNH BẠN nhập | Yêu cầu HTTP tới đúng địa chỉ bạn dán vào |

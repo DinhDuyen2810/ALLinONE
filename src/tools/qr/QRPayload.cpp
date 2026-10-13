@@ -258,6 +258,113 @@ QString QRPayload::makeVCard(const VCardInfo& info)
     return l.join("\r\n");
 }
 
+namespace
+{
+bool mapsCoordsInRange(double lat, double lon)
+{
+    return lat >= -90.0 && lat <= 90.0 && lon >= -180.0 && lon <= 180.0;
+}
+
+/// Thử các dạng chứa tọa độ trong MỘT chuỗi, theo thứ tự ưu tiên (xem QRPayload::parseGoogleMapsCoordinates).
+bool matchMapsCoords(const QString& s, double* lat, double* lon)
+{
+    static const QRegularExpression kPatterns[] = {
+        // Điểm GHIM thật của địa điểm trong phần data=... - chính xác hơn tâm khung nhìn "@".
+        QRegularExpression(R"(!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?))"),
+        // Tâm khung nhìn: ".../maps/@21.028511,105.804817,15z" (link copy từ thanh địa chỉ).
+        QRegularExpression(R"(@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?))"),
+        // Tham số truy vấn: link "chia sẻ vị trí" hoặc chính link nút "Mở bản đồ" tạo ra.
+        QRegularExpression(R"([?&](?:q|query|ll|center)=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?))"),
+    };
+    for (const QRegularExpression& re : kPatterns)
+    {
+        QRegularExpressionMatchIterator it = re.globalMatch(s);
+        while (it.hasNext())
+        {
+            const QRegularExpressionMatch m = it.next();
+            const double la = m.captured(1).toDouble();
+            const double lo = m.captured(2).toDouble();
+            if (!mapsCoordsInRange(la, lo))
+                continue; // khớp mẫu regex nhưng ra ngoài phạm vi hợp lệ - không phải tọa độ thật, bỏ qua
+            *lat = la;
+            *lon = lo;
+            return true;
+        }
+    }
+    return false;
+}
+} // namespace
+
+bool QRPayload::parseGoogleMapsCoordinates(const QString& text, double* lat, double* lon)
+{
+    if (!lat || !lon)
+        return false;
+    const QString trimmed = text.trimmed();
+    if (trimmed.isEmpty())
+        return false;
+
+    QStringList candidates{trimmed};
+    // Bản đã giải mã phần trăm: "q=21.0%2C105.8" -> "q=21.0,105.8".
+    const QString decoded = QUrl::fromPercentEncoding(trimmed.toUtf8());
+    if (decoded != trimmed)
+        candidates << decoded;
+    // Trang đồng ý cookie của Google (consent.google.com/m?continue=<link thật>) bọc link thật ở đây.
+    const QUrl url(trimmed, QUrl::TolerantMode);
+    if (url.isValid())
+    {
+        const QString cont = QUrlQuery(url).queryItemValue("continue", QUrl::FullyDecoded);
+        if (!cont.isEmpty() && cont != trimmed)
+            candidates << cont;
+    }
+    for (const QString& c : candidates)
+        if (matchMapsCoords(c, lat, lon))
+            return true;
+    return false;
+}
+
+QUrl QRPayload::normalizeLinkUrl(const QString& text)
+{
+    QString t = text.trimmed();
+    if (t.isEmpty() || t.contains(QRegularExpression(R"(\s)")))
+        return QUrl();
+    if (!t.contains("://"))
+        t = "https://" + t;
+    QUrl u(t, QUrl::TolerantMode);
+    if (!u.isValid() || u.host().isEmpty())
+        return QUrl();
+    if (u.scheme() != "https" && u.scheme() != "http")
+        return QUrl();
+    u.setScheme("https"); // luôn dùng https - không gửi yêu cầu chuyển hướng qua kênh không mã hóa
+    return u;
+}
+
+bool QRPayload::isGoogleMapsShortLink(const QString& text)
+{
+    const QUrl u = normalizeLinkUrl(text);
+    if (u.isEmpty())
+        return false;
+    const QString host = u.host().toLower();
+    const QString path = u.path();
+    if (host == "maps.app.goo.gl")
+        return path.length() > 1;
+    if (host == "goo.gl")
+        return path.startsWith("/maps");
+    if (host == "g.co")
+        return path.startsWith("/kgs");
+    return false;
+}
+
+bool QRPayload::isAllowedMapsRedirectUrl(const QUrl& url)
+{
+    if (!url.isValid() || url.scheme() != "https")
+        return false;
+    // google.<tld> chỉ nhận đúng các dạng TLD thật của Google (com, co.xx, com.xx, xx 2 chữ cái) - KHÔNG nhận
+    // "google.evil.co" (nhãn "evil" 4 chữ cái không khớp) hay "evilgoogle.com" (phải là nhãn trọn vẹn).
+    static const QRegularExpression kHost(
+        R"(^(?:[a-z0-9-]+\.)*(?:google\.(?:com(?:\.[a-z]{2})?|co\.[a-z]{2}|[a-z]{2})|goo\.gl|g\.co)$)");
+    return kHost.match(url.host().toLower()).hasMatch();
+}
+
 WifiInfo QRPayload::parseWifi(const QString& content)
 {
     WifiInfo info;
