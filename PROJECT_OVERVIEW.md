@@ -2244,6 +2244,29 @@ yt-dlp/trình duyệt ẩn qua `WinProcessTree`.
 lịch sử 2 mục, quét trang HTML mẫu -> thêm vào hàng đợi -> toàn OK/"Chưa tải", đổi thư mục ở một nơi -> ≥4 nhãn đổi theo); `update_tests` 95/95 (dùng chung `FileDownloader`); `secdl_stress_tests` 1.869.830/1.869.830 (120 s); `core_stress_tests` đạt. Chạy hàng đợi THẬT qua mạng bằng chương trình thử tạm (đã xóa). Bố cục kiểm bằng ảnh chụp `QWidget::grab()` của từng tab (không hiện lên màn hình) - phát hiện và sửa: nút "Tải các mục đã chọn" bị cắt chữ ở cửa sổ hẹp (hàng nút nay là `FlowLayout`, tự xuống dòng), nút 🌐 bị Qt rút thành "..." (đặt cỡ cố định), cột trạng thái quá hẹp, đường dẫn thư mục hiện dấu `/` thay vì `\`.
 **CHƯA kiểm chứng**: bấm chuột/hộp thoại chọn thư mục thật và nút 🌐 mở trình duyệt thật (máy qua RDP), Shift+bấm chuột chọn dải, cookie đăng nhập Instagram/Facebook, hồ sơ Facebook đầy đủ, Smart App Control.
 
+## 4zf. Đối chiếu code giao diện với v1.19.10 (2026-10-14, v1.19.17)
+
+Người dùng: giao diện bản này "cứ lỗi" trong khi v1.19.10 không lỗi; yêu cầu so sánh mạnh TOÀN BỘ code giao diện (từng dòng, từng hàm, không dùng ảnh chụp) và sửa cho trùng v1.19.10, vẫn giữ các tính năng đã có.
+
+**Cách làm (lặp lại được):** `git diff --stat v1.19.10 HEAD -- src`, rồi đọc từng hunk của các tệp giao diện dùng chung và liệt kê mọi dòng BỊ XÓA/SỬA của giao diện cũ (dòng chỉ thêm cho tính năng mới được phân loại riêng).
+
+**Kết quả:** 285 tệp nguồn, 218 giống hệt v1.19.10, 67 khác. Ngoài `src/` và tài liệu/test, chỉ `CMakeLists.txt` và `VERSION` khác. Không còn mã khung cửa sổ/popup của các bản sau (`PopupCornerFix`, `WindowTheme`, `FramelessChrome`, `DwmSetWindowAttribute`).
+
+| Tệp / vùng | Khác v1.19.10 | Lý do |
+|---|---|---|
+| `src/ui/widgets/ComboBoxStyle.h` | `applyCursor()` thêm `QPushButton` (chỉ con trỏ) | Người dùng yêu cầu |
+| `src/ui/widgets/ItemHoverCursor.h` + `MainWindow.cpp` (1 dòng) | Con trỏ ngón tay trên danh sách công cụ | Người dùng yêu cầu |
+| `src/tools/qr/QRUiStyle.h` | **Đã đưa về giống hệt v1.19.10** (bo góc bảng 12px -> 10px) | Duy nhất không phục vụ tính năng; hoàn lại ở v1.19.17 |
+| `QRGenerateTab.*` | Bỏ Email/SMS/vCard khỏi danh sách tạo; trang Vị trí bố cục lại; ô chọn WiFi, ô dán link | Người dùng yêu cầu (YEU_CAU_SAU_1.19.10.md mục 4, 1, 2) |
+| `QRScanTab.*`, `QRCodec.*`, `QRPayload.*`, `ScreenSnipOverlay.cpp` | Ẩn khung KẾT QUẢ khi 1 mã, nút Kết nối WiFi, sửa khung nhận dạng/dpr; `listLabel` -> `m_resultListLabel` (cùng style) | Người dùng yêu cầu |
+| `AutoClickWindow.*`, `ActionEditorWidget.*`, `ActionListWidget.*`, `ChainListWidget.*`, `RuntimeOverlay.*`, `capture/ActionRecorder.*`, `engine/*`, `model/Action.*`, `storage/ActionSerializer.cpp` | "Ghi nhớ chuỗi", cache chỉnh sửa chưa lưu, chọn nhiều + xóa/nhân bản (kèm chữ gợi ý/tooltip) | Người dùng yêu cầu |
+| `wifi/ConnectDialog.*`, `android/WirelessPairDialog.cpp`, `vpn/engine/PublicIpChecker.*` | `setPassword()`, `applyCursor`, tra vị trí IP cho QR | Phục vụ tính năng QR / con trỏ |
+| `tools/downloader/**` | Hàng đợi hợp nhất, tab Lịch sử/Cài đặt (mục 4ze) | Người dùng yêu cầu |
+
+Tất cả các tool còn lại (WiFi, VPN, Disk Cleanup, Connect, Security, Android ngoài 2 dòng trên) giống hệt từng byte.
+
+**Giới hạn:** đưa giao diện về "trùng 100%" mã v1.19.10 cho các tool QR/Auto Click/Downloader nghĩa là xóa chính các tính năng người dùng đã yêu cầu - không làm. Không tìm thấy thay đổi giao diện NÀO KHÁC không do yêu cầu; nếu còn lỗi hiển thị cụ thể cần ảnh/tab/nút để truy nguyên. CHƯA kiểm chứng hiển thị thật trên màn hình người dùng (máy chạy qua RDP).
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
@@ -2407,6 +2430,7 @@ Quy tắc đứng nằm ở `CLAUDE.md` (gốc dự án). Tóm tắt - mỗi l�
 | 2026-10-13 | QR Vị trí: ô tọa độ rộng hơn + nút co vừa chữ; con trỏ ngón tay trên danh sách công cụ (v1.19.14) | Chi tiết đầy đủ ở mục 4zc. Người dùng gửi ảnh ô tọa độ bị cắt chữ số cuối: nguyên nhân là bề rộng cố định lấy từ `sizeHint()` (chưa tính padding stylesheet) - nay bề rộng tối thiểu tính theo chữ thật của `-180.000000`, ô giãn theo cột, hai nút co vừa chữ (lưới 3 cột), có test ở 860/1020/1400px. Thêm helper `ItemHoverCursor` (ngón tay trỏ khi rê lên MỘT MỤC của danh sách, vùng trống giữ mũi tên) gắn vào danh sách công cụ của cửa sổ chính. Bản đầu tiên được tag sau v1.19.10. `autoclick_tests` 201/201, `qr_ui_tests` 190/190, `qr_tests` 182/182, `qrwifi_stress_tests` 760.141/760.141. CHƯA kiểm chứng: con trỏ thật trong cửa sổ chính, DPI khác. |
 | 2026-10-13 | QR: định dạng vị trí + khung nhận dạng khi quét màn hình; Auto Click: chọn nhiều để xóa/nhân bản (v1.19.15) | Chi tiết đầy đủ ở mục 4zd. 4 yêu cầu: (1) đọc đúng 3 định dạng vị trí - dữ liệu thật cho thấy KHÔNG cùng một điểm (link dài = lộ trình xuất phát + Hội Gym; link rút gọn = Hội Gym; độ-phút-giây = điểm xuất phát), nay link dài lấy điểm của địa điểm có mã địa điểm (trùng link rút gọn) và báo điểm còn lại, thêm đọc tọa độ viết tay (độ-phút-giây, độ thập phân, cặp số); (2) khung nhận dạng nhỏ hơn mã - tái hiện: ảnh dpr 1,25 cho khung 79,8% do `padWhite()` vẽ theo kích thước logic, sửa bằng chuẩn hóa dpr về 1; (3) đếm số lần quét mã đã tạo - KHÔNG làm được (mã tĩnh, không có máy chủ); (4) chọn nhiều hành động/chuỗi bằng Ctrl/Shift để xóa/nhân bản (nhiều hành động: cụm bản sao lùi về sau hành động chọn cuối). `qr_tests` 241/241, `qr_ui_tests` 197/197, `autoclick_tests` 251/251, `core_stress_tests` 551/551, `qrwifi_stress_tests` 760.298/760.298. CHƯA kiểm chứng: Shift + bấm chuột thật, menu chuột phải thật, ảnh chụp màn hình thật ở DPI 125%. Chỉ push code, không tạo release. |
 | 2026-10-14 | Downloader: hàng đợi hợp nhất + phân giải mọi loại link + Lịch sử + Cài đặt (v1.19.16) | Chi tiết đầy đủ ở mục 4ze. 6 yêu cầu: (1) Tải trực tiếp = hàng đợi (thêm -> kiểm tra OK/ERR -> chọn -> tải; thư mục đích trống sau bước kiểm tra); (2) trang chặn chuột phải vẫn đọc được qua quét sâu mã nguồn + trình duyệt ẩn (NetLog); (3) phủ Facebook ảnh/video, TikTok ảnh, trang phim HLS, Google Drive/Docs, Studocu (ERR vì Cloudflare); (4) tab Lịch sử + Cài đặt (thư mục tải dùng chung); (5) nút 🌐 mở link; (6) hồ sơ/kênh bung thành từng bài (Instagram/Facebook cần cookie). `downloader_tests` 510/510, `downloader_ui_tests` 57/57, `update_tests` 95/95, `secdl_stress_tests` 1.869.830/1.869.830, `core_stress_tests` đạt; hàng đợi chạy thật qua mạng. CHƯA kiểm chứng: bấm chuột/hộp thoại thật, cookie Instagram/Facebook, hồ sơ Facebook đầy đủ. Có tạo release. |
+| 2026-10-14 | Đối chiếu code giao diện với v1.19.10 + đưa `QRUiStyle.h` về đúng v1.19.10 (v1.19.17) | Chi tiết ở mục 4zf. `git diff v1.19.10 HEAD -- src`: 218/285 tệp giống hệt, 67 tệp khác đều là tính năng được yêu cầu; thay đổi duy nhất trên giao diện cũ không phục vụ tính năng (bo góc bảng QR 12px) đã hoàn lại 10px. `qr_tests` 241/241, `qr_ui_tests` 197/197. Chỉ push code, không tạo tag/release. CHƯA kiểm chứng hiển thị thật trên màn hình người dùng. |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `
