@@ -3,6 +3,8 @@
 #include <QRegularExpression>
 #include <QUrl>
 #include <QUrlQuery>
+#include <algorithm>
+#include <cmath>
 
 namespace
 {
@@ -269,6 +271,10 @@ bool mapsCoordsInRange(double lat, double lon)
 bool matchMapsCoords(const QString& s, double* lat, double* lon)
 {
     static const QRegularExpression kPatterns[] = {
+        // Điểm GHIM của ĐỊA ĐIỂM có mã địa điểm (!1s0x<hex>:0x<hex>) - đúng điểm mà link rút gọn của địa điểm đó
+        // dẫn tới. Cần ưu tiên hơn "cặp !3d!4d đầu tiên": link LỘ TRÌNH chỉ đường (data=!4m12...) liệt kê điểm
+        // XUẤT PHÁT trước (không có mã địa điểm, vd điểm người dùng gõ bằng độ-phút-giây) rồi mới tới địa điểm.
+        QRegularExpression(R"(!1s0x[0-9a-fA-F]+:0x[0-9a-fA-F]+!8m2!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?))"),
         // Điểm GHIM thật của địa điểm trong phần data=... - chính xác hơn tâm khung nhìn "@".
         QRegularExpression(R"(!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?))"),
         // Tâm khung nhìn: ".../maps/@21.028511,105.804817,15z" (link copy từ thanh địa chỉ).
@@ -293,7 +299,137 @@ bool matchMapsCoords(const QString& s, double* lat, double* lon)
     }
     return false;
 }
+/// Chuẩn hóa ký tự độ/phút/giây Unicode về ASCII để các mẫu bên dưới chỉ phải xử lý một dạng.
+QString normalizeCoordText(QString s)
+{
+    for (QChar c : {QChar(0x2032), QChar(0x2019), QChar(0x2018), QChar(0x00B4), QChar(0x02B9), QChar(0x02BC)})
+        s.replace(c, QLatin1Char('\''));
+    for (QChar c : {QChar(0x2033), QChar(0x201D), QChar(0x201C), QChar(0x02BA)})
+        s.replace(c, QLatin1Char('"'));
+    for (QChar c : {QChar(0x00BA), QChar(0x02DA), QChar(0x2218)})
+        s.replace(c, QChar(0x00B0));
+    s.replace(QStringLiteral("''"), QStringLiteral("\"")); // hai dấu nháy đơn = giây
+    return s;
+}
+
+/// Độ/phút/giây -> độ thập phân; false nếu phút/giây ngoài [0, 60).
+bool dmsToDecimal(double d, double m, double s, double* out)
+{
+    if (m < 0.0 || m >= 60.0 || s < 0.0 || s >= 60.0)
+        return false;
+    *out = d + m / 60.0 + s / 3600.0;
+    return true;
+}
+
+/// Tọa độ VIẾT TAY trong một chuỗi (xem QRPayload::parseLocationText).
+bool matchCoordinateText(const QString& raw, double* lat, double* lon)
+{
+    const QString s = normalizeCoordText(raw);
+    constexpr auto kI = QRegularExpression::CaseInsensitiveOption;
+    // Giá trị số / chữ hướng dùng chung. (?![A-Za-z]) sau chữ hướng để "N" không ăn vào đầu một từ khác.
+    static const QRegularExpression kDmsAfter(
+        R"((\d{1,3})\s*°\s*(\d{1,2})\s*'\s*(\d{1,2}(?:\.\d+)?)\s*"?\s*([NS])(?![A-Za-z])[\s,;]*)"
+        R"((\d{1,3})\s*°\s*(\d{1,2})\s*'\s*(\d{1,2}(?:\.\d+)?)\s*"?\s*([EW])(?![A-Za-z]))", kI);
+    static const QRegularExpression kDmsBefore(
+        R"((?<![A-Za-z])([NS])\s*(\d{1,3})\s*°\s*(\d{1,2})\s*'\s*(\d{1,2}(?:\.\d+)?)\s*"?[\s,;]*)"
+        R"(([EW])\s*(\d{1,3})\s*°\s*(\d{1,2})\s*'\s*(\d{1,2}(?:\.\d+)?)\s*"?)", kI);
+    static const QRegularExpression kDmAfter(
+        R"((\d{1,3})\s*°\s*(\d{1,2}(?:\.\d+)?)\s*'?\s*([NS])(?![A-Za-z])[\s,;]*)"
+        R"((\d{1,3})\s*°\s*(\d{1,2}(?:\.\d+)?)\s*'?\s*([EW])(?![A-Za-z]))", kI);
+    static const QRegularExpression kDdAfter(
+        R"((\d{1,3}(?:\.\d+)?)\s*°?\s*([NS])(?![A-Za-z])[\s,;]*(\d{1,3}(?:\.\d+)?)\s*°?\s*([EW])(?![A-Za-z]))", kI);
+    static const QRegularExpression kDdBefore(
+        R"((?<![A-Za-z])([NS])\s*(\d{1,3}(?:\.\d+)?)\s*°?[\s,;]*([EW])\s*(\d{1,3}(?:\.\d+)?)\s*°?(?![\d.]))", kI);
+    static const QRegularExpression kPlainPair(
+        R"(^\s*(?:geo:)?\s*\(?\s*(-?\d{1,3}(?:\.\d+)?)\s*[,;]\s*(-?\d{1,3}(?:\.\d+)?)\s*\)?\s*$)", kI);
+    static const QRegularExpression kPlainPairSpace(
+        R"(^\s*\(?\s*(-?\d{1,3}\.\d+)\s+(-?\d{1,3}\.\d+)\s*\)?\s*$)");
+
+    auto finish = [&](double la, QChar hLat, double lo, QChar hLon) {
+        if (hLat.toUpper() == QLatin1Char('S'))
+            la = -la;
+        if (hLon.toUpper() == QLatin1Char('W'))
+            lo = -lo;
+        if (!mapsCoordsInRange(la, lo))
+            return false;
+        *lat = la;
+        *lon = lo;
+        return true;
+    };
+    auto d = [](const QRegularExpressionMatch& m, int i) { return m.captured(i).toDouble(); };
+    auto h = [](const QRegularExpressionMatch& m, int i) { return m.captured(i).at(0); };
+
+    QRegularExpressionMatch m;
+    double la = 0, lo = 0;
+    if ((m = kDmsAfter.match(s)).hasMatch() && dmsToDecimal(d(m, 1), d(m, 2), d(m, 3), &la) &&
+        dmsToDecimal(d(m, 5), d(m, 6), d(m, 7), &lo))
+        return finish(la, h(m, 4), lo, h(m, 8));
+    if ((m = kDmsBefore.match(s)).hasMatch() && dmsToDecimal(d(m, 2), d(m, 3), d(m, 4), &la) &&
+        dmsToDecimal(d(m, 6), d(m, 7), d(m, 8), &lo))
+        return finish(la, h(m, 1), lo, h(m, 5));
+    if ((m = kDmAfter.match(s)).hasMatch() && dmsToDecimal(d(m, 1), d(m, 2), 0.0, &la) &&
+        dmsToDecimal(d(m, 4), d(m, 5), 0.0, &lo))
+        return finish(la, h(m, 3), lo, h(m, 6));
+    if ((m = kDdAfter.match(s)).hasMatch())
+        return finish(d(m, 1), h(m, 2), d(m, 3), h(m, 4));
+    if ((m = kDdBefore.match(s)).hasMatch())
+        return finish(d(m, 2), h(m, 1), d(m, 4), h(m, 3));
+    if ((m = kPlainPair.match(s)).hasMatch())
+        return finish(d(m, 1), QLatin1Char('N'), d(m, 2), QLatin1Char('E'));
+    if ((m = kPlainPairSpace.match(s)).hasMatch())
+        return finish(d(m, 1), QLatin1Char('N'), d(m, 2), QLatin1Char('E'));
+    return false;
+}
 } // namespace
+
+bool QRPayload::parseLocationText(const QString& text, double* lat, double* lon)
+{
+    if (!lat || !lon)
+        return false;
+    if (parseGoogleMapsCoordinates(text, lat, lon))
+        return true;
+    const QString trimmed = text.trimmed();
+    if (trimmed.isEmpty())
+        return false;
+    QStringList candidates{trimmed};
+    // Đường dẫn Google Maps mã hóa phần trăm: /place/20%C2%B059'31.1%22N+105%C2%B050'33.8%22E (dấu + = khoảng trắng).
+    const QString decoded = QUrl::fromPercentEncoding(trimmed.toUtf8());
+    if (decoded != trimmed)
+        candidates << decoded;
+    QString spaced = decoded;
+    spaced.replace(QLatin1Char('+'), QLatin1Char(' '));
+    if (spaced != decoded)
+        candidates << spaced;
+    for (const QString& c : candidates)
+        if (matchCoordinateText(c, lat, lon))
+            return true;
+    return false;
+}
+
+QList<QPointF> QRPayload::googleMapsPins(const QString& text)
+{
+    static const QRegularExpression kPin(R"(!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?))");
+    QList<QPointF> pins;
+    const QString decoded = QUrl::fromPercentEncoding(text.toUtf8());
+    for (const QString& s : {text, decoded})
+    {
+        QRegularExpressionMatchIterator it = kPin.globalMatch(s);
+        while (it.hasNext())
+        {
+            const QRegularExpressionMatch m = it.next();
+            const double la = m.captured(1).toDouble();
+            const double lo = m.captured(2).toDouble();
+            if (!mapsCoordsInRange(la, lo))
+                continue;
+            const bool dup = std::any_of(pins.begin(), pins.end(), [&](const QPointF& p) {
+                return std::abs(p.x() - la) < 1e-9 && std::abs(p.y() - lo) < 1e-9;
+            });
+            if (!dup)
+                pins.append(QPointF(la, lo));
+        }
+    }
+    return pins;
+}
 
 bool QRPayload::parseGoogleMapsCoordinates(const QString& text, double* lat, double* lon)
 {

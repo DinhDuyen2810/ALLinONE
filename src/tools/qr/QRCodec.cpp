@@ -424,7 +424,16 @@ QList<QRDecoded> QRCodec::decode(const QImage& image, int* undecodedCount)
     if (image.isNull())
         return {};
 
-    const QImage gray = toGray(image);
+    // Ảnh chụp màn hình/clipboard trên màn hình DPI cao (Windows scale 125%/150%...) mang devicePixelRatio > 1.
+    // QPainter::drawImage() (padWhite() bên dưới) vẽ theo kích thước LOGIC = pixel / dpr nên nội dung bị CO lại
+    // trước khi giải mã, trong khi tọa độ góc lại được quy đổi như chưa co -> khung nhận dạng chỉ còn 1/dpr
+    // (đo thật: dpr 1,25 -> khung = 79,8% vùng mã; xem qr_tests). Chuẩn hóa về 1 - dữ liệu pixel không đổi,
+    // chỉ bỏ siêu dữ liệu tỉ lệ, và mọi tọa độ trả về luôn là tọa độ PIXEL của ảnh đầu vào.
+    QImage normalized = image;
+    if (normalized.devicePixelRatio() != 1.0)
+        normalized.setDevicePixelRatio(1.0);
+
+    const QImage gray = toGray(normalized);
 
     // Hạn chế ảnh quá lớn để quét nhanh và tiết kiệm bộ nhớ
     const int maxDim = std::max(gray.width(), gray.height());

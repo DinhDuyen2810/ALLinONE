@@ -118,6 +118,17 @@ void remapPendingEditsMove(std::map<int, Action>& edits, int from, int to)
         remapped[remapIdx(kv.first)] = std::move(kv.second);
     edits = std::move(remapped);
 }
+/// Danh sách chỉ số nhận từ giao diện -> tăng dần, không trùng, chỉ giữ chỉ số hợp lệ trong [0, count).
+QList<int> normalizedIndices(const QList<int>& in, int count)
+{
+    QList<int> out;
+    for (int i : in)
+        if (i >= 0 && i < count && !out.contains(i))
+            out << i;
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
 /// Bật một cờ bool trong đúng phạm vi khối rồi tự trả về giá trị cũ khi ra khỏi (kể cả return sớm) - dùng
 /// cho AutoClickWindow::m_suppressPendingCapture (xem comment ở khai báo cờ đó).
 class ScopedFlag
@@ -461,6 +472,8 @@ void AutoClickWindow::setupUi()
     connect(m_chainListWidget, &ChainListWidget::addChainClicked, this, &AutoClickWindow::onAddChain);
     connect(m_chainListWidget, &ChainListWidget::cloneChainClicked, this, &AutoClickWindow::onCloneChain);
     connect(m_chainListWidget, &ChainListWidget::deleteChainClicked, this, &AutoClickWindow::onDeleteChain);
+    connect(m_chainListWidget, &ChainListWidget::cloneChainsClicked, this, &AutoClickWindow::onCloneChains);
+    connect(m_chainListWidget, &ChainListWidget::deleteChainsClicked, this, &AutoClickWindow::onDeleteChains);
     connect(m_chainListWidget, &ChainListWidget::renameChainClicked, this, &AutoClickWindow::onRenameChain);
     connect(m_chainListWidget, &ChainListWidget::togglePinClicked, this, &AutoClickWindow::onTogglePinChain);
     connect(m_chainListWidget, &ChainListWidget::chainMoved, this, &AutoClickWindow::onChainMoved);
@@ -470,6 +483,8 @@ void AutoClickWindow::setupUi()
     connect(m_actionListWidget, &ActionListWidget::addActionClicked, this, &AutoClickWindow::onAddAction);
     connect(m_actionListWidget, &ActionListWidget::cloneActionClicked, this, &AutoClickWindow::onCloneAction);
     connect(m_actionListWidget, &ActionListWidget::deleteActionClicked, this, &AutoClickWindow::onDeleteAction);
+    connect(m_actionListWidget, &ActionListWidget::cloneActionsClicked, this, &AutoClickWindow::onCloneActions);
+    connect(m_actionListWidget, &ActionListWidget::deleteActionsClicked, this, &AutoClickWindow::onDeleteActions);
     connect(m_actionListWidget, &ActionListWidget::actionMoved, this, &AutoClickWindow::onActionMoved);
     connect(m_actionEditorWidget, &ActionEditorWidget::actionSaved, this, &AutoClickWindow::onActionSaved);
     connect(m_actionEditorWidget, &ActionEditorWidget::dirtyChanged, this, &AutoClickWindow::onEditorDirtyChanged);
@@ -747,6 +762,78 @@ void AutoClickWindow::onDeleteChain(int index)
     }
 }
 
+void AutoClickWindow::onCloneChains(const QList<int>& indicesIn)
+{
+    const QList<int> indices = normalizedIndices(indicesIn, static_cast<int>(m_chains.size()));
+    if (indices.isEmpty())
+        return;
+    if (indices.size() == 1)
+    {
+        onCloneChain(indices.first());
+        return;
+    }
+
+    captureEditorIfDirty();
+    applyPendingEdits();
+    // Bản sao thêm vào CUỐI theo đúng thứ tự (cùng cách nhân bản MỘT chuỗi ở onCloneChain()); chỉ số nguồn luôn
+    // trỏ vào phần danh sách GỐC vì push_back ở cuối không làm dời chúng.
+    const int firstNew = static_cast<int>(m_chains.size());
+    for (int i : indices)
+        m_chains.push_back(m_chains[i].clone());
+    QList<int> newRows;
+    for (int k = 0; k < indices.size(); ++k)
+        newRows << firstNew + k;
+    m_chainListWidget->setChains(m_chains);
+    m_chainListWidget->setSelectedChainIndices(newRows);
+    m_currentChainIndex = firstNew; // biến cục bộ - xem onAddChain()
+    syncUiWithCurrentChain();
+}
+
+void AutoClickWindow::onDeleteChains(const QList<int>& indicesIn)
+{
+    const QList<int> indices = normalizedIndices(indicesIn, static_cast<int>(m_chains.size()));
+    if (indices.isEmpty())
+        return;
+    if (indices.size() == 1)
+    {
+        onDeleteChain(indices.first());
+        return;
+    }
+    if (indices.size() >= static_cast<int>(m_chains.size()))
+    {
+        QMessageBox::warning(this, "Không thể xóa", "Phải giữ lại ít nhất một chuỗi hành động.");
+        return;
+    }
+
+    captureEditorIfDirty();
+    applyPendingEdits();
+    // Chain đang chạy (ActionRunner giữ bản sao riêng nên vẫn chạy tiếp được) bị xóa hoặc bị dồn chỉ số - cùng
+    // quy tắc onDeleteChain(), chỉ khác dồn theo SỐ chuỗi bị xóa nằm trước nó.
+    if (m_runningChainIndex >= 0)
+    {
+        if (indices.contains(m_runningChainIndex))
+        {
+            m_runningChainIndex = -1;
+            clearRunningMarker();
+        }
+        else
+        {
+            int before = 0;
+            for (int i : indices)
+                if (i < m_runningChainIndex)
+                    ++before;
+            m_runningChainIndex -= before;
+        }
+    }
+    for (int k = indices.size() - 1; k >= 0; --k) // từ cuối về đầu - chỉ số chưa xóa không bị dời
+        m_chains.erase(m_chains.begin() + indices[k]);
+    const int newIndex = std::min(std::max(0, indices.first() - 1), static_cast<int>(m_chains.size()) - 1);
+    m_chainListWidget->setChains(m_chains);
+    m_chainListWidget->setSelectedChainIndex(newIndex);
+    m_currentChainIndex = newIndex;
+    syncUiWithCurrentChain();
+}
+
 void AutoClickWindow::onRenameChain(int index, const QString& newName)
 {
     if (index >= 0 && index < static_cast<int>(m_chains.size()))
@@ -899,6 +986,87 @@ void AutoClickWindow::onDeleteAction(int index)
         {
             m_actionEditorWidget->clear();
         }
+    }
+}
+
+void AutoClickWindow::onCloneActions(const QList<int>& indicesIn)
+{
+    ActionChain* chain = currentChain();
+    if (!chain)
+        return;
+    const QList<int> indices = normalizedIndices(indicesIn, static_cast<int>(chain->actions.size()));
+    if (indices.isEmpty())
+        return;
+    if (indices.size() == 1)
+    {
+        onCloneAction(indices.first());
+        return;
+    }
+
+    captureEditorIfDirty();
+    // Từ đây tới hết hàm: setActions()/setSelectedActionIndices() tự phát currentCellChanged -> onActionSelected() -
+    // chặn nó capture bằng chỉ số CŨ (không còn đúng nghĩa sau remap) - xem m_suppressPendingCapture.
+    ScopedFlag noCapture(m_suppressPendingCapture);
+    noteActionsRestructured();
+    // Khác nhân bản MỘT hành động (bản sao ngay sau bản gốc): cả cụm bản sao được đẩy lùi về SAU hành động được
+    // chọn cuối cùng, giữ nguyên thứ tự tương đối - không chen vào giữa các hành động gốc.
+    const int insertPos = indices.last() + 1;
+    std::vector<Action> clones;
+    for (int i : indices)
+        clones.push_back(chain->actions[i]);
+    chain->actions.insert(chain->actions.begin() + insertPos, clones.begin(), clones.end());
+    for (int k = 0; k < indices.size(); ++k)
+        remapPendingEditsInsert(m_pendingEdits, insertPos); // mỗi lần chèn dồn mọi cache có chỉ số >= insertPos lên 1
+    m_actionListWidget->setActions(chain->actions);
+    refreshDirtyMarkersFromPendingEdits();
+    QList<int> newRows;
+    for (int k = 0; k < indices.size(); ++k)
+        newRows << insertPos + k;
+    m_actionListWidget->setSelectedActionIndices(newRows);
+    m_actionEditorWidget->setAction(chain->actions[insertPos], insertPos);
+}
+
+void AutoClickWindow::onDeleteActions(const QList<int>& indicesIn)
+{
+    ActionChain* chain = currentChain();
+    if (!chain)
+        return;
+    const QList<int> indices = normalizedIndices(indicesIn, static_cast<int>(chain->actions.size()));
+    if (indices.isEmpty())
+        return;
+    if (indices.size() == 1)
+    {
+        onDeleteAction(indices.first());
+        return;
+    }
+
+    // Editor đang sửa dở một hàng KHÔNG bị xóa -> giữ chỉnh sửa đó vào cache TRƯỚC khi chỉ số dời chỗ (remap bên
+    // dưới đẩy nó về đúng hàng mới). Nếu hàng đó sắp bị xóa thì không cần/không nên capture.
+    if (!indices.contains(m_actionEditorWidget->currentActionIndex()))
+        captureEditorIfDirty();
+    // Từ đây tới hết hàm: setActions()/setSelectedActionIndex() tự phát currentCellChanged -> onActionSelected() -
+    // chặn nó capture bằng chỉ số CŨ - xem m_suppressPendingCapture.
+    ScopedFlag noCapture(m_suppressPendingCapture);
+    noteActionsRestructured();
+    for (int k = indices.size() - 1; k >= 0; --k) // từ cuối về đầu - chỉ số chưa xóa không bị dời
+    {
+        chain->actions.erase(chain->actions.begin() + indices[k]);
+        remapPendingEditsErase(m_pendingEdits, indices[k]); // cache của hàng bị xóa bỏ theo, hàng sau dồn xuống 1
+    }
+    m_actionListWidget->setActions(chain->actions);
+    refreshDirtyMarkersFromPendingEdits();
+    const int nextIdx = std::min(indices.first(), static_cast<int>(chain->actions.size()) - 1);
+    if (nextIdx >= 0)
+    {
+        auto it = m_pendingEdits.find(nextIdx);
+        m_actionListWidget->setSelectedActionIndex(nextIdx);
+        m_actionEditorWidget->setAction(it != m_pendingEdits.end() ? it->second : chain->actions[nextIdx], nextIdx);
+        if (it != m_pendingEdits.end())
+            m_actionListWidget->setRowDirty(nextIdx, true);
+    }
+    else
+    {
+        m_actionEditorWidget->clear();
     }
 }
 

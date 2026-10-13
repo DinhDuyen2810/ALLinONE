@@ -204,7 +204,7 @@
     gương Android, dán lệnh PowerShell).
 
 ## 4b. QR Tools
-- **Tạo mã:** 5 loại nội dung (Văn bản, URL, WiFi, Điện thoại, Vị trí) - bỏ Email/SMS/vCard khỏi danh sách tạo từ v1.19.12. WiFi: combo "WiFi đã lưu" điền nhanh SSID/bảo mật/mật khẩu từ hồ sơ WiFi trên máy. Vị trí: nút "Lấy vị trí hiện tại" (ước lượng theo IP công khai qua `ipwho.is`), "Mở bản đồ" (Google Maps) và ô dán link Google Maps (kể cả link rút gọn maps.app.goo.gl) để đọc tọa độ. Tùy chọn: mức sửa lỗi L/M/Q/H, kích thước ảnh, viền trắng, màu mã/nền, ô bo tròn, logo giữa mã (tự dùng mức H). Xem trước trực tiếp, cảnh báo độ tương phản, tự giải mã lại ảnh vừa tạo để bảo đảm quét được. Lưu PNG/JPG/BMP/SVG, sao chép vào clipboard.
+- **Tạo mã:** 5 loại nội dung (Văn bản, URL, WiFi, Điện thoại, Vị trí) - bỏ Email/SMS/vCard khỏi danh sách tạo từ v1.19.12. WiFi: combo "WiFi đã lưu" điền nhanh SSID/bảo mật/mật khẩu từ hồ sơ WiFi trên máy. Vị trí: nút "Lấy vị trí hiện tại" (ước lượng theo IP công khai qua `ipwho.is`), "Mở bản đồ" (Google Maps) và ô dán link Google Maps (kể cả link rút gọn maps.app.goo.gl) HOẶC tọa độ viết tay (độ-phút-giây, độ thập phân, cặp số) để đọc tọa độ. Tùy chọn: mức sửa lỗi L/M/Q/H, kích thước ảnh, viền trắng, màu mã/nền, ô bo tròn, logo giữa mã (tự dùng mức H). Xem trước trực tiếp, cảnh báo độ tương phản, tự giải mã lại ảnh vừa tạo để bảo đảm quét được. Lưu PNG/JPG/BMP/SVG, sao chép vào clipboard.
 - **Quét mã:** từ file ảnh, clipboard (Ctrl+V), kéo-thả, chụp vùng màn hình, camera. Nhận nhiều mã trong một ảnh, vẽ viền quanh mã, phân tích nội dung (URL, WiFi, Email, vCard...; nhận cả email/SĐT nằm rải rác trong văn bản tự do), nút Sao chép / Mở (có hỏi xác nhận) / Lưu .txt / Tạo lại mã; mã WiFi có thêm nút "Kết nối WiFi"; khung "KẾT QUẢ (nhiều mã)" chỉ hiện khi ảnh có hơn 1 mã.
 - **Lịch sử:** ghi mã đã tạo (khi lưu hoặc sao chép) và đã quét; sao chép, tạo lại, xóa.
 - **Kiểm thử:** `cmake --build build --target qr_tests qr_ui_tests`, rồi chạy `build\qr_tests.exe` và `build\qr_ui_tests.exe` (cần Qt bin trong PATH).
@@ -2146,6 +2146,56 @@ an toàn), `qr_ui_tests` 190/190, `qr_tests` 182/182, `qrwifi_stress_tests` 760.
 `MouseMove` giả, dòng gắn vào `MainWindow` chưa có test riêng vì `MainWindow` nằm trong exe, không có trong thư viện test);
 hiển thị ở DPI/cỡ chữ Windows khác.
 
+## 4zd. QR: định dạng vị trí + khung nhận dạng khi quét màn hình; Auto Click: chọn nhiều để xóa/nhân bản (2026-10-13, v1.19.15)
+
+Người dùng gửi 4 yêu cầu kèm 2 ảnh (chỉ push code, không tạo release):
+
+**1. Đọc đúng mọi định dạng vị trí.** Người dùng đưa 3 chuỗi và khẳng định "cùng một vị trí". Dữ liệu thật cho thấy KHÔNG
+phải: (A) link dài `.../maps/place/Hội+Gym.../data=!4m12!1m5!3m4!2z<base64>!8m2!3d20.991978!4d105.842733!3m5!1s0x3135ac43dc0e273b:0xf2e69345522b1dc7!8m2!3d20.977992!4d105.8475138...`
+là LỘ TRÌNH chỉ đường có hai điểm - xuất phát (20.991978, 105.842733; phần `!2z` giải base64 ra đúng chuỗi
+`20°59'31.1"N 105°50'33.8"E`) và địa điểm Hội Gym (20.977992, 105.8475138, có mã địa điểm `!1s0x..:0x..`); (B) link rút gọn
+`maps.app.goo.gl/5rH3RvRHyMLxAqNs8` chuyển hướng (HTTP 302) tới trang địa điểm Hội Gym chỉ có điểm (20.977992, 105.8475138);
+(C) chuỗi độ-phút-giây = điểm xuất phát, cách Hội Gym ~1,5 km. Cách đọc: A -> điểm của ĐỊA ĐIỂM có mã địa điểm (trùng B) kèm
+thông báo điểm xuất phát còn lại; B -> như cũ qua mạng; C -> điểm xuất phát. Cài đặt (lõi `QRPayload`, test được không cần mạng):
+`parseGoogleMapsCoordinates()` thêm mẫu ưu tiên `!1s0x..:0x..!8m2!3d..!4d..` trước "cặp `!3d!4d` đầu tiên";
+`parseLocationText()` = link Google Maps + tọa độ viết tay (`20°59'31.1"N 105°50'33.8"E`, `′ ″ º ''` Unicode, chữ hướng trước/
+sau số, N/S/E/W hoa-thường - S/W cho giá trị âm, độ-phút thập phân, độ thập phân + hướng, cặp số `lat, lon`/`lat lon`,
+`geo:`; từ chối phút/giây >= 60, ngoài phạm vi, số nguyên rời `12 34`); `googleMapsPins()` liệt kê mọi điểm ghim để giao diện báo
+điểm khác. Ô dán ở trang Vị trí nhận cả link lẫn tọa độ.
+
+**2. Khung nhận dạng nhỏ hơn mã khi quét màn hình.** Tái hiện tất định bằng probe: ảnh có `devicePixelRatio` 1,25 -> 4 góc chỉ phủ
+79,8% vùng mã (= 1/1,25); DPR 1,0 luôn 100% ở mọi cỡ (300-2600 px). Nguyên nhân gốc: `QRCodec::padWhite()` vẽ ảnh lên nền bằng
+`QPainter::drawImage`, Qt vẽ theo kích thước LOGIC (pixel/dpr) nên nội dung bị co lại trước khi giải mã (vẫn giải mã được), còn
+`decodeGray()` quy đổi góc như chưa co. Ảnh chụp màn hình Windows scale 125% mang dpr 1,25 (`QScreen::grabWindow`). Sửa ở gốc:
+chuẩn hóa dpr về 1 ngay đầu `QRCodec::decode()` (dữ liệu pixel không đổi, tọa độ trả về luôn là PIXEL của ảnh đầu vào) và ở
+`ScreenSnipOverlay::cropSelection()`. Test hồi quy: `qr_tests` (dpr 1,0/1,25/1,5/2,0/0,75 cho cùng tọa độ góc, sai số <= 3 px)
+và `qr_ui_tests` (qua tab Quét).
+
+**3. Theo dõi số lần quét mã đã tạo - KHÔNG làm được, không thêm.** Mã QR tĩnh mã hóa trực tiếp nội dung; người khác quét bằng
+điện thoại không có kênh nào gửi về ứng dụng. Muốn đếm phải dùng mã ĐỘNG (nhúng đường dẫn trung gian trên máy chủ rồi chuyển
+hướng) - dự án không có máy chủ riêng (xem PRIVACY.md) nên không làm. Lịch sử hiện chỉ ghi các lần quét thực hiện TRONG ứng dụng.
+
+**4. Auto Click: chọn nhiều hành động/chuỗi.** `ActionListWidget` và `ChainListWidget` chuyển sang `ExtendedSelection` (Ctrl + bấm
+thêm/bớt một hàng, Shift cả khoảng); API mới `selectedActionIndices()/setSelectedActionIndices()` và tương ứng cho chuỗi; tín hiệu
+mới `cloneActionsClicked/deleteActionsClicked` (và `...ChainsClicked`) CHỈ khi chọn từ 2 hàng trở lên - một hàng vẫn dùng tín hiệu
+cũ. Chuột phải TRONG vùng chọn tác động cả nhóm (nhãn "Xóa N hành động", "Nhân bản N hành động"), NGOÀI vùng chọn thì chọn riêng
+hàng đó. `AutoClickWindow::onCloneActions/onDeleteActions/onCloneChains/onDeleteChains`: nhân bản MỘT hành động đặt bản sao ngay
+sau bản gốc (như cũ), nhân bản NHIỀU hành động chèn cả cụm bản sao (giữ thứ tự) NGAY SAU hành động được chọn cuối cùng ("đẩy
+lùi về sau"); chuỗi: bản sao thêm vào CUỐI như nhân bản một chuỗi (luôn là hành vi cũ của chuỗi). Xóa nhiều: xóa từ cuối về đầu;
+cache chỉnh sửa dở (`m_pendingEdits`) được remap cho từng hàng xóa/chèn và capture hàng đang sửa dở TRƯỚC khi chỉ số dời chỗ;
+`ScopedFlag` chặn capture suốt đoạn vẽ lại bảng (bài học bấm Lưu 2 lần, mục 4zb); xóa HẾT chuỗi bị từ chối (phải giữ ít nhất
+một); chuỗi đang chạy bị xóa thì bỏ dấu "đang chạy", còn lại được dồn chỉ số. Kéo-thả khi đang chọn nhiều hàng KHÔNG đổi vị
+trí (chỉ dời được một hàng/lần). Diễn giải "đẩy lùi về sau" là CỤM bản sao nằm sau hành động chọn cuối (không phải cuối cả
+danh sách) - dễ đổi nếu người dùng muốn cuối danh sách.
+
+**Kiểm thử**: `qr_tests` 241/241, `qr_ui_tests` 197/197, `autoclick_tests` 251/251, `core_stress_tests` 551/551, `qrwifi_stress_tests` 760.298/760.298.
+Qua mạng thật (harness tạm, không commit): A và B ra CÙNG điểm Hội Gym (20.977992, 105.847514), C ra điểm xuất phát (20.991972,
+105.842722). Chọn nhiều: Ctrl + bấm bằng sự kiện chuột giả lập có phím bổ trợ; Shift bằng Shift+Mũi tên (Shift + bấm chuột giả lập
+không mở rộng được ngay cả trên `QTableWidget` trần - đã đối chứng, là đặc điểm của giả lập, không phải lỗi ứng dụng).
+
+**CHƯA kiểm chứng**: Shift + bấm CHUỘT thật và menu chuột phải thật (RDP không gửi được chuột/phím thật); ảnh chụp màn hình
+thật ở DPI 125% (đã tái hiện bằng ảnh DPR 1,25 giả lập); cách hiểu "đẩy lùi về sau" của người dùng.
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
@@ -2307,6 +2357,7 @@ Quy tắc đứng nằm ở `CLAUDE.md` (gốc dự án). Tóm tắt - mỗi l�
 | 2026-10-13 | QR Tools: làm lại các cải tiến đã mất + con trỏ ngón tay cho mọi nút bấm (v1.19.12) | Chi tiết đầy đủ ở mục 4za. Người dùng gửi lại danh sách yêu cầu QR Tools + con trỏ đã mất khi quay về v1.19.10: WiFi chọn nhanh từ hồ sơ đã lưu + nút "Kết nối WiFi" khi quét ra mã WiFi; Vị trí có "Lấy vị trí hiện tại" (theo IP công khai) + "Mở bản đồ" (Google Maps) + dán link Google Maps; Quét ẩn khung "KẾT QUẢ" khi chỉ có 1 mã, nhận diện email/SĐT trong văn bản tự do, bảng bo góc đồng bộ; Tạo mã chỉ còn 5 loại; con trỏ ngón tay mở rộng sang mọi `QPushButton`. Port CÓ CHỌN LỌC từ `ae232ec` + phần dán link của `14baffc`, KHÔNG mang theo cơ chế giao diện nào (không `PopupCornerFix`/`WindowTheme`/Fusion/bản đồ nhúng). `qr_tests` 136/136, `qr_ui_tests` 165/165, `wifi_tests` 119/119, `qrwifi_stress_tests` 760.699/760.699, `disk_vpn_stress_tests` 7.320/7.320; xác nhận thật trên app đang chạy: 5 loại, 2 nút Vị trí + ô dán link, combo "WiFi đã lưu". CHƯA kiểm chứng: gọi thật `ipwho.is`, mở Google Maps thật, kết nối WiFi thật từ mã QR, hình ảnh thực tế trên máy thật. |
 | 2026-10-13 | Sửa lỗi bấm "Lưu hành động" 2 lần + gọn lại trang QR Vị trí + link rút gọn Google Maps (v1.19.13) | Chi tiết đầy đủ ở mục 4zb. Người dùng gửi ảnh + 3 yêu cầu: (1) trang QR Vị trí vượt chiều rộng - đã bố trí lại (ô giá trị thu hẹp, nút nằm cạnh, có test chống vượt cột trái ở 860/1020/1400px); (2) không đọc được link rút gọn `maps.app.goo.gl` - nay gửi 1 yêu cầu GET tới Google, đọc header `Location`, tách tọa độ (ưu tiên điểm ghim `!3d!4d`), chỉ theo host Google; xác nhận qua mạng thật với link của người dùng; (3) phải bấm Lưu 2 lần - nguyên nhân gốc: `setActions()` tự phát `currentCellChanged` ngay khi editor còn "dirty" nên bản vừa lưu bị chụp lại thành cache chưa lưu (lỗi do cache v1.19.11, không có ở v1.19.10), cùng lỗ hổng ở "Lưu lại trước khi chạy?" và Nhân bản/Xóa/Dời; tái hiện bằng test trước khi sửa, sửa bằng `ScopedFlag`. `autoclick_tests` 194/194, `core_stress_tests` 551/551, `qr_tests` 182/182, `qr_ui_tests` 172/172, `qrwifi_stress_tests` 760.292/760.292. CHƯA kiểm chứng: bấm chuột thật trong app, trang đồng ý cookie EU. |
 | 2026-10-13 | QR Vị trí: ô tọa độ rộng hơn + nút co vừa chữ; con trỏ ngón tay trên danh sách công cụ (v1.19.14) | Chi tiết đầy đủ ở mục 4zc. Người dùng gửi ảnh ô tọa độ bị cắt chữ số cuối: nguyên nhân là bề rộng cố định lấy từ `sizeHint()` (chưa tính padding stylesheet) - nay bề rộng tối thiểu tính theo chữ thật của `-180.000000`, ô giãn theo cột, hai nút co vừa chữ (lưới 3 cột), có test ở 860/1020/1400px. Thêm helper `ItemHoverCursor` (ngón tay trỏ khi rê lên MỘT MỤC của danh sách, vùng trống giữ mũi tên) gắn vào danh sách công cụ của cửa sổ chính. Bản đầu tiên được tag sau v1.19.10. `autoclick_tests` 201/201, `qr_ui_tests` 190/190, `qr_tests` 182/182, `qrwifi_stress_tests` 760.141/760.141. CHƯA kiểm chứng: con trỏ thật trong cửa sổ chính, DPI khác. |
+| 2026-10-13 | QR: định dạng vị trí + khung nhận dạng khi quét màn hình; Auto Click: chọn nhiều để xóa/nhân bản (v1.19.15) | Chi tiết đầy đủ ở mục 4zd. 4 yêu cầu: (1) đọc đúng 3 định dạng vị trí - dữ liệu thật cho thấy KHÔNG cùng một điểm (link dài = lộ trình xuất phát + Hội Gym; link rút gọn = Hội Gym; độ-phút-giây = điểm xuất phát), nay link dài lấy điểm của địa điểm có mã địa điểm (trùng link rút gọn) và báo điểm còn lại, thêm đọc tọa độ viết tay (độ-phút-giây, độ thập phân, cặp số); (2) khung nhận dạng nhỏ hơn mã - tái hiện: ảnh dpr 1,25 cho khung 79,8% do `padWhite()` vẽ theo kích thước logic, sửa bằng chuẩn hóa dpr về 1; (3) đếm số lần quét mã đã tạo - KHÔNG làm được (mã tĩnh, không có máy chủ); (4) chọn nhiều hành động/chuỗi bằng Ctrl/Shift để xóa/nhân bản (nhiều hành động: cụm bản sao lùi về sau hành động chọn cuối). `qr_tests` 241/241, `qr_ui_tests` 197/197, `autoclick_tests` 251/251, `core_stress_tests` 551/551, `qrwifi_stress_tests` 760.298/760.298. CHƯA kiểm chứng: Shift + bấm chuột thật, menu chuột phải thật, ảnh chụp màn hình thật ở DPI 125%. Chỉ push code, không tạo release. |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `

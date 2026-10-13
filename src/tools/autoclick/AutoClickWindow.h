@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QList>
 #include <QWidget>
 #include <QSplitter>
 #include <QSpinBox>
@@ -38,6 +39,10 @@ private slots:
     void onAddChain();
     void onCloneChain(int index);
     void onDeleteChain(int index);
+    /// Nhiều chuỗi cùng lúc (Ctrl/Shift + bấm rồi chuột phải). Bản sao thêm vào CUỐI danh sách theo đúng thứ tự
+    /// (như nhân bản một chuỗi). Không được xóa hết chuỗi - phải giữ lại ít nhất một.
+    void onCloneChains(const QList<int>& indices);
+    void onDeleteChains(const QList<int>& indices);
     void onRenameChain(int index, const QString& newName);
     void onTogglePinChain(int index);
     void onChainMoved(int from, int to);
@@ -47,6 +52,11 @@ private slots:
     void onAddAction();
     void onCloneAction(int index);
     void onDeleteAction(int index);
+    /// Nhiều hành động cùng lúc (Ctrl/Shift + bấm rồi chuột phải). Nhân bản MỘT hành động đặt bản sao NGAY SAU bản
+    /// gốc; nhân bản NHIỀU hành động thì cả cụm bản sao (giữ thứ tự) được đẩy lùi về SAU hành động được chọn cuối
+    /// cùng, không chen vào giữa các hành động gốc.
+    void onCloneActions(const QList<int>& indices);
+    void onDeleteActions(const QList<int>& indices);
     void onActionMoved(int from, int to);
     void onActionSaved(const Action& action, int actionIndex);
     void onEditorDirtyChanged(bool dirty);

@@ -7,6 +7,7 @@
 #include <QInputDialog>
 #include <QMessageBox>
 #include <QDropEvent>
+#include <algorithm>
 #include <functional>
 
 namespace
@@ -34,6 +35,10 @@ protected:
         event->setDropAction(Qt::IgnoreAction);
         event->accept();
 
+        // Đang chọn NHIỀU chuỗi (Ctrl/Shift + bấm) thì kéo-thả KHÔNG đổi vị trí - xem ReorderableTable::dropEvent().
+        if (selectedItems().size() > 1)
+            return;
+
         if (fromRow >= 0 && toRow >= 0 && fromRow != toRow && onRowMoved)
             onRowMoved(fromRow, toRow);
     }
@@ -57,10 +62,14 @@ ChainListWidget::ChainListWidget(QWidget* parent)
     auto* reorderableList = new ReorderableListWidget(this);
     m_listWidget = reorderableList;
     m_listWidget->setContextMenuPolicy(Qt::CustomContextMenu);
+    // Ctrl + bấm = thêm/bớt MỘT chuỗi, Shift + bấm = chọn cả khoảng (yêu cầu người dùng: xóa/nhân bản nhiều chuỗi
+    // một lượt). Chuỗi HIỆN TẠI (bấm gần nhất) vẫn là chuỗi đang hiển thị.
+    m_listWidget->setSelectionMode(QAbstractItemView::ExtendedSelection);
     // Không dùng trình sửa tên mặc định của Qt (ô nhập trần không theo style ứng dụng, lại không đi
     // qua renameChainClicked/cập nhật đúng dữ liệu) - double-click mở hộp thoại Đổi tên thật thay vào đó.
     m_listWidget->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    m_listWidget->setToolTip("Nhấp đúp hoặc chuột phải để đổi tên - kéo-thả để đổi thứ tự");
+    m_listWidget->setToolTip("Nhấp đúp hoặc chuột phải để đổi tên - kéo-thả để đổi thứ tự - giữ Ctrl/Shift rồi bấm "
+                             "để chọn nhiều chuỗi (chuột phải: xóa/nhân bản)");
     m_listWidget->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_listWidget->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     m_listWidget->setTextElideMode(Qt::ElideRight);
@@ -142,11 +151,72 @@ void ChainListWidget::setSelectedChainIndex(int index)
     }
 }
 
+QList<int> ChainListWidget::selectedChainIndices() const
+{
+    QList<int> rows;
+    for (QListWidgetItem* item : m_listWidget->selectedItems())
+        rows << m_listWidget->row(item);
+    std::sort(rows.begin(), rows.end());
+    rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
+    return rows;
+}
+
+void ChainListWidget::setSelectedChainIndices(const QList<int>& indices)
+{
+    QList<int> valid;
+    for (int i : indices)
+        if (i >= 0 && i < m_listWidget->count() && !valid.contains(i))
+            valid << i;
+    if (valid.isEmpty())
+        return;
+    m_listWidget->clearSelection();
+    for (int i : valid)
+        m_listWidget->item(i)->setSelected(true);
+    // Chuỗi hiện tại = chuỗi đầu tiên, KHÔNG đổi lựa chọn vừa đặt (NoUpdate).
+    m_listWidget->selectionModel()->setCurrentIndex(m_listWidget->model()->index(valid.first(), 0),
+                                                    QItemSelectionModel::NoUpdate);
+}
+
+QList<int> ChainListWidget::contextRows(const QPoint& pos)
+{
+    const QList<int> selected = selectedChainIndices();
+    QListWidgetItem* at = m_listWidget->itemAt(pos);
+    if (at)
+    {
+        const int row = m_listWidget->row(at);
+        if (selected.contains(row))
+            return selected; // bấm phải TRONG vùng đang chọn -> tác động cả vùng chọn
+        setSelectedChainIndex(row); // ngoài vùng chọn -> chọn riêng chuỗi đó (bỏ vùng chọn cũ)
+        return {row};
+    }
+    if (!selected.isEmpty())
+        return selected;
+    const int current = m_listWidget->currentRow();
+    return current >= 0 ? QList<int>{current} : QList<int>{};
+}
+
 void ChainListWidget::onCustomContextMenuRequested(const QPoint& pos)
 {
-    int row = m_listWidget->currentRow();
-    if (row < 0) return;
+    const QList<int> rows = contextRows(pos);
+    if (rows.isEmpty()) return;
 
+    if (rows.size() > 1)
+    {
+        // Nhiều chuỗi: chỉ Nhân bản/Xóa (Đổi tên và Ghim chỉ có nghĩa với MỘT chuỗi).
+        QMenu multiMenu(this);
+        ModernMenu::style(&multiMenu);
+        QAction* cloneMulti = ModernMenu::addAction(multiMenu, QString("Nhân bản %1 chuỗi").arg(rows.size()));
+        multiMenu.addSeparator();
+        QAction* deleteMulti = ModernMenu::addAction(multiMenu, QString("Xóa %1 chuỗi").arg(rows.size()));
+        QAction* picked = multiMenu.exec(m_listWidget->mapToGlobal(pos));
+        if (picked == cloneMulti)
+            emit cloneChainsClicked(rows);
+        else if (picked == deleteMulti)
+            emit deleteChainsClicked(rows);
+        return;
+    }
+
+    const int row = rows.first();
     const bool pinned = m_listWidget->item(row)->data(Qt::UserRole + 1).toBool();
 
     QMenu menu(this);

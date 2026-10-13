@@ -66,7 +66,8 @@ private slots:
 
 private:
     /// Điền tọa độ đã đọc được từ link Google Maps vào hai ô Vĩ độ/Kinh độ + báo kết quả ở nhãn trạng thái.
-    void applyMapsCoordinates(double lat, double lon, const QString& what);
+    /// `sourceText` = chuỗi (link) đã đọc ra tọa độ - dùng để báo thêm các điểm ghim KHÁC nếu link có nhiều điểm.
+    void applyMapsCoordinates(double lat, double lon, const QString& what, const QString& sourceText = QString());
     /// Mở một link RÚT GỌN (maps.app.goo.gl/...) bằng MỘT yêu cầu GET, KHÔNG theo chuyển hướng tự động: chỉ
     /// đọc header Location (đích chuyển hướng - URL đầy đủ có tọa độ), không tải nội dung trang. Mỗi bước
     /// chuyển hướng chỉ được đi tiếp nếu còn thuộc Google (QRPayload::isAllowedMapsRedirectUrl), tối đa 5 bước.

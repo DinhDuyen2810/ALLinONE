@@ -36,6 +36,7 @@
 #include <QStandardPaths>
 #include <QTimer>
 #include <QUrl>
+#include <cmath>
 #include <QVBoxLayout>
 
 namespace
@@ -254,13 +255,15 @@ QWidget* QRGenerateTab::makeGeoPage()
     // "Dán link Google Maps để lấy vị trí" (yêu cầu người dùng). Link ĐẦY ĐỦ: đọc tọa độ trực tiếp từ URL,
     // không gọi mạng. Link RÚT GỌN (maps.app.goo.gl/...): URL không chứa tọa độ nên phải mở 1 yêu cầu tới
     // Google để đọc đích chuyển hướng - xem resolveShortMapsLink().
-    auto* linkCaption = new QLabel("Link Google Maps (kể cả link rút gọn maps.app.goo.gl):", w);
+    auto* linkCaption = new QLabel(
+        "Link Google Maps (kể cả link rút gọn maps.app.goo.gl) hoặc tọa độ dạng 20°59'31.1\"N 105°50'33.8\"E, "
+        "21.0285, 105.8048:", w);
     linkCaption->setWordWrap(true);
     v->addWidget(linkCaption);
     auto* mapsLinkRow = new QHBoxLayout();
     mapsLinkRow->setSpacing(8);
     m_mapsLinkEdit = new QLineEdit(w);
-    m_mapsLinkEdit->setPlaceholderText("Dán link Google Maps vào đây");
+    m_mapsLinkEdit->setPlaceholderText("Dán link Google Maps hoặc tọa độ vào đây");
     m_mapsLinkEdit->setStyleSheet(QRUi::inputStyle());
     m_mapsLinkApplyButton = new QPushButton("Dùng link này", w);
     m_mapsLinkApplyButton->setStyleSheet(compactButton);
@@ -950,12 +953,21 @@ void QRGenerateTab::cancelMapsLookup()
         m_mapsLinkApplyButton->setEnabled(true);
 }
 
-void QRGenerateTab::applyMapsCoordinates(double lat, double lon, const QString& what)
+void QRGenerateTab::applyMapsCoordinates(double lat, double lon, const QString& what, const QString& sourceText)
 {
     m_geoLat->setValue(lat);
     m_geoLon->setValue(lon);
-    m_geoLocateStatus->setText(
-        QString("✓ Đã đọc tọa độ (%1, %2) từ %3.").arg(lat, 0, 'f', 6).arg(lon, 0, 'f', 6).arg(what));
+    QString text = QString("✓ Đã đọc tọa độ (%1, %2) từ %3.").arg(lat, 0, 'f', 6).arg(lon, 0, 'f', 6).arg(what);
+    // Link LỘ TRÌNH chỉ đường (hoặc nhiều điểm) chứa nhiều hơn một điểm ghim: đã chọn điểm của ĐỊA ĐIỂM trong
+    // link (khớp link rút gọn của cùng địa điểm) - nói rõ các điểm khác để người dùng tự đổi nếu cần.
+    QStringList others;
+    for (const QPointF& p : QRPayload::googleMapsPins(sourceText))
+        if (std::abs(p.x() - lat) > 1e-6 || std::abs(p.y() - lon) > 1e-6)
+            others << QString("(%1, %2)").arg(p.x(), 0, 'f', 6).arg(p.y(), 0, 'f', 6);
+    if (!others.isEmpty())
+        text += QString(" ⚠ Link có nhiều điểm (chỉ đường?) - đã lấy điểm của ĐỊA ĐIỂM trong link; điểm khác: %1.")
+                    .arg(others.join(", "));
+    m_geoLocateStatus->setText(text);
 }
 
 void QRGenerateTab::onApplyMapsLink()
@@ -963,9 +975,10 @@ void QRGenerateTab::onApplyMapsLink()
     cancelMapsLookup(); // đang dở một lần mở link rút gọn trước đó thì bỏ, ưu tiên link vừa bấm
     const QString text = m_mapsLinkEdit->text().trimmed();
     double lat = 0.0, lon = 0.0;
-    if (QRPayload::parseGoogleMapsCoordinates(text, &lat, &lon))
+    if (QRPayload::parseLocationText(text, &lat, &lon))
     {
-        applyMapsCoordinates(lat, lon, "link Google Maps");
+        const bool isLink = text.contains("://") || text.contains("google", Qt::CaseInsensitive);
+        applyMapsCoordinates(lat, lon, isLink ? "link Google Maps" : "tọa độ đã dán", text);
         return;
     }
     if (QRPayload::isGoogleMapsShortLink(text))
@@ -974,8 +987,8 @@ void QRGenerateTab::onApplyMapsLink()
         return;
     }
     m_geoLocateStatus->setText(
-        "⚠ Không đọc được tọa độ từ link này - hãy dán link Google Maps dạng \".../@vĩ_độ,kinh_độ,...\", "
-        "\"?q=vĩ_độ,kinh_độ\" hoặc link rút gọn maps.app.goo.gl.");
+        "⚠ Không đọc được tọa độ - hãy dán link Google Maps (đầy đủ hoặc rút gọn maps.app.goo.gl) hoặc tọa độ "
+        "dạng 20°59'31.1\"N 105°50'33.8\"E hay 21.0285, 105.8048.");
 }
 
 void QRGenerateTab::resolveShortMapsLink(const QUrl& url, int hop)
@@ -1015,9 +1028,10 @@ void QRGenerateTab::resolveShortMapsLink(const QUrl& url, int hop)
         }
         const QUrl target = reply->url().resolved(redirect.toUrl());
         double lat = 0.0, lon = 0.0;
-        if (QRPayload::parseGoogleMapsCoordinates(target.toString(QUrl::FullyEncoded), &lat, &lon))
+        const QString targetText = target.toString(QUrl::FullyEncoded);
+        if (QRPayload::parseGoogleMapsCoordinates(targetText, &lat, &lon))
         {
-            applyMapsCoordinates(lat, lon, "link rút gọn Google Maps");
+            applyMapsCoordinates(lat, lon, "link rút gọn Google Maps", targetText);
             return;
         }
         if (hop < 5 && QRPayload::isAllowedMapsRedirectUrl(target))

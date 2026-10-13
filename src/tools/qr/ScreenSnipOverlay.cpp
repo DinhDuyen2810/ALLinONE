@@ -160,5 +160,10 @@ QImage ScreenSnipOverlay::cropSelection(const QRect& globalRect) const
     const QRect local = inter.translated(-best->logicalRect.topLeft());
     const QRect phys(qRound(local.x() * best->dpr), qRound(local.y() * best->dpr),
                      qRound(local.width() * best->dpr), qRound(local.height() * best->dpr));
-    return best->pixmap.toImage().copy(phys);
+    // Ảnh lấy từ pixmap chụp màn hình mang devicePixelRatio của màn hình (vd 1,25) - vùng cắt đã tính bằng
+    // PIXEL VẬT LÝ nên trả về ảnh có tỉ lệ 1 (pixel = pixel), để mọi nơi dùng ảnh này (giải mã, vẽ khung
+    // nhận dạng) không phải đoán lại đơn vị.
+    QImage out = best->pixmap.toImage().copy(phys);
+    out.setDevicePixelRatio(1.0);
+    return out;
 }

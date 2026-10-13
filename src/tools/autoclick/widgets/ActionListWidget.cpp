@@ -39,6 +39,14 @@ protected:
         event->setDropAction(Qt::IgnoreAction); // không để Qt tự ghép dữ liệu ô mặc định
         event->accept();
 
+        // Đang chọn NHIỀU hàng (Ctrl/Shift + bấm) thì kéo-thả KHÔNG đổi vị trí: chỉ một hàng được dời mỗi lần -
+        // dời riêng hàng hiện tại khi cả cụm đang được kéo sẽ gây hiểu nhầm. Bỏ chọn bớt (bấm một hàng) để kéo.
+        std::set<int> selectedRows;
+        for (const QModelIndex& idx : selectedIndexes())
+            selectedRows.insert(idx.row());
+        if (selectedRows.size() > 1)
+            return;
+
         if (fromRow >= 0 && toRow >= 0 && fromRow != toRow && onRowMoved)
             onRowMoved(fromRow, toRow);
     }
@@ -59,7 +67,9 @@ ActionListWidget::ActionListWidget(QWidget* parent)
     header->setStyleSheet("color: #0969da; font-size: 11px; font-weight: bold; letter-spacing: 1.5px; padding-left: 4px;");
     mainLayout->addWidget(header);
 
-    auto* hint = new QLabel("Kéo-thả một hàng để đổi vị trí", this);
+    auto* hint = new QLabel("Kéo-thả một hàng để đổi vị trí. Giữ Ctrl/Shift rồi bấm để chọn nhiều hàng, "
+                            "chuột phải để xóa/nhân bản.", this);
+    hint->setWordWrap(true); // chữ dài hơn trước - không để nó đẩy rộng cả panel giữa
     hint->setStyleSheet("color: #8c959f; font-size: 10px; padding-left: 4px;");
     mainLayout->addWidget(hint);
 
@@ -84,7 +94,9 @@ ActionListWidget::ActionListWidget(QWidget* parent)
     m_table->setTextElideMode(Qt::ElideRight);
     m_table->setWordWrap(false);
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
-    m_table->setSelectionMode(QAbstractItemView::SingleSelection);
+    // Ctrl + bấm = thêm/bớt MỘT hàng, Shift + bấm = chọn cả khoảng (yêu cầu người dùng: xóa/nhân bản nhiều hành
+    // động một lượt). Hàng HIỆN TẠI (hàng bấm gần nhất) vẫn là hàng panel "Cài đặt hành động" hiển thị.
+    m_table->setSelectionMode(QAbstractItemView::ExtendedSelection);
     // Thiếu dòng này là nguyên nhân lỗi giao diện thật đã gặp: double-click vào ô mở trình soạn
     // thảo mặc định của Qt (QLineEdit trần, không theo style ứng dụng) đè lên nội dung ô - trông như
     // một khối viên thuốc/kẻ lạ chồng lên chữ. Sửa hành động phải qua panel bên phải, không sửa trực
@@ -203,6 +215,30 @@ void ActionListWidget::setSelectedActionIndex(int index)
     }
 }
 
+QList<int> ActionListWidget::selectedActionIndices() const
+{
+    std::set<int> rows;
+    for (const QModelIndex& idx : m_table->selectionModel()->selectedIndexes())
+        rows.insert(idx.row());
+    return QList<int>(rows.begin(), rows.end());
+}
+
+void ActionListWidget::setSelectedActionIndices(const QList<int>& indices)
+{
+    QList<int> valid;
+    for (int i : indices)
+        if (i >= 0 && i < m_table->rowCount() && !valid.contains(i))
+            valid << i;
+    if (valid.isEmpty())
+        return;
+    QItemSelectionModel* sm = m_table->selectionModel();
+    sm->clearSelection();
+    for (int i : valid)
+        sm->select(m_table->model()->index(i, 0), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+    // Hàng hiện tại = hàng đầu tiên, KHÔNG đổi lựa chọn vừa đặt (NoUpdate).
+    sm->setCurrentIndex(m_table->model()->index(valid.first(), 0), QItemSelectionModel::NoUpdate);
+}
+
 void ActionListWidget::setRowDirty(int row, bool dirty)
 {
     if (row < 0)
@@ -274,20 +310,46 @@ void ActionListWidget::refreshIndexCell(int r)
     item->setForeground(foreground);
 }
 
+QList<int> ActionListWidget::contextRows(const QPoint& pos)
+{
+    const QList<int> selected = selectedActionIndices();
+    const QModelIndex idx = m_table->indexAt(pos);
+    if (idx.isValid())
+    {
+        if (selected.contains(idx.row()))
+            return selected; // bấm phải TRONG vùng đang chọn -> tác động cả vùng chọn
+        setSelectedActionIndex(idx.row()); // ngoài vùng chọn -> chọn riêng hàng đó (bỏ vùng chọn cũ)
+        return {idx.row()};
+    }
+    if (!selected.isEmpty())
+        return selected;
+    const int current = m_table->currentRow();
+    return current >= 0 ? QList<int>{current} : QList<int>{};
+}
+
 void ActionListWidget::onCustomContextMenuRequested(const QPoint& pos)
 {
-    int row = m_table->currentRow();
-    if (row < 0) return;
+    const QList<int> rows = contextRows(pos);
+    if (rows.isEmpty()) return;
+    const bool multi = rows.size() > 1;
 
     QMenu menu(this);
     ModernMenu::style(&menu);
-    QAction* cloneAct = ModernMenu::addAction(menu, "Nhân bản");
+    QAction* cloneAct = ModernMenu::addAction(menu, multi ? QString("Nhân bản %1 hành động").arg(rows.size()) : QString("Nhân bản"));
     menu.addSeparator();
-    QAction* delAct = ModernMenu::addAction(menu, "Xóa");
+    QAction* delAct = ModernMenu::addAction(menu, multi ? QString("Xóa %1 hành động").arg(rows.size()) : QString("Xóa"));
 
     QAction* chosen = menu.exec(m_table->mapToGlobal(pos));
     if (!chosen) return;
 
-    if (chosen == cloneAct) emit cloneActionClicked(row);
-    else if (chosen == delAct) emit deleteActionClicked(row);
+    if (chosen == cloneAct)
+    {
+        if (multi) emit cloneActionsClicked(rows);
+        else emit cloneActionClicked(rows.first());
+    }
+    else if (chosen == delAct)
+    {
+        if (multi) emit deleteActionsClicked(rows);
+        else emit deleteActionClicked(rows.first());
+    }
 }

@@ -417,6 +417,39 @@ int main(int argc, char** argv)
         CHECK(mmNoTo.actionUrl.isEmpty()); // không có người nhận thì không dựng mailto: từ trường khác
     }
 
+    // ---- decode(): ảnh có devicePixelRatio != 1 (chụp màn hình Windows scale 125%/150%...) vẫn phải trả về ĐÚNG
+    // tọa độ PIXEL của 4 góc - lỗi thật người dùng báo: khung nhận dạng chỉ bằng ~80% mã (1/1,25) vì padWhite()
+    // vẽ ảnh theo kích thước logic nên nội dung bị co trước khi giải mã ----
+    {
+        QRStyle st;
+        st.targetSize = 500;
+        const QRMatrix m = QRCodec::encode("https://q.me-qr.com/e9qomltq", QREcc::Quartile);
+        const QImage base = QRCodec::render(m, st);
+        const QList<QRDecoded> ref = QRCodec::decode(base);
+        CHECK(ref.size() == 1 && ref.first().corners.size() == 4);
+        // Vùng THẬT của mã (không tính viền trắng) - 4 góc phải phủ đúng vùng này.
+        const double cell = static_cast<double>(base.width()) / (m.size + 2 * st.quietZone);
+        const double lo = st.quietZone * cell, hi = (st.quietZone + m.size) * cell;
+        for (double dpr : {1.0, 1.25, 1.5, 2.0, 0.75})
+        {
+            QImage img = base;
+            img.setDevicePixelRatio(dpr);
+            const QList<QRDecoded> r = QRCodec::decode(img);
+            CHECK(r.size() == 1 && r.first().text == "https://q.me-qr.com/e9qomltq");
+            if (r.size() == 1 && r.first().corners.size() == 4)
+            {
+                int minx = 1 << 30, maxx = -1, miny = 1 << 30, maxy = -1;
+                for (const QPoint& p : r.first().corners)
+                {
+                    minx = std::min(minx, p.x()); maxx = std::max(maxx, p.x());
+                    miny = std::min(miny, p.y()); maxy = std::max(maxy, p.y());
+                }
+                CHECK(std::abs(minx - lo) <= 3 && std::abs(maxx - hi) <= 3);
+                CHECK(std::abs(miny - lo) <= 3 && std::abs(maxy - hi) <= 3);
+            }
+        }
+    }
+
     // ---- Link Google Maps: tách tọa độ / nhận diện link rút gọn / giới hạn host chuyển hướng ----
     {
         auto coords = [](const QString& text, double* la, double* lo) {
@@ -453,6 +486,95 @@ int main(int argc, char** argv)
         CHECK(!coords("https://maps.app.goo.gl/DM9Xt5AkRLgG6Sbo7", &la, &lo));
         CHECK(la == 7 && lo == 8);
         CHECK(!QRPayload::parseGoogleMapsCoordinates("https://www.google.com/maps/@1,2,3z", nullptr, &lo));
+
+        // ---- Ba định dạng người dùng gửi. DỮ LIỆU THẬT: link rút gọn maps.app.goo.gl/5rH3RvRHyMLxAqNs8 chuyển
+        // hướng tới trang địa điểm "Hội Gym" (ghim 20.977992,105.8475138); link dài là LỘ TRÌNH chỉ đường có HAI
+        // điểm - xuất phát 20.991978,105.842733 (chính là chuỗi độ-phút-giây trong !2z...) và Hội Gym; chuỗi
+        // 20°59'31.1"N 105°50'33.8"E là điểm xuất phát. Hai điểm cách nhau ~1,5 km: KHÔNG phải cùng một vị trí. ----
+        {
+            auto loc = [](const QString& t, double* a, double* b) { return QRPayload::parseLocationText(t, a, b); };
+            auto same = [&](double a, double b, double x, double y, double tol = 1e-6) {
+                return std::abs(a - x) <= tol && std::abs(b - y) <= tol;
+            };
+            const QString routeUrl =
+                "https://www.google.com/maps/place/H%E1%BB%99i+Gym-+Chuy%C3%AAn+Gi%E1%BA%A3m+B%C3%A9o/@20.976233,105.8446387,16.25z/"
+                "data=!4m12!1m5!3m4!2zMjDCsDU5JzMxLjEiTiAxMDXCsDUwJzMzLjgiRQ!8m2!3d20.991978!4d105.842733!3m5!1s0x3135ac43dc0e273b:"
+                "0xf2e69345522b1dc7!8m2!3d20.977992!4d105.8475138!16s%2Fg%2F11hd50nl02?entry=ttu&g_ep=EgoyMDI2MTAwNy4wIKXMDSoASAFQAw%3D%3D";
+            const QString shortTarget =
+                "https://www.google.com/maps/place/H%E1%BB%99i+Gym-+Chuy%C3%AAn+Gi%E1%BA%A3m+B%C3%A9o/@20.976233,105.8446387,16.25z/"
+                "data=!4m6!3m5!1s0x3135ac43dc0e273b:0xf2e69345522b1dc7!8m2!3d20.977992!4d105.8475138!16s%2Fg%2F11hd50nl02"
+                "?entry=tts&g_ep=EgoyMDI2MTAwNy4wIPu8ASoASAFQAw%3D%3D&skid=8d71e96d-36ce-4446-a0b4-3dd79ec036ef";
+            double a = 0, b = 0, c = 0, d = 0, e = 0, f = 0;
+            // (A) link dài lộ trình -> địa điểm Hội Gym (có mã địa điểm), KHÔNG phải điểm xuất phát.
+            CHECK(loc(routeUrl, &a, &b) && same(a, b, 20.977992, 105.8475138));
+            // (B) đích chuyển hướng của link rút gọn -> CÙNG điểm với (A).
+            CHECK(loc(shortTarget, &c, &d) && same(c, d, a, b));
+            // (C) chuỗi độ-phút-giây -> điểm xuất phát (20.991972, 105.842722).
+            CHECK(loc("20°59'31.1\"N 105°50'33.8\"E", &e, &f) && same(e, f, 20.991972, 105.842722, 1e-5));
+            // Điểm xuất phát trong link dài (!2z...) khớp chuỗi độ-phút-giây tới ~1e-5 độ (~1 m).
+            const QList<QPointF> pins = QRPayload::googleMapsPins(routeUrl);
+            CHECK(pins.size() == 2);
+            if (pins.size() == 2)
+            {
+                CHECK(same(pins[0].x(), pins[0].y(), 20.991978, 105.842733));
+                CHECK(same(pins[1].x(), pins[1].y(), 20.977992, 105.8475138));
+                // Chuỗi độ-phút-giây làm tròn tới 0,1 giây cung (~1,4e-5 độ) nên dung sai 2e-5 độ (~2 m).
+                CHECK(same(pins[0].x(), pins[0].y(), e, f, 2e-5));
+            }
+            CHECK(QRPayload::googleMapsPins(shortTarget).size() == 1);
+            CHECK(QRPayload::googleMapsPins("hello").isEmpty());
+            // Link rút gọn thuần (chưa chuyển hướng) không có tọa độ -> false; cần mạng mới ra (QRGenerateTab).
+            CHECK(!loc("https://maps.app.goo.gl/5rH3RvRHyMLxAqNs8", &a, &b));
+            CHECK(QRPayload::isGoogleMapsShortLink("https://maps.app.goo.gl/5rH3RvRHyMLxAqNs8"));
+
+            // Các biến thể viết tọa độ - đều ra ĐÚNG điểm (20.991972, 105.842722).
+            const QStringList variants = {
+                "20°59'31.1\"N 105°50'33.8\"E",
+                "20°59'31.1\"N, 105°50'33.8\"E",
+                "  20° 59' 31.1\" N ; 105° 50' 33.8\" E  ",
+                "20°59′31.1″N 105°50′33.8″E",                  // dấu phút/giây Unicode
+                "20º59'31.1''N 105º50'33.8''E",                // º và '' thay cho " (hay gặp khi copy từ web)
+                "20°59'31.1\"n 105°50'33.8\"e",                // chữ thường
+                "N 20°59'31.1\" E 105°50'33.8\"",              // chữ hướng đứng trước
+                "N20°59'31.1\", E105°50'33.8\"",
+                "20°59.5183'N 105°50.5633'E",                  // độ + phút thập phân
+                "20.991972 N, 105.842722 E",                   // độ thập phân + hướng
+                "20.991972°N 105.842722°E",
+                "N 20.991972 E 105.842722",
+                "20.991972, 105.842722",                       // cặp số thuần (Google Maps: chuột phải -> sao chép)
+                "20.991972,105.842722",
+                "20.991972; 105.842722",
+                "(20.991972, 105.842722)",
+                "20.991972 105.842722",
+                "geo:20.991972,105.842722",
+                "https://www.google.com/maps/place/20%C2%B059'31.1%22N+105%C2%B050'33.8%22E",  // DMS trong đường dẫn
+            };
+            for (const QString& v : variants)
+            {
+                double x = 0, y = 0;
+                const bool ok = loc(v, &x, &y) && same(x, y, 20.991972, 105.842722, 2e-5);
+                CHECK(ok);
+                if (!ok)
+                    std::printf("  KHÔNG đọc đúng: [%s] -> %f, %f\n", v.toUtf8().constData(), x, y);
+            }
+            // Bán cầu Nam/Tây cho giá trị ÂM.
+            double x = 0, y = 0;
+            CHECK(loc("33°52'07.8\"S 151°12'33.5\"E", &x, &y) && same(x, y, -33.868833, 151.209306, 1e-5));
+            CHECK(loc("22°54'30\"S 43°12'27\"W", &x, &y) && same(x, y, -22.908333, -43.2075, 1e-5));
+            CHECK(loc("-33.868820, 151.209296", &x, &y) && same(x, y, -33.868820, 151.209296));
+            // Từ chối: ngoài phạm vi, phút/giây >= 60, rác, số nguyên rời, thiếu một nửa.
+            x = 7; y = 8;
+            CHECK(!loc("95, 200", &x, &y));
+            CHECK(!loc("20°75'31.1\"N 105°50'33.8\"E", &x, &y));
+            CHECK(!loc("20°59'75.1\"N 105°50'33.8\"E", &x, &y));
+            CHECK(!loc("100°00'00\"N 105°50'33.8\"E", &x, &y));
+            CHECK(!loc("hello world", &x, &y));
+            CHECK(!loc("12 34", &x, &y));                      // hai số nguyên cách nhau bởi khoảng trắng: quá mơ hồ
+            CHECK(!loc("20°59'31.1\"N", &x, &y));              // thiếu kinh độ
+            CHECK(!loc("", &x, &y));
+            CHECK(x == 7 && y == 8);                           // thất bại không sửa tham số ra
+            CHECK(!QRPayload::parseLocationText("21.0, 105.8", nullptr, &y));
+        }
 
         // Nhận diện link rút gọn (chỉ các host rút gọn của Google Maps).
         CHECK(QRPayload::isGoogleMapsShortLink("https://maps.app.goo.gl/DM9Xt5AkRLgG6Sbo7"));

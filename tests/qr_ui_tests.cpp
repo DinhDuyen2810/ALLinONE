@@ -534,6 +534,30 @@ int main(int argc, char** argv)
         }
     }
 
+    // ---- Tab Quét: ảnh có devicePixelRatio 1,25 (chụp màn hình Windows scale 125%) -> khung nhận dạng phải phủ ĐÚNG
+    // vùng mã (lỗi thật người dùng báo: khung chỉ bằng ~80% mã). Tọa độ 4 góc là tọa độ PIXEL của ảnh. ----
+    {
+        QRStyle st;
+        st.targetSize = 500;
+        const QRMatrix m = QRCodec::encode("https://q.me-qr.com/e9qomltq", QREcc::Quartile);
+        QImage img = QRCodec::render(m, st);
+        const double cell = static_cast<double>(img.width()) / (m.size + 2 * st.quietZone);
+        const double lo = st.quietZone * cell, hi = (st.quietZone + m.size) * cell;
+        img.setDevicePixelRatio(1.25);
+        win.tabs()->setCurrentWidget(scan);
+        CHECK(scan->scanImage(img, "vung man hinh") == 1);
+        if (scan->results().size() == 1)
+        {
+            int minx = 1 << 30, maxx = -1;
+            for (const QPoint& p : scan->results().first().corners)
+            {
+                minx = std::min(minx, p.x());
+                maxx = std::max(maxx, p.x());
+            }
+            CHECK(std::abs(minx - lo) <= 3 && std::abs(maxx - hi) <= 3);
+        }
+    }
+
     // ---- Tạo mã chỉ còn 5 loại + trang Vị trí: nút "Lấy vị trí"/"Mở bản đồ" + dán link Google Maps ----
     {
         auto* type = gen->findChild<QComboBox*>("typeCombo");
@@ -582,6 +606,26 @@ int main(int argc, char** argv)
             link->setText("https://maps.google.com/?q=-33.868820,151.209296");
             apply->click();
             CHECK(qAbs(spins[0]->value() + 33.868820) < 1e-6 && qAbs(spins[1]->value() - 151.209296) < 1e-6);
+            // Link lộ trình chỉ đường (2 điểm: xuất phát + Hội Gym): lấy điểm của ĐỊA ĐIỂM (Hội Gym) và báo điểm còn lại.
+            link->setText(
+                "https://www.google.com/maps/place/H%E1%BB%99i+Gym-+Chuy%C3%AAn+Gi%E1%BA%A3m+B%C3%A9o/@20.976233,105.8446387,16.25z/"
+                "data=!4m12!1m5!3m4!2zMjDCsDU5JzMxLjEiTiAxMDXCsDUwJzMzLjgiRQ!8m2!3d20.991978!4d105.842733!3m5!1s0x3135ac43dc0e273b:"
+                "0xf2e69345522b1dc7!8m2!3d20.977992!4d105.8475138!16s%2Fg%2F11hd50nl02?entry=ttu");
+            apply->click();
+            CHECK(qAbs(spins[0]->value() - 20.977992) < 1e-6 && qAbs(spins[1]->value() - 105.8475138) < 1e-6);
+            CHECK(statusContains("nhiều điểm") && statusContains("20.991978") && statusContains("105.842733"));
+            // Tọa độ độ-phút-giây dán thẳng vào ô (không phải link).
+            link->setText("20°59'31.1\"N 105°50'33.8\"E");
+            apply->click();
+            CHECK(qAbs(spins[0]->value() - 20.991972) < 2e-5 && qAbs(spins[1]->value() - 105.842722) < 2e-5);
+            CHECK(statusContains("tọa độ đã dán") && !statusContains("nhiều điểm"));
+            // Cặp số thập phân thuần.
+            link->setText("21.006298, 105.843155");
+            apply->click();
+            CHECK(qAbs(spins[0]->value() - 21.006298) < 1e-6 && qAbs(spins[1]->value() - 105.843155) < 1e-6);
+            // Tọa độ âm.
+            link->setText("https://maps.google.com/?q=-33.868820,151.209296");
+            apply->click();
             // Link rác / ngoài phạm vi / host lạ -> báo lỗi, KHÔNG đổi tọa độ đang có và KHÔNG gọi mạng. (Link
             // rút gọn maps.app.goo.gl thật sẽ gọi mạng nên KHÔNG đưa vào test tự động - xem qr_tests cho phần
             // nhận diện/giới hạn host, còn việc mở link thật phải thử tay.)

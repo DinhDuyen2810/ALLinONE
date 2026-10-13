@@ -2,6 +2,7 @@
 
 #include <QList>
 #include <QPair>
+#include <QPointF>
 #include <QString>
 #include <QUrl>
 
@@ -93,11 +94,21 @@ public:
 
     // ---- Link Google Maps (dùng cho ô "Dán link Google Maps" ở trang tạo mã QR Vị trí) ----
     /// Tách tọa độ từ một chuỗi chứa link Google Maps ĐẦY ĐỦ (KHÔNG gọi mạng). Thử theo thứ tự ưu tiên:
-    /// `!3d<lat>!4d<lon>` (điểm GHIM thật của địa điểm - chính xác nhất), `@<lat>,<lon>` (tâm khung nhìn),
-    /// rồi `q=`/`query=`/`ll=`/`center=<lat>,<lon>`. Thử cả bản đã giải mã phần trăm (%2C -> ,) và tham số
+    /// điểm GHIM của ĐỊA ĐIỂM có mã địa điểm (`!1s0x..:0x..!8m2!3d<lat>!4d<lon>` - trùng điểm mà link rút gọn
+    /// của cùng địa điểm đó dẫn tới, kể cả khi link là lộ trình chỉ đường có thêm điểm xuất phát), rồi điểm
+    /// GHIM `!3d<lat>!4d<lon>` đầu tiên, `@<lat>,<lon>` (tâm khung nhìn), rồi `q=`/`query=`/`ll=`/`center=`. Thử cả bản đã giải mã phần trăm (%2C -> ,) và tham số
     /// `continue=` (trang đồng ý cookie của Google bọc link thật trong đó). Trả về false nếu không khớp
     /// dạng nào hoặc tọa độ ngoài phạm vi hợp lệ (|vĩ độ| <= 90, |kinh độ| <= 180).
     static bool parseGoogleMapsCoordinates(const QString& text, double* lat, double* lon);
+    /// Như parseGoogleMapsCoordinates() nhưng nhận THÊM tọa độ VIẾT TAY (dán từ Google Maps/GPS/nơi khác):
+    /// độ-phút-giây `20°59'31.1"N 105°50'33.8"E` (cả ′ ″ Unicode, chữ hướng trước/sau số, N/S/E/W hoa hoặc
+    /// thường, S và W cho giá trị âm), độ-phút thập phân `20°59.518'N 105°50.563'E`, độ thập phân có chữ hướng
+    /// `20.9919 N, 105.8427 E`, và cặp số thuần `21.006298, 105.843155` (cũng nhận `geo:lat,lon`). Link Google
+    /// Maps được thử TRƯỚC (kể cả tọa độ độ-phút-giây nằm trong đường dẫn `/place/20°59'..."N+105°50'..."E`).
+    static bool parseLocationText(const QString& text, double* lat, double* lon);
+    /// Mọi điểm GHIM khác nhau (`!3d<lat>!4d<lon>`) trong một link Google Maps, theo thứ tự xuất hiện. Link chỉ
+    /// đường/nhiều điểm có nhiều hơn một - dùng để báo cho người dùng biết ngoài điểm đã chọn còn điểm nào khác.
+    static QList<QPointF> googleMapsPins(const QString& text);
     /// true nếu text là link RÚT GỌN của Google Maps (maps.app.goo.gl/..., goo.gl/maps/..., g.co/kgs/...) -
     /// URL của nó KHÔNG chứa tọa độ, phải mở bằng mạng (đọc đích chuyển hướng) mới ra được.
     static bool isGoogleMapsShortLink(const QString& text);

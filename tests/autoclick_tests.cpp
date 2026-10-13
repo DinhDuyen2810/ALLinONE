@@ -4,6 +4,8 @@
 // thật phải tự kiểm tra tay. Dữ liệu ghi vào một thư mục tạm (AppPaths::setDataDirOverride), không đụng
 // %LOCALAPPDATA%\OneForAll thật của máy đang chạy test.
 #include <QApplication>
+#include <QKeyEvent>
+#include <QMouseEvent>
 #include <QComboBox>
 #include <QDir>
 #include <QDoubleSpinBox>
@@ -790,6 +792,174 @@ int main(int argc, char** argv)
                 CHECK(closedByNo);
                 CHECK(!win.isVisible());
             }
+        }
+    }
+
+    // ---- Chọn NHIỀU hành động/chuỗi (Ctrl/Shift + bấm), xóa/nhân bản nhiều (yêu cầu người dùng) ----
+    {
+        AutoClickWindow w2; // cửa sổ MỚI: dữ liệu mặc định (5 hành động mẫu), không dính trạng thái các test trên
+        w2.setAttribute(Qt::WA_DontShowOnScreen, true);
+        w2.resize(1300, 760);
+        w2.show();
+        app.processEvents();
+        auto* chainList2 = w2.findChild<ChainListWidget*>();
+        auto* actionList2 = w2.findChild<ActionListWidget*>();
+        auto* editor2 = w2.findChild<ActionEditorWidget*>();
+        CHECK(chainList2 && actionList2 && editor2);
+        auto* table2 = actionList2 ? actionList2->findChild<QTableWidget*>() : nullptr;
+        auto* clist2 = chainList2 ? chainList2->findChild<QListWidget*>() : nullptr;
+        CHECK(table2 && clist2 && table2->rowCount() == 5);
+        if (table2 && clist2 && table2->rowCount() == 5 && editor2)
+        {
+            // Bấm chuột THẬT (sự kiện Press/Release có phím bổ trợ) vào hàng r của bảng hành động.
+            auto clickRow = [&](int r, Qt::KeyboardModifiers mods, Qt::MouseButton btn = Qt::LeftButton) {
+                QWidget* vp = table2->viewport();
+                const QPoint p = table2->visualRect(table2->model()->index(r, 2)).center();
+                QMouseEvent press(QEvent::MouseButtonPress, QPointF(p), QPointF(vp->mapToGlobal(p)), btn, btn, mods);
+                QApplication::sendEvent(vp, &press);
+                QMouseEvent rel(QEvent::MouseButtonRelease, QPointF(p), QPointF(vp->mapToGlobal(p)), btn, Qt::NoButton, mods);
+                QApplication::sendEvent(vp, &rel);
+                app.processEvents();
+            };
+            auto descs = [&]() {
+                QStringList out;
+                for (int r = 0; r < table2->rowCount(); ++r)
+                    out << table2->item(r, 2)->text();
+                return out;
+            };
+            auto idxs = [&](std::initializer_list<int> l) { return QList<int>(l); };
+
+            // -- 1. Chọn nhiều bằng Ctrl/Shift + bấm --
+            clickRow(0, Qt::NoModifier);
+            CHECK(actionList2->selectedActionIndices() == idxs({0}));
+            clickRow(2, Qt::ControlModifier);
+            clickRow(4, Qt::ControlModifier);
+            CHECK(actionList2->selectedActionIndices() == idxs({0, 2, 4}));
+            CHECK(actionList2->selectedActionIndex() == 4); // hàng hiện tại = hàng bấm gần nhất
+            clickRow(2, Qt::ControlModifier);               // Ctrl + bấm lại = bỏ chọn hàng đó
+            CHECK(actionList2->selectedActionIndices() == idxs({0, 4}));
+            clickRow(1, Qt::NoModifier);                    // bấm thường = chọn riêng một hàng
+            CHECK(actionList2->selectedActionIndices() == idxs({1}));
+            // Shift + Mũi tên xuống = mở rộng vùng chọn từ hàng hiện tại (cơ chế ExtendedSelection của Qt). Kiểm bằng
+            // bàn phím vì sự kiện Shift+bấm chuột GIẢ LẬP không mở rộng được ngay cả trên QTableWidget trần (đã đối
+            // chứng) - Shift+bấm chuột thật là hành vi chuẩn của chế độ này, nhưng CHƯA kiểm chứng trên máy thật.
+            for (int k = 0; k < 2; ++k)
+            {
+                QKeyEvent down(QEvent::KeyPress, Qt::Key_Down, Qt::ShiftModifier);
+                QApplication::sendEvent(table2, &down);
+            }
+            app.processEvents();
+            CHECK(actionList2->selectedActionIndices() == idxs({1, 2, 3}));
+
+            // -- 2. Chuột phải: TRONG vùng chọn giữ nguyên cả vùng; NGOÀI vùng chọn thì chọn riêng hàng đó --
+            clickRow(2, Qt::NoModifier, Qt::RightButton);
+            CHECK(actionList2->selectedActionIndices() == idxs({1, 2, 3}));
+            clickRow(0, Qt::NoModifier, Qt::RightButton);
+            CHECK(actionList2->selectedActionIndices() == idxs({0}));
+
+            // -- 3. Nhân bản NHIỀU: cụm bản sao đẩy lùi về SAU hành động chọn cuối, giữ thứ tự --
+            const QStringList before = descs();
+            CHECK(QMetaObject::invokeMethod(&w2, "onCloneActions", Qt::DirectConnection, Q_ARG(QList<int>, idxs({1, 3}))));
+            app.processEvents();
+            QStringList expect = {before[0], before[1], before[2], before[3], before[1], before[3], before[4]};
+            CHECK(descs() == expect);
+            CHECK(actionList2->selectedActionIndices() == idxs({4, 5})); // chọn luôn cụm bản sao
+            CHECK(actionList2->selectedActionIndex() == 4);
+            // Nhân bản MỘT hành động vẫn đặt bản sao NGAY SAU bản gốc (không đổi so với trước).
+            CHECK(QMetaObject::invokeMethod(&w2, "onCloneActions", Qt::DirectConnection, Q_ARG(QList<int>, idxs({0}))));
+            app.processEvents();
+            CHECK(descs().size() == 8 && descs()[1] == before[0] && descs()[0] == before[0]);
+            // Chỉ số rác/trùng/ngoài phạm vi bị lọc; rỗng thì không làm gì.
+            const QStringList stable = descs();
+            CHECK(QMetaObject::invokeMethod(&w2, "onCloneActions", Qt::DirectConnection, Q_ARG(QList<int>, QList<int>{})));
+            CHECK(QMetaObject::invokeMethod(&w2, "onDeleteActions", Qt::DirectConnection, Q_ARG(QList<int>, idxs({-3, 99}))));
+            CHECK(descs() == stable);
+
+            // -- 4. Xóa NHIỀU, kèm một hàng KHÁC đang sửa dở (cache phải đi theo hàng bị dồn chỗ) --
+            // Trạng thái: 8 hàng [a0,a0',a1,a2,a3,a1',a3',a4] (a0' = bản sao). Sửa dở hàng 6, rồi xóa {0,1,4}.
+            actionList2->setSelectedActionIndex(6);
+            app.processEvents();
+            auto* wait2 = editor2->findChild<DurationInput*>("waitBeforeInput");
+            CHECK(wait2 != nullptr);
+            if (wait2)
+                wait2->setValueMs(8888);
+            CHECK(editor2->isDirty());
+            const QStringList pre = descs();
+            CHECK(QMetaObject::invokeMethod(&w2, "onDeleteActions", Qt::DirectConnection, Q_ARG(QList<int>, idxs({4, 0, 1, 4}))));
+            app.processEvents();
+            // Còn lại (theo thứ tự gốc): pre[2], pre[3], pre[5], pre[6], pre[7].
+            CHECK(descs() == QStringList({pre[2], pre[3], pre[5], pre[6], pre[7]}));
+            // Hàng sửa dở (gốc 6) giờ là hàng 3 và vẫn còn dấu "*" + nạp lại đúng 8888; không hàng nào khác bị dính.
+            CHECK(table2->item(3, 0)->text().contains("*"));
+            for (int r : {0, 1, 2, 4})
+                CHECK(!table2->item(r, 0)->text().contains("*"));
+            actionList2->setSelectedActionIndex(3);
+            app.processEvents();
+            CHECK(editor2->getAction().waitBefore.count() == 8888);
+            // Xóa hết các hàng còn lại: bảng rỗng, không crash, editor được dọn.
+            CHECK(QMetaObject::invokeMethod(&w2, "onDeleteActions", Qt::DirectConnection, Q_ARG(QList<int>, idxs({0, 1, 2, 3, 4}))));
+            app.processEvents();
+            CHECK(table2->rowCount() == 0);
+
+            // -- 5. Chuỗi: chọn nhiều bằng Ctrl/Shift, nhân bản (thêm vào CUỐI) và xóa nhiều --
+            for (int k = 0; k < 2; ++k)
+                CHECK(QMetaObject::invokeMethod(&w2, "onAddChain", Qt::DirectConnection));
+            app.processEvents();
+            CHECK(clist2->count() == 3);
+            auto clickChain = [&](int r, Qt::KeyboardModifiers mods, Qt::MouseButton btn = Qt::LeftButton) {
+                QWidget* vp = clist2->viewport();
+                const QPoint p = clist2->visualItemRect(clist2->item(r)).center();
+                QMouseEvent press(QEvent::MouseButtonPress, QPointF(p), QPointF(vp->mapToGlobal(p)), btn, btn, mods);
+                QApplication::sendEvent(vp, &press);
+                QMouseEvent rel(QEvent::MouseButtonRelease, QPointF(p), QPointF(vp->mapToGlobal(p)), btn, Qt::NoButton, mods);
+                QApplication::sendEvent(vp, &rel);
+                app.processEvents();
+            };
+            clickChain(0, Qt::NoModifier);
+            clickChain(2, Qt::ControlModifier);
+            CHECK(chainList2->selectedChainIndices() == idxs({0, 2}));
+            clickChain(0, Qt::NoModifier);
+            for (int k = 0; k < 2; ++k)                      // Shift + Mũi tên xuống: mở rộng 0..2
+            {
+                QKeyEvent down(QEvent::KeyPress, Qt::Key_Down, Qt::ShiftModifier);
+                QApplication::sendEvent(clist2, &down);
+            }
+            app.processEvents();
+            CHECK(chainList2->selectedChainIndices() == idxs({0, 1, 2}));
+            clickChain(0, Qt::NoModifier);
+            clickChain(1, Qt::ControlModifier);
+            CHECK(chainList2->selectedChainIndices() == idxs({0, 1}));
+            const QString n0 = clist2->item(0)->data(Qt::UserRole).toString();
+            const QString n1 = clist2->item(1)->data(Qt::UserRole).toString();
+            CHECK(QMetaObject::invokeMethod(&w2, "onCloneChains", Qt::DirectConnection, Q_ARG(QList<int>, idxs({0, 1}))));
+            app.processEvents();
+            CHECK(clist2->count() == 5);
+            CHECK(clist2->item(3)->data(Qt::UserRole).toString() == n0 + " (Copy)");
+            CHECK(clist2->item(4)->data(Qt::UserRole).toString() == n1 + " (Copy)");
+            CHECK(chainList2->selectedChainIndices() == idxs({3, 4})); // chọn luôn các bản sao ở cuối
+            // Xóa nhiều chuỗi (các bản sao): còn 3, chuỗi gốc nguyên vẹn.
+            CHECK(QMetaObject::invokeMethod(&w2, "onDeleteChains", Qt::DirectConnection, Q_ARG(QList<int>, idxs({3, 4}))));
+            app.processEvents();
+            CHECK(clist2->count() == 3);
+            CHECK(clist2->item(0)->data(Qt::UserRole).toString() == n0);
+            // Xóa TẤT CẢ chuỗi bị từ chối (phải giữ lại ít nhất một) - hộp thoại cảnh báo được đóng bằng timer.
+            bool warned = false;
+            QTimer::singleShot(0, &w2, [&warned] {
+                if (auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget()))
+                {
+                    warned = true;
+                    box->button(QMessageBox::Ok)->click();
+                }
+            });
+            CHECK(QMetaObject::invokeMethod(&w2, "onDeleteChains", Qt::DirectConnection, Q_ARG(QList<int>, idxs({0, 1, 2}))));
+            app.processEvents();
+            CHECK(warned);
+            CHECK(clist2->count() == 3);
+            // Xóa 2 trong 3: còn đúng chuỗi chưa chọn.
+            const QString n2 = clist2->item(2)->data(Qt::UserRole).toString();
+            CHECK(QMetaObject::invokeMethod(&w2, "onDeleteChains", Qt::DirectConnection, Q_ARG(QList<int>, idxs({0, 1}))));
+            app.processEvents();
+            CHECK(clist2->count() == 1 && clist2->item(0)->data(Qt::UserRole).toString() == n2);
         }
     }
 
