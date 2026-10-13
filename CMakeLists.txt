@@ -171,6 +171,11 @@ add_library(wifi_ui STATIC
 target_include_directories(wifi_ui PUBLIC src)
 target_link_libraries(wifi_ui PUBLIC wifi_core Qt6::Widgets Qt6::Network wlanapi core_shared ui_widgets)
 
+# qr_ui dùng lại ConnectDialog/WlanController của wifi_ui cho nút "Kết nối WiFi" khi quét được mã QR WiFi
+# (yêu cầu người dùng) - PUBLIC để mọi target link qr_ui (vd qr_ui_tests) tự có luôn wifi_ui, không cần
+# khai lại ở từng nơi. Đặt SAU khi wifi_ui đã add_library() (CMake cần target đã tồn tại tại đây).
+target_link_libraries(qr_ui PUBLIC wifi_ui)
+
 # ---- Kiểm thử "khói" UI WiFi: cmake --build build --target wifi_ui_tests ----
 add_executable(wifi_ui_tests EXCLUDE_FROM_ALL tests/wifi_ui_tests.cpp)
 target_link_libraries(wifi_ui_tests PRIVATE wifi_ui)
@@ -339,6 +344,10 @@ add_library(vpn_core STATIC
 )
 target_include_directories(vpn_core PUBLIC src)
 target_link_libraries(vpn_core PUBLIC Qt6::Core Qt6::Network advapi32 shell32 rasapi32 core_shared)
+
+# qr_ui dùng lại PublicIpChecker của vpn_core cho nút "Lấy vị trí hiện tại" (ước lượng gần đúng theo IP
+# công khai) ở trang tạo mã QR Vị trí (Geo) - cùng lý do/khuôn mẫu đã thêm cho wifi_ui ở trên.
+target_link_libraries(qr_ui PUBLIC vpn_core)
 
 # ---- Kiểm thử lõi VPN: cmake --build build --target vpn_tests ----
 add_executable(vpn_tests EXCLUDE_FROM_ALL tests/vpn_tests.cpp)

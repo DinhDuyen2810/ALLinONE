@@ -4,8 +4,10 @@
 #include <QClipboard>
 #include <QComboBox>
 #include <QDir>
+#include <QDoubleSpinBox>
 #include <QFile>
 #include <QKeyEvent>
+#include <QLabel>
 #include <QLineEdit>
 #include <QCameraDevice>
 #include <QMediaDevices>
@@ -528,6 +530,80 @@ int main(int argc, char** argv)
             app.processEvents();
             win.grab().save(dir + "/" + names[i] + ".png");
         }
+    }
+
+    // ---- Tạo mã chỉ còn 5 loại + trang Vị trí: nút "Lấy vị trí"/"Mở bản đồ" + dán link Google Maps ----
+    {
+        auto* type = gen->findChild<QComboBox*>("typeCombo");
+        CHECK(type && type->count() == 5);
+        if (type && type->count() == 5)
+        {
+            CHECK(type->itemText(0) == "Văn bản");
+            CHECK(type->itemText(1).contains("URL"));
+            CHECK(type->itemText(2) == "WiFi");
+            CHECK(type->itemText(3).contains("Điện thoại"));
+            CHECK(type->itemText(4).contains("Vị trí"));
+        }
+        type->setCurrentIndex(4);
+        app.processEvents();
+        gen->refresh();
+        CHECK(gen->currentContent().startsWith("geo:")); // đã sang trang Vị trí
+        CHECK(findButton(gen, "🗺 Mở bản đồ") != nullptr);
+        CHECK(findButton(gen, "📍 Lấy vị trí hiện tại (ước lượng theo IP)") != nullptr);
+
+        const auto spins = gen->findChildren<QDoubleSpinBox*>();
+        CHECK(spins.size() == 2);
+        QLineEdit* link = nullptr;
+        for (QLineEdit* e : gen->findChildren<QLineEdit*>())
+            if (e->placeholderText().startsWith("Dán link Google Maps"))
+                link = e;
+        QPushButton* apply = findButton(gen, "Dùng link này");
+        CHECK(link && apply && spins.size() == 2);
+        if (link && apply && spins.size() == 2)
+        {
+            auto statusContains = [&](const QString& part) {
+                for (QLabel* l : gen->findChildren<QLabel*>())
+                    if (l->text().contains(part))
+                        return true;
+                return false;
+            };
+            // Dạng "@lat,lon" (link copy từ thanh địa chỉ Google Maps).
+            link->setText("https://www.google.com/maps/place/Ho+Chi+Minh/@10.762622,106.660172,15z/data=abc");
+            apply->click();
+            CHECK(qAbs(spins[0]->value() - 10.762622) < 1e-6 && qAbs(spins[1]->value() - 106.660172) < 1e-6);
+            CHECK(statusContains("Đã đọc tọa độ"));
+            // Dạng "query=lat,lon" - chính link do nút "Mở bản đồ" tạo ra phải dán lại được.
+            link->setText("https://www.google.com/maps/search/?api=1&query=21.028511,105.804817");
+            apply->click();
+            CHECK(qAbs(spins[0]->value() - 21.028511) < 1e-6 && qAbs(spins[1]->value() - 105.804817) < 1e-6);
+            // Tọa độ âm.
+            link->setText("https://maps.google.com/?q=-33.868820,151.209296");
+            apply->click();
+            CHECK(qAbs(spins[0]->value() + 33.868820) < 1e-6 && qAbs(spins[1]->value() - 151.209296) < 1e-6);
+            // Link rút gọn / rác / ngoài phạm vi -> báo lỗi, KHÔNG đổi tọa độ đang có.
+            for (const char* bad : {"https://maps.app.goo.gl/AbCdEf123", "hello world", "https://x.com/@95.0,200.0", ""})
+            {
+                link->setText(bad);
+                apply->click();
+                CHECK(qAbs(spins[0]->value() + 33.868820) < 1e-6 && qAbs(spins[1]->value() - 151.209296) < 1e-6);
+                CHECK(statusContains("Không đọc được tọa độ"));
+            }
+        }
+        type->setCurrentIndex(0); // trả về mặc định cho các phần sau
+    }
+
+    // ---- Con trỏ ngón tay trỏ cho MỌI QPushButton của cửa sổ QR Tools (ComboBoxStyle::applyCursor) ----
+    {
+        const auto buttons = win.findChildren<QPushButton*>();
+        CHECK(buttons.size() >= 10); // tab Tạo (nhiều nút) + Quét + Lịch sử
+        int notHand = 0;
+        for (QPushButton* b : buttons)
+            if (b->cursor().shape() != Qt::PointingHandCursor)
+            {
+                ++notHand;
+                std::printf("  nút chưa có con trỏ ngón tay: '%s'\n", b->text().toUtf8().constData());
+            }
+        CHECK(notHand == 0);
     }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);

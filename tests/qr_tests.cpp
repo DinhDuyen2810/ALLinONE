@@ -359,7 +359,9 @@ int main(int argc, char** argv)
         const QString gs = QRPayload::makeGeo({21.028511, 105.804817});
         const ParsedPayload gp = QRPayload::parse(gs);
         CHECK(gs == "geo:21.028511,105.804817");
-        CHECK(gp.type == QRContentType::Geo && gp.actionUrl.contains("openstreetmap"));
+        // Google Maps (yêu cầu người dùng, v1.19.13) - trước đây OpenStreetMap.
+        CHECK(gp.type == QRContentType::Geo && gp.actionUrl.contains("google.com/maps") &&
+              gp.actionUrl.contains("21.028511") && gp.actionUrl.contains("105.804817"));
 
         VCardInfo v;
         v.firstName = "Văn";

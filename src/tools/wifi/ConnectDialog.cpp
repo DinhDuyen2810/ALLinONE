@@ -140,6 +140,11 @@ void ConnectDialog::buildUi()
     ComboBoxStyle::applyCursor(this);
 }
 
+void ConnectDialog::setPassword(const QString& password)
+{
+    m_passwordEdit->setText(password);
+}
+
 void ConnectDialog::onTogglePasswordVisibility()
 {
     const bool hidden = m_passwordEdit->echoMode() == QLineEdit::Password;

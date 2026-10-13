@@ -2,6 +2,7 @@
 
 #include "AndroidUiStyle.h"
 #include "engine/AdbController.h"
+#include "ui/widgets/ComboBoxStyle.h"
 
 #include <QFormLayout>
 #include <QHBoxLayout>
@@ -68,6 +69,10 @@ WirelessPairDialog::WirelessPairDialog(QWidget* parent)
     btnRow->addWidget(cancelBtn);
     btnRow->addWidget(pairBtn);
     root->addLayout(btnRow);
+
+    // Hộp thoại riêng (mở theo yêu cầu, không phải con của AndroidControlWindow lúc nó tự gọi applyCursor
+    // trong constructor của chính nó) - phải tự gọi lại ở đây.
+    ComboBoxStyle::applyCursor(this);
 }
 
 void WirelessPairDialog::accept()

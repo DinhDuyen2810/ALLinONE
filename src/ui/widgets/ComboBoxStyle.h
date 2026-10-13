@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QComboBox>
+#include <QPushButton>
 #include <QString>
 #include <QWidget>
 
@@ -19,16 +20,21 @@ inline QString noArrow()
 }
 
 /// Gọi SAU KHI toàn bộ widget con đã dựng xong (vd cuối constructor của cửa sổ/tab/hộp thoại) - tự tìm
-/// MỌI QComboBox hậu duệ (qua QObject parent-child, không cần widget cha trực tiếp) và đổi con trỏ thành
-/// ngón tay trỏ khi di chuột qua, vì combo là nơi "bấm ra danh sách" (yêu cầu người dùng, v1.19.10). Chỉ
-/// cần gọi MỘT LẦN ở cấp cao nhất đã dựng xong mọi combo con tại thời điểm gọi - combo tạo SAU đó (vd
-/// trong một hộp thoại mở theo yêu cầu) phải tự gọi lại ở hộp thoại của chính nó.
+/// MỌI QComboBox và QPushButton hậu duệ (qua QObject parent-child, không cần widget cha trực tiếp) và đổi
+/// con trỏ thành ngón tay trỏ khi di chuột qua, vì cả hai đều là nơi "bấm được" (combo mở danh sách, nút
+/// bấm thực hiện hành động) - yêu cầu người dùng, v1.19.10 (combo), mở rộng sang QPushButton ở v1.19.12
+/// (rà toàn bộ tiện ích phát hiện còn nhiều nút rải rác thiếu `setCursor()` riêng, nhất là QR Tools - gộp
+/// về đúng MỘT chỗ thay vì tự chạy theo từng nút). Các nút đã tự `setCursor()` riêng trước đó không bị
+/// ảnh hưởng gì (gán lại cùng giá trị). Chỉ cần gọi MỘT LẦN ở cấp cao nhất đã dựng xong mọi widget con tại
+/// thời điểm gọi - widget tạo SAU đó (vd trong một hộp thoại mở theo yêu cầu) phải tự gọi lại ở hộp thoại
+/// của chính nó.
 inline void applyCursor(QWidget* root)
 {
     if (!root)
         return;
-    const auto combos = root->findChildren<QComboBox*>();
-    for (QComboBox* combo : combos)
+    for (QComboBox* combo : root->findChildren<QComboBox*>())
         combo->setCursor(Qt::PointingHandCursor);
+    for (QPushButton* btn : root->findChildren<QPushButton*>())
+        btn->setCursor(Qt::PointingHandCursor);
 }
 } // namespace ComboBoxStyle

@@ -4,6 +4,9 @@
 #include "QRImageView.h"
 #include "QRUiStyle.h"
 #include "ScreenSnipOverlay.h"
+#include "tools/wifi/ConnectDialog.h"
+#include "tools/wifi/engine/WlanController.h"
+#include "tools/wifi/model/WifiNetwork.h"
 
 #include <QApplication>
 #include <QCamera>
@@ -100,14 +103,19 @@ void QRScanTab::buildUi()
     rl->setContentsMargins(0, 0, 0, 0);
     rl->setSpacing(8);
 
-    auto* listLabel = new QLabel("KẾT QUẢ", right);
-    listLabel->setStyleSheet("color: #0969da; font-size: 11px; font-weight: bold; letter-spacing: 1.5px;");
-    rl->addWidget(listLabel);
+    // "KẾT QUẢ" chỉ cần thiết khi MỘT ảnh chứa NHIỀU mã QR (phải chọn xem mã nào) - trường hợp thường gặp
+    // (đúng 1 mã/ảnh) ẩn hẳn đi, chỉ còn "NỘI DUNG GỐC" bên dưới cho gọn (yêu cầu người dùng), xem
+    // presentResults()/clearResults().
+    m_resultListLabel = new QLabel("KẾT QUẢ (nhiều mã)", right);
+    m_resultListLabel->setStyleSheet("color: #0969da; font-size: 11px; font-weight: bold; letter-spacing: 1.5px;");
+    m_resultListLabel->setVisible(false);
+    rl->addWidget(m_resultListLabel);
 
     m_resultList = new QListWidget(right);
     m_resultList->setStyleSheet(QRUi::tableStyle());
     m_resultList->setMaximumHeight(96);
     m_resultList->setTextElideMode(Qt::ElideRight);
+    m_resultList->setVisible(false);
     rl->addWidget(m_resultList);
     connect(m_resultList, &QListWidget::currentRowChanged, this, &QRScanTab::onResultSelected);
 
@@ -208,6 +216,8 @@ void QRScanTab::clearResults()
     m_resultList->blockSignals(true);
     m_resultList->clear();
     m_resultList->blockSignals(false);
+    m_resultListLabel->setVisible(false); // presentResults() mở lại nếu kết quả mới có > 1 mã
+    m_resultList->setVisible(false);
     m_fieldTable->setRowCount(0);
     m_rawText->clear();
     m_typeLabel->clear();
@@ -230,20 +240,29 @@ int QRScanTab::scanImage(const QImage& image, const QString& sourceName)
     }
 
     QApplication::setOverrideCursor(Qt::WaitCursor);
-    const QList<QRDecoded> found = QRCodec::decode(image);
+    int undecoded = 0;
+    const QList<QRDecoded> found = QRCodec::decode(image, &undecoded);
     QApplication::restoreOverrideCursor();
 
-    return presentResults(image, found, sourceName);
+    return presentResults(image, found, sourceName, undecoded);
 }
 
-int QRScanTab::presentResults(const QImage& image, const QList<QRDecoded>& found, const QString& sourceName)
+int QRScanTab::presentResults(const QImage& image, const QList<QRDecoded>& found, const QString& sourceName, int undecodedCount)
 {
     clearResults();
     m_view->setImage(image);
 
     if (found.isEmpty())
     {
-        setStatus(QString("Không tìm thấy mã QR trong: %1. Thử ảnh rõ nét hơn hoặc cắt sát vùng mã.").arg(sourceName), true);
+        // Phân biệt "không có gì giống mã QR" với "có thấy dạng mã QR nhưng đọc hỏng" (undecodedCount>0,
+        // xem comment QRCodec::decode()) - thông báo cũ dùng chung một câu "Không tìm thấy mã QR" cho cả
+        // hai, khiến người dùng tưởng ảnh không có mã gì dù thực ra CÓ nhưng mã bị hỏng/sai định dạng.
+        if (undecodedCount > 0)
+            setStatus(QString("Phát hiện mã QR trong: %1 nhưng không đọc được - mã QR không hợp lệ hoặc "
+                              "không đúng định dạng (có thể bị che một phần, mờ, hoặc hỏng).")
+                          .arg(sourceName), true);
+        else
+            setStatus(QString("Không tìm thấy mã QR trong: %1. Thử ảnh rõ nét hơn hoặc cắt sát vùng mã.").arg(sourceName), true);
         return 0;
     }
 
@@ -264,6 +283,11 @@ int QRScanTab::presentResults(const QImage& image, const QList<QRDecoded>& found
         m_resultList->addItem(QString("%1. [%2] %3").arg(i + 1).arg(m_parsed[i].typeName, snippet));
         QRHistoryStore::instance().add("scan", m_parsed[i].typeName, found[i].text);
     }
+    // Chỉ MỘT mã (trường hợp thường gặp nhất): không cần danh sách chọn, ẩn hẳn cho gọn - chỉ hiện khi
+    // thật sự cần chọn giữa NHIỀU mã trong cùng một ảnh.
+    const bool multi = found.size() > 1;
+    m_resultListLabel->setVisible(multi);
+    m_resultList->setVisible(multi);
     m_resultList->setCurrentRow(0);
 
     setStatus(QString("✓ Tìm thấy %1 mã QR trong: %2").arg(found.size()).arg(sourceName));
@@ -304,8 +328,18 @@ void QRScanTab::showResult(int index)
     m_copyBtn->setEnabled(true);
     m_saveBtn->setEnabled(true);
     m_recreateBtn->setEnabled(true);
-    m_actionBtn->setEnabled(!p.actionUrl.isEmpty());
-    m_actionBtn->setText(p.actionLabel.isEmpty() ? "Mở" : p.actionLabel);
+    if (p.type == QRContentType::Wifi)
+    {
+        // WiFi không có actionUrl (không phải liên kết mở được) - nút hành động dùng riêng để mở
+        // ConnectDialog, chỉ bật khi mã QR có SSID (xem connectToScannedWifi()).
+        m_actionBtn->setEnabled(!QRPayload::parseWifi(d.text).ssid.isEmpty());
+        m_actionBtn->setText("🔗 Kết nối WiFi");
+    }
+    else
+    {
+        m_actionBtn->setEnabled(!p.actionUrl.isEmpty());
+        m_actionBtn->setText(p.actionLabel.isEmpty() ? "Mở" : p.actionLabel);
+    }
 }
 
 void QRScanTab::copyContent()
@@ -320,7 +354,16 @@ void QRScanTab::copyContent()
 void QRScanTab::openAction()
 {
     const int row = m_resultList->currentRow();
-    if (row < 0 || row >= m_parsed.size() || m_parsed[row].actionUrl.isEmpty())
+    if (row < 0 || row >= m_parsed.size())
+        return;
+
+    if (m_parsed[row].type == QRContentType::Wifi)
+    {
+        connectToScannedWifi(row);
+        return;
+    }
+
+    if (m_parsed[row].actionUrl.isEmpty())
         return;
 
     const QString url = m_parsed[row].actionUrl;
@@ -337,6 +380,67 @@ void QRScanTab::openAction()
 
     if (!QDesktopServices::openUrl(QUrl::fromUserInput(url)))
         setStatus("Không thể mở liên kết này.", true);
+}
+
+void QRScanTab::connectToScannedWifi(int row)
+{
+    if (row < 0 || row >= m_results.size())
+        return;
+
+    const WifiInfo w = QRPayload::parseWifi(m_results[row].text);
+    if (w.ssid.isEmpty())
+    {
+        setStatus("Mã QR WiFi này thiếu tên mạng (SSID), không thể kết nối.", true);
+        return;
+    }
+
+    // Mở lười - đa số phiên quét QR không bao giờ bấm nút này.
+    if (!m_wlan)
+        m_wlan = new WlanController(this);
+    if (!m_wlan->isOpen())
+    {
+        QString openError;
+        if (!m_wlan->open(&openError))
+        {
+            setStatus("Không dùng được dịch vụ WiFi của Windows: " + openError, true);
+            return;
+        }
+    }
+
+    QString adaptersError;
+    const QList<WifiAdapterInfo> adapters = m_wlan->adapters(&adaptersError);
+    if (adapters.isEmpty())
+    {
+        setStatus("Không tìm thấy adapter WiFi nào trên máy này" +
+                      (adaptersError.isEmpty() ? QString() : (": " + adaptersError)),
+                  true);
+        return;
+    }
+
+    WifiNetwork net;
+    net.ssid = w.ssid;
+    net.ssidBytes = w.ssid.toUtf8();
+    net.hidden = w.hidden;
+    if (w.security.compare("nopass", Qt::CaseInsensitive) == 0)
+        net.security = WifiSecurity::Open;
+    else if (w.security.compare("WEP", Qt::CaseInsensitive) == 0)
+        net.security = WifiSecurity::Wep;
+    else
+        // Định dạng WIFI: chỉ có "WPA" chung chung cho cả WPA/WPA2/WPA3-Personal, không phân biệt thế hệ -
+        // WPA2-Personal là lựa chọn tương thích rộng nhất (ConnectDialog vẫn cho đổi lại trước khi kết nối
+        // nếu người dùng biết chính xác mạng dùng WPA3).
+        net.security = WifiSecurity::Wpa2Psk;
+
+    // ConnectDialog tái dùng NGUYÊN VẸN của module WiFi Connection (xem tools/wifi/ConnectDialog.h) - SSID/
+    // bảo mật/mật khẩu chỉ ĐIỀN SẴN, người dùng vẫn tự xem lại và bấm "Kết nối"; đúng MỘT mật khẩu lấy từ
+    // chính mã QR được gửi đi, không có cơ chế dò/thử nhiều mật khẩu nào (CLAUDE.md mục 3).
+    auto* dlg = new ConnectDialog(m_wlan, adapters.first().guidString, net, this);
+    dlg->setPassword(w.password);
+    connect(dlg, &ConnectDialog::connected, this, [this](const QString& ssid) {
+        setStatus("✓ Đã kết nối WiFi: " + ssid);
+    });
+    dlg->exec();
+    dlg->deleteLater();
 }
 
 void QRScanTab::saveContent()
@@ -507,7 +611,10 @@ void QRScanTab::toggleCamera(bool on)
     m_view->setHighlights({});
     m_lastDecode.invalidate();
     m_camera->start();
-    setStatus("Đang quét bằng camera... đưa mã QR vào khung hình.");
+    // Đổi hẳn CHỮ trên nút (không chỉ dựa vào màu nền :checked, dễ bị bỏ sót) - người dùng cần thấy rõ
+    // "bấm lại nút này để tắt camera" thay vì tưởng phải chọn phương thức khác mới thoát được.
+    m_cameraBtn->setText("⏹ Tắt Camera");
+    setStatus("Đang quét bằng camera... đưa mã QR vào khung hình. Bấm lại nút Camera để tắt.");
 }
 
 void QRScanTab::stopCamera()
@@ -517,6 +624,8 @@ void QRScanTab::stopCamera()
         QSignalBlocker b(m_cameraBtn);
         m_cameraBtn->setChecked(false);
     }
+    if (m_cameraBtn)
+        m_cameraBtn->setText("📷 Camera");
     releaseCamera();
 }
 

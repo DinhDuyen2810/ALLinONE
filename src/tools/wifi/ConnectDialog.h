@@ -33,6 +33,11 @@ public:
     static ConnectDialog* forHiddenNetwork(WlanController* controller, const QString& adapterGuid, QWidget* parent = nullptr,
                                            WifiSecurity security = WifiSecurity::Wpa2Psk);
 
+    /// Điền sẵn mật khẩu (vd đã biết trước từ mã QR WiFi quét được) - gọi SAU khi dựng xong, TRƯỚC exec().
+    /// Người dùng vẫn thấy/sửa được ô này như bình thường trước khi tự bấm "Kết nối" - không tự động kết
+    /// nối thay, chỉ đỡ phải gõ lại đúng mật khẩu đã có sẵn.
+    void setPassword(const QString& password);
+
     /// Mọi đường đóng hộp thoại (Hủy, Esc, nút X, accept) đều qua đây - nơi hoàn tác lần kết nối còn dở.
     void done(int result) override;
 

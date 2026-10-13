@@ -28,7 +28,7 @@
 | `src/tools/autoclick/widgets/` | `ChainListWidget`, `ActionListWidget`, `ActionEditorWidget` |
 | `src/tools/autoclick/AutoClick*.{h,cpp}` | `AutoClickTool` (ITool) và `AutoClickWindow` (điều phối UI 3 cột) |
 | `src/tools/qr/QRCodec.*` | Lõi QR: mã hóa (qrcodegen), render ảnh/SVG, giải mã (quirc) |
-| `src/tools/qr/QRPayload.*` | Tạo và phân tích nội dung: Text, URL, WiFi, Email, SMS, Phone, Geo, vCard/MECARD |
+| `src/tools/qr/QRPayload.*` | Tạo và phân tích nội dung: Text, URL, WiFi, Email, SMS, Phone, Geo, vCard/MECARD (giao diện TẠO chỉ dùng 5 loại: Text, URL, WiFi, Phone, Geo; Email/SMS/vCard vẫn được nhận diện khi QUÉT) |
 | `src/tools/qr/QRWindow.*`, `QRGenerateTab.*`, `QRScanTab.*`, `QRHistoryTab.*` | UI QR Tools: 3 tab Tạo / Quét / Lịch sử |
 | `src/tools/qr/QRHistoryStore.*` | Lịch sử tạo/quét, lưu `profiles\qr_history.json` trong thư mục dữ liệu người dùng (tối đa 300 mục) |
 | `src/tools/qr/QRImageView.*`, `ScreenSnipOverlay.*` | Khung xem ảnh kéo-thả có viền mã; chụp vùng màn hình |
@@ -204,8 +204,8 @@
     gương Android, dán lệnh PowerShell).
 
 ## 4b. QR Tools
-- **Tạo mã:** 8 loại nội dung (Văn bản, URL, WiFi, Email, SMS, Điện thoại, Vị trí, vCard). Tùy chọn: mức sửa lỗi L/M/Q/H, kích thước ảnh, viền trắng, màu mã/nền, ô bo tròn, logo giữa mã (tự dùng mức H). Xem trước trực tiếp, cảnh báo độ tương phản, tự giải mã lại ảnh vừa tạo để bảo đảm quét được. Lưu PNG/JPG/BMP/SVG, sao chép vào clipboard.
-- **Quét mã:** từ file ảnh, clipboard (Ctrl+V), kéo-thả, chụp vùng màn hình, camera. Nhận nhiều mã trong một ảnh, vẽ viền quanh mã, phân tích nội dung (URL, WiFi, Email, vCard...), nút Sao chép / Mở (có hỏi xác nhận) / Lưu .txt / Tạo lại mã.
+- **Tạo mã:** 5 loại nội dung (Văn bản, URL, WiFi, Điện thoại, Vị trí) - bỏ Email/SMS/vCard khỏi danh sách tạo từ v1.19.12. WiFi: combo "WiFi đã lưu" điền nhanh SSID/bảo mật/mật khẩu từ hồ sơ WiFi trên máy. Vị trí: nút "Lấy vị trí hiện tại" (ước lượng theo IP công khai qua `ipwho.is`), "Mở bản đồ" (Google Maps) và ô dán link Google Maps để đọc tọa độ. Tùy chọn: mức sửa lỗi L/M/Q/H, kích thước ảnh, viền trắng, màu mã/nền, ô bo tròn, logo giữa mã (tự dùng mức H). Xem trước trực tiếp, cảnh báo độ tương phản, tự giải mã lại ảnh vừa tạo để bảo đảm quét được. Lưu PNG/JPG/BMP/SVG, sao chép vào clipboard.
+- **Quét mã:** từ file ảnh, clipboard (Ctrl+V), kéo-thả, chụp vùng màn hình, camera. Nhận nhiều mã trong một ảnh, vẽ viền quanh mã, phân tích nội dung (URL, WiFi, Email, vCard...; nhận cả email/SĐT nằm rải rác trong văn bản tự do), nút Sao chép / Mở (có hỏi xác nhận) / Lưu .txt / Tạo lại mã; mã WiFi có thêm nút "Kết nối WiFi"; khung "KẾT QUẢ (nhiều mã)" chỉ hiện khi ảnh có hơn 1 mã.
 - **Lịch sử:** ghi mã đã tạo (khi lưu hoặc sao chép) và đã quét; sao chép, tạo lại, xóa.
 - **Kiểm thử:** `cmake --build build --target qr_tests qr_ui_tests`, rồi chạy `build\qr_tests.exe` và `build\qr_ui_tests.exe` (cần Qt bin trong PATH).
 
@@ -2026,6 +2026,51 @@ hàng 02 rồi quay lại hàng 01 -> editor vẫn là "Ghi nhớ chuỗi" và `
 **CHƯA kiểm chứng được (cần tự thử trên máy thật, môi trường này không gửi được chuột/phím thật)**: ghi macro thật
 bằng hook toàn cục + phát lại bằng `SendInput`, và hành vi minibox đứng yên khi ghi/né chuột khi chạy.
 
+## 4za. QR Tools: làm lại các cải tiến đã mất + con trỏ ngón tay cho mọi nút bấm (2026-10-13, v1.19.12)
+
+Bối cảnh: sau khi quay code về ĐÚNG v1.19.10 (xem `YEU_CAU_SAU_1.19.10.md`) và làm lại Auto Click ở mục 4z,
+người dùng gửi lại danh sách các yêu cầu QR Tools + con trỏ mà các bản v1.19.12-v1.19.14 cũ đã có. Vẫn yêu cầu
+giữ giao diện y hệt v1.19.10 (KHÔNG mang theo `PopupCornerFix`/`WindowTheme`/Fusion/`QPalette`/sửa style):
+
+1. **QR - WiFi (tạo)**: combo "WiFi đã lưu" chọn nhanh từ hồ sơ WiFi trên máy (`WlanController`).
+2. **QR - Quét ra mã WiFi**: nút "🔗 Kết nối WiFi" mở `ConnectDialog` của module WiFi với mật khẩu lấy từ chính
+   mã QR (điền sẵn qua `ConnectDialog::setPassword()`, người dùng vẫn tự bấm "Kết nối"). Đúng MỘT mật khẩu, không dò
+   mật khẩu - đúng quy tắc 3 của CLAUDE.md.
+3. **QR - Vị trí (tạo)**: "📍 Lấy vị trí hiện tại (ước lượng theo IP)" dùng `PublicIpChecker` (`ipwho.is`; thêm
+   `latitude/longitude/hasLocation` vào `PublicIpInfo`) - KHÔNG phải GPS (Windows chỉ cấp quyền vị trí hệ thống cho
+   app MSIX, xem PublicIpChecker.h), độ chính xác cỡ thành phố; "🗺 Mở bản đồ" mở Google Maps theo tọa độ đang nhập
+   bằng trình duyệt mặc định; ô "Link Google Maps" + "Dùng link này" đọc tọa độ từ link dán vào
+   (`QRGenerateTab::parseGoogleMapsLink`: `@lat,lon`, `?q=lat,lon`, `?query=lat,lon`; tọa độ ngoài phạm vi hoặc link
+   rút gọn `maps.app.goo.gl` bị từ chối kèm thông báo, không đổi tọa độ đang có).
+4. **QR - Quét**: khung "KẾT QUẢ (nhiều mã)" chỉ hiện khi ảnh có HƠN 1 mã; nhận diện email/SĐT nằm rải rác trong
+   văn bản tự do; thông báo phân biệt "không thấy mã QR" với "thấy mã nhưng đọc hỏng" (`QRCodec::decode(image,
+   &undecodedCount)`); bảng/khung bo góc 12px (`QRUiStyle`) cho đồng bộ với thẻ/nhóm.
+5. **QR - Tạo mã chỉ còn 5 loại** (Văn bản/URL/WiFi/Điện thoại/Vị trí): bỏ Email/SMS/vCard khỏi giao diện tạo (các
+   hàm `QRPayload::makeEmail/makeSms/makeVCard` và phần nhận diện khi quét vẫn giữ). Hồ sơ lịch sử cũ không bị ảnh
+   hưởng.
+6. **Con trỏ ngón tay trên MỌI `QPushButton` toàn ứng dụng**: `ComboBoxStyle::applyCursor()` (đã được từng cửa sổ
+   công cụ gọi ở cuối constructor) mở rộng từ `QComboBox` sang cả `QPushButton`; hộp thoại mở theo yêu cầu
+   `WirelessPairDialog` tự gọi lại. Nút đã tự `setCursor()` riêng không bị ảnh hưởng (gán lại cùng giá trị).
+
+**Cách làm**: port CÓ CHỌN LỌC từ lịch sử git - `git diff v1.19.10 ae232ec` cho `src/tools/{qr,wifi,vpn/engine,android}`
+(đã kiểm: không chứa cơ chế ép giao diện nào) + phần dán link Google Maps của `14baffc`; `CMakeLists.txt` thêm
+`target_link_libraries(qr_ui PUBLIC wifi_ui vpn_core)`; `ComboBoxStyle.h` chỉ thêm `QPushButton`. KHÔNG mang theo:
+`PopupCornerFix`, `WindowTheme`, Fusion/`QPalette`, bản đồ nhúng OpenStreetMap (`OsmMapWidget`, không có trong yêu
+cầu), chữ thông báo cập nhật/checkbox cursor của v1.19.11 cũ (không có trong danh sách).
+
+**Quyền riêng tư**: nút "Lấy vị trí hiện tại" gọi `ipwho.is` (gửi IP công khai - vốn đã lộ với mọi trang web); "Mở bản
+đồ" mở `google.com/maps` bằng trình duyệt mặc định (không gọi ngầm); dán link Google Maps chỉ đọc chuỗi, không gọi
+mạng. Đã cập nhật `PRIVACY.md`.
+
+**Kiểm thử**: `qr_tests` 136/136, `qr_ui_tests` 165/165 (thêm: đúng 5 loại, trang Vị trí có 2 nút + ô dán link, 7
+trường hợp dán link hợp lệ/lỗi, mọi `QPushButton` của cửa sổ QR có con trỏ ngón tay), `wifi_tests` 119/119,
+`connect_ui_tests` 13/13, `qrwifi_stress_tests` 760.699/760.699, `disk_vpn_stress_tests` 7.320/7.320. Trên app đang
+chạy (UI Automation): danh sách "Nội dung" đúng 5 loại, trang Vị trí có hai nút + ô dán link, trang WiFi có combo
+"WiFi đã lưu". Tab Quét kiểm bằng harness tạm (14 kiểm tra, không commit).
+
+**CHƯA kiểm chứng**: bấm "Lấy vị trí hiện tại" gọi thật `ipwho.is`; mở Google Maps thật; kết nối WiFi thật từ mã QR
+(cần adapter WiFi); hình ảnh/hover/con trỏ thực tế trên máy thật.
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
@@ -2184,6 +2229,7 @@ Quy tắc đứng nằm ở `CLAUDE.md` (gốc dự án). Tóm tắt - mỗi l�
 | 2026-10-11 | Sửa lỗi tự cập nhật thất bại ngẫu nhiên, ExitCode=1 (v1.19.9) | Chi tiết đầy đủ ở mục 4x. Người dùng báo kèm ảnh chụp "Cập nhật lần trước thất bại - ExitCode=1", tải 100% lúc cập nhật được lúc không. Nguyên nhân thật tìm qua đọc code (không đoán): app cố ý không giới hạn 1 bản sao (`CreateMutexW` trong main.cpp) + Inno Setup dùng cùng tên mutex (`AppMutex=OneForAllRunningMutex`) để phát hiện app đang chạy ở bước khởi tạo + `/CLOSEAPPLICATIONS` không có `/FORCECLOSEAPPLICATIONS` trong khi app chưa đăng ký Restart Manager -> không đóng êm được một cửa sổ OneForAll.exe KHÁC đang chạy -> Setup tự hủy ngay, đúng ExitCode=1 "Setup failed to initialize". Sửa `buildHelperScript`: thêm vòng chờ tối đa 30s (Get-Process/Where-Object theo đường dẫn exe) cho bản sao khác tự thoát (không ép đóng - không an toàn với thao tác người dùng đang dở ở cửa sổ khác) + thử lại cài đặt tối đa 5 lần nếu vẫn lỗi. Sửa chữ hộp thoại theo góp ý UX người dùng (không ngụ ý 100% tải = xong ngay). Phát hiện và sửa luôn 1 lỗi pre-existing trong fuzz test buildHelperScript (baseline hardcode lạc hậu từ v1.19.5 - đổi sang so sánh động). 95/95 test (+6 mới); core_stress_tests 551/551 pass sạch hoàn toàn - lần đầu tiên trong phiên không còn lỗi nào. Chưa xác nhận bằng một lần cập nhật thật trên máy có 2 bản sao chạy cùng lúc. |
 | 2026-10-11 | Sửa góc đen ở menu + mũi tên còn sót ở combo/spinbox + bỏ nút Nạp cấu hình (v1.19.10) | Chi tiết đầy đủ ở mục 4y. Người dùng gửi 2 ảnh chụp thật, nêu 3 điểm. (1) Góc đen ở menu chuột phải dù đã bo góc - QMenu là popup không trong suốt mặc định, sửa bằng `Qt::WA_TranslucentBackground`. (2) Combo "Nút"/"Phím"/"Hướng" vẫn còn mũi tên dù v1.19.8 đã thêm ComboBoxStyle::noArrow() - tìm đúng nguyên nhân bằng ảnh chụp so sánh (không đoán): `kComboStyle` dùng khối CSS TRẦN không có selector `QComboBox {}` bao ngoài, nối với rule có selector của noArrow() khiến Qt không áp dụng đúng rule phía sau; xác nhận qua so sánh combo "Loại"/"ms" (đã bọc đúng) sạch còn "Nút" (thiếu bọc) thì không - sửa bằng cách bọc đúng selector, audit toàn bộ nơi khác dùng noArrow() đều đã đúng. Tiện thể bổ sung `setButtonSymbols(NoButtons)` cho 17 QSpinBox còn thiếu (8 ở Auto Click + 9 ở QR/Disk Cleanup/Connect/Android). Thêm `ComboBoxStyle::applyCursor()` đổi con trỏ ngón tay khi hover qua mọi combo, áp dụng 9 cửa sổ chính + 2 dialog độc lập. (3) Bỏ nút "Nạp cấu hình" theo yêu cầu người dùng. Thêm test hồi quy bắt đúng lỗi "CSS thiếu selector". 123/123 autoclick_tests (+2 mới) và toàn bộ 16 bộ test các tool khác đều pass - không hồi quy dù sửa trải khắp 8 tool; core_stress_tests 551/551 pass sạch. Đã xác nhận bằng ảnh chụp thật combo/spinbox hết mũi tên; chưa xác nhận được bằng ảnh chụp góc menu (môi trường không bắt được popup window kịp lúc) - tin vào kỹ thuật Qt chuẩn, cần tự xem trên máy thật. |
 | 2026-10-13 | Auto Click: làm lại "Ghi nhớ chuỗi" + cache chỉnh sửa chưa lưu trên nền v1.19.10 (v1.19.11) | Chi tiết đầy đủ ở mục 4z. Sau khi người dùng yêu cầu quay code về ĐÚNG v1.19.10 (xóa mọi commit/tag sau đó, lưu lịch sử yêu cầu ở `YEU_CAU_SAU_1.19.10.md`), người dùng gửi lại 2 yêu cầu Auto Click: (1) loại hành động "Ghi nhớ chuỗi" - ghi macro chuột+bàn phím thật toàn máy, minibox ĐỨNG YÊN lúc ghi / né chuột lúc chạy chuỗi; (2) chỉnh sửa chưa lưu không mất khi đổi sang hành động khác (cache theo từng hàng, dấu `*`, chỉ hỏi lúc RUN/đóng cửa sổ). Port CÓ CHỌN LỌC từ lịch sử git (`cherry-pick -n 51ac6ab` + phần cache của `ae232ec` + phần sửa minibox của bản cuối), KHÔNG mang theo cơ chế giao diện nào (không `PopupCornerFix`/`WindowTheme`/Fusion/`paintEvent`/sửa style) - giao diện giữ y hệt v1.19.10, `git diff v1.19.10` ngoài Auto Click chỉ khác `CMakeLists.txt` (thêm `ActionRecorder.cpp`). `autoclick_tests` 165/165, `core_stress_tests` 551/551; xác nhận thật trên app đang chạy: trang "Ghi nhớ chuỗi" hiển thị đúng phong cách, cache giữ `*` + nạp lại đúng bản dở khi quay lại hàng. CHƯA kiểm chứng được: ghi/phát lại macro thật bằng hook toàn cục + `SendInput`, hành vi minibox khi ghi/chạy (cần thử tay trên máy thật). |
+| 2026-10-13 | QR Tools: làm lại các cải tiến đã mất + con trỏ ngón tay cho mọi nút bấm (v1.19.12) | Chi tiết đầy đủ ở mục 4za. Người dùng gửi lại danh sách yêu cầu QR Tools + con trỏ đã mất khi quay về v1.19.10: WiFi chọn nhanh từ hồ sơ đã lưu + nút "Kết nối WiFi" khi quét ra mã WiFi; Vị trí có "Lấy vị trí hiện tại" (theo IP công khai) + "Mở bản đồ" (Google Maps) + dán link Google Maps; Quét ẩn khung "KẾT QUẢ" khi chỉ có 1 mã, nhận diện email/SĐT trong văn bản tự do, bảng bo góc đồng bộ; Tạo mã chỉ còn 5 loại; con trỏ ngón tay mở rộng sang mọi `QPushButton`. Port CÓ CHỌN LỌC từ `ae232ec` + phần dán link của `14baffc`, KHÔNG mang theo cơ chế giao diện nào (không `PopupCornerFix`/`WindowTheme`/Fusion/bản đồ nhúng). `qr_tests` 136/136, `qr_ui_tests` 165/165, `wifi_tests` 119/119, `qrwifi_stress_tests` 760.699/760.699, `disk_vpn_stress_tests` 7.320/7.320; xác nhận thật trên app đang chạy: 5 loại, 2 nút Vị trí + ô dán link, combo "WiFi đã lưu". CHƯA kiểm chứng: gọi thật `ipwho.is`, mở Google Maps thật, kết nối WiFi thật từ mã QR, hình ảnh thực tế trên máy thật. |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `

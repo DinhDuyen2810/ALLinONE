@@ -56,7 +56,10 @@ inline QString plainToolTip(const QString& text)
 
 inline QString tableStyle()
 {
-    return "QTableWidget, QListWidget { background-color: #ffffff; color: #1f2328; border: 1px solid #d0d7de; border-radius: 10px; }"
+    // 12px - đồng bộ với cardStyle()/groupStyle() và khung xem trước QRImageView (cũng 12px), trước đây
+    // 10px lệch nhẹ so với phần còn lại (yêu cầu người dùng: bảng/khung trong QR Tools "đẹp hơn, bo góc
+    // đẹp hơn").
+    return "QTableWidget, QListWidget { background-color: #ffffff; color: #1f2328; border: 1px solid #d0d7de; border-radius: 12px; }"
            "QTableWidget::item, QListWidget::item { padding: 6px 8px; border-bottom: 1px solid #eaeef2; }"
            "QTableWidget::item:selected, QListWidget::item:selected { background-color: #0969da; color: #ffffff; }"
            "QHeaderView::section { background-color: #f6f8fa; color: #57606a; font-weight: bold; border: none; padding: 6px; border-bottom: 1px solid #d0d7de; }";

@@ -2,10 +2,12 @@
 
 #include <QColor>
 #include <QImage>
+#include <QList>
 #include <QWidget>
 
 #include "QRCodec.h"
 #include "QRPayload.h"
+#include "tools/wifi/model/WifiProfile.h"
 
 class QCheckBox;
 class QComboBox;
@@ -18,6 +20,8 @@ class QSlider;
 class QSpinBox;
 class QStackedWidget;
 class QTimer;
+class WlanController;
+class PublicIpChecker;
 
 /// Tab tạo mã QR: chọn loại nội dung, tùy chỉnh giao diện, xem trước trực tiếp, lưu/sao chép.
 class QRGenerateTab : public QWidget
@@ -53,17 +57,24 @@ private slots:
     void onClearLogo();
     void onSave();
     void onCopy();
+    void onWifiProfileSelected(int index);
+    void onLocateMe();
+    void onOpenMap();
+    void onApplyMapsLink();
 
 private:
+    /// Thử đọc tọa độ từ một link Google Maps dán vào (các dạng ".../@lat,lon,..", "?q=lat,lon",
+    /// "?query=lat,lon" - xem onApplyMapsLink()). Trả về false nếu không khớp dạng nào hoặc tọa độ đọc
+    /// được ra ngoài phạm vi hợp lệ (link rút gọn maps.app.goo.gl không chứa tọa độ trong chuỗi URL nên
+    /// không đọc được).
+    bool parseGoogleMapsLink(const QString& text, double* lat, double* lon) const;
+
     void buildUi();
     QWidget* makeTextPage();
     QWidget* makeUrlPage();
     QWidget* makeWifiPage();
-    QWidget* makeEmailPage();
-    QWidget* makeSmsPage();
     QWidget* makePhonePage();
     QWidget* makeGeoPage();
-    QWidget* makeVCardPage();
 
     QString buildContent(QString* problem) const;
     QRContentType currentType() const;
@@ -71,6 +82,10 @@ private:
     void updateColorButtons();
     void setPreviewMessage(const QString& msg);
     void updatePreviewPixmap();
+    /// Nạp lại danh sách "WiFi đã lưu" từ adapter WLAN đầu tiên của máy (gọi mỗi lần đổi sang loại WiFi -
+    /// hồ sơ có thể đổi trong lúc cửa sổ QR vẫn mở). Không báo lỗi gì nếu không có dịch vụ WLAN/adapter -
+    /// combo chỉ còn mỗi mục mặc định, người dùng vẫn nhập tay bình thường.
+    void refreshWifiSavedProfiles();
 
     QTimer* m_timer{nullptr};
     QComboBox* m_typeCombo{nullptr};
@@ -84,27 +99,18 @@ private:
     QLineEdit* m_wifiPass{nullptr};
     QComboBox* m_wifiSec{nullptr};
     QCheckBox* m_wifiHidden{nullptr};
-    // Email
-    QLineEdit* m_mailTo{nullptr};
-    QLineEdit* m_mailSubject{nullptr};
-    QPlainTextEdit* m_mailBody{nullptr};
-    // SMS
-    QLineEdit* m_smsNumber{nullptr};
-    QPlainTextEdit* m_smsMessage{nullptr};
+    QComboBox* m_wifiSavedCombo{nullptr}; // "Chọn từ WiFi đã lưu" - tự điền SSID/mật khẩu/bảo mật khi chọn
+    QLabel* m_wifiSavedStatus{nullptr};
     // Phone
     QLineEdit* m_phoneNumber{nullptr};
     // Geo
     QDoubleSpinBox* m_geoLat{nullptr};
     QDoubleSpinBox* m_geoLon{nullptr};
-    // vCard
-    QLineEdit* m_vcFirst{nullptr};
-    QLineEdit* m_vcLast{nullptr};
-    QLineEdit* m_vcOrg{nullptr};
-    QLineEdit* m_vcTitle{nullptr};
-    QLineEdit* m_vcPhone{nullptr};
-    QLineEdit* m_vcEmail{nullptr};
-    QLineEdit* m_vcUrl{nullptr};
-    QLineEdit* m_vcAddress{nullptr};
+    QPushButton* m_geoLocateButton{nullptr}; // "Lấy vị trí hiện tại" - ước lượng gần đúng theo IP công khai
+    QPushButton* m_geoMapButton{nullptr};    // "Mở bản đồ" - mở Google Maps tại tọa độ đang nhập
+    QLabel* m_geoLocateStatus{nullptr};
+    QLineEdit* m_mapsLinkEdit{nullptr};          // dán link Google Maps vào đây để đọc tọa độ
+    QPushButton* m_mapsLinkApplyButton{nullptr};
 
     // Options
     QComboBox* m_eccCombo{nullptr};
@@ -138,4 +144,15 @@ private:
     QRMatrix m_matrix;
     QImage m_image;
     QString m_content;
+
+    // Tạo/mở lười - đa số phiên tạo mã QR không bao giờ chạm tới WiFi/Geo.
+    WlanController* m_wlan{nullptr};
+    QList<WifiProfile> m_wifiSavedProfiles; // song song với item data của m_wifiSavedCombo (chỉ số trong list này)
+    /// true sau lần nạp ĐẦU TIÊN - refreshWifiSavedProfiles() đọc mật khẩu dạng chữ cho MỌI hồ sơ
+    /// (WlanGetProfile + giải mã DPAPI cho từng hồ sơ) nên không rẻ trên máy có nhiều hồ sơ đã lưu; nạp lại
+    /// MỖI LẦN chuyển sang loại WiFi (như thiết kế ban đầu) gây giật trên máy thật nhiều hồ sơ. Đánh đổi:
+    /// danh sách có thể hơi cũ nếu người dùng thêm/xóa hồ sơ WiFi trong lúc cửa sổ QR vẫn đang mở - chấp
+    /// nhận được, hiếm khi xảy ra trong một phiên tạo mã QR.
+    bool m_wifiProfilesLoaded{false};
+    PublicIpChecker* m_ipChecker{nullptr};
 };

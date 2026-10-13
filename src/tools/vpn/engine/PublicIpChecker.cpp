@@ -79,6 +79,17 @@ void PublicIpChecker::check()
         info.ip = obj.value("ip").toString();
         info.country = obj.value("country").toString();
         info.city = obj.value("city").toString();
+        // latitude/longitude luôn có trong phản hồi ipwho.is thành công (không cần tham số riêng) - kiểm
+        // isDouble() vì giá trị JSON lạ/thiếu (vd obj không có field) trả về 0.0 mặc định của toDouble()
+        // trông giống tọa độ (0,0) thật (đảo Null, ngoài khơi Ghana) thay vì "không có dữ liệu".
+        const QJsonValue lat = obj.value("latitude");
+        const QJsonValue lon = obj.value("longitude");
+        if (lat.isDouble() && lon.isDouble())
+        {
+            info.latitude = lat.toDouble();
+            info.longitude = lon.toDouble();
+            info.hasLocation = true;
+        }
         emit result(info);
     });
 }

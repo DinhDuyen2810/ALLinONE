@@ -16,6 +16,12 @@ struct PublicIpInfo
     QString ip;
     QString country;
     QString city;
+    /// Vĩ độ/kinh độ GẦN ĐÚNG theo vùng phủ của IP (độ chính xác cỡ thành phố, KHÔNG phải GPS thật) - ipwho.is
+    /// luôn trả kèm 2 trường này trong cùng một lần tra cứu, không cần yêu cầu thêm. hasLocation=false nếu
+    /// phản hồi thiếu/không phải số (dịch vụ không áp dụng được, vd địa chỉ IP nội bộ/riêng tư).
+    double latitude{0};
+    double longitude{0};
+    bool hasLocation{false};
 };
 
 /**

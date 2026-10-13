@@ -71,7 +71,11 @@ public:
     /// Tìm và giải mã mọi mã QR trong ảnh (thử nhiều lần: gốc, đảo màu, phóng to/thu nhỏ; mã bị lật
     /// gương cũng được thử lại). Dừng ở lượt đầu tiên đọc được HẾT các mã nó nhìn thấy; nếu lượt đó còn
     /// mã chưa đọc được thì chạy thêm các lượt cùng cực tính và gộp kết quả (không trùng nội dung).
-    static QList<QRDecoded> decode(const QImage& image);
+    /// `undecodedCount` (nếu khác null) nhận số LƯỚI mã quirc đã NHÌN THẤY (phát hiện được 3 ô định vị góc)
+    /// nhưng KHÔNG giải mã được ở lượt "tốt nhất" - nơi gọi dùng để phân biệt "không có gì giống mã QR
+    /// trong ảnh" (undecodedCount==0, kết quả rỗng) với "có thấy dạng mã QR nhưng đọc hỏng/không đúng định
+    /// dạng" (undecodedCount>0, kết quả rỗng) khi trả về danh sách rỗng - hai thông báo lỗi khác nhau.
+    static QList<QRDecoded> decode(const QImage& image, int* undecodedCount = nullptr);
 
     /// Độ tương phản WCAG giữa hai màu (1..21). Quét tốt khi >= 3 và nền sáng hơn mã.
     static double contrastRatio(const QColor& a, const QColor& b);

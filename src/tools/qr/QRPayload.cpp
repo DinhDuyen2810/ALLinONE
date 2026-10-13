@@ -91,6 +91,39 @@ bool looksLikeEmail(const QString& s)
     static const QRegularExpression re(R"(^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$)");
     return re.match(s.trimmed()).hasMatch();
 }
+
+/// Tìm MỌI email xuất hiện RẢI RÁC trong một đoạn văn bản tự do (không neo ^$ như looksLikeEmail) - dùng
+/// khi cả chuỗi KHÔNG phải là một email trần mà chỉ CHỨA một/nhiều địa chỉ email ở đâu đó bên trong (yêu
+/// cầu người dùng: "trong văn bản bắt được gmail hay sđt gì đấy").
+QStringList findEmbeddedEmails(const QString& text)
+{
+    static const QRegularExpression re(R"([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})");
+    QStringList out;
+    auto it = re.globalMatch(text);
+    while (it.hasNext())
+    {
+        const QString m = it.next().captured(0);
+        if (!out.contains(m, Qt::CaseInsensitive))
+            out << m;
+    }
+    return out;
+}
+
+/// Tương tự findEmbeddedEmails() nhưng cho số điện thoại - cùng kiểu ký tự chấp nhận (chữ số + khoảng
+/// trắng/().-) với looksLikePhone() nhưng không neo ^$, đủ dài (>=8 chữ số) để giảm nhận nhầm số ngẫu nhiên.
+QStringList findEmbeddedPhones(const QString& text)
+{
+    static const QRegularExpression re(R"(\+?[0-9][0-9 ().\-]{6,17}[0-9])");
+    QStringList out;
+    auto it = re.globalMatch(text);
+    while (it.hasNext())
+    {
+        const QString m = it.next().captured(0).trimmed();
+        if (!out.contains(m))
+            out << m;
+    }
+    return out;
+}
 } // namespace
 
 QString QRPayload::typeName(QRContentType type)
@@ -225,6 +258,33 @@ QString QRPayload::makeVCard(const VCardInfo& info)
     return l.join("\r\n");
 }
 
+WifiInfo QRPayload::parseWifi(const QString& content)
+{
+    WifiInfo info;
+    const QString text = content.trimmed();
+    if (!text.startsWith("WIFI:", Qt::CaseInsensitive))
+        return info;
+
+    const QStringList parts = splitUnescaped(text.mid(5), ';');
+    for (const QString& part : parts)
+    {
+        if (part.size() < 2 || part[1] != ':')
+            continue;
+        const QString value = unescapeWifi(part.mid(2));
+        switch (part[0].toUpper().unicode())
+        {
+            case 'S': info.ssid = value; break;
+            // Trường P lặp lại (mã tự dựng/lỗi): giữ giá trị KHÁC RỖNG - cùng lý do đã áp dụng ở parse().
+            case 'P': if (!value.isEmpty()) info.password = value; break;
+            case 'T': info.security = value; break;
+            case 'H': info.hidden = value.compare("true", Qt::CaseInsensitive) == 0; break;
+        }
+    }
+    if (info.security.isEmpty())
+        info.security = "nopass";
+    return info;
+}
+
 ParsedPayload QRPayload::parse(const QString& content)
 {
     ParsedPayload p;
@@ -240,29 +300,12 @@ ParsedPayload QRPayload::parse(const QString& content)
     if (text.startsWith("WIFI:", Qt::CaseInsensitive))
     {
         setType(QRContentType::Wifi);
-        const QStringList parts = splitUnescaped(text.mid(5), ';');
-        QString ssid, pass, sec, hidden;
-        for (const QString& part : parts)
-        {
-            if (part.size() < 2 || part[1] != ':')
-                continue;
-            const QString value = unescapeWifi(part.mid(2));
-            switch (part[0].toUpper().unicode())
-            {
-                case 'S': ssid = value; break;
-                // Trường P lặp lại (mã tự dựng/lỗi): giữ giá trị KHÁC RỖNG. Trước đây trường sau luôn thắng -
-                // "P:<mật khẩu>;P:;" cho ra mật khẩu rỗng, secretField = -1, và giao diện (dựa vào secretField
-                // để che) hiện nguyên văn chuỗi gốc CÒN mật khẩu ở ô "nội dung gốc".
-                case 'P': if (!value.isEmpty()) pass = value; break;
-                case 'T': sec = value; break;
-                case 'H': hidden = value; break;
-            }
-        }
-        p.fields << qMakePair(QString("Tên mạng (SSID)"), ssid)
-                 << qMakePair(QString("Bảo mật"), sec.isEmpty() ? QString("nopass") : sec)
-                 << qMakePair(QString("Mật khẩu"), pass)
-                 << qMakePair(QString("Mạng ẩn"), hidden.compare("true", Qt::CaseInsensitive) == 0 ? QString("Có") : QString("Không"));
-        if (!pass.isEmpty())
+        const WifiInfo w = parseWifi(text);
+        p.fields << qMakePair(QString("Tên mạng (SSID)"), w.ssid)
+                 << qMakePair(QString("Bảo mật"), w.security)
+                 << qMakePair(QString("Mật khẩu"), w.password)
+                 << qMakePair(QString("Mạng ẩn"), w.hidden ? QString("Có") : QString("Không"));
+        if (!w.password.isEmpty())
             p.secretField = 2; // "Mật khẩu" - giao diện che mặc định
         return p;
     }
@@ -427,7 +470,9 @@ ParsedPayload QRPayload::parse(const QString& content)
         p.fields << qMakePair(QString("Vĩ độ"), c.value(0)) << qMakePair(QString("Kinh độ"), c.value(1));
         if (okLat && okLon)
         {
-            p.actionUrl = QString("https://www.openstreetmap.org/?mlat=%1&mlon=%2#map=17/%1/%2").arg(lat, 0, 'f', 6).arg(lon, 0, 'f', 6);
+            // Google Maps (yêu cầu người dùng) - cú pháp URL chính thức của Google cho việc mở một tọa độ,
+            // hoạt động trên cả trình duyệt desktop lẫn tự mở app Google Maps trên di động nếu có cài.
+            p.actionUrl = QString("https://www.google.com/maps/search/?api=1&query=%1,%2").arg(lat, 0, 'f', 6).arg(lon, 0, 'f', 6);
             p.actionLabel = "Mở bản đồ";
         }
         return p;
@@ -458,6 +503,16 @@ ParsedPayload QRPayload::parse(const QString& content)
         p.fields << qMakePair(QString("Số điện thoại"), text);
         return p;
     }
+
+    // Văn bản tự do (không khớp bất kỳ loại cụ thể nào ở trên) - vẫn tìm thêm email/SĐT RẢI RÁC bên trong
+    // (khác hẳn looksLikeEmail/looksLikePhone chỉ khớp khi CẢ chuỗi là một email/SĐT trần) để người dùng
+    // không phải tự đọc dò trong đoạn văn bản dài.
+    const QStringList embeddedEmails = findEmbeddedEmails(text);
+    const QStringList embeddedPhones = findEmbeddedPhones(text);
+    if (!embeddedEmails.isEmpty())
+        p.fields << qMakePair(QString("📧 Email phát hiện trong văn bản"), embeddedEmails.join(", "));
+    if (!embeddedPhones.isEmpty())
+        p.fields << qMakePair(QString("📞 SĐT phát hiện trong văn bản"), embeddedPhones.join(", "));
 
     p.fields << qMakePair(QString("Nội dung"), content);
     return p;

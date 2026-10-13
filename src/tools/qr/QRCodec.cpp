@@ -417,8 +417,10 @@ QString QRCodec::toSvg(const QRMatrix& matrix, const QRStyle& style)
     return svg;
 }
 
-QList<QRDecoded> QRCodec::decode(const QImage& image)
+QList<QRDecoded> QRCodec::decode(const QImage& image, int* undecodedCount)
 {
+    if (undecodedCount)
+        *undecodedCount = 0;
     if (image.isNull())
         return {};
 
@@ -441,6 +443,12 @@ QList<QRDecoded> QRCodec::decode(const QImage& image)
         passes.push_back({3.0, false});
     if (std::max(base.width(), base.height()) > 800)
         passes.push_back({0.5, true});
+    // ĐÃ THỬ thêm 2 tỉ lệ "ở giữa" (0.75x/1.5x) để nâng khả năng nhận diện ảnh chụp màn hình - đo thật
+    // bằng qrwifi_stress_tests cho thấy chi phí RÕ RỆT (decode() nằm trên đường nóng: mỗi lần xem trước ở
+    // tab Tạo đều tự giải mã lại để xác minh, scanImage() cũng gọi decode()) trong khi lợi ích chưa từng
+    // được xác nhận THẬT trên một ảnh cụ thể bị quét hỏng - bỏ lại theo đúng nguyên tắc "xác nhận thật,
+    // không đoán", chỉ giữ phần đã xác nhận rõ ràng (phân biệt thông báo lỗi, xem presentResults() ở
+    // QRScanTab.cpp).
 
     // Trước đây trả về NGAY ở lượt đầu tiên có kết quả - nếu lượt đó nhìn thấy 2 mã nhưng chỉ đọc được 1
     // (mã kia quá nhỏ/mờ ở tỉ lệ này) thì mã còn lại bị bỏ sót hẳn dù một lượt phóng to/thu nhỏ đọc được.
@@ -450,6 +458,7 @@ QList<QRDecoded> QRCodec::decode(const QImage& image)
     QList<QRDecoded> all;
     bool partial = false;
     bool partialInvert = false;
+    int maxUndecoded = 0; // số lưới NHÌN THẤY nhưng không đọc được, lớn nhất qua các lượt đã thử
 
     for (const Pass& pass : passes)
     {
@@ -470,6 +479,7 @@ QList<QRDecoded> QRCodec::decode(const QImage& image)
         const QImage padded = padWhite(work, pad);
         int undecoded = 0;
         const QList<QRDecoded> found = decodeGray(padded, pass.scale * baseScale, pad, &undecoded);
+        maxUndecoded = std::max(maxUndecoded, undecoded);
         for (const QRDecoded& d : found)
         {
             const bool dup = std::any_of(all.begin(), all.end(),
@@ -479,13 +489,19 @@ QList<QRDecoded> QRCodec::decode(const QImage& image)
         }
 
         if (!found.isEmpty() && undecoded == 0)
+        {
+            if (undecodedCount)
+                *undecodedCount = maxUndecoded;
             return all;
+        }
         if (!all.isEmpty() && !partial)
         {
             partial = true;
             partialInvert = pass.invert;
         }
     }
+    if (undecodedCount)
+        *undecodedCount = maxUndecoded;
     return all;
 }
 

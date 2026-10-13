@@ -85,6 +85,10 @@ public:
 
     // ---- Phân tích nội dung quét được ----
     static ParsedPayload parse(const QString& content);
+    /// Phân tích RIÊNG một chuỗi "WIFI:..." thành WifiInfo có cấu trúc (khác parse() trả về danh sách
+    /// (nhãn, giá trị) để HIỂN THỊ) - dùng khi cần SSID/mật khẩu/bảo mật tách bạch để LÀM GÌ ĐÓ với nó (vd
+    /// nút "Kết nối WiFi" ở QRScanTab). Trả về WifiInfo rỗng (ssid rỗng) nếu content không đúng định dạng.
+    static WifiInfo parseWifi(const QString& content);
 
     /// Bản để HIỂN THỊ của nội dung: nếu là payload WIFI: có mật khẩu thì thay giá trị P: bằng dấu chấm
     /// (••••••••), mọi phần khác giữ nguyên; nội dung loại khác trả về nguyên văn. Dùng cho danh sách kết

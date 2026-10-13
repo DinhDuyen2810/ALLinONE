@@ -14,11 +14,16 @@ Từ bản 1.19.0, toàn bộ dữ liệu dưới đây nằm trong thư mục r
 này - muốn xóa sạch dữ liệu, tự xóa thư mục đó.
 - **Auto Click**: chuỗi hành động tự động hóa bạn tạo (`profiles\default.json`). Nội dung bạn nhập cho hành
   động "Gõ văn bản" được lưu dạng chữ thường trong tệp này - đừng đặt mật khẩu quan trọng vào đó. Hành động
-  **"Ghi nhớ chuỗi"** (từ bản 1.19.12) ghi lại TOÀN BỘ thao tác chuột+bàn phím thật của bạn trên **toàn bộ
+  **"Ghi nhớ chuỗi"** (từ bản 1.19.11) ghi lại TOÀN BỘ thao tác chuột+bàn phím thật của bạn trên **toàn bộ
   máy** (không giới hạn trong cửa sổ One for ALL) trong lúc đang ghi - có thể gồm mật khẩu nếu bạn gõ trong
   lúc đó. Dữ liệu ghi được chỉ lưu vào tệp hồ sơ cục bộ này, không gửi đi đâu; ứng dụng luôn hỏi xác nhận
   trước khi bắt đầu ghi mỗi lần.
 - **QR Tools**: lịch sử quét/tạo mã QR (`profiles\qr_history.json`), gồm cả nội dung mã WiFi bạn đã tạo/quét.
+  Từ bản 1.19.12: quét được mã QR WiFi có thể bấm "Kết nối WiFi" ngay (dùng lại đúng API WLAN/hộp thoại của
+  module WiFi Connection, đúng MỘT mật khẩu lấy từ chính mã QR, không dò/thử gì thêm); tạo mã QR WiFi có thể
+  chọn nhanh từ hồ sơ WiFi đã lưu trên máy (đọc trực tiếp từ Windows, không gửi đi đâu); tạo mã QR Vị trí có
+  nút "Lấy vị trí hiện tại" gọi dịch vụ `ipwho.is` để ước lượng tọa độ theo IP công khai (xem bảng bên dưới);
+  dán link Google Maps chỉ đọc tọa độ từ chuỗi bạn dán, không gọi mạng.
 - **Connect Together**: danh sách thiết bị đã ghép đôi + khóa dài hạn của từng cặp máy
   (`profiles\connect_peers.json`, khóa được bảo vệ bằng Windows DPAPI theo tài khoản của bạn), định danh máy
   bạn tự sinh ngẫu nhiên (`profiles\connect_identity.json`, không gắn với danh tính thật).
@@ -35,7 +40,8 @@ phải máy chủ của nhóm phát triển, và chỉ gọi khi bạn chủ đ�
 | Tính năng | Gọi tới đâu | Dữ liệu gửi đi |
 |---|---|---|
 | Tự kiểm tra bản cập nhật (1 lần/lúc mở ứng dụng) | GitHub Releases API (`api.github.com`); khi bạn bấm "Cập nhật ngay" thì tải tệp cài đặt từ `github.com` | Không gì ngoài yêu cầu HTTP tiêu chuẩn (không gửi kèm thông tin máy/định danh) |
-| VPN & Location - xem vị trí theo IP | `ipwho.is` (dịch vụ tra cứu IP công khai) | Địa chỉ IP công khai hiện tại của bạn (vốn đã lộ với MỌI trang web bạn truy cập, không riêng gì tính năng này) |
+| VPN & Location - xem vị trí theo IP; QR Tools - nút "Lấy vị trí hiện tại" khi tạo mã QR Vị trí | `ipwho.is` (dịch vụ tra cứu IP công khai) | Địa chỉ IP công khai hiện tại của bạn (vốn đã lộ với MỌI trang web bạn truy cập, không riêng gì tính năng này) |
+| QR Tools - nút "Mở bản đồ" cho mã QR Vị trí | `google.com/maps` (mở bằng trình duyệt mặc định của bạn, không gọi ngầm) | Tọa độ nằm trong đường dẫn được mở - giống bấm vào bất kỳ liên kết Google Maps nào khác |
 | WiFi - đo tốc độ mạng | `speed.cloudflare.com` | Dữ liệu đo tốc độ tiêu chuẩn (giống mọi công cụ speedtest khác) |
 | Downloader - tải trực tiếp/quét trang/video nền tảng | URL/trang web do CHÍNH BẠN nhập | Yêu cầu HTTP tới đúng địa chỉ bạn dán vào |
 | Android Phone Control, Connect Together | Thiết bị/máy khác trên mạng LAN của bạn (không qua Internet) | Dữ liệu điều khiển/màn hình - không rời khỏi mạng cục bộ |
