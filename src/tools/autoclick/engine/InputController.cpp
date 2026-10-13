@@ -400,3 +400,66 @@ void InputController::scroll(ScrollDirection direction, int amount, std::chrono:
         }
     }
 }
+
+void InputController::keyDown(int keyCode)
+{
+    INPUT input = makeKeyInput(keyCode, false);
+    sendInputs(&input, 1, "Nhấn giữ phím (SendInput)");
+}
+
+void InputController::keyUp(int keyCode)
+{
+    INPUT input = makeKeyInput(keyCode, true);
+    sendInputs(&input, 1, "Nhả phím (SendInput)");
+}
+
+void InputController::mouseWheelTick(int delta, bool horizontal)
+{
+    INPUT input = {0};
+    input.type = INPUT_MOUSE;
+    input.mi.dwFlags = horizontal ? 0x01000 /* MOUSEEVENTF_HWHEEL */ : MOUSEEVENTF_WHEEL;
+    input.mi.mouseData = static_cast<DWORD>(delta);
+    sendInputs(&input, 1, "Cuộn chuột (SendInput)");
+}
+
+void InputController::replayRecordedEvents(const std::vector<RecordedEvent>& events, const std::atomic_bool* stopFlag)
+{
+    for (const auto& ev : events)
+    {
+        if (stopRequested(stopFlag))
+            return;
+        // delayMs tính từ sự kiện NGAY TRƯỚC nó (xem RecordedEvent) - chờ đúng khoảng này rồi mới thực
+        // hiện, dùng sleepFor() có kiểm tra stopFlag mỗi ≤50ms để Dừng vẫn ngắt được giữa chừng.
+        if (ev.delayMs > 0 && !sleepFor(std::chrono::milliseconds(ev.delayMs), stopFlag))
+            return;
+        if (stopRequested(stopFlag))
+            return;
+
+        switch (ev.type)
+        {
+            case RecordedEventType::MouseMove:
+                moveMouse(ev.x, ev.y);
+                break;
+            case RecordedEventType::MouseDown:
+                mouseDown(ev.button);
+                break;
+            case RecordedEventType::MouseUp:
+                mouseUp(ev.button);
+                break;
+            case RecordedEventType::MouseWheel:
+                mouseWheelTick(ev.wheelDelta, ev.wheelHorizontal);
+                break;
+            case RecordedEventType::KeyDown:
+                keyDown(ev.keyCode);
+                break;
+            case RecordedEventType::KeyUp:
+                keyUp(ev.keyCode);
+                break;
+        }
+
+        // Windows đã từ chối một bước thì các bước sau nhiều khả năng cũng vậy (cùng lý do UIPI/màn hình
+        // khóa) - dừng sớm thay vì phát lại tiếp vào hư không, giống typeText()/scroll() ở trên.
+        if (hasError())
+            return;
+    }
+}

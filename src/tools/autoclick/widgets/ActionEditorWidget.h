@@ -24,11 +24,22 @@ public:
     void setAction(const Action& action, int actionIndex);
     Action getAction() const;
     void clear();
+    /// true nếu đang có thay đổi CHƯA bấm "Lưu hành động (Apply)" - AutoClickWindow dùng để cache lại
+    /// (getAction()) trước khi đổi hành động/chuỗi đang xem, không để mất ngầm (xem m_pendingEdits).
+    bool isDirty() const { return m_dirty; }
+    /// Chỉ số hành động ĐANG NẠP (tham số actionIndex của lần setAction() gần nhất) - DÙNG THAY
+    /// ActionListWidget::selectedActionIndex() khi cache chỉnh sửa dở: currentCellChanged của bảng đổi
+    /// SANG hàng mới TRƯỚC KHI slot xử lý chạy, nên lúc đó selectedActionIndex() đã là hàng MỚI chứ không
+    /// còn là hàng đang sửa dở cần cache - m_currentIndex chỉ đổi khi CHÍNH setAction() chạy, nên luôn đúng
+    /// là hàng mà nội dung editor hiện tại THỰC SỰ thuộc về.
+    int currentActionIndex() const { return m_currentIndex; }
 
 signals:
     void actionSaved(const Action& action, int actionIndex);
     void captureRequested(int targetField); // 0: Click/Hold; 3: Tổ hợp phím + Click chuột (field 1/2 không còn dùng)
     void dragGestureCaptureRequested(); // bắt trọn thao tác kéo thật (nhấn-kéo-thả), xem DragGestureCapture.h
+    /// Bấm "Bắt đầu ghi" ở trang "Ghi nhớ chuỗi" - xem capture/ActionRecorder.h.
+    void macroRecordRequested();
     /// Phát khi có thay đổi CHƯA LƯU (dirty=true) hoặc vừa lưu/nạp xong (dirty=false) - AutoClickWindow
     /// dùng để hiện dấu "*" ở dòng tương ứng trong ActionListWidget.
     void dirtyChanged(bool dirty);
@@ -36,6 +47,8 @@ signals:
 public slots:
     void onPositionCaptured(int x, int y);
     void onDragGestureCaptured(int startX, int startY, int endX, int endY);
+    /// AutoClickWindow gọi khi ActionRecorder ghi xong (dù bởi nút Dừng hay trần an toàn số sự kiện).
+    void onMacroRecorded(const std::vector<RecordedEvent>& events);
 
 protected:
     void hideEvent(QHideEvent* event) override;
@@ -49,6 +62,7 @@ private:
     void setupUi();
     void connectDirtyTracking();
     void cancelHotkeyCapture();
+    void refreshRecordMacroStatusLabel();
     /// Chọn phím `vkCode` trong combo phím; nếu phím đó KHÔNG có trong danh sách hỗ trợ sẵn thì thêm một
     /// mục tạm "(phím khác: ...)" giữ nguyên mã + tên gốc, xem setAction().
     static void selectKeyInCombo(QComboBox* combo, int vkCode, const QString& keyName);
@@ -60,6 +74,7 @@ private:
     QWidget* createHotkeyPage();
     QWidget* createKeyPressPage();
     QWidget* createScrollPage();
+    QWidget* createRecordedMacroPage();
 
     int m_currentIndex{-1};
     int m_capturingField{0}; // 0: X,Y (Click/Hold); 3: X,Y (Tổ hợp phím + Click chuột)
@@ -135,6 +150,12 @@ private:
     // Scroll widgets
     QComboBox* m_scrollDirectionCombo;
     QSpinBox* m_scrollAmountSpin;
+
+    // Ghi nhớ chuỗi (RecordedMacro) widgets - không có control nào cho TỪNG sự kiện, chỉ 1 nút ghi + 1
+    // label trạng thái; dữ liệu thật nằm trong m_recordedEvents, xem onMacroRecorded()/setAction()/getAction().
+    QPushButton* m_recordMacroBtn;
+    QLabel* m_recordMacroStatusLabel;
+    std::vector<RecordedEvent> m_recordedEvents;
 
     QPushButton* m_applyButton;
 };

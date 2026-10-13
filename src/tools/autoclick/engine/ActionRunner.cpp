@@ -167,6 +167,10 @@ bool ActionRunner::executeAction(const Action& action)
         case ActionType::Scroll:
             m_inputController->scroll(action.scrollDirection, action.scrollAmount, action.duration, &m_stopRequested);
             break;
+
+        case ActionType::RecordedMacro:
+            m_inputController->replayRecordedEvents(action.recordedEvents, &m_stopRequested);
+            break;
     }
 
     return !m_inputController->hasError();
@@ -238,6 +242,21 @@ void ActionRunner::run()
             {
                 targetX = act.startX;
                 targetY = act.startY;
+            }
+            else if (act.type == ActionType::RecordedMacro)
+            {
+                // Macro di chuyển qua nhiều điểm - không có 1 tọa độ "đúng" duy nhất để né, lấy tạm điểm
+                // chuột ĐẦU TIÊN trong chuỗi đã ghi (gần đúng, chỉ ảnh hưởng vị trí HUD né chuột, không
+                // ảnh hưởng độ chính xác phát lại).
+                for (const auto& ev : act.recordedEvents)
+                {
+                    if (ev.type == RecordedEventType::MouseMove || ev.type == RecordedEventType::MouseDown)
+                    {
+                        targetX = ev.x;
+                        targetY = ev.y;
+                        break;
+                    }
+                }
             }
 
             emit actionStarted(currentRound, totalRounds, static_cast<int>(i + 1), static_cast<int>(enabledIndices.size()),

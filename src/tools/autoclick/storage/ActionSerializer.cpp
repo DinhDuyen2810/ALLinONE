@@ -61,26 +61,53 @@ static QString actionTypeToString(ActionType type)
 {
     switch (type)
     {
-        case ActionType::MouseClick: return "MouseClick";
-        case ActionType::MouseDrag:  return "MouseDrag";
-        case ActionType::MouseHold:  return "MouseHold";
-        case ActionType::TypeText:   return "TypeText";
-        case ActionType::Hotkey:     return "Hotkey";
-        case ActionType::KeyPress:   return "KeyPress";
-        case ActionType::Scroll:     return "Scroll";
+        case ActionType::MouseClick:   return "MouseClick";
+        case ActionType::MouseDrag:    return "MouseDrag";
+        case ActionType::MouseHold:    return "MouseHold";
+        case ActionType::TypeText:     return "TypeText";
+        case ActionType::Hotkey:       return "Hotkey";
+        case ActionType::KeyPress:     return "KeyPress";
+        case ActionType::Scroll:       return "Scroll";
+        case ActionType::RecordedMacro: return "RecordedMacro";
     }
     return "MouseClick";
 }
 
 static ActionType stringToActionType(const QString& str)
 {
-    if (str == "MouseDrag") return ActionType::MouseDrag;
-    if (str == "MouseHold") return ActionType::MouseHold;
-    if (str == "TypeText")  return ActionType::TypeText;
-    if (str == "Hotkey")    return ActionType::Hotkey;
-    if (str == "KeyPress")  return ActionType::KeyPress;
-    if (str == "Scroll")    return ActionType::Scroll;
+    if (str == "MouseDrag")     return ActionType::MouseDrag;
+    if (str == "MouseHold")     return ActionType::MouseHold;
+    if (str == "TypeText")      return ActionType::TypeText;
+    if (str == "Hotkey")        return ActionType::Hotkey;
+    if (str == "KeyPress")      return ActionType::KeyPress;
+    if (str == "Scroll")        return ActionType::Scroll;
+    if (str == "RecordedMacro") return ActionType::RecordedMacro;
     return ActionType::MouseClick;
+}
+
+static QString recordedEventTypeToString(RecordedEventType type)
+{
+    switch (type)
+    {
+        case RecordedEventType::MouseMove:  return "MouseMove";
+        case RecordedEventType::MouseDown:  return "MouseDown";
+        case RecordedEventType::MouseUp:    return "MouseUp";
+        case RecordedEventType::MouseWheel: return "MouseWheel";
+        case RecordedEventType::KeyDown:    return "KeyDown";
+        case RecordedEventType::KeyUp:      return "KeyUp";
+    }
+    return "MouseMove";
+}
+
+static bool stringToRecordedEventType(const QString& s, RecordedEventType& out)
+{
+    if (s == "MouseMove")  { out = RecordedEventType::MouseMove;  return true; }
+    if (s == "MouseDown")  { out = RecordedEventType::MouseDown;  return true; }
+    if (s == "MouseUp")    { out = RecordedEventType::MouseUp;    return true; }
+    if (s == "MouseWheel") { out = RecordedEventType::MouseWheel; return true; }
+    if (s == "KeyDown")    { out = RecordedEventType::KeyDown;    return true; }
+    if (s == "KeyUp")      { out = RecordedEventType::KeyUp;      return true; }
+    return false;
 }
 
 QString ActionSerializer::toJsonString(const std::vector<ActionChain>& chains)
@@ -137,6 +164,39 @@ QString ActionSerializer::toJsonString(const std::vector<ActionChain>& chains)
 
             actObj["scrollDirection"] = static_cast<int>(action.scrollDirection);
             actObj["scrollAmount"] = action.scrollAmount;
+
+            // Mảng có thể rất dài (hàng nghìn sự kiện) - chỉ ghi field LIÊN QUAN tới từng type cho gọn,
+            // khác cách ghi phẳng hết mọi field ở cấp Action phía trên.
+            QJsonArray recordedEventsArr;
+            for (const auto& ev : action.recordedEvents)
+            {
+                QJsonObject evObj;
+                evObj["type"] = recordedEventTypeToString(ev.type);
+                evObj["delayMs"] = static_cast<qint64>(ev.delayMs);
+                switch (ev.type)
+                {
+                    case RecordedEventType::MouseMove:
+                    case RecordedEventType::MouseDown:
+                    case RecordedEventType::MouseUp:
+                        evObj["x"] = ev.x;
+                        evObj["y"] = ev.y;
+                        if (ev.type != RecordedEventType::MouseMove)
+                            evObj["button"] = static_cast<int>(ev.button);
+                        break;
+                    case RecordedEventType::MouseWheel:
+                        evObj["x"] = ev.x;
+                        evObj["y"] = ev.y;
+                        evObj["wheelDelta"] = ev.wheelDelta;
+                        evObj["wheelHorizontal"] = ev.wheelHorizontal;
+                        break;
+                    case RecordedEventType::KeyDown:
+                    case RecordedEventType::KeyUp:
+                        evObj["keyCode"] = ev.keyCode;
+                        break;
+                }
+                recordedEventsArr.append(evObj);
+            }
+            actObj["recordedEvents"] = recordedEventsArr;
 
             actionsArr.append(actObj);
         }
@@ -239,6 +299,30 @@ bool ActionSerializer::fromJsonString(const QString& jsonStr, std::vector<Action
 
             action.scrollDirection = static_cast<ScrollDirection>(clampInt(actObj["scrollDirection"].toInt(0), 0, 3));
             action.scrollAmount = actObj["scrollAmount"].toInt(5);
+
+            // Thiếu key (hồ sơ cũ trước khi có "Ghi nhớ chuỗi") -> rỗng, không lỗi. Mỗi phần tử trong mảng
+            // validate RIÊNG - type lạ/field thiếu thì bỏ qua đúng phần tử đó, không làm hỏng cả hồ sơ.
+            if (actObj["recordedEvents"].isArray())
+            {
+                for (const auto& evVal : actObj["recordedEvents"].toArray())
+                {
+                    if (!evVal.isObject())
+                        continue;
+                    QJsonObject evObj = evVal.toObject();
+                    RecordedEvent ev;
+                    if (!stringToRecordedEventType(evObj["type"].toString(), ev.type))
+                        continue;
+                    // Một giá trị delayMs hỏng/ác ý không được tạo ra một bước chờ cả ngày lúc phát lại.
+                    ev.delayMs = clampInt(static_cast<int>(evObj["delayMs"].toDouble(0)), 0, 60000);
+                    ev.x = clampInt(evObj["x"].toInt(0), kMinScreenCoord, kMaxScreenCoord);
+                    ev.y = clampInt(evObj["y"].toInt(0), kMinScreenCoord, kMaxScreenCoord);
+                    ev.button = static_cast<MouseButtonType>(clampInt(evObj["button"].toInt(0), 0, 2));
+                    ev.wheelDelta = evObj["wheelDelta"].toInt(0);
+                    ev.wheelHorizontal = evObj["wheelHorizontal"].toBool(false);
+                    ev.keyCode = evObj["keyCode"].toInt(0);
+                    action.recordedEvents.push_back(ev);
+                }
+            }
 
             chain.actions.push_back(action);
         }

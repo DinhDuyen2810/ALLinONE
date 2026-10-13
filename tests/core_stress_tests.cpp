@@ -1528,6 +1528,62 @@ void fuzzHelperScript()
 // 5. Auto Click: ActionSerializer
 // =====================================================================================================
 
+// Chỉ gán field LIÊN QUAN tới `type` đã chọn (các field khác giữ nguyên giá trị mặc định của
+// RecordedEvent) - ActionSerializer chỉ GHI field liên quan tới type cho gọn (mảng có thể rất dài), đọc
+// lại field vắng mặt luôn ra giá trị mặc định giống hệt - khớp đúng hành vi đó thì khứ hồi mới chính xác
+// (khác hẳn randomAction() bên dưới: Action luôn ghi phẳng HẾT mọi field bất kể type).
+RecordedEvent randomRecordedEvent(std::mt19937& rng)
+{
+    const auto anyInt = [&]() {
+        switch (rndIn(rng, 0, 5))
+        {
+            case 0: return 0;
+            case 1: return INT_MAX;
+            case 2: return INT_MIN;
+            case 3: return -1;
+            default: return rndIn(rng, -40000, 40000);
+        }
+    };
+    const auto coord = [&]() {
+        switch (rndIn(rng, 0, 4))
+        {
+            case 0: return -32768;
+            case 1: return 32767;
+            default: return rndIn(rng, -32768, 32767);
+        }
+    };
+    RecordedEvent ev;
+    ev.type = static_cast<RecordedEventType>(rndIn(rng, 0, 5));
+    // delayMs: khớp trần clamp [0, 60000] mà ActionSerializer::fromJsonString áp mỗi phần tử - sinh ngoài
+    // miền này thì khứ hồi KHÔNG BAO GIỜ chính xác (có bộ test riêng cho trường hợp bị kẹp, xem
+    // autoclick_tests.cpp), ở đây chỉ cần giá trị hợp lệ để fuzz tự do mọi field khác.
+    ev.delayMs = rndIn(rng, 0, 60000);
+    switch (ev.type)
+    {
+        case RecordedEventType::MouseMove:
+            ev.x = coord();
+            ev.y = coord();
+            break;
+        case RecordedEventType::MouseDown:
+        case RecordedEventType::MouseUp:
+            ev.x = coord();
+            ev.y = coord();
+            ev.button = static_cast<MouseButtonType>(rndIn(rng, 0, 2));
+            break;
+        case RecordedEventType::MouseWheel:
+            ev.x = coord();
+            ev.y = coord();
+            ev.wheelDelta = anyInt();
+            ev.wheelHorizontal = rndIn(rng, 0, 1);
+            break;
+        case RecordedEventType::KeyDown:
+        case RecordedEventType::KeyUp:
+            ev.keyCode = anyInt();
+            break;
+    }
+    return ev;
+}
+
 Action randomAction(std::mt19937& rng)
 {
     const auto anyInt = [&]() {
@@ -1541,7 +1597,7 @@ Action randomAction(std::mt19937& rng)
         }
     };
     Action a;
-    a.type = static_cast<ActionType>(rndIn(rng, 0, 6));
+    a.type = static_cast<ActionType>(rndIn(rng, 0, 7)); // 0..7: CẢ RecordedMacro (cuối enum)
     a.enabled = rndIn(rng, 0, 1);
     a.waitBefore = std::chrono::milliseconds(rndIn(rng, 0, 3600000));
     a.waitAfter = std::chrono::milliseconds(rndIn(rng, 0, 3600000));
@@ -1573,17 +1629,34 @@ Action randomAction(std::mt19937& rng)
     a.modWin = rndIn(rng, 0, 1);
     a.scrollDirection = static_cast<ScrollDirection>(rndIn(rng, 0, 3));
     a.scrollAmount = anyInt();
+    // Ghi phẳng bất kể type (giống mọi field khác ở trên) - ActionSerializer ghi/đọc recordedEvents cho
+    // MỌI Action, không chỉ RecordedMacro, xem randomRecordedEvent() ở trên.
+    const int eventCount = rndIn(rng, 0, 4);
+    for (int i = 0; i < eventCount; ++i)
+        a.recordedEvents.push_back(randomRecordedEvent(rng));
     return a;
+}
+
+bool sameRecordedEvent(const RecordedEvent& a, const RecordedEvent& b)
+{
+    return a.type == b.type && a.delayMs == b.delayMs && a.x == b.x && a.y == b.y && a.button == b.button &&
+           a.wheelDelta == b.wheelDelta && a.wheelHorizontal == b.wheelHorizontal && a.keyCode == b.keyCode;
 }
 
 bool sameAction(const Action& a, const Action& b)
 {
-    return a.type == b.type && a.enabled == b.enabled && a.waitBefore == b.waitBefore && a.waitAfter == b.waitAfter &&
-           a.duration == b.duration && a.x == b.x && a.y == b.y && a.startX == b.startX && a.startY == b.startY &&
-           a.endX == b.endX && a.endY == b.endY && a.mouseButton == b.mouseButton && a.text == b.text &&
-           a.textMode == b.textMode && a.keyCode == b.keyCode && a.keyName == b.keyName && a.modCtrl == b.modCtrl &&
-           a.modAlt == b.modAlt && a.modShift == b.modShift && a.modWin == b.modWin &&
-           a.scrollDirection == b.scrollDirection && a.scrollAmount == b.scrollAmount;
+    if (a.type != b.type || a.enabled != b.enabled || a.waitBefore != b.waitBefore || a.waitAfter != b.waitAfter ||
+        a.duration != b.duration || a.x != b.x || a.y != b.y || a.startX != b.startX || a.startY != b.startY ||
+        a.endX != b.endX || a.endY != b.endY || a.mouseButton != b.mouseButton || a.text != b.text ||
+        a.textMode != b.textMode || a.keyCode != b.keyCode || a.keyName != b.keyName || a.modCtrl != b.modCtrl ||
+        a.modAlt != b.modAlt || a.modShift != b.modShift || a.modWin != b.modWin ||
+        a.scrollDirection != b.scrollDirection || a.scrollAmount != b.scrollAmount ||
+        a.recordedEvents.size() != b.recordedEvents.size())
+        return false;
+    for (size_t i = 0; i < a.recordedEvents.size(); ++i)
+        if (!sameRecordedEvent(a.recordedEvents[i], b.recordedEvents[i]))
+            return false;
+    return true;
 }
 
 bool sameChains(const std::vector<ActionChain>& a, const std::vector<ActionChain>& b)
@@ -1689,7 +1762,7 @@ void fuzzActionSerializer()
                 {
                     const int type = static_cast<int>(a.type), button = static_cast<int>(a.mouseButton);
                     const int mode = static_cast<int>(a.textMode), dir = static_cast<int>(a.scrollDirection);
-                    if (type < 0 || type > 6 || button < 0 || button > 2 || mode < 0 || mode > 1 || dir < 0 || dir > 3) ++outOfDomain;
+                    if (type < 0 || type > 7 || button < 0 || button > 2 || mode < 0 || mode > 1 || dir < 0 || dir > 3) ++outOfDomain; // 7 = RecordedMacro, cuối enum ActionType
                     // Thời gian âm/khổng lồ làm tràn phép cộng mốc thời gian của ActionRunner/InputController.
                     for (const auto ms : {a.waitBefore.count(), a.waitAfter.count(), a.duration.count()})
                         if (ms < 0 || ms > INT_MAX) ++outOfDomain;

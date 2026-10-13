@@ -7,6 +7,7 @@
 #include <QGroupBox>
 #include <QHideEvent>
 #include <QScrollArea>
+#include <QMessageBox>
 #include <algorithm>
 
 // Miền tọa độ của các ô X/Y: toàn bộ màn hình ảo Windows (tọa độ 16-bit có dấu). Trước đây là ±10000 - ba
@@ -127,7 +128,7 @@ void ActionEditorWidget::setupUi()
     auto* typeLabel = new QLabel("Loại:", this);
     typeLabel->setStyleSheet("color: #1f2328; font-weight: bold; font-size: 12px;");
     m_typeCombo = new QComboBox(this);
-    m_typeCombo->addItems({"Click chuột", "Kéo chuột", "Giữ chuột", "Gõ văn bản", "Tổ hợp phím", "Nhấn phím", "Cuộn"});
+    m_typeCombo->addItems({"Click chuột", "Kéo chuột", "Giữ chuột", "Gõ văn bản", "Tổ hợp phím", "Nhấn phím", "Cuộn", "Ghi nhớ chuỗi"});
     m_typeCombo->setStyleSheet(
         "QComboBox { background-color: #ffffff; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 6px 10px; font-size: 12px; }"
         "QComboBox:hover { border-color: #0969da; }"
@@ -152,9 +153,10 @@ void ActionEditorWidget::setupUi()
     QWidget* hotkeyPage = createHotkeyPage();
     QWidget* keyPressPage = createKeyPressPage();
     QWidget* scrollPage = createScrollPage();
+    QWidget* recordedMacroPage = createRecordedMacroPage();
 
     int widestPageWidth = 0;
-    for (QWidget* page : {clickPage, dragPage, holdPage, textPage, hotkeyPage, keyPressPage, scrollPage})
+    for (QWidget* page : {clickPage, dragPage, holdPage, textPage, hotkeyPage, keyPressPage, scrollPage, recordedMacroPage})
         widestPageWidth = std::max(widestPageWidth, page->sizeHint().width());
 
     m_pagesStack = new QStackedWidget(this);
@@ -165,6 +167,7 @@ void ActionEditorWidget::setupUi()
     m_pagesStack->addWidget(hotkeyPage);
     m_pagesStack->addWidget(keyPressPage);
     m_pagesStack->addWidget(scrollPage);
+    m_pagesStack->addWidget(recordedMacroPage); // PHẢI ở cuối - khớp ActionType::RecordedMacro cuối enum
     contentLayout->addWidget(m_pagesStack);
 
     // Common Timing Group
@@ -653,6 +656,44 @@ QWidget* ActionEditorWidget::createScrollPage()
     return w;
 }
 
+QWidget* ActionEditorWidget::createRecordedMacroPage()
+{
+    auto* w = new QWidget(this);
+    auto* layout = new QVBoxLayout(w);
+    layout->setContentsMargins(0, 6, 0, 6);
+    layout->setSpacing(8);
+
+    auto* hint = new QLabel(
+        "Ghi lại thao tác chuột+bàn phím THẬT rồi phát lại đúng thứ tự/nhịp. Bấm \"Bắt đầu ghi\": cửa sổ "
+        "tự thu nhỏ, mọi thao tác trên TOÀN BỘ máy được ghi tới khi bấm \"Kết thúc ghi\" ở minibox.", w);
+    hint->setWordWrap(true);
+    hint->setStyleSheet("color: #57606a; font-size: 11px;");
+    layout->addWidget(hint);
+
+    m_recordMacroBtn = new QPushButton("🔴 Bắt đầu ghi", w);
+    m_recordMacroBtn->setCursor(Qt::PointingHandCursor);
+    m_recordMacroBtn->setStyleSheet(
+        "QPushButton { background-color: #cf222e; color: white; border: none; border-radius: 8px; padding: 7px 12px; font-size: 12px; font-weight: bold; } "
+        "QPushButton:hover { background-color: #a40e26; }");
+    connect(m_recordMacroBtn, &QPushButton::clicked, this, [this]() {
+        const auto reply = QMessageBox::question(this, "Ghi nhớ chuỗi",
+            "Mọi thao tác chuột và bàn phím trên TOÀN BỘ máy sẽ được ghi lại cho tới khi bấm Dừng, kể cả "
+            "ở cửa sổ khác (có thể gồm mật khẩu nếu bạn gõ trong lúc ghi). Dữ liệu chỉ lưu trong hồ sơ cấu "
+            "hình trên máy này. Tiếp tục?",
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (reply == QMessageBox::Yes)
+            emit macroRecordRequested();
+    });
+    layout->addWidget(m_recordMacroBtn);
+
+    m_recordMacroStatusLabel = new QLabel("Chưa ghi gì.", w);
+    m_recordMacroStatusLabel->setWordWrap(true);
+    m_recordMacroStatusLabel->setStyleSheet("color: #1f2328; font-size: 12px; font-weight: 600;");
+    layout->addWidget(m_recordMacroStatusLabel);
+
+    return w;
+}
+
 void ActionEditorWidget::onTypeChanged(int index)
 {
     m_pagesStack->setCurrentIndex(index);
@@ -770,6 +811,9 @@ void ActionEditorWidget::setAction(const Action& action, int actionIndex)
     m_scrollDirectionCombo->setCurrentIndex(static_cast<int>(action.scrollDirection));
     m_scrollAmountSpin->setValue(action.scrollAmount);
 
+    m_recordedEvents = action.recordedEvents;
+    refreshRecordMacroStatusLabel();
+
     m_loadingAction = false;
     if (m_dirty)
     {
@@ -823,6 +867,8 @@ Action ActionEditorWidget::getAction() const
     act.scrollDirection = static_cast<ScrollDirection>(m_scrollDirectionCombo->currentIndex());
     act.scrollAmount = m_scrollAmountSpin->value();
 
+    act.recordedEvents = m_recordedEvents;
+
     act.hotkeyTrigger = static_cast<HotkeyTrigger>(m_hotkeyTriggerCombo->currentIndex());
     if (act.type == ActionType::Hotkey && act.hotkeyTrigger == HotkeyTrigger::Scroll)
     {
@@ -864,6 +910,27 @@ void ActionEditorWidget::onDragGestureCaptured(int startX, int startY, int endX,
     m_dragStartYSpin->setValue(startY);
     m_dragEndXSpin->setValue(endX);
     m_dragEndYSpin->setValue(endY);
+}
+
+void ActionEditorWidget::onMacroRecorded(const std::vector<RecordedEvent>& events)
+{
+    m_recordedEvents = events;
+    refreshRecordMacroStatusLabel();
+    markDirty();
+}
+
+void ActionEditorWidget::refreshRecordMacroStatusLabel()
+{
+    if (m_recordedEvents.empty())
+    {
+        m_recordMacroStatusLabel->setText("Chưa ghi gì.");
+        return;
+    }
+    qint64 totalMs = 0;
+    for (const auto& ev : m_recordedEvents)
+        totalMs += ev.delayMs;
+    m_recordMacroStatusLabel->setText(
+        QString("Đã ghi %1 bước (%2 giây).").arg(m_recordedEvents.size()).arg(totalMs / 1000.0, 0, 'f', 1));
 }
 
 void ActionEditorWidget::onApplyClicked()

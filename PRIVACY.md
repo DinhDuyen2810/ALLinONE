@@ -13,7 +13,11 @@ Từ bản 1.19.0, toàn bộ dữ liệu dưới đây nằm trong thư mục r
 `%LOCALAPPDATA%\OneForAll\` (thư mục con `profiles\` và `logs\`). Gỡ cài đặt ứng dụng KHÔNG xóa thư mục
 này - muốn xóa sạch dữ liệu, tự xóa thư mục đó.
 - **Auto Click**: chuỗi hành động tự động hóa bạn tạo (`profiles\default.json`). Nội dung bạn nhập cho hành
-  động "Gõ văn bản" được lưu dạng chữ thường trong tệp này - đừng đặt mật khẩu quan trọng vào đó.
+  động "Gõ văn bản" được lưu dạng chữ thường trong tệp này - đừng đặt mật khẩu quan trọng vào đó. Hành động
+  **"Ghi nhớ chuỗi"** (từ bản 1.19.12) ghi lại TOÀN BỘ thao tác chuột+bàn phím thật của bạn trên **toàn bộ
+  máy** (không giới hạn trong cửa sổ One for ALL) trong lúc đang ghi - có thể gồm mật khẩu nếu bạn gõ trong
+  lúc đó. Dữ liệu ghi được chỉ lưu vào tệp hồ sơ cục bộ này, không gửi đi đâu; ứng dụng luôn hỏi xác nhận
+  trước khi bắt đầu ghi mỗi lần.
 - **QR Tools**: lịch sử quét/tạo mã QR (`profiles\qr_history.json`), gồm cả nội dung mã WiFi bạn đã tạo/quét.
 - **Connect Together**: danh sách thiết bị đã ghép đôi + khóa dài hạn của từng cặp máy
   (`profiles\connect_peers.json`, khóa được bảo vệ bằng Windows DPAPI theo tài khoản của bạn), định danh máy

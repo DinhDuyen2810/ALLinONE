@@ -5,6 +5,7 @@
 #include "ui/widgets/ComboBoxStyle.h"
 
 #include <algorithm>
+#include <set>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QDateTime>
@@ -74,6 +75,49 @@ ActionChain makeDemoChain()
     defaultChain.actions = {a1, a2, a3, a4, a5};
     return defaultChain;
 }
+
+// --- Remap chỉ số của AutoClickWindow::m_pendingEdits khi danh sách hành động bị THÊM/XÓA/DỜI CHỖ - cùng
+// tinh thần "tính lại theo đúng phép hoán vị" đã dùng cho m_currentChainIndex/m_runningChainIndex ở
+// onChainMoved(), chỉ khác là áp dụng cho TỪNG KEY của một std::map thay vì một biến int đơn lẻ. ---
+
+/// Chèn 1 hành động MỚI tại idx (vd Nhân bản chèn ngay sau hàng gốc): mọi cache có chỉ số >= idx dồn lên 1.
+void remapPendingEditsInsert(std::map<int, Action>& edits, int idx)
+{
+    std::map<int, Action> remapped;
+    for (auto& kv : edits)
+        remapped[kv.first >= idx ? kv.first + 1 : kv.first] = std::move(kv.second);
+    edits = std::move(remapped);
+}
+
+/// Xóa hành động tại idx: bỏ cache của đúng idx đó (hàng không còn nữa), mọi chỉ số > idx dồn xuống 1.
+void remapPendingEditsErase(std::map<int, Action>& edits, int idx)
+{
+    std::map<int, Action> remapped;
+    for (auto& kv : edits)
+    {
+        if (kv.first == idx)
+            continue;
+        remapped[kv.first > idx ? kv.first - 1 : kv.first] = std::move(kv.second);
+    }
+    edits = std::move(remapped);
+}
+
+/// Dời 1 hành động từ chỉ số from sang to (kéo-thả, dùng std::rotate) - CÙNG công thức remap thủ công đã
+/// áp dụng cho m_currentChainIndex/m_runningChainIndex ở onChainMoved() (không phải trùng hợp: cùng một
+/// phép hoán vị std::rotate() nên công thức tính lại chỉ số luôn giống nhau).
+void remapPendingEditsMove(std::map<int, Action>& edits, int from, int to)
+{
+    auto remapIdx = [from, to](int idx) {
+        if (idx == from) return to;
+        if (from < to && idx > from && idx <= to) return idx - 1;
+        if (from > to && idx >= to && idx < from) return idx + 1;
+        return idx;
+    };
+    std::map<int, Action> remapped;
+    for (auto& kv : edits)
+        remapped[remapIdx(kv.first)] = std::move(kv.second);
+    edits = std::move(remapped);
+}
 } // namespace
 
 AutoClickWindow::AutoClickWindow(QWidget* parent)
@@ -81,6 +125,7 @@ AutoClickWindow::AutoClickWindow(QWidget* parent)
     , m_runner(new ActionRunner(this))
     , m_overlay(new RuntimeOverlay())
     , m_mouseCapture(new MouseCapture(this, this))
+    , m_actionRecorder(new ActionRecorder(this))
 {
     setupUi();
 
@@ -104,6 +149,11 @@ AutoClickWindow::AutoClickWindow(QWidget* parent)
         QMessageBox::warning(this, "Không bắt được thao tác", message);
     });
 
+    // Ghi nhớ chuỗi (RecordedMacro)
+    connect(m_actionEditorWidget, &ActionEditorWidget::macroRecordRequested, this, &AutoClickWindow::startMacroRecording);
+    connect(m_actionRecorder, &ActionRecorder::progressUpdated, this, &AutoClickWindow::onRecordingProgress);
+    connect(m_actionRecorder, &ActionRecorder::recordingFinished, this, &AutoClickWindow::onRecordingFinished);
+
     loadDefaultProfile();
 }
 
@@ -120,6 +170,27 @@ AutoClickWindow::~AutoClickWindow()
 
 void AutoClickWindow::closeEvent(QCloseEvent* event)
 {
+    if (!confirmPendingEditsBeforeLeaving("đóng cửa sổ"))
+    {
+        event->ignore();
+        return;
+    }
+
+    if (m_recordActive)
+    {
+        auto reply = QMessageBox::question(this, "Đang ghi chuỗi",
+                                           "Đang ghi lại chuỗi thao tác (Ghi nhớ chuỗi). Bạn có muốn kết thúc ghi và đóng cửa sổ?",
+                                           QMessageBox::Yes | QMessageBox::No);
+        if (reply != QMessageBox::Yes)
+        {
+            event->ignore();
+            return;
+        }
+        // Đồng bộ (gỡ hook ngay) - chỉ tín hiệu recordingFinished tới SAU qua hàng đợi, không chặn đóng
+        // cửa sổ (cửa sổ này chỉ ẨN đi, không hủy, xem ~AutoClickWindow()/kiến trúc ITool).
+        m_actionRecorder->stop();
+    }
+
     if (m_runner && m_runner->isRunning())
     {
         auto reply = QMessageBox::question(this, "Đang thực thi", "Chuỗi thao tác đang chạy. Bạn có muốn dừng lại và đóng cửa sổ?", QMessageBox::Yes | QMessageBox::No);
@@ -147,11 +218,18 @@ void AutoClickWindow::closeEvent(QCloseEvent* event)
 
 void AutoClickWindow::stopForQuit()
 {
+    // Thoát CẢ ứng dụng - không chặn bằng hộp thoại (có thể không ai còn ở đó để bấm), cứ áp dụng tạm mọi
+    // chỉnh sửa dở vào bộ nhớ (như tự bấm Apply) để không mất trắng, khác hẳn closeEvent() (có hỏi).
+    captureEditorIfDirty();
+    applyPendingEdits();
+
     if (m_runner && m_runner->isRunning())
     {
         m_runner->requestStop();
         m_runner->wait(2000); // có giới hạn - không được treo quá trình thoát ứng dụng
     }
+    if (m_recordActive)
+        m_actionRecorder->stop();
     unregisterStopHotkey();
     if (m_overlay) m_overlay->hide();
 }
@@ -202,6 +280,79 @@ void AutoClickWindow::noteActionsRestructured()
         m_runningChainRestructured = true;
         clearRunningMarker();
     }
+}
+
+void AutoClickWindow::captureEditorIfDirty()
+{
+    if (m_suppressPendingCapture)
+        return;
+    if (!m_actionEditorWidget->isDirty())
+        return;
+    // currentActionIndex() (không phải m_actionListWidget->selectedActionIndex()): khi hàm này chạy LAN
+    // TRUYỀN từ currentCellChanged của bảng, bảng đã đổi sang hàng MỚI rồi - selectedActionIndex() lúc đó
+    // trả về hàng MỚI chứ không còn là hàng đang sửa dở cần cache. currentActionIndex() chỉ đổi khi chính
+    // ActionEditorWidget::setAction() chạy, nên luôn khớp đúng hàng nội dung editor hiện tại thực sự thuộc về.
+    const int idx = m_actionEditorWidget->currentActionIndex();
+    if (idx < 0)
+        return;
+    m_pendingEdits[idx] = m_actionEditorWidget->getAction();
+    refreshDirtyMarkersFromPendingEdits();
+}
+
+void AutoClickWindow::applyPendingEdits()
+{
+    ActionChain* chain = currentChain();
+    if (chain)
+    {
+        for (const auto& kv : m_pendingEdits)
+        {
+            if (kv.first >= 0 && kv.first < static_cast<int>(chain->actions.size()))
+                chain->actions[kv.first] = kv.second;
+        }
+    }
+    m_pendingEdits.clear();
+    m_actionListWidget->setDirtyRows({}); // XÓA TRƯỚC khi setActions() vẽ lại - không để "*" hiện sai
+    if (chain)
+        m_actionListWidget->setActions(chain->actions);
+}
+
+void AutoClickWindow::discardPendingEdits()
+{
+    m_pendingEdits.clear();
+    m_actionListWidget->setDirtyRows({});
+    // Nạp lại editor từ dữ liệu THẬT (bỏ chỉnh sửa dở đang hiện, nếu có) cho hàng đang chọn.
+    ActionChain* chain = currentChain();
+    const int idx = m_actionListWidget->selectedActionIndex();
+    if (chain && idx >= 0 && idx < static_cast<int>(chain->actions.size()))
+        m_actionEditorWidget->setAction(chain->actions[idx], idx);
+}
+
+void AutoClickWindow::refreshDirtyMarkersFromPendingEdits()
+{
+    std::set<int> rows;
+    for (const auto& kv : m_pendingEdits)
+        rows.insert(kv.first);
+    m_actionListWidget->setDirtyRows(rows);
+}
+
+bool AutoClickWindow::confirmPendingEditsBeforeLeaving(const QString& actionLabel)
+{
+    captureEditorIfDirty();
+    if (!hasPendingEdits())
+        return true;
+
+    const auto reply = QMessageBox::question(this, "Có thay đổi chưa lưu",
+        QString("Có %1 hành động đang sửa dở chưa lưu. Lưu lại trước khi %2?")
+            .arg(m_pendingEdits.size())
+            .arg(actionLabel),
+        QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel, QMessageBox::Yes);
+    if (reply == QMessageBox::Cancel)
+        return false;
+    if (reply == QMessageBox::Yes)
+        applyPendingEdits();
+    else
+        discardPendingEdits();
+    return true;
 }
 
 #include "core/IconHelper.h"
@@ -441,6 +592,12 @@ void AutoClickWindow::syncUiWithCurrentChain()
 {
     ActionChain* chain = currentChain();
     m_syncingUi = true;
+    // Mọi nơi gọi hàm này (onChainSelected/onAddChain/onCloneChain/onDeleteChain/onImportProfile/
+    // loadDefaultProfile) đã TỰ xử lý capture/apply/clear m_pendingEdits của chain CŨ (nếu cần) TRƯỚC khi
+    // gọi - setSelectedActionIndex(0) bên dưới lan truyền qua onActionSelected() không được tự ý capture
+    // THÊM LẦN NỮA (sẽ ghi nhầm nội dung/chain cũ vào chain MỚI vừa chuyển sang, xem comment
+    // m_suppressPendingCapture).
+    m_suppressPendingCapture = true;
     // Dấu "▶ đang chạy" thuộc về chain đang chạy - chuyển sang xem chain khác thì bỏ (hàng cùng số thứ tự
     // của chain khác không phải hành động đang chạy).
     if (m_currentChainIndex != m_runningChainIndex)
@@ -475,6 +632,7 @@ void AutoClickWindow::syncUiWithCurrentChain()
         m_actionListWidget->setActions({});
         m_actionEditorWidget->clear();
     }
+    m_suppressPendingCapture = false;
     m_syncingUi = false;
 }
 
@@ -490,6 +648,11 @@ void AutoClickWindow::onChainSelected(int index)
 {
     if (index >= 0 && index < static_cast<int>(m_chains.size()))
     {
+        // Đổi sang XEM chain khác - tự áp dụng (không hỏi, giống bấm Apply) mọi chỉnh sửa dở của chain CŨ
+        // trước khi rời đi, để cache m_pendingEdits (chỉ gắn với MỘT chain đang xem) không mang sai sang
+        // chain mới. Chỉ RUN/đóng cửa sổ mới HỎI người dùng (xem confirmPendingEditsBeforeLeaving()).
+        captureEditorIfDirty();
+        applyPendingEdits();
         m_currentChainIndex = index;
         syncUiWithCurrentChain();
     }
@@ -497,6 +660,9 @@ void AutoClickWindow::onChainSelected(int index)
 
 void AutoClickWindow::onAddChain()
 {
+    captureEditorIfDirty();
+    applyPendingEdits();
+
     ActionChain chain;
     chain.id = "chain_" + std::to_string(m_chains.size() + 1);
     chain.name = "Chain Mới " + std::to_string(m_chains.size() + 1);
@@ -519,6 +685,8 @@ void AutoClickWindow::onCloneChain(int index)
 {
     if (index >= 0 && index < static_cast<int>(m_chains.size()))
     {
+        captureEditorIfDirty();
+        applyPendingEdits();
         ActionChain cloned = m_chains[index].clone();
         m_chains.push_back(cloned);
         const int newIndex = static_cast<int>(m_chains.size()) - 1; // biến cục bộ - xem onAddChain()
@@ -539,6 +707,8 @@ void AutoClickWindow::onDeleteChain(int index)
             return;
         }
 
+        captureEditorIfDirty();
+        applyPendingEdits();
         m_chains.erase(m_chains.begin() + index);
         // Chain đang chạy (ActionRunner giữ bản sao riêng nên vẫn chạy tiếp được) bị xóa hoặc bị dồn chỉ số.
         if (index == m_runningChainIndex)
@@ -622,9 +792,19 @@ void AutoClickWindow::onChainMoved(int from, int to)
 void AutoClickWindow::onActionSelected(int index)
 {
     ActionChain* chain = currentChain();
-    if (chain && index >= 0 && index < static_cast<int>(chain->actions.size()))
+    if (!chain)
+        return;
+    // Đổi hàng xem KHÔNG hỏi gì - chỉ cache lại hành động VỪA RỜI ĐI nếu đang sửa dở (yêu cầu người dùng:
+    // chỉ hỏi "có lưu không" lúc RUN hoặc đóng cửa sổ, xem confirmPendingEditsBeforeLeaving()).
+    captureEditorIfDirty();
+    if (index >= 0 && index < static_cast<int>(chain->actions.size()))
     {
-        m_actionEditorWidget->setAction(chain->actions[index], index);
+        // Hàng SẮP nạp có cache chưa lưu từ trước (đã từng sửa dở, rời đi, giờ quay lại) -> nạp đúng bản
+        // đang sửa dở đó, không nạp đè bằng dữ liệu gốc đã lưu.
+        auto it = m_pendingEdits.find(index);
+        m_actionEditorWidget->setAction(it != m_pendingEdits.end() ? it->second : chain->actions[index], index);
+        if (it != m_pendingEdits.end())
+            m_actionListWidget->setRowDirty(index, true); // setAction() vừa tự xóa dấu "*" - gắn lại
     }
 }
 
@@ -633,12 +813,18 @@ void AutoClickWindow::onAddAction()
     ActionChain* chain = currentChain();
     if (!chain) return;
 
+    captureEditorIfDirty(); // giữ cache hành động đang sửa dở (nếu có) trước khi nạp hành động MỚI vào editor
     noteActionsRestructured();
     Action newAct;
-    chain->actions.push_back(newAct);
+    chain->actions.push_back(newAct); // thêm ở CUỐI - không làm lệch chỉ số của m_pendingEdits đã có
     int newIdx = static_cast<int>(chain->actions.size()) - 1;
     m_actionListWidget->setActions(chain->actions);
+    refreshDirtyMarkersFromPendingEdits(); // setActions() vừa vẽ lại bảng - tô lại dấu "*" đã cache
+    // setSelectedActionIndex() lan truyền qua onActionSelected() (currentCellChanged) - đã tự capture ở
+    // trên rồi, chặn nó capture THÊM LẦN NỮA (xem comment m_suppressPendingCapture).
+    m_suppressPendingCapture = true;
     m_actionListWidget->setSelectedActionIndex(newIdx);
+    m_suppressPendingCapture = false;
     m_actionEditorWidget->setAction(newAct, newIdx);
 }
 
@@ -647,11 +833,18 @@ void AutoClickWindow::onCloneAction(int index)
     ActionChain* chain = currentChain();
     if (chain && index >= 0 && index < static_cast<int>(chain->actions.size()))
     {
+        captureEditorIfDirty();
         noteActionsRestructured();
         Action cloned = chain->actions[index];
         chain->actions.insert(chain->actions.begin() + index + 1, cloned);
+        remapPendingEditsInsert(m_pendingEdits, index + 1);
         m_actionListWidget->setActions(chain->actions);
+        refreshDirtyMarkersFromPendingEdits();
+        // Đã tự capture + remap ở trên - chặn onActionSelected() (lan truyền qua setSelectedActionIndex)
+        // capture THÊM LẦN NỮA bằng chỉ số CŨ (sai, vì vừa remap xong) - xem m_suppressPendingCapture.
+        m_suppressPendingCapture = true;
         m_actionListWidget->setSelectedActionIndex(index + 1);
+        m_suppressPendingCapture = false;
         m_actionEditorWidget->setAction(cloned, index + 1);
     }
 }
@@ -663,12 +856,22 @@ void AutoClickWindow::onDeleteAction(int index)
     {
         noteActionsRestructured();
         chain->actions.erase(chain->actions.begin() + index);
+        remapPendingEditsErase(m_pendingEdits, index); // hàng bị xóa thì cache của nó (nếu có) cũng bỏ theo
         m_actionListWidget->setActions(chain->actions);
+        refreshDirtyMarkersFromPendingEdits();
         int nextIdx = std::min(index, static_cast<int>(chain->actions.size()) - 1);
         if (nextIdx >= 0)
         {
+            auto it = m_pendingEdits.find(nextIdx);
+            // Hàng bị xóa chính là hàng editor đang hiển thị (xóa luôn thao tác qua menu chuột phải của
+            // HÀNG ĐANG CHỌN) - không cần/không nên capture nó (sắp bị bỏ), và remap vừa làm ở trên khiến
+            // chỉ số cũ không còn đúng nghĩa - chặn onActionSelected() tự capture sai (xem m_suppressPendingCapture).
+            m_suppressPendingCapture = true;
             m_actionListWidget->setSelectedActionIndex(nextIdx);
-            m_actionEditorWidget->setAction(chain->actions[nextIdx], nextIdx);
+            m_suppressPendingCapture = false;
+            m_actionEditorWidget->setAction(it != m_pendingEdits.end() ? it->second : chain->actions[nextIdx], nextIdx);
+            if (it != m_pendingEdits.end())
+                m_actionListWidget->setRowDirty(nextIdx, true);
         }
         else
         {
@@ -691,6 +894,7 @@ void AutoClickWindow::onActionMoved(int from, int to)
     if (from < 0 || from >= count || to < 0 || to >= count || from == to)
         return;
 
+    captureEditorIfDirty(); // giữ cache hành động ĐANG SỬA DỞ (nếu có) trước khi dữ liệu dời chỗ
     // Di chuyển đúng MỘT phần tử từ chỉ số from sang đúng chỉ số to (giữ nguyên thứ tự tương đối của
     // mọi phần tử còn lại) - cách chuẩn dùng std::rotate, tránh tính sai lệch chỉ số dễ gặp nếu tự
     // erase() rồi insert() thủ công (chỉ số to đổi ý nghĩa ngay sau khi erase phần tử phía trước nó).
@@ -700,9 +904,15 @@ void AutoClickWindow::onActionMoved(int from, int to)
         std::rotate(actions.begin() + from, actions.begin() + from + 1, actions.begin() + to + 1);
     else
         std::rotate(actions.begin() + to, actions.begin() + from, actions.begin() + from + 1);
+    remapPendingEditsMove(m_pendingEdits, from, to);
 
     m_actionListWidget->setActions(chain->actions);
+    refreshDirtyMarkersFromPendingEdits();
+    // Đã tự capture + remap ở trên - chặn onActionSelected() capture THÊM LẦN NỮA bằng chỉ số CŨ (from,
+    // không còn đúng nghĩa sau remap) - xem m_suppressPendingCapture.
+    m_suppressPendingCapture = true;
     m_actionListWidget->setSelectedActionIndex(to);
+    m_suppressPendingCapture = false;
 }
 
 void AutoClickWindow::onActionSaved(const Action& action, int actionIndex)
@@ -713,8 +923,16 @@ void AutoClickWindow::onActionSaved(const Action& action, int actionIndex)
     if (actionIndex >= 0 && actionIndex < static_cast<int>(chain->actions.size()))
     {
         chain->actions[actionIndex] = action;
+        m_pendingEdits.erase(actionIndex); // vừa Apply - khớp dữ liệu thật rồi, không còn là "chưa lưu" nữa
         m_actionListWidget->setActions(chain->actions);
+        refreshDirtyMarkersFromPendingEdits();
+        // onActionSaved() chạy TRONG LÚC emit actionSaved() của ActionEditorWidget::onApplyClicked() - cờ
+        // m_dirty của editor CHƯA kịp reset về false (chỉ reset SAU khi emit trả về), nên nếu không chặn,
+        // setSelectedActionIndex() lan truyền qua onActionSelected()->captureEditorIfDirty() sẽ coi editor
+        // vẫn đang "dirty" và GHI LẠI đúng entry vừa erase() ở trên - để sót dấu "*" dù vừa Lưu xong.
+        m_suppressPendingCapture = true;
         m_actionListWidget->setSelectedActionIndex(actionIndex);
+        m_suppressPendingCapture = false;
     }
     else
     {
@@ -727,6 +945,8 @@ void AutoClickWindow::onActionSaved(const Action& action, int actionIndex)
 
 void AutoClickWindow::onRunClicked()
 {
+    if (!confirmPendingEditsBeforeLeaving("chạy"))
+        return;
     startChain(m_currentChainIndex);
 }
 
@@ -735,8 +955,9 @@ void AutoClickWindow::startChain(int index)
     // Lần chạy trước chưa được onRunnerFinished() xử lý xong (kể cả khi luồng đã thoát nhưng tín hiệu kết
     // thúc còn nằm trong hàng đợi sự kiện): không bắt đầu lần mới. Nếu cho chạy, tín hiệu kết thúc CŨ tới
     // sau sẽ ẩn HUD, hủy phím dừng toàn cục và bật lại nút Chạy ngay giữa lúc chuỗi MỚI đang chạy (đường
-    // vào: menu chuột phải "Chạy chuỗi này" không bị vô hiệu hóa như nút RUN).
-    if (m_runActive)
+    // vào: menu chuột phải "Chạy chuỗi này" không bị vô hiệu hóa như nút RUN). Đang ghi "Ghi nhớ chuỗi"
+    // cũng chặn - Run và Record dùng chung HUD + phím tắt dừng toàn cục, không thể chạy đồng thời.
+    if (m_runActive || m_recordActive)
         return;
 
     if (m_runner->isRunning())
@@ -789,7 +1010,12 @@ void AutoClickWindow::startChain(int index)
 
 void AutoClickWindow::onStopClicked()
 {
-    m_runner->requestStop();
+    // Chạy chuỗi (ActionRunner) và ghi macro (ActionRecorder) không bao giờ cùng lúc - m_recordActive
+    // quyết định nút Dừng trên minibox (hoặc phím tắt dừng toàn cục, xem nativeEvent()) đang điều khiển cái nào.
+    if (m_recordActive)
+        m_actionRecorder->stop();
+    else
+        m_runner->requestStop();
 }
 
 void AutoClickWindow::onRunnerRoundStarted(int currentRound, int totalRounds)
@@ -943,6 +1169,7 @@ void AutoClickWindow::onImportProfile()
     m_chains = loaded;
     m_runningChainIndex = -1;
     clearRunningMarker();
+    m_pendingEdits.clear(); // hộp thoại xác nhận ở trên đã báo rõ "mọi thay đổi chưa lưu sẽ mất"
     m_chainListWidget->setChains(m_chains);
     m_chainListWidget->setSelectedChainIndex(0);
     m_currentChainIndex = 0;
@@ -953,4 +1180,60 @@ void AutoClickWindow::onImportProfile()
 void AutoClickWindow::onCaptureRequested(int /*targetField*/)
 {
     m_mouseCapture->startCapture();
+}
+
+void AutoClickWindow::startMacroRecording()
+{
+    // Run và Record không bao giờ cùng lúc (dùng chung HUD + phím dừng toàn cục) - xem startChain().
+    if (m_runActive || m_recordActive)
+        return;
+
+    m_recordActive = true;
+    registerStopHotkey();
+    m_overlay->setMode(RuntimeOverlay::Mode::Recording);
+
+    // Cùng mẫu startChain(): thu nhỏ cửa sổ quản lý TRƯỚC khi bắt đầu ghi - tránh chính cửa sổ này nhận
+    // nhầm thao tác ghi, HUD vẫn hiện riêng để theo dõi + dừng.
+    showMinimized();
+    m_overlay->show();
+
+    if (!m_actionRecorder->start(m_overlay))
+    {
+        // Windows từ chối cài hook chuột (hiếm) - không có gì để ghi, hiện lại cửa sổ ngay.
+        m_recordActive = false;
+        unregisterStopHotkey();
+        m_overlay->hide();
+        m_overlay->setMode(RuntimeOverlay::Mode::Running);
+        if (isVisible() && isMinimized())
+        {
+            setWindowState((windowState() & ~Qt::WindowMinimized) | Qt::WindowActive);
+            raise();
+            activateWindow();
+        }
+        QMessageBox::warning(this, "Không ghi được",
+                             "Windows từ chối cài hook chuột toàn cục - không ghi được chuỗi thao tác.");
+    }
+}
+
+void AutoClickWindow::onRecordingProgress(int stepCount, qint64 elapsedMs)
+{
+    m_overlay->setRecordingInfo(stepCount, elapsedMs);
+}
+
+void AutoClickWindow::onRecordingFinished(std::vector<RecordedEvent> events)
+{
+    m_recordActive = false;
+    unregisterStopHotkey();
+    m_overlay->hide();
+    m_overlay->setMode(RuntimeOverlay::Mode::Running);
+
+    // startMacroRecording() đã thu nhỏ cửa sổ này - cùng mẫu khôi phục của onRunnerFinished().
+    if (isVisible() && isMinimized())
+    {
+        setWindowState((windowState() & ~Qt::WindowMinimized) | Qt::WindowActive);
+        raise();
+        activateWindow();
+    }
+
+    m_actionEditorWidget->onMacroRecorded(events);
 }

@@ -1987,6 +1987,45 @@ này với loại cửa sổ popup thoáng qua, không phải dấu hiệu bản
 là kỹ thuật Qt chuẩn, được tài liệu hóa rõ ràng cho đúng vấn đề "góc đen quanh widget bo tròn trên popup
 không composite" - cần tự xác nhận bằng mắt thường trên máy thật.
 
+## 4z. Auto Click: làm lại "Ghi nhớ chuỗi" + cache chỉnh sửa chưa lưu trên nền v1.19.10 (2026-10-13, v1.19.11)
+
+Bối cảnh: người dùng đã yêu cầu quay code về ĐÚNG v1.19.10 (xóa mọi commit/tag sau đó; xem
+`YEU_CAU_SAU_1.19.10.md` - liệt kê toàn bộ yêu cầu đã gửi từ sau v1.19.10) rồi gửi lại 2 yêu cầu cho Auto Click,
+yêu cầu giữ giao diện y hệt v1.19.10 (KHÔNG mang theo `PopupCornerFix`/`WindowTheme`/Fusion/`QPalette`/sửa style):
+
+1. **Loại hành động mới "Ghi nhớ chuỗi"**: bấm "Bắt đầu ghi" -> app tự thu nhỏ, hiện minibox đếm thời gian + số
+   bước, ghi TOÀN BỘ thao tác chuột+bàn phím THẬT trên toàn máy tới khi bấm nút dừng trên minibox; kết quả LƯU
+   LÀM 1 HÀNH ĐỘNG duy nhất, phát lại đúng thứ tự + đúng khoảng cách thời gian. Minibox có 2 chế độ: **lúc ĐANG
+   GHI đứng yên một chỗ** (để người dùng bấm được nút "Kết thúc ghi" - né chuột lúc này sẽ biến nút thành mục tiêu
+   di động không bao giờ bấm trúng), **lúc CHẠY chuỗi vẫn né chuột** như cũ (để không che vùng thao tác).
+2. **Chỉnh sửa chưa lưu không bị mất khi đổi sang hành động khác**: cache từng hành động đang sửa dở
+   (`AutoClickWindow::m_pendingEdits`), dấu `*` ở cột số thứ tự giữ nguyên cho từng hàng, quay lại hàng đó nạp
+   đúng bản đang sửa dở; chỉ RUN hoặc đóng cửa sổ mới hỏi "Lưu lại?" (Có/Không/Hủy).
+
+**Cách làm (port CÓ CHỌN LỌC từ lịch sử git, không kéo theo gì khác)**: code cũ vẫn còn trong git (commit
+`51ac6ab` v1.19.12 cho "Ghi nhớ chuỗi", `ae232ec` v1.19.13 cho cache). Áp dụng đúng phần Auto Click:
+- `git cherry-pick -n 51ac6ab` - toàn bộ mã nguồn merge sạch (chỉ xung đột phần tài liệu/VERSION, tự giải quyết):
+  `Action`/`ActionSerializer` (model + JSON, hồ sơ cũ thiếu `recordedEvents` vẫn đọc được), `ActionRecorder`
+  (hook `WH_MOUSE_LL`+`WH_KEYBOARD_LL`, không bao giờ nuốt sự kiện, Esc KHÔNG hủy ghi, loại click vào minibox,
+  tự nhả phím/nút còn giữ lúc dừng), `InputController`/`ActionRunner` (phát lại), `ActionEditorWidget` (trang
+  "Ghi nhớ chuỗi" + hộp thoại xác nhận phạm vi ghi), `RuntimeOverlay` (chế độ Recording), `AutoClickWindow` (điều
+  phối), `PRIVACY.md`.
+- Minibox đứng yên lúc ghi: áp đúng phần sửa của bản cuối (`RuntimeOverlay::setMode(Recording)` đưa HUD về vị trí
+  "home" cố định, `setRecordingInfo()` chỉ cập nhật chữ, không `GetCursorPos`/né chuột; `ActionRecorder::
+  progressUpdated` không mang theo vị trí chuột).
+- Cache: áp phần `AutoClickWindow`/`ActionListWidget` (`m_dirtyRows` thay `m_dirtyRow`)/`ActionEditorWidget.h`
+  (`isDirty()`/`currentActionIndex()`) + test; GỠ khỏi phần port mọi đoạn thuộc cơ chế giao diện (không có
+  `paintEvent` tự vẽ nền, không gọi `WindowTheme`, không đổi style checkbox/spinbox - đúng giao diện v1.19.10).
+  `git diff v1.19.10` cho thấy ngoài Auto Click chỉ khác `CMakeLists.txt` (thêm `ActionRecorder.cpp`).
+
+**Test/xác nhận**: `autoclick_tests` 165/165 (gồm test cache đổi hàng giữ `*`, quay lại nạp đúng bản dở, Hủy/Không
+trên hộp thoại đóng cửa sổ, serializer `recordedEvents` khứ hồi); `core_stress_tests` 551/551 (3000 thao tác ngẫu
+nhiên trên giao diện, 0 lệch dữ liệu). Xác nhận THẬT trên app đang chạy (click mô phỏng bằng `PostMessage`):
+chọn loại "Ghi nhớ chuỗi" -> trang mới hiển thị đúng phong cách giao diện hiện có, hàng 01 hiện `*`; chuyển sang
+hàng 02 rồi quay lại hàng 01 -> editor vẫn là "Ghi nhớ chuỗi" và `*` còn nguyên.
+**CHƯA kiểm chứng được (cần tự thử trên máy thật, môi trường này không gửi được chuột/phím thật)**: ghi macro thật
+bằng hook toàn cục + phát lại bằng `SendInput`, và hành vi minibox đứng yên khi ghi/né chuột khi chạy.
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
@@ -2144,6 +2183,7 @@ Quy tắc đứng nằm ở `CLAUDE.md` (gốc dự án). Tóm tắt - mỗi l�
 | 2026-10-11 | Auto Click: dọn giao diện chính + con trỏ ngón tay + sửa đơn vị thời gian (v1.19.8) | Chi tiết đầy đủ ở mục 4w. 6 điểm tiếp theo từ ảnh chụp thật: thông báo "Đang tự khởi động lại..." trước khi thoát để cập nhật (trễ 1.5s, vẫn trong hạn 60s của tiến trình trợ giúp); menu chuột phải đổi CON TRỎ CHUỘT thành ngón tay trỏ thay vì icon 👆 vẽ trên từng dòng (v1.19.7 không đúng ý); bỏ nút Dừng + nhãn Trạng thái ở cửa sổ chính (trùng minibox/đã có cảnh báo lỗi riêng); `ChainListWidget` bỏ nút Nhân bản/Xóa dưới danh sách + "Chạy chuỗi này" trong chuột phải (trùng chức năng), thêm "Ghim lên"/"Bỏ ghim" (đưa lên đầu + nhãn 📌, không ép giữ mãi trên cùng) và kéo-thả đổi thứ tự chuỗi; `ActionListWidget` bỏ "Sửa" trong chuột phải (không có tác dụng gì khác click chọn hàng) + nút Nhân bản/Xóa dưới bảng; bỏ icon mũi tên ▾ trên MỌI QComboBox toàn bộ 9 công cụ (`ComboBoxStyle::noArrow()` mới); `DurationInput` đổi đơn vị không còn quy đổi số hiển thị (trước đây "500"→"0.5" khi chọn giây, giờ số giữ nguyên, chỉ đổi ý nghĩa đơn vị). 121/121 test (+12 mới), `core_stress_tests` 547/549 pass, phần Auto Click (76/76) không hồi quy - 2 lỗi còn lại thuộc `UpdateInstaller::buildHelperScript`, có từ trước v1.19.7, không liên quan đợt sửa này. Chưa xác nhận bằng mắt thường: thông báo restart khi có bản cập nhật thật, con trỏ ngón tay thật, ghim/kéo-thả chuột thật. |
 | 2026-10-11 | Sửa lỗi tự cập nhật thất bại ngẫu nhiên, ExitCode=1 (v1.19.9) | Chi tiết đầy đủ ở mục 4x. Người dùng báo kèm ảnh chụp "Cập nhật lần trước thất bại - ExitCode=1", tải 100% lúc cập nhật được lúc không. Nguyên nhân thật tìm qua đọc code (không đoán): app cố ý không giới hạn 1 bản sao (`CreateMutexW` trong main.cpp) + Inno Setup dùng cùng tên mutex (`AppMutex=OneForAllRunningMutex`) để phát hiện app đang chạy ở bước khởi tạo + `/CLOSEAPPLICATIONS` không có `/FORCECLOSEAPPLICATIONS` trong khi app chưa đăng ký Restart Manager -> không đóng êm được một cửa sổ OneForAll.exe KHÁC đang chạy -> Setup tự hủy ngay, đúng ExitCode=1 "Setup failed to initialize". Sửa `buildHelperScript`: thêm vòng chờ tối đa 30s (Get-Process/Where-Object theo đường dẫn exe) cho bản sao khác tự thoát (không ép đóng - không an toàn với thao tác người dùng đang dở ở cửa sổ khác) + thử lại cài đặt tối đa 5 lần nếu vẫn lỗi. Sửa chữ hộp thoại theo góp ý UX người dùng (không ngụ ý 100% tải = xong ngay). Phát hiện và sửa luôn 1 lỗi pre-existing trong fuzz test buildHelperScript (baseline hardcode lạc hậu từ v1.19.5 - đổi sang so sánh động). 95/95 test (+6 mới); core_stress_tests 551/551 pass sạch hoàn toàn - lần đầu tiên trong phiên không còn lỗi nào. Chưa xác nhận bằng một lần cập nhật thật trên máy có 2 bản sao chạy cùng lúc. |
 | 2026-10-11 | Sửa góc đen ở menu + mũi tên còn sót ở combo/spinbox + bỏ nút Nạp cấu hình (v1.19.10) | Chi tiết đầy đủ ở mục 4y. Người dùng gửi 2 ảnh chụp thật, nêu 3 điểm. (1) Góc đen ở menu chuột phải dù đã bo góc - QMenu là popup không trong suốt mặc định, sửa bằng `Qt::WA_TranslucentBackground`. (2) Combo "Nút"/"Phím"/"Hướng" vẫn còn mũi tên dù v1.19.8 đã thêm ComboBoxStyle::noArrow() - tìm đúng nguyên nhân bằng ảnh chụp so sánh (không đoán): `kComboStyle` dùng khối CSS TRẦN không có selector `QComboBox {}` bao ngoài, nối với rule có selector của noArrow() khiến Qt không áp dụng đúng rule phía sau; xác nhận qua so sánh combo "Loại"/"ms" (đã bọc đúng) sạch còn "Nút" (thiếu bọc) thì không - sửa bằng cách bọc đúng selector, audit toàn bộ nơi khác dùng noArrow() đều đã đúng. Tiện thể bổ sung `setButtonSymbols(NoButtons)` cho 17 QSpinBox còn thiếu (8 ở Auto Click + 9 ở QR/Disk Cleanup/Connect/Android). Thêm `ComboBoxStyle::applyCursor()` đổi con trỏ ngón tay khi hover qua mọi combo, áp dụng 9 cửa sổ chính + 2 dialog độc lập. (3) Bỏ nút "Nạp cấu hình" theo yêu cầu người dùng. Thêm test hồi quy bắt đúng lỗi "CSS thiếu selector". 123/123 autoclick_tests (+2 mới) và toàn bộ 16 bộ test các tool khác đều pass - không hồi quy dù sửa trải khắp 8 tool; core_stress_tests 551/551 pass sạch. Đã xác nhận bằng ảnh chụp thật combo/spinbox hết mũi tên; chưa xác nhận được bằng ảnh chụp góc menu (môi trường không bắt được popup window kịp lúc) - tin vào kỹ thuật Qt chuẩn, cần tự xem trên máy thật. |
+| 2026-10-13 | Auto Click: làm lại "Ghi nhớ chuỗi" + cache chỉnh sửa chưa lưu trên nền v1.19.10 (v1.19.11) | Chi tiết đầy đủ ở mục 4z. Sau khi người dùng yêu cầu quay code về ĐÚNG v1.19.10 (xóa mọi commit/tag sau đó, lưu lịch sử yêu cầu ở `YEU_CAU_SAU_1.19.10.md`), người dùng gửi lại 2 yêu cầu Auto Click: (1) loại hành động "Ghi nhớ chuỗi" - ghi macro chuột+bàn phím thật toàn máy, minibox ĐỨNG YÊN lúc ghi / né chuột lúc chạy chuỗi; (2) chỉnh sửa chưa lưu không mất khi đổi sang hành động khác (cache theo từng hàng, dấu `*`, chỉ hỏi lúc RUN/đóng cửa sổ). Port CÓ CHỌN LỌC từ lịch sử git (`cherry-pick -n 51ac6ab` + phần cache của `ae232ec` + phần sửa minibox của bản cuối), KHÔNG mang theo cơ chế giao diện nào (không `PopupCornerFix`/`WindowTheme`/Fusion/`paintEvent`/sửa style) - giao diện giữ y hệt v1.19.10, `git diff v1.19.10` ngoài Auto Click chỉ khác `CMakeLists.txt` (thêm `ActionRecorder.cpp`). `autoclick_tests` 165/165, `core_stress_tests` 551/551; xác nhận thật trên app đang chạy: trang "Ghi nhớ chuỗi" hiển thị đúng phong cách, cache giữ `*` + nạp lại đúng bản dở khi quay lại hàng. CHƯA kiểm chứng được: ghi/phát lại macro thật bằng hook toàn cục + `SendInput`, hành vi minibox khi ghi/chạy (cần thử tay trên máy thật). |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `

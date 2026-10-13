@@ -40,6 +40,19 @@ public:
     void typeText(const std::string& text, TextTypeMode mode, std::chrono::milliseconds duration, const std::atomic_bool* stopFlag = nullptr);
     void scroll(ScrollDirection direction, int amount, std::chrono::milliseconds duration, const std::atomic_bool* stopFlag = nullptr);
 
+    /// Nhấn xuống/nhả MỘT phím RIÊNG BIỆT (khác pressKey() gộp cả hai cách nhau không kiểm soát được) -
+    /// dùng để phát lại đúng dãy sự kiện thô đã ghi, xem replayRecordedEvents().
+    void keyDown(int keyCode);
+    void keyUp(int keyCode);
+    /// Một lần cuộn THÔ (đúng 1 sự kiện WM_MOUSEWHEEL/WM_MOUSEHWHEEL đã ghi được) - khác scroll() ở trên
+    /// (trừu tượng theo hướng+số bước, tự chèn khoảng nghỉ giữa các bước), hàm này không tự ngủ/lặp gì cả.
+    void mouseWheelTick(int delta, bool horizontal = false);
+
+    /// Phát lại đúng dãy sự kiện ActionType::RecordedMacro đã ghi (xem capture/ActionRecorder.h), đúng thứ
+    /// tự và đúng khoảng chờ (RecordedEvent::delayMs) giữa các sự kiện - chờ có kiểm tra stopFlag mỗi
+    /// ≤50ms (như mọi hàm có stopFlag khác ở trên), không dùng sleep thô để Dừng vẫn ngắt được giữa chừng.
+    void replayRecordedEvents(const std::vector<RecordedEvent>& events, const std::atomic_bool* stopFlag = nullptr);
+
     /// Windows có từ chối thao tác nào kể từ lần clearError() gần nhất không (SendInput chèn thiếu sự
     /// kiện / SetCursorPos trả FALSE - thường gặp khi cửa sổ đích chạy quyền Administrator còn ứng dụng
     /// này thì không (UIPI), hoặc đang ở màn hình khóa/hộp thoại UAC). Trước đây mọi giá trị trả về của

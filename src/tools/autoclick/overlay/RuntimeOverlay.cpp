@@ -120,6 +120,42 @@ void RuntimeOverlay::setCountdown(qint64 remainingMs, const QString& phase)
     }
 }
 
+void RuntimeOverlay::setMode(Mode mode)
+{
+    m_mode = mode;
+    if (mode == Mode::Recording)
+    {
+        m_chainLabel->setText("Auto Click đang ghi chuỗi...");
+        m_roundLabel->setVisible(false);
+        m_countdownLabel->setVisible(false);
+        m_progressBar->setVisible(false);
+        m_stopButton->setText("⏹ Kết thúc ghi");
+        m_actionLabel->setText("Đã ghi: 0 bước");
+        m_nextActionLabel->setText("Thời gian: 0,0 giây");
+        // Lúc ghi HUD phải ĐỨNG YÊN (yêu cầu người dùng) - luôn về đúng vị trí "home" cố định, không né
+        // theo chuột nữa (người dùng đang chủ động điều khiển chuột để ghi macro, né sẽ khiến nút "Kết
+        // thúc ghi" thành mục tiêu di động không bao giờ bấm trúng được).
+        move(m_homePos);
+        m_isDisplaced = false;
+    }
+    else
+    {
+        m_chainLabel->setText("Auto Click đang chạy");
+        m_roundLabel->setVisible(true);
+        m_countdownLabel->setVisible(true);
+        m_progressBar->setVisible(true);
+        m_stopButton->setText("■ Dừng lại (Stop)");
+    }
+}
+
+void RuntimeOverlay::setRecordingInfo(int stepCount, qint64 elapsedMs)
+{
+    // CHỈ cập nhật chữ - KHÔNG đổi vị trí (xem comment setMode()/khai báo hàm này ở .h). Né chuột chỉ dành
+    // cho lúc CHẠY chuỗi (setActionInfo()), không áp dụng lúc ghi.
+    m_actionLabel->setText(QString("Đã ghi: %1 bước").arg(stepCount));
+    m_nextActionLabel->setText(QString("Thời gian: %1 giây").arg(elapsedMs / 1000.0, 0, 'f', 1));
+}
+
 void RuntimeOverlay::updateOverlayPosition(int targetX, int targetY)
 {
     m_targetX = targetX;

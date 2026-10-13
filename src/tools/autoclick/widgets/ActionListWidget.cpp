@@ -8,7 +8,9 @@
 #include <QDropEvent>
 #include <QMouseEvent>
 #include <QColor>
+#include <algorithm>
 #include <functional>
+#include <iterator>
 
 namespace
 {
@@ -203,18 +205,34 @@ void ActionListWidget::setSelectedActionIndex(int index)
 
 void ActionListWidget::setRowDirty(int row, bool dirty)
 {
-    const int newDirtyRow = dirty ? row : -1;
-    if (newDirtyRow == m_dirtyRow)
+    if (row < 0)
         return;
-
-    const int oldDirtyRow = m_dirtyRow;
-    m_dirtyRow = newDirtyRow;
-
-    // Chỉ cập nhật lại CỘT SỐ của (tối đa) 2 hàng liên quan thay vì vẽ lại cả bảng - rẻ hơn nhiều vì
+    if (dirty)
+    {
+        if (!m_dirtyRows.insert(row).second)
+            return; // đã dirty sẵn - không có gì đổi
+    }
+    else
+    {
+        if (m_dirtyRows.erase(row) == 0)
+            return; // vốn đã sạch - không có gì đổi
+    }
+    // Chỉ cập nhật lại CỘT SỐ của đúng 1 hàng liên quan thay vì vẽ lại cả bảng - rẻ hơn nhiều vì
     // onPositionCaptured/các trường trong ActionEditorWidget có thể gọi hàm này liên tục khi người dùng
     // đang gõ/chỉnh từng ký tự.
-    refreshIndexCell(oldDirtyRow);
-    refreshIndexCell(newDirtyRow);
+    refreshIndexCell(row);
+}
+
+void ActionListWidget::setDirtyRows(const std::set<int>& rows)
+{
+    if (rows == m_dirtyRows)
+        return;
+    std::set<int> changed;
+    std::set_symmetric_difference(rows.begin(), rows.end(), m_dirtyRows.begin(), m_dirtyRows.end(),
+                                   std::inserter(changed, changed.begin()));
+    m_dirtyRows = rows;
+    for (int row : changed)
+        refreshIndexCell(row);
 }
 
 void ActionListWidget::setRunningRow(int row)
@@ -245,7 +263,7 @@ void ActionListWidget::refreshIndexCell(int r)
         toolTip = "Hành động đang được thực thi";
         foreground = QColor("#1f883d");
     }
-    if (r == m_dirtyRow)
+    if (m_dirtyRows.count(r))
     {
         text += " *";
         toolTip = "Có thay đổi CHƯA LƯU - bấm \"Lưu hành động (Apply)\" ở panel bên phải để lưu lại";

@@ -522,6 +522,8 @@ set(SOURCES
     src/tools/autoclick/capture/HotkeyCapture.cpp
     src/tools/autoclick/capture/DragGestureCapture.h
     src/tools/autoclick/capture/DragGestureCapture.cpp
+    src/tools/autoclick/capture/ActionRecorder.h
+    src/tools/autoclick/capture/ActionRecorder.cpp
     src/tools/autoclick/overlay/RuntimeOverlay.h
     src/tools/autoclick/overlay/RuntimeOverlay.cpp
     src/tools/autoclick/widgets/ChainListWidget.h
@@ -596,6 +598,8 @@ add_executable(autoclick_tests EXCLUDE_FROM_ALL
     src/tools/autoclick/capture/HotkeyCapture.cpp
     src/tools/autoclick/capture/DragGestureCapture.h
     src/tools/autoclick/capture/DragGestureCapture.cpp
+    src/tools/autoclick/capture/ActionRecorder.h
+    src/tools/autoclick/capture/ActionRecorder.cpp
     src/tools/autoclick/overlay/RuntimeOverlay.h
     src/tools/autoclick/overlay/RuntimeOverlay.cpp
     src/tools/autoclick/widgets/ChainListWidget.h
@@ -634,6 +638,8 @@ add_executable(core_stress_tests EXCLUDE_FROM_ALL
     src/tools/autoclick/capture/HotkeyCapture.cpp
     src/tools/autoclick/capture/DragGestureCapture.h
     src/tools/autoclick/capture/DragGestureCapture.cpp
+    src/tools/autoclick/capture/ActionRecorder.h
+    src/tools/autoclick/capture/ActionRecorder.cpp
     src/tools/autoclick/overlay/RuntimeOverlay.h
     src/tools/autoclick/overlay/RuntimeOverlay.cpp
     src/tools/autoclick/widgets/ChainListWidget.h

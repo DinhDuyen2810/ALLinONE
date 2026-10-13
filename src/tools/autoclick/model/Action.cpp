@@ -64,6 +64,7 @@ QString Action::typeName() const
         case ActionType::Hotkey:     return "Tổ hợp phím";
         case ActionType::KeyPress:   return "Nhấn phím";
         case ActionType::Scroll:     return "Cuộn";
+        case ActionType::RecordedMacro: return "Ghi nhớ chuỗi";
     }
     return "Không rõ";
 }
@@ -129,6 +130,20 @@ QString Action::description() const
 
         case ActionType::Scroll:
             return QString("Cuộn %1, %2 bước").arg(scrollDirectionLabel(scrollDirection)).arg(scrollAmount);
+
+        case ActionType::RecordedMacro:
+        {
+            // CHỦ Ý chỉ in số liệu tổng (số bước + thời lượng) - KHÔNG BAO GIỜ in tọa độ/phím cụ thể đã
+            // ghi ra đây: chuỗi ghi được có thể chứa mật khẩu người dùng gõ trong lúc ghi (xem cảnh báo ở
+            // ActionEditorWidget trước khi bắt đầu ghi). Nhờ vậy logDescription() không cần che riêng cho
+            // loại này - description() đã an toàn để ghi log từ đầu.
+            qint64 totalMs = 0;
+            for (const auto& ev : recordedEvents)
+                totalMs += ev.delayMs;
+            return QString("Ghi nhớ chuỗi: %1 bước (%2 giây)")
+                .arg(recordedEvents.size())
+                .arg(totalMs / 1000.0, 0, 'f', 1);
+        }
     }
     return "Hành động";
 }

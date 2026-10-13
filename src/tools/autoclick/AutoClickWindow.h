@@ -6,6 +6,7 @@
 #include <QCheckBox>
 #include <QPushButton>
 #include <QLabel>
+#include <map>
 #include <memory>
 #include <vector>
 
@@ -15,6 +16,7 @@
 #include "widgets/ActionEditorWidget.h"
 #include "engine/ActionRunner.h"
 #include "capture/MouseCapture.h"
+#include "capture/ActionRecorder.h"
 #include "overlay/RuntimeOverlay.h"
 
 class AutoClickWindow : public QWidget
@@ -68,6 +70,11 @@ private slots:
     // Capture slot
     void onCaptureRequested(int targetField);
 
+    // Ghi nhớ chuỗi (RecordedMacro) slots - xem capture/ActionRecorder.h.
+    void startMacroRecording();
+    void onRecordingProgress(int stepCount, qint64 elapsedMs);
+    void onRecordingFinished(std::vector<RecordedEvent> events);
+
 protected:
     void closeEvent(QCloseEvent* event) override;
     bool nativeEvent(const QByteArray& eventType, void* message, qintptr* result) override;
@@ -85,6 +92,23 @@ private:
     /// số hàng không còn khớp với bản sao ActionRunner đang giữ, phải thôi tô hàng "đang chạy".
     void noteActionsRestructured();
     void clearRunningMarker();
+
+    // --- Cache chỉnh sửa chưa lưu (m_pendingEdits) - xem comment field bên dưới. ---
+    /// Nếu ActionEditorWidget đang dirty (sửa dở, chưa bấm Apply), chụp lại getAction() vào
+    /// m_pendingEdits[hàng đang nạp] - gọi TRƯỚC khi nạp dữ liệu khác vào editor (đổi hàng/chain/
+    /// đóng cửa sổ) để không bao giờ ghi đè mất.
+    void captureEditorIfDirty();
+    bool hasPendingEdits() const { return !m_pendingEdits.empty(); }
+    /// Ghi toàn bộ m_pendingEdits vào chain đang xem (y hệt bấm "Apply" từng cái) rồi xóa cache + dấu "*".
+    void applyPendingEdits();
+    /// Bỏ toàn bộ m_pendingEdits (không ghi gì), nạp lại editor từ dữ liệu THẬT của hàng đang chọn.
+    void discardPendingEdits();
+    /// Đồng bộ lại tập hàng "*" trên ActionListWidget theo đúng key hiện có trong m_pendingEdits.
+    void refreshDirtyMarkersFromPendingEdits();
+    /// Gọi ở các điểm "rời khỏi" quan trọng (RUN, đóng cửa sổ): captureEditorIfDirty() rồi nếu còn cache,
+    /// hỏi Có (áp dụng)/Không (bỏ)/Hủy. Trả về false nếu người dùng chọn Hủy - nơi gọi phải dừng thao tác
+    /// đang định làm (không chạy/không đóng).
+    bool confirmPendingEditsBeforeLeaving(const QString& actionLabel);
     /// Đổi tên tệp hồ sơ mặc định bị hỏng thành "<tên>.<thời điểm>.bak" để KHÔNG BAO GIỜ ghi đè lên nó.
     bool backupCorruptDefaultProfile(QString* backupPath = nullptr);
 
@@ -97,8 +121,23 @@ private:
     int m_runningChainIndex{-1};        // chỉ số (trong m_chains) của chain đang chạy, -1 = không chạy/không còn xác định
     bool m_runningChainRestructured{false};
     bool m_stopHotkeyRegistered{false};
+    bool m_recordActive{false};         // true từ startMacroRecording() tới khi onRecordingFinished() xử lý xong
     QString m_lastRunError;             // lỗi ActionRunner báo về, hiện cho người dùng khi lần chạy kết thúc
     bool m_corruptDefaultProfilePending{false}; // tệp mặc định hỏng mà CHƯA đổi tên được - cấm ghi đè
+
+    /// Cache các hành động ĐANG SỬA DỞ (chưa bấm Apply) của chain đang xem (m_currentChainIndex), theo
+    /// chỉ số hành động -> bản ghi đang gõ dở trong editor - để đổi hàng xem KHÔNG làm mất chỉnh sửa
+    /// (yêu cầu người dùng: chỉ hỏi "có lưu không" lúc RUN hoặc đóng cửa sổ, không hỏi lúc đổi hàng).
+    /// LUÔN rỗng khi đổi sang chain khác (đổi chain tự áp dụng/làm sạch cache trước, xem onChainSelected()
+    /// và các chỗ khác đổi m_currentChainIndex) - không cần một map lồng theo từng chain.
+    std::map<int, Action> m_pendingEdits;
+    /// true trong lúc một hàm RESTRUCTURE (syncUiWithCurrentChain()/onActionMoved()/onCloneAction()/
+    /// onDeleteAction()/onAddAction()) đang TỰ gọi setSelectedActionIndex() sau khi đã tự lo capture/remap
+    /// m_pendingEdits của riêng nó - chặn captureEditorIfDirty() khỏi bị gọi THÊM LẦN NỮA một cách sai chỉ
+    /// số bởi chính onActionSelected() lan truyền qua currentCellChanged (bảng đã đổi sang hàng MỚI trước
+    /// khi slot chạy, nên lúc đó capture sẽ ghi nhầm nội dung cũ vào đúng chỉ số vừa remap xong - đã xác
+    /// nhận qua suy luận kỹ, không phải giả thuyết).
+    bool m_suppressPendingCapture{false};
 
     // UI Widgets
     QSplitter* m_splitter;
@@ -118,4 +157,5 @@ private:
     ActionRunner* m_runner;
     RuntimeOverlay* m_overlay;
     MouseCapture* m_mouseCapture;
+    ActionRecorder* m_actionRecorder;
 };

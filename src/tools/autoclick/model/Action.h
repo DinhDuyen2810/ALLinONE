@@ -13,7 +13,11 @@ enum class ActionType
     TypeText,
     Hotkey,
     KeyPress,
-    Scroll
+    Scroll,
+    /// "Ghi nhớ chuỗi" - ghi lại THẬT thao tác chuột+bàn phím của người dùng (xem capture/ActionRecorder.h)
+    /// rồi phát lại nguyên vẹn. PHẢI ở CUỐI enum: ActionEditorWidget dùng static_cast<int>(type) làm chỉ
+    /// số cho cả m_typeCombo lẫn m_pagesStack, thêm ở giữa sẽ làm lệch mọi giá trị đã lưu trong hồ sơ cũ.
+    RecordedMacro
 };
 
 enum class MouseButtonType
@@ -59,6 +63,32 @@ enum class HotkeyTrigger
     Click = 2
 };
 
+/// Một sự kiện THÔ trong chuỗi đã ghi (ActionType::RecordedMacro) - đúng những gì hook WH_MOUSE_LL/
+/// WH_KEYBOARD_LL bắt được, theo thứ tự, kèm khoảng chờ tới sự kiện kế tiếp để phát lại đúng nhịp.
+enum class RecordedEventType
+{
+    MouseMove,
+    MouseDown,
+    MouseUp,
+    MouseWheel,
+    KeyDown,
+    KeyUp
+};
+
+struct RecordedEvent
+{
+    RecordedEventType type{RecordedEventType::MouseMove};
+    /// Thời gian chờ kể từ sự kiện NGAY TRƯỚC nó trong cùng chuỗi (không phải từ lúc bắt đầu ghi) - phát
+    /// lại chỉ cần chờ đúng khoảng này rồi thực hiện, xem InputController::replayRecordedEvents().
+    qint64 delayMs{0};
+    int x{0};  // MouseMove/MouseDown/MouseUp - tọa độ vật lý (giống Action::x/y)
+    int y{0};
+    MouseButtonType button{MouseButtonType::Left}; // MouseDown/MouseUp
+    int wheelDelta{0};           // MouseWheel - bội số WHEEL_DELTA (120), dấu = hướng
+    bool wheelHorizontal{false}; // MouseWheel - true nếu là cuộn ngang
+    int keyCode{0};              // KeyDown/KeyUp - mã VK
+};
+
 struct Action
 {
     ActionType type{ActionType::MouseClick};
@@ -98,6 +128,9 @@ struct Action
     // Scroll
     ScrollDirection scrollDirection{ScrollDirection::Down};
     int scrollAmount{5};
+
+    /// Chỉ có ý nghĩa khi type==RecordedMacro - dãy sự kiện thô đã ghi, phát lại đúng thứ tự/nhịp.
+    std::vector<RecordedEvent> recordedEvents;
 
     /// Gán modOrder VÀ 4 bool modCtrl/Alt/Shift/Win CÙNG LÚC, luôn khớp nhau - dùng ở MỌI nơi gán tổ hợp
     /// phím (UI tự chọn tay, HotkeyCapture bắt thật). Không gán rời rạc 4 bool ở nơi khác.

@@ -10,10 +10,12 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QListWidget>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QTableWidget>
 #include <QTemporaryDir>
+#include <QTimer>
 #include "TestDataDir.h"
 #include <climits>
 #include <cstdio>
@@ -81,6 +83,34 @@ int main(int argc, char** argv)
         CHECK(click.logDescription() == click.description()); // loại khác giữ nguyên
     }
 
+    // ---- Action::typeName/description cho RecordedMacro ("Ghi nhớ chuỗi") - KHÔNG lộ keyCode/tọa độ cụ
+    // thể (có thể là mật khẩu gõ lúc ghi), chỉ số bước + tổng thời gian ----
+    {
+        Action macro;
+        macro.type = ActionType::RecordedMacro;
+        CHECK(macro.typeName() == "Ghi nhớ chuỗi");
+        CHECK(macro.description().contains("0 bước")); // chưa ghi gì
+
+        RecordedEvent keyEv;
+        keyEv.type = RecordedEventType::KeyDown;
+        keyEv.keyCode = 65; // 'A' - giả lập phím bí mật gõ lúc ghi
+        keyEv.delayMs = 1500;
+        RecordedEvent moveEv;
+        moveEv.type = RecordedEventType::MouseMove;
+        moveEv.x = 777;
+        moveEv.y = 888;
+        moveEv.delayMs = 2500;
+        macro.recordedEvents = {keyEv, moveEv};
+
+        const QString desc = macro.description();
+        CHECK(desc.contains("2 bước"));
+        CHECK(desc.contains("4.0")); // tổng delayMs = 4000ms = 4.0 giây (QString::arg 'f' dùng dấu chấm)
+        CHECK(!desc.contains("65"));
+        CHECK(!desc.contains("777"));
+        CHECK(!desc.contains("888"));
+        CHECK(macro.logDescription() == macro.description()); // không có gì nhạy cảm hơn để che thêm
+    }
+
     // ---- ActionChain::enabledActionIndices: ánh xạ "hành động thứ k đang chạy" -> hàng gốc ----
     {
         ActionChain chain;
@@ -126,6 +156,75 @@ int main(int argc, char** argv)
             CHECK(b.keyCode == 49 && b.keyName == "1" && b.modCtrl);
             CHECK(b.waitBefore.count() == 123 && b.duration.count() == 4567);
             CHECK(b.text == "xin chào");
+        }
+    }
+
+    // ---- ActionSerializer: khứ hồi JSON cho RecordedMacro ("Ghi nhớ chuỗi") - đủ cả 6 loại sự kiện, đúng
+    // thứ tự + giá trị; hồ sơ CŨ không có "recordedEvents" vẫn đọc được (vector rỗng, không crash) ----
+    {
+        ActionChain chain;
+        chain.id = "macro1";
+        Action macro;
+        macro.type = ActionType::RecordedMacro;
+
+        RecordedEvent move; move.type = RecordedEventType::MouseMove; move.delayMs = 20; move.x = 111; move.y = 222;
+        RecordedEvent down; down.type = RecordedEventType::MouseDown; down.delayMs = 30; down.x = 111; down.y = 222; down.button = MouseButtonType::Right;
+        RecordedEvent up;   up.type = RecordedEventType::MouseUp;     up.delayMs = 40;  up.x = 333; up.y = 444; up.button = MouseButtonType::Right;
+        RecordedEvent wheel; wheel.type = RecordedEventType::MouseWheel; wheel.delayMs = 50; wheel.x = 10; wheel.y = 20; wheel.wheelDelta = -240; wheel.wheelHorizontal = true;
+        RecordedEvent keyDown; keyDown.type = RecordedEventType::KeyDown; keyDown.delayMs = 60; keyDown.keyCode = 65;
+        RecordedEvent keyUp;   keyUp.type = RecordedEventType::KeyUp;     keyUp.delayMs = 70;  keyUp.keyCode = 65;
+        macro.recordedEvents = {move, down, up, wheel, keyDown, keyUp};
+        chain.actions.push_back(macro);
+
+        std::vector<ActionChain> out;
+        QString error;
+        CHECK(ActionSerializer::fromJsonString(ActionSerializer::toJsonString({chain}), out, &error));
+        CHECK(error.isEmpty());
+        if (out.size() == 1 && out[0].actions.size() == 1)
+        {
+            const std::vector<RecordedEvent>& evs = out[0].actions[0].recordedEvents;
+            CHECK(evs.size() == 6);
+            if (evs.size() == 6)
+            {
+                CHECK(evs[0].type == RecordedEventType::MouseMove && evs[0].delayMs == 20 && evs[0].x == 111 && evs[0].y == 222);
+                CHECK(evs[1].type == RecordedEventType::MouseDown && evs[1].delayMs == 30 && evs[1].button == MouseButtonType::Right);
+                CHECK(evs[2].type == RecordedEventType::MouseUp && evs[2].delayMs == 40 && evs[2].x == 333 && evs[2].y == 444 && evs[2].button == MouseButtonType::Right);
+                CHECK(evs[3].type == RecordedEventType::MouseWheel && evs[3].delayMs == 50 && evs[3].wheelDelta == -240 && evs[3].wheelHorizontal);
+                CHECK(evs[4].type == RecordedEventType::KeyDown && evs[4].delayMs == 60 && evs[4].keyCode == 65);
+                CHECK(evs[5].type == RecordedEventType::KeyUp && evs[5].delayMs == 70 && evs[5].keyCode == 65);
+            }
+        }
+
+        // Hồ sơ cũ viết tay (trước khi có "Ghi nhớ chuỗi") - không có key "recordedEvents" ở cấp Action.
+        const QString oldJson = QStringLiteral(
+            "{\"chains\":[{\"id\":\"old\",\"name\":\"x\",\"repeatCount\":1,\"actions\":["
+            "{\"type\":\"MouseClick\",\"enabled\":true,\"x\":1,\"y\":2}]}]}");
+        std::vector<ActionChain> oldOut;
+        QString oldErr;
+        CHECK(ActionSerializer::fromJsonString(oldJson, oldOut, &oldErr));
+        if (oldOut.size() == 1 && oldOut[0].actions.size() == 1)
+            CHECK(oldOut[0].actions[0].recordedEvents.empty());
+
+        // Phần tử hỏng (type lạ) trong mảng bị BỎ QUA, không làm hỏng cả hồ sơ; delayMs quá lớn bị kẹp
+        // về trần [0, 60000] - không được tạo ra một bước chờ cả ngày lúc phát lại.
+        const QString mixedJson = QStringLiteral(
+            "{\"chains\":[{\"id\":\"mixed\",\"name\":\"x\",\"repeatCount\":1,\"actions\":["
+            "{\"type\":\"RecordedMacro\",\"enabled\":true,\"recordedEvents\":["
+            "{\"type\":\"KhongHopLe\",\"delayMs\":10},"
+            "{\"type\":\"KeyDown\",\"delayMs\":999999999,\"keyCode\":13}"
+            "]}]}]}");
+        std::vector<ActionChain> mixedOut;
+        QString mixedErr;
+        CHECK(ActionSerializer::fromJsonString(mixedJson, mixedOut, &mixedErr));
+        if (mixedOut.size() == 1 && mixedOut[0].actions.size() == 1)
+        {
+            const std::vector<RecordedEvent>& evs = mixedOut[0].actions[0].recordedEvents;
+            CHECK(evs.size() == 1); // phần tử "KhongHopLe" bị loại
+            if (evs.size() == 1)
+            {
+                CHECK(evs[0].type == RecordedEventType::KeyDown && evs[0].keyCode == 13);
+                CHECK(evs[0].delayMs == 60000);
+            }
         }
     }
 
@@ -466,6 +565,34 @@ int main(int argc, char** argv)
             const Action backWide = editor->getAction();
             CHECK(backWide.startX == 11500 && backWide.startY == -12000 && backWide.endX == 20000 && backWide.endY == 15000);
 
+            // -- Editor: RecordedMacro ("Ghi nhớ chuỗi") setAction()/getAction() khứ hồi đúng dãy sự kiện -
+            // không cần ghi macro THẬT (hook toàn cục), chỉ kiểm đường dây UI<->model qua onMacroRecorded() --
+            Action macroAction;
+            macroAction.type = ActionType::RecordedMacro;
+            editor->setAction(macroAction, 0); // chưa ghi gì -> m_recordedEvents rỗng
+            CHECK(editor->getAction().recordedEvents.empty());
+
+            RecordedEvent recMove; recMove.type = RecordedEventType::MouseMove; recMove.delayMs = 15; recMove.x = 50; recMove.y = 60;
+            RecordedEvent recKey;  recKey.type = RecordedEventType::KeyDown;    recKey.delayMs = 25;  recKey.keyCode = 13;
+            editor->onMacroRecorded({recMove, recKey}); // mô phỏng AutoClickWindow gọi khi ActionRecorder ghi xong
+            const Action macroResult = editor->getAction();
+            CHECK(macroResult.type == ActionType::RecordedMacro);
+            CHECK(macroResult.recordedEvents.size() == 2);
+            if (macroResult.recordedEvents.size() == 2)
+            {
+                CHECK(macroResult.recordedEvents[0].type == RecordedEventType::MouseMove && macroResult.recordedEvents[0].x == 50);
+                CHECK(macroResult.recordedEvents[1].type == RecordedEventType::KeyDown && macroResult.recordedEvents[1].keyCode == 13);
+            }
+
+            // Nạp LẠI một action khác rồi nạp macro cũ - setAction() phải khôi phục ĐÚNG m_recordedEvents
+            // từ Action đang nạp (không giữ sót dữ liệu của lần onMacroRecorded() trước).
+            Action anotherClick;
+            anotherClick.type = ActionType::MouseClick;
+            editor->setAction(anotherClick, 1);
+            CHECK(editor->getAction().recordedEvents.empty());
+            editor->setAction(macroResult, 0);
+            CHECK(editor->getAction().recordedEvents.size() == 2);
+
             // Nạp một hành động phím thường: mục tạm "(phím khác: ...)" phải biến mất khỏi mọi combo
             Action normal;
             normal.type = ActionType::KeyPress;
@@ -523,11 +650,58 @@ int main(int argc, char** argv)
                       after.duration == editing.duration);
                 // Không có chuỗi nào đang chạy -> không hàng nào được đánh dấu
                 CHECK(!table->item(2, 0)->text().contains("▶"));
+
+                // -- Cache chỉnh sửa chưa lưu khi đổi hàng xem: KHÔNG hỏi gì, chỉ giữ lại (m_pendingEdits) --
+                // `editing` (waitBefore=7777) vẫn đang sửa dở ở hàng 0, chưa Apply - đổi sang hàng 1 không
+                // được hỏi lưu (chỉ RUN/đóng cửa sổ mới hỏi) và không được làm mất chỉnh sửa đó.
+                CHECK(editor->isDirty());
+                actionList->setSelectedActionIndex(1);
+                app.processEvents();
+                CHECK(table->item(0, 0)->text().contains("*")); // vẫn còn dấu "*" dù đã rời đi
+                CHECK(!editor->isDirty()); // hàng 1 vừa nạp CÒN SẠCH (chưa ai sửa gì ở hàng này)
+                actionList->setSelectedActionIndex(0);
+                app.processEvents();
+                // Quay lại đúng hàng 0: phải nạp lại ĐÚNG bản đang sửa dở (cache), không phải bản gốc đã lưu.
+                // editor->isDirty() tự về false ngay sau MỌI setAction() (kể cả nạp từ cache - "dirty" của
+                // chính ActionEditorWidget chỉ nghĩa là "đã gõ gì đó kể từ lần nạp gần nhất", không phải
+                // "khác dữ liệu gốc đã lưu") - dấu "*" ở bảng (do AutoClickWindow quản lý qua m_pendingEdits)
+                // mới là chỉ báo ĐÚNG cho "còn cache chưa lưu", kiểm bên dưới.
+                const Action cached = editor->getAction();
+                CHECK(cached.waitBefore == editing.waitBefore);
+                CHECK(table->item(0, 0)->text().contains("*"));
+
+                // -- Đóng cửa sổ khi còn cache chưa lưu: PHẢI HỎI (Hủy -> không đóng, giữ nguyên cache) --
+                bool dialogSeen = false;
+                QTimer::singleShot(0, &win, [&dialogSeen] {
+                    if (auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget()))
+                    {
+                        dialogSeen = true;
+                        box->button(QMessageBox::Cancel)->click();
+                    }
+                });
+                const bool closedByCancel = win.close();
+                app.processEvents();
+                CHECK(dialogSeen);
+                CHECK(!closedByCancel);
+                CHECK(win.isVisible()); // Hủy -> cửa sổ KHÔNG đóng, cache vẫn còn nguyên
+                CHECK(table->item(0, 0)->text().contains("*")); // cache vẫn còn - xem comment isDirty() ở trên
+
+                // Lần hai: chọn "Không" (bỏ chỉnh sửa dở) - phải đóng được.
+                dialogSeen = false;
+                QTimer::singleShot(0, &win, [&dialogSeen] {
+                    if (auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget()))
+                    {
+                        dialogSeen = true;
+                        box->button(QMessageBox::No)->click();
+                    }
+                });
+                const bool closedByNo = win.close();
+                app.processEvents();
+                CHECK(dialogSeen);
+                CHECK(closedByNo);
+                CHECK(!win.isVisible());
             }
         }
-
-        win.close();
-        app.processEvents();
     }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);
