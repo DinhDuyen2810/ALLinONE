@@ -428,6 +428,8 @@ add_library(downloader_core STATIC
     src/tools/downloader/model/ResolvedMedia.h
     src/tools/downloader/engine/FileDownloader.h
     src/tools/downloader/engine/FileDownloader.cpp
+    src/tools/downloader/engine/CookieFile.h
+    src/tools/downloader/engine/CookieFile.cpp
     src/tools/downloader/engine/PageMediaScanner.h
     src/tools/downloader/engine/PageMediaScanner.cpp
     src/tools/downloader/engine/LinkResolverCore.h

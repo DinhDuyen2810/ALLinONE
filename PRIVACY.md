@@ -52,6 +52,8 @@ phải máy chủ của nhóm phát triển, và chỉ gọi khi bạn chủ đ�
 
 **Trình duyệt ẩn (Downloader)**: khi các cách khác không tìm ra tệp, ứng dụng chạy Microsoft Edge hoặc Google Chrome ĐÃ CÓ trên máy ở chế độ ẩn (`--headless`) với **hồ sơ tạm riêng** (không dùng hồ sơ, tài khoản hay cookie của bạn) để nạp trang và ghi nhật ký mạng, rồi xóa hồ sơ tạm. Trang đó thấy một trình duyệt mới như lần truy cập đầu tiên. Tắt tính năng này trong tab Cài đặt của Downloader.
 
+**Cookie `cookies.txt` (Downloader, từ v1.19.18)**: nếu bạn chọn tệp `cookies.txt` ở tab Cài đặt, chính ứng dụng cũng đọc nó (cục bộ, tối đa 5 MB) để quét link và tải tệp bạn có quyền (vd Google Drive bạn là chủ sở hữu). Cookie chỉ nằm trong bộ nhớ tiến trình, không ghi/chép đi đâu, và Qt chỉ gửi tới đúng miền/đường dẫn khớp với cookie (kể cả sau chuyển hướng). Nhật ký `app.log` ghi địa chỉ đã phân giải (máy chủ + đường dẫn, KHÔNG ghi chuỗi truy vấn) cùng kết quả/lý do lỗi để chẩn đoán - xóa được cùng thư mục dữ liệu.
+
 ## Mã nguồn mở - tự kiểm chứng được
 Toàn bộ mã nguồn công khai tại [github.com/DinhDuyen2810/ALLinONE](https://github.com/DinhDuyen2810/ALLinONE)
 (giấy phép MIT) - bất kỳ ai cũng có thể đọc lại chính xác ứng dụng làm gì, không cần tin theo lời khẳng

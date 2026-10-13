@@ -66,6 +66,25 @@ DeepScan deepScanHtml(const QString& html, const QString& baseUrl);
 bool looksLikeChallengePage(const QString& html); ///< Cloudflare "Just a moment..." và tương tự
 bool looksLikeLoginWall(const QString& html);
 
+// ---------------------------------------------------------------- Bài đăng trong trang hồ sơ
+/// Một bài đăng nhìn thấy trong DOM của trang hồ sơ: `photo` = bài ảnh (yt-dlp không hỗ trợ - phải dựng bằng trình duyệt
+/// ẩn để lấy ảnh đầy đủ), ngược lại là video/reel (yt-dlp tải được). `id` = mã bài (fbid, mã video, mã TikTok...).
+struct PostRef
+{
+    QString url;
+    QString id;
+    bool photo{false};
+};
+/// Các liên kết bài đăng (cùng trang, không trùng, theo thứ tự xuất hiện) trong DOM đã dựng của một trang hồ sơ:
+///  - Facebook: /photo/?fbid=..., /photo.php?fbid=... (ảnh); /posts/<mã> (bài, có thể có ảnh); /<tên>/videos/<id>, /reel/<id>, /watch/?v=<id> (video).
+///  - TikTok: /@<người dùng>/photo/<id> (ảnh), /@<người dùng>/video/<id> (video) - chỉ của CHÍNH hồ sơ đang xem.
+///  - Instagram: /p/<mã>, /reel/<mã>, /tv/<mã> (đưa cho yt-dlp).
+QList<PostRef> postLinksFromDom(const QString& dom, const QString& pageUrl, int maxCount = 80);
+/// Mã số bài TikTok trong .../video/<id> hoặc .../photo/<id>; rỗng nếu không phải.
+QString tiktokPostId(const QString& url);
+/// .../@user/video/<id> -> .../@user/photo/<id>; rỗng nếu không phải link /video/ của TikTok.
+QString tiktokPhotoUrlFromVideoUrl(const QString& url);
+
 // ---------------------------------------------------------------- Trình duyệt ẩn (Edge/Chrome không giao diện)
 /// URL media (m3u8/mpd/mp4/webm/mp3/m4a/flv) mà trang đã yêu cầu, lấy từ tệp NetLog của trình duyệt. Luồng
 /// (manifest .m3u8/.mpd) xếp TRƯỚC. Không trả các đoạn .ts/.m4s.

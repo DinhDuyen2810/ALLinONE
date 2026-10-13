@@ -122,6 +122,13 @@ DownloadQueue::~DownloadQueue()
         r->deleteLater();
     }
     m_resolvers.clear();
+    for (LinkResolver* r : m_photoChecks)
+    {
+        r->disconnect(this);
+        r->cancel();
+        r->deleteLater();
+    }
+    m_photoChecks.clear();
     for (YtDlpDownloadWorker* w : m_ytActive)
     {
         w->disconnect(this);
@@ -227,6 +234,7 @@ void DownloadQueue::pumpResolve()
         o.maxItems = m_settings->profileMaxItems();
         o.useBrowser = m_settings->useBrowserFallback();
         o.ytDlpExtraArgs = m_settings->ytDlpExtraArguments();
+        o.cookieFile = m_settings->httpCookieFile();
         r->setOptions(o);
         m_resolvers.insert(id, r);
         connect(r, &LinkResolver::progress, this, [this, id](QString text) {
@@ -246,7 +254,7 @@ void DownloadQueue::pumpResolve()
     }
 }
 
-void DownloadQueue::onResolved(int id, const ResolveResult& res)
+void DownloadQueue::onResolved(int id, const ResolveResult& res, QList<int>* createdIds)
 {
     auto found = m_items.find(id);
     if (found == m_items.end())
@@ -274,6 +282,8 @@ void DownloadQueue::onResolved(int id, const ResolveResult& res)
             found->total = m.size;
             first = false;
             emit itemUpdated(id);
+            if (createdIds)
+                *createdIds << id;
             ++added;
             continue;
         }
@@ -292,6 +302,8 @@ void DownloadQueue::onResolved(int id, const ResolveResult& res)
         extra.total = m.size;
         insertItem(extra, afterId);
         afterId = extra.id;
+        if (createdIds)
+            *createdIds << extra.id;
         ++added;
     }
     if (added > 1 || res.isCollection)
@@ -375,8 +387,69 @@ bool DownloadQueue::startItem(int id)
     found->historyDone = false;
     if (found->media.kind == ResolvedMedia::Kind::HttpFile)
         return startHttp(id);
+    // Mục của hồ sơ TikTok chưa biết là video hay bài ảnh: yt-dlp tải bài ảnh ra file nhạc mp3 chứ không có ảnh - kiểm tra lại
+    // đúng mục này trước khi tải.
+    if (found->media.maybePhotoPost)
+        return startPhotoCheck(id);
     queueYt(id);
     return true;
+}
+
+bool DownloadQueue::startPhotoCheck(int id)
+{
+    auto found = m_items.find(id);
+    if (found == m_items.end() || m_photoChecks.contains(id))
+        return false;
+    found->state = QueueItem::State::Queued;
+    found->received = 0;
+    emit itemUpdated(id);
+
+    auto* r = new LinkResolver(this);
+    LinkResolver::Options o;
+    o.maxItems = 60;
+    o.useBrowser = m_settings->useBrowserFallback();
+    o.ytDlpExtraArgs = m_settings->ytDlpExtraArguments();
+    o.cookieFile = m_settings->httpCookieFile();
+    r->setOptions(o);
+    m_photoChecks.insert(id, r);
+    connect(r, &LinkResolver::finished, this, [this, id, r](ResolveResult res) {
+        m_photoChecks.remove(id);
+        r->deleteLater();
+        onPhotoChecked(id, res);
+    });
+    r->resolve(found->media.url);
+    return true;
+}
+
+void DownloadQueue::onPhotoChecked(int id, const ResolveResult& res)
+{
+    auto found = m_items.find(id);
+    if (found == m_items.end())
+        return;
+    if (res.error == QStringLiteral("Đã hủy."))
+    {
+        found->state = QueueItem::State::Canceled;
+        emit itemUpdated(id);
+        finalize(id, false);
+        return;
+    }
+    found->media.maybePhotoPost = false;
+    bool allImages = res.ok();
+    for (const ResolvedMedia& m : res.items)
+        allImages = allImages && m.kind == ResolvedMedia::Kind::HttpFile;
+    if (!allImages)
+    {
+        // Là video (hoặc chưa phân loại được): tải bằng yt-dlp như thường.
+        queueYt(id);
+        return;
+    }
+    // Là bài ảnh: mục này (và các mục chèn thêm ngay sau nó) trở thành các ảnh, rồi tải luôn.
+    QList<int> ids;
+    found->state = QueueItem::State::Idle;
+    onResolved(id, res, &ids);
+    emit message(QString("Bài đăng ảnh TikTok: tách thành %1 ảnh.").arg(ids.size()));
+    for (int newId : ids)
+        startItem(newId);
 }
 
 QString DownloadQueue::chooseHttpDestPath(const QueueItem& item) const
@@ -400,6 +473,7 @@ QString DownloadQueue::chooseHttpDestPath(const QueueItem& item) const
 bool DownloadQueue::startHttp(int id)
 {
     QueueItem& it = m_items[id];
+    m_downloader->setCookieFile(m_settings->httpCookieFile());
     // Đã từng có mục FileDownloader (tạm dừng/lỗi/hủy): tiếp tục/thử lại chính nó.
     if (it.httpId >= 0)
     {
@@ -456,6 +530,8 @@ void DownloadQueue::stopProcesses()
         cancel(id);
     for (int id : m_resolvers.keys())
         cancel(id);
+    for (int id : m_photoChecks.keys())
+        cancel(id);
     for (int id : m_ytActive.keys())
         cancel(id);
 }
@@ -469,6 +545,11 @@ void DownloadQueue::cancel(int id)
     if (m_resolvers.contains(id))
     {
         m_resolvers.value(id)->cancel(); // phát finished("Đã hủy.") -> onResolved đánh dấu ERR
+        return;
+    }
+    if (m_photoChecks.contains(id))
+    {
+        m_photoChecks.value(id)->cancel(); // phát finished("Đã hủy.") -> onPhotoChecked
         return;
     }
     if (m_resolveQueue.removeAll(id) > 0)
@@ -504,6 +585,12 @@ void DownloadQueue::remove(const QList<int>& ids)
         if (found == m_items.end())
             continue;
         if (LinkResolver* r = m_resolvers.take(id))
+        {
+            r->disconnect(this);
+            r->cancel();
+            r->deleteLater();
+        }
+        if (LinkResolver* r = m_photoChecks.take(id))
         {
             r->disconnect(this);
             r->cancel();

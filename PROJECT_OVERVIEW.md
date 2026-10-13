@@ -107,14 +107,14 @@
 | `src/tools/downloader/engine/YtDlpController.*` | Đường dẫn/khả dụng của `yt-dlp.exe`/`ffmpeg.exe` đóng gói kèm theo (thư mục `yt-dlp/`) |
 | `src/tools/downloader/engine/YtDlpInfoWorker.*` | Lấy thông tin/định dạng video (`yt-dlp --dump-json`) trên QThread riêng |
 | `src/tools/downloader/engine/YtDlpDownloadWorker.*` | Tải video qua `yt-dlp.exe`, đọc tiến độ qua `--progress-template` |
-| `src/tools/downloader/engine/{DownloadQueue,LinkResolver,LinkResolverCore,HeadlessBrowser}.*` | Hàng đợi hợp nhất (kiểm tra OK/ERR, tải HTTP + yt-dlp, ghi lịch sử); bộ phân giải link bất đồng bộ; phần THUẦN của bộ phân giải (test bằng dữ liệu thật); trình duyệt ẩn Edge/Chrome (NetLog + DOM) |
+| `src/tools/downloader/engine/{DownloadQueue,LinkResolver,LinkResolverCore,HeadlessBrowser,CookieFile}.*` | Hàng đợi hợp nhất (kiểm tra OK/ERR, tải HTTP + yt-dlp, ghi lịch sử); bộ phân giải link bất đồng bộ; phần THUẦN của bộ phân giải (test bằng dữ liệu thật); trình duyệt ẩn Edge/Chrome (NetLog + DOM) |
 | `src/tools/downloader/{DownloaderSettings,DownloadHistoryStore}.*`, `model/ResolvedMedia.h` | Cài đặt dùng chung + lịch sử tải (JSON qua `AppPaths::profileFile`); struct kết quả phân giải |
 | `src/tools/downloader/{DirectDownloadTab,PageScanTab,PlatformVideoTab,DownloadHistoryTab,DownloaderSettingsTab,DownloaderWindow}.*` | UI 5 tab Downloader (Tải trực tiếp = hàng đợi, Quét trang web, Video nền tảng, Lịch sử, Cài đặt) |
 | `src/tools/downloader/DownloaderTool.*` | `ITool` của Downloader (một cửa sổ duy nhất) |
 | `src/third_party/` | qrcodegen (MIT), quirc (ISC), xem `THIRD_PARTY.md` |
 | `vendor/scrcpy/` | scrcpy + adb đóng gói (Apache-2.0, KHÔNG commit Git) - xem `THIRD_PARTY.md` |
 | `vendor/yt-dlp/` | yt-dlp + ffmpeg/ffprobe đóng gói (Unlicense/GPLv3+ kết hợp + GPL, KHÔNG commit Git) - xem `THIRD_PARTY.md` |
-| `tests/` | `qr_tests`/`qr_ui_tests`, `wifi_tests`/`wifi_ui_tests`, `connect_tests`/`connect_ui_tests` (506 + 2, ghép đôi 2 chiều thật qua TCP, ổn định qua 40+ lần chạy liên tiếp), `diskcleanup_tests`/`diskcleanup_ui_tests` (176 + 19 kiểm tra, có xóa file thật qua Thùng rác, liệt kê phân vùng thật), `android_tests`/`android_ui_tests` (45 + 7 kiểm tra, có gọi `adb devices` thật - chỉ đọc), `vpn_tests`/`vpn_ui_tests` (41 + 6 kiểm tra, có gọi `Get-VpnConnection` thật - chỉ đọc), `security_tests`/`security_ui_tests` (76 + 6 kiểm tra, có gọi `Get-MpComputerStatus`/đọc hosts file thật - chỉ đọc), `downloader_tests`/`downloader_ui_tests` (510 + 57 kiểm tra từ v1.19.16: máy chủ HTTP 127.0.0.1 cho cả luồng hàng đợi lẫn giao diện, có tải thật một tệp công khai nhỏ qua HTTP thật) |
+| `tests/` | `qr_tests`/`qr_ui_tests`, `wifi_tests`/`wifi_ui_tests`, `connect_tests`/`connect_ui_tests` (506 + 2, ghép đôi 2 chiều thật qua TCP, ổn định qua 40+ lần chạy liên tiếp), `diskcleanup_tests`/`diskcleanup_ui_tests` (176 + 19 kiểm tra, có xóa file thật qua Thùng rác, liệt kê phân vùng thật), `android_tests`/`android_ui_tests` (45 + 7 kiểm tra, có gọi `adb devices` thật - chỉ đọc), `vpn_tests`/`vpn_ui_tests` (41 + 6 kiểm tra, có gọi `Get-VpnConnection` thật - chỉ đọc), `security_tests`/`security_ui_tests` (76 + 6 kiểm tra, có gọi `Get-MpComputerStatus`/đọc hosts file thật - chỉ đọc), `downloader_tests`/`downloader_ui_tests` (554 + 65 kiểm tra từ v1.19.18: máy chủ HTTP 127.0.0.1 cho cả luồng hàng đợi lẫn giao diện, có tải thật một tệp công khai nhỏ qua HTTP thật) |
 | `assets/resources.qrc`, `icon/` | Icon nhúng vào exe |
 | `profiles/default.json` | Chuỗi Auto Click MẪU đóng gói kèm (lần chạy đầu được chép sang thư mục dữ liệu người dùng) |
 | `CLAUDE.md` | Quy tắc làm việc đứng cho Claude Code (build → commit → push sau mỗi lần sửa...) |
@@ -2267,6 +2267,44 @@ Tất cả các tool còn lại (WiFi, VPN, Disk Cleanup, Connect, Security, And
 
 **Giới hạn:** đưa giao diện về "trùng 100%" mã v1.19.10 cho các tool QR/Auto Click/Downloader nghĩa là xóa chính các tính năng người dùng đã yêu cầu - không làm. Không tìm thấy thay đổi giao diện NÀO KHÁC không do yêu cầu; nếu còn lỗi hiển thị cụ thể cần ảnh/tab/nút để truy nguyên. CHƯA kiểm chứng hiển thị thật trên màn hình người dùng (máy chạy qua RDP).
 
+## 4zg. Downloader: quét từng bài đăng của hồ sơ, Quét trang web dùng bộ phân giải đầy đủ, cookies.txt (2026-10-14, v1.19.18)
+
+Người dùng báo (kèm 2 ảnh) và đặt mục tiêu `/goal`: (1) thông báo Windows Security về `ffmpeg.exe` khi tải video (vẫn tải được); (2) vì sao tải được video Facebook mà ảnh Facebook thì không; (3) hồ sơ Facebook/YouTube/TikTok quét ở "Quét trang web" phải tải được video/ảnh từng bài đăng;
+(4) năm link chưa tải được (Studocu, Drive, ảnh Facebook, hồ sơ Facebook, ảnh TikTok); (5) bỏ mũi tên ô số ở Cài đặt. Mục tiêu: link mẫu (kể cả tệp PDF) phải tải được, hồ sơ phải quét từng bài và tải ảnh.
+
+**Phát hiện (đo thật):**
+- Tab "Quét trang web" (v1.19.16) chỉ quét HTML tĩnh nên không ra gì với hồ sơ/bài ảnh (dựng bằng JavaScript) - bộ phân giải đầy đủ chỉ có ở tab hàng đợi. Đây là lý do "quét web không ra" ở yêu cầu (3) và một phần (2).
+- yt-dlp hỗ trợ video Facebook nhưng không hỗ trợ ảnh Facebook/TikTok (cần trình duyệt ẩn).
+- DOM hồ sơ Facebook (chưa đăng nhập) lộ ~9 liên kết `/photo/?fbid=...` (ảnh trên trang chỉ là bản thu nhỏ/cắt vuông `c0.185.720.720a`); DOM hồ sơ TikTok lộ 8 liên kết `/photo/<id>` và 7 `/video/<id>`.
+- yt-dlp liệt kê bài ẢNH của hồ sơ TikTok dưới dạng `/video/<id>`; tải `/video/<id>` của bài ảnh cho định dạng duy nhất `mp3` (`vcodec: none`) - tức chỉ có nhạc nền, không có ảnh. `/video/<id>` không chuyển hướng sang `/photo/<id>`, trang tĩnh bị thử thách JS nên không phân loại được bằng HTTP.
+- Drive `1ObltgwgTX8...`: Google trả "Sorry, the owner hasn't given you permission to download this file. Only the owner and editors can download this file." - chủ tệp tắt quyền tải. Studocu: Cloudflare + tường trả phí.
+
+**Thay đổi:**
+- `LinkResolver`: sau bước trình duyệt ẩn, nếu là hồ sơ thì `LinkResolverCore::postLinksFromDom()` lấy danh sách bài (Facebook `/photo/?fbid=`, `/photo.php`, `/<tên>/videos/<id>`, `/reel/<id>`, `/watch/?v=`, `/<tên>/posts/<mã>`; TikTok `/@<chính chủ>/photo|video/<id>`; Instagram `/p|reel|tv/<mã>`); `startExpansion()` tạo bộ phân giải con cho từng bài ảnh (mặc định 3 song song,
+  `Options::expandPosts=false` ở con để không đệ quy) và gom ảnh ĐẦY ĐỦ; bài video thành mục yt-dlp. Hồ sơ TikTok: yt-dlp liệt kê -> `refineTikTokCollection()` dùng DOM hồ sơ phân biệt ảnh/video; bài ngoài phần nhìn thấy được đánh dấu `ResolvedMedia::maybePhotoPost`. `parseYtDlpJson()` nhận ra bài ảnh TikTok (`vcodec none` + extractor TikTok) và trả `photoPostUrl`.
+  Trình duyệt ẩn lần đầu lỗi (không phải hết giờ/không có trình duyệt) thì thử lại `--headless` cũ; thông báo lỗi kèm dòng cuối stderr; nhật ký ghi host+đường dẫn và kết quả.
+- `DownloadQueue`: mục `maybePhotoPost` được kiểm tra lại bằng một `LinkResolver` NGAY trước khi tải (`startPhotoCheck/onPhotoChecked`): là bài ảnh thì mục đó + các mục chèn thêm thành các ảnh rồi tải, không thì tải video như thường; hủy/xóa/đóng cửa sổ dừng cả lượt kiểm tra này.
+- `PageScanTab` viết lại: quét tĩnh -> tự quét sâu (khi chưa có video/âm thanh/tài liệu, hoặc hồ sơ/bài đăng, hoặc bấm "Quét sâu"), nút Dừng, "Thêm vào hàng đợi", "⬇ Tải ngay" (mục đã có sẵn trong hàng đợi được tải tiếp, không nhân đôi), nút 🌐 mỗi dòng; `cancelScan()` gọi khi đóng cửa sổ.
+- `CookieFile` (mới): đọc `cookies.txt` Netscape (cả `#HttpOnly_`, bỏ cookie hết hạn/dòng hỏng) và nạp vào `QNetworkCookieJar` của `LinkResolver` và `FileDownloader` (nạp lại khi tệp đổi); thông báo Drive "chủ không cho tải" gợi ý cookies.txt khi chưa đặt, hoặc báo tài khoản vẫn không có quyền khi đã đặt.
+- Cài đặt: `QSpinBox::NoButtons` (bỏ mũi tên), nhãn ô tick ngắn lại + tooltip.
+
+**Kết quả thật qua hàng đợi** (tải vào thư mục tạm, kiểm tra xong KHÔNG có tệp nào trước khi bấm tải):
+| Link | Kết quả |
+|---|---|
+| Ảnh Facebook `/photo/?fbid=1935618970974748` | OK - 1 ảnh 294 KB |
+| Hồ sơ Facebook `/qynhmaiiiz` | OK - 9 ảnh đầy đủ từ 9 bài (41 s), tải 9/9 |
+| Ảnh TikTok `@kiue.oahn/photo/7683433150571121940` | OK - 2 ảnh |
+| Hồ sơ TikTok `@kiue.oahn` (giới hạn 14) | OK - 25 mục = 19 ảnh (bài ảnh) + 6 video, tải 25/25 (~116 s kiểm tra, 13 s tải) |
+| Video Facebook `/ctsvdhbkhn/videos/1068033449194736` | OK qua yt-dlp (đã tải thử ở bản trước, 2,7 GB) |
+| Drive `1ObltgwgTX8...` | ERR - chủ tệp tắt quyền tải; chủ/biên tập viên dùng cookies.txt |
+| Studocu | ERR - Cloudflare + tường trả phí |
+
+**Không làm (có chủ đích):** vượt hạn chế "không cho tải" của chủ tệp Drive (đọc ảnh trang từ trình xem), né kiểm tra bot của Cloudflare hay tường trả phí của Studocu - đây là vượt kiểm soát truy cập, không phải tải tệp hợp lệ. Tải được khi có quyền thật: chủ/biên tập viên Drive qua cookies.txt, Studocu qua tài khoản của người dùng trong trình duyệt (nút 🌐).
+
+**Thông báo "Part of this app has been blocked ... ffmpeg.exe":** Windows (Smart App Control/danh tiếng ứng dụng) chặn `ffmpeg.exe` không có chữ ký số (bản BtbN) do yt-dlp nạp. yt-dlp vẫn tải được, nhưng bước ghép hình+tiếng có thể hỏng khi Smart App Control ở chế độ chặn. Chỉ có chữ ký số mới hết hẳn - theo quy tắc dự án không tự ký (SignPath/chủ dự án). CHƯA kiểm chứng trên máy bật Smart App Control.
+
+**Kiểm thử:** `downloader_tests` 554/554, `downloader_ui_tests` 65/65, `update_tests` 95/95, `secdl_stress_tests` 1.874.715/1.874.715, `core_stress_tests` đạt. **CHƯA kiểm chứng:** nguyên nhân link ảnh Facebook không ra trên MÁY NGƯỜI DÙNG (ở máy phát triển ra đủ; nay lỗi hiện chi tiết + thử lại chế độ ẩn cũ + ghi nhật ký), cookies.txt với tài khoản Google thật, hồ sơ Facebook/Instagram đầy đủ khi đăng nhập, bấm chuột/🌐 thật.
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
@@ -2431,6 +2469,7 @@ Quy tắc đứng nằm ở `CLAUDE.md` (gốc dự án). Tóm tắt - mỗi l�
 | 2026-10-13 | QR: định dạng vị trí + khung nhận dạng khi quét màn hình; Auto Click: chọn nhiều để xóa/nhân bản (v1.19.15) | Chi tiết đầy đủ ở mục 4zd. 4 yêu cầu: (1) đọc đúng 3 định dạng vị trí - dữ liệu thật cho thấy KHÔNG cùng một điểm (link dài = lộ trình xuất phát + Hội Gym; link rút gọn = Hội Gym; độ-phút-giây = điểm xuất phát), nay link dài lấy điểm của địa điểm có mã địa điểm (trùng link rút gọn) và báo điểm còn lại, thêm đọc tọa độ viết tay (độ-phút-giây, độ thập phân, cặp số); (2) khung nhận dạng nhỏ hơn mã - tái hiện: ảnh dpr 1,25 cho khung 79,8% do `padWhite()` vẽ theo kích thước logic, sửa bằng chuẩn hóa dpr về 1; (3) đếm số lần quét mã đã tạo - KHÔNG làm được (mã tĩnh, không có máy chủ); (4) chọn nhiều hành động/chuỗi bằng Ctrl/Shift để xóa/nhân bản (nhiều hành động: cụm bản sao lùi về sau hành động chọn cuối). `qr_tests` 241/241, `qr_ui_tests` 197/197, `autoclick_tests` 251/251, `core_stress_tests` 551/551, `qrwifi_stress_tests` 760.298/760.298. CHƯA kiểm chứng: Shift + bấm chuột thật, menu chuột phải thật, ảnh chụp màn hình thật ở DPI 125%. Chỉ push code, không tạo release. |
 | 2026-10-14 | Downloader: hàng đợi hợp nhất + phân giải mọi loại link + Lịch sử + Cài đặt (v1.19.16) | Chi tiết đầy đủ ở mục 4ze. 6 yêu cầu: (1) Tải trực tiếp = hàng đợi (thêm -> kiểm tra OK/ERR -> chọn -> tải; thư mục đích trống sau bước kiểm tra); (2) trang chặn chuột phải vẫn đọc được qua quét sâu mã nguồn + trình duyệt ẩn (NetLog); (3) phủ Facebook ảnh/video, TikTok ảnh, trang phim HLS, Google Drive/Docs, Studocu (ERR vì Cloudflare); (4) tab Lịch sử + Cài đặt (thư mục tải dùng chung); (5) nút 🌐 mở link; (6) hồ sơ/kênh bung thành từng bài (Instagram/Facebook cần cookie). `downloader_tests` 510/510, `downloader_ui_tests` 57/57, `update_tests` 95/95, `secdl_stress_tests` 1.869.830/1.869.830, `core_stress_tests` đạt; hàng đợi chạy thật qua mạng. CHƯA kiểm chứng: bấm chuột/hộp thoại thật, cookie Instagram/Facebook, hồ sơ Facebook đầy đủ. Có tạo release. |
 | 2026-10-14 | Đối chiếu code giao diện với v1.19.10 + đưa `QRUiStyle.h` về đúng v1.19.10 (v1.19.17) | Chi tiết ở mục 4zf. `git diff v1.19.10 HEAD -- src`: 218/285 tệp giống hệt, 67 tệp khác đều là tính năng được yêu cầu; thay đổi duy nhất trên giao diện cũ không phục vụ tính năng (bo góc bảng QR 12px) đã hoàn lại 10px. `qr_tests` 241/241, `qr_ui_tests` 197/197. Chỉ push code, không tạo tag/release. CHƯA kiểm chứng hiển thị thật trên màn hình người dùng. |
+| 2026-10-14 | Downloader: quét từng bài đăng của hồ sơ + Quét trang web dùng bộ phân giải đầy đủ + cookies.txt cho tệp có quyền (v1.19.18) | Chi tiết ở mục 4zg. Nguyên nhân thật: tab Quét trang chỉ quét HTML tĩnh; yt-dlp không hỗ trợ ảnh; hồ sơ TikTok liệt kê bài ảnh dạng /video/ (tải ra mp3). Kết quả qua hàng đợi thật: ảnh Facebook OK, hồ sơ Facebook 9 ảnh đầy đủ (9/9), ảnh TikTok 2 ảnh, hồ sơ TikTok 19 ảnh + 6 video (25/25); Drive (chủ tắt quyền tải) và Studocu (Cloudflare + trả phí) ERR đúng lý do - không vượt hạn chế. Thông báo ffmpeg.exe là Windows chặn tệp chưa ký số. `downloader_tests` 554/554, `downloader_ui_tests` 65/65, `update_tests` 95/95, `secdl_stress_tests` 1.874.715/1.874.715, `core_stress_tests` đạt. CHƯA kiểm chứng: nguyên nhân lỗi ảnh Facebook trên máy người dùng, cookies.txt với tài khoản Google thật. Có tạo release. |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `

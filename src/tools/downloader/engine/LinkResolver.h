@@ -24,7 +24,11 @@ class HeadlessBrowser;
 ///     HỒ SƠ/KÊNH/DANH SÁCH PHÁT (nhiều mục). Bỏ qua với bài đăng ẢNH mà yt-dlp không hỗ trợ.
 ///  4. Quét HTML sâu: thẻ, meta, CHUỖI THÔ trong script (link .m3u8/.mp4 của trình phát JavaScript), rồi iframe nhúng.
 ///  5. Trình duyệt ẩn (Edge/Chrome): dựng trang thật, đọc DOM + toàn bộ yêu cầu mạng - bắt được cả trang cấm chuột
-///     phải và ảnh/video do JavaScript chèn.
+///     phải và ảnh/video do JavaScript chèn. Lần đầu lỗi thì thử lại bằng chế độ ẩn cũ.
+///
+/// HỒ SƠ (Facebook/TikTok/Instagram): trình duyệt ẩn đọc danh sách bài đăng trong trang rồi QUÉT TỪNG BÀI - bài video giao
+/// cho yt-dlp, bài ảnh được dựng riêng (bộ phân giải con) để lấy ảnh ĐẦY ĐỦ chứ không phải ảnh thu nhỏ trên trang hồ sơ.
+/// Hồ sơ TikTok: yt-dlp liệt kê bài (kể cả bài ảnh dưới dạng /video/...), trình duyệt ẩn phân biệt bài ảnh/video.
 class LinkResolver : public QObject
 {
     Q_OBJECT
@@ -38,6 +42,9 @@ public:
         QStringList ytDlpExtraArgs;    ///< Đối số thêm cho yt-dlp (cookie...)
         int ytDlpTimeoutMs{150000};
         int browserTimeoutMs{70000};
+        QString cookieFile;            ///< cookies.txt cho các yêu cầu HTTP của chính bộ phân giải (vd Google Drive có quyền)
+        bool expandPosts{true};        ///< Hồ sơ: quét từng bài đăng (bộ phân giải con); tắt cho chính bộ phân giải con
+        int maxParallelChildren{3};    ///< Số bài ảnh quét cùng lúc (mỗi bài một trình duyệt ẩn)
     };
 
     explicit LinkResolver(QObject* parent = nullptr);
@@ -75,6 +82,28 @@ private:
     void stageStatic();
     void stageFrames(int index);
     void stageBrowser();
+    void startBrowser(const QString& url);
+    void onBrowserFinished(bool ok, QString dom, QByteArray netLog, QString error);
+    void onPageDom(const QString& dom, const QByteArray& netLog);
+    void refineTikTokCollection(const ResolveResult& collection);
+    void onRefineDom(const QString& dom);
+
+    /// Quét từng bài đăng của hồ sơ: mỗi khe là MỘT mục có sẵn (video) hoặc MỘT bài ảnh cần bộ phân giải con dựng ra ảnh.
+    struct Slot
+    {
+        ResolvedMedia fixed;           ///< Mục đã biết (bài video)
+        bool isPhoto{false};
+        QString photoUrl;
+        bool started{false};
+        bool done{false};
+        QList<ResolvedMedia> children; ///< Ảnh lấy từ bài này
+        QString error;
+    };
+    void startExpansion(const QList<Slot>& plan, bool collection, bool truncated, const QList<ResolvedMedia>& fallback);
+    void pumpSlots();
+    void finishExpansion();
+    QString workUrl() const { return m_workUrl.isEmpty() ? m_url : m_workUrl; }
+    void logOutcome(const QString& text) const;
 
     ResolvedMedia fileItem(const QString& url, const Fetch& f, const QString& referer) const;
     void finishOk(const QList<ResolvedMedia>& items, bool collection = false, bool truncated = false);
@@ -90,6 +119,8 @@ private:
     HeadlessBrowser* m_browser{nullptr};
 
     QString m_url;
+    QString m_cookieStamp;
+    QString m_workUrl;        ///< Địa chỉ thực sự được quét (khác m_url khi bài /video/ TikTok hóa ra là bài ảnh /photo/)
     QString m_finalUrl;
     QString m_html;
     QString m_pageTitle;
@@ -103,6 +134,15 @@ private:
     QString m_browserError;
     QString m_warning;        ///< Chuyển vào ResolveResult::warning
     int m_ytAttempts{0};
+    int m_browserAttempt{0};
+    QString m_browserFirstError;
+    bool m_browserRefine{false};          ///< Lượt trình duyệt đang chạy là để phân loại bài của hồ sơ TikTok
+    ResolveResult m_pendingCollection;    ///< Danh sách yt-dlp chờ phân loại bài ảnh/video
+    QList<Slot> m_slots;
+    QList<LinkResolver*> m_children;
+    bool m_expCollection{false};
+    bool m_expTruncated{false};
+    QList<ResolvedMedia> m_expFallback;
     bool m_running{false};
     bool m_done{true};
     bool m_canceled{false};

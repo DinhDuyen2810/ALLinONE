@@ -601,6 +601,132 @@ QList<MediaLink> photosFromDom(const QString& dom, const QString& pageUrl, int m
     return out;
 }
 
+// ---------------------------------------------------------------------------------------------- Bài đăng trong hồ sơ
+QString tiktokPostId(const QString& url)
+{
+    if (siteOf(url) != Site::TikTok)
+        return {};
+    static const QRegularExpression rx(QStringLiteral("^/@[^/]+/(?:photo|video)/(\\d+)"));
+    const auto m = rx.match(QUrl(url.trimmed()).path());
+    return m.hasMatch() ? m.captured(1) : QString();
+}
+
+QString tiktokPhotoUrlFromVideoUrl(const QString& url)
+{
+    if (siteOf(url) != Site::TikTok)
+        return {};
+    QUrl u(url.trimmed());
+    static const QRegularExpression rx(QStringLiteral("^(/@[^/]+)/video/(\\d+)"));
+    const auto m = rx.match(u.path());
+    if (!m.hasMatch())
+        return {};
+    u.setPath(m.captured(1) + QStringLiteral("/photo/") + m.captured(2));
+    u.setQuery(QString());
+    u.setFragment(QString());
+    return u.toString();
+}
+
+QList<PostRef> postLinksFromDom(const QString& dom, const QString& pageUrl, int maxCount)
+{
+    QList<PostRef> out;
+    QSet<QString> seen;
+    const QUrl base(pageUrl);
+    const Site pageSite = siteOf(pageUrl);
+    if (pageSite != Site::Facebook && pageSite != Site::TikTok && pageSite != Site::Instagram)
+        return out;
+
+    // Hồ sơ TikTok: chỉ lấy bài của CHÍNH người dùng này (trang còn có gợi ý tài khoản khác).
+    QString tiktokOwner;
+    if (pageSite == Site::TikTok)
+    {
+        static const QRegularExpression ownerRx(QStringLiteral("^/(@[^/]+)"));
+        const auto om = ownerRx.match(base.path());
+        tiktokOwner = om.hasMatch() ? om.captured(1).toLower() : QString();
+    }
+
+    static const QRegularExpression aRx(QStringLiteral("<a\\b([^>]*)>"), QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression tiktokRx(QStringLiteral("^/(@[^/]+)/(photo|video)/(\\d+)"));
+    static const QRegularExpression fbVideoRx(QStringLiteral("^/([^/]+)/videos/(\\d+)"));
+    static const QRegularExpression fbReelRx(QStringLiteral("^/reel/(\\d+)"));
+    static const QRegularExpression fbPostRx(QStringLiteral("^/([^/]+)/posts/([A-Za-z0-9]+)"));
+    static const QRegularExpression igRx(QStringLiteral("^/(?:[^/]+/)?(p|reel|tv)/([A-Za-z0-9_\\-]+)"));
+
+    auto push = [&](const QString& url, const QString& id, bool photo) {
+        const QString key = (photo ? QStringLiteral("p:") : QStringLiteral("v:")) + id;
+        if (id.isEmpty() || seen.contains(key) || out.size() >= maxCount)
+            return;
+        seen.insert(key);
+        PostRef r;
+        r.url = url;
+        r.id = id;
+        r.photo = photo;
+        out << r;
+    };
+
+    auto it = aRx.globalMatch(dom);
+    while (it.hasNext())
+    {
+        const QString href = parseAttributes(it.next().captured(1)).value(QStringLiteral("href")).trimmed();
+        if (href.isEmpty() || href.startsWith('#') || href.startsWith(QStringLiteral("javascript:"), Qt::CaseInsensitive))
+            continue;
+        const QUrl u = base.isValid() ? base.resolved(QUrl(href)) : QUrl(href);
+        if (!u.isValid() || u.host().isEmpty() || (u.scheme() != QLatin1String("http") && u.scheme() != QLatin1String("https")))
+            continue;
+        if (siteOf(u.toString()) != pageSite)
+            continue;
+        const QString path = u.path();
+        const QUrlQuery q(u);
+
+        if (pageSite == Site::TikTok)
+        {
+            const auto m = tiktokRx.match(path);
+            if (!m.hasMatch() || m.captured(1).toLower() != tiktokOwner)
+                continue;
+            const bool photo = m.captured(2) == QLatin1String("photo");
+            push(QStringLiteral("https://www.tiktok.com/%1/%2/%3").arg(m.captured(1), m.captured(2), m.captured(3)), m.captured(3), photo);
+        }
+        else if (pageSite == Site::Facebook)
+        {
+            if ((path == QLatin1String("/photo") || path == QLatin1String("/photo/") || path == QLatin1String("/photo.php")) &&
+                q.hasQueryItem(QStringLiteral("fbid")))
+            {
+                const QString id = q.queryItemValue(QStringLiteral("fbid"));
+                push(QStringLiteral("https://www.facebook.com/photo/?fbid=") + id, id, true);
+                continue;
+            }
+            auto m = fbVideoRx.match(path);
+            if (m.hasMatch())
+            {
+                push(QStringLiteral("https://www.facebook.com/%1/videos/%2").arg(m.captured(1), m.captured(2)), m.captured(2), false);
+                continue;
+            }
+            m = fbReelRx.match(path);
+            if (m.hasMatch())
+            {
+                push(QStringLiteral("https://www.facebook.com/reel/") + m.captured(1), m.captured(1), false);
+                continue;
+            }
+            if (path == QLatin1String("/watch") || path == QLatin1String("/watch/"))
+            {
+                const QString v = q.queryItemValue(QStringLiteral("v"));
+                if (!v.isEmpty())
+                    push(QStringLiteral("https://www.facebook.com/watch/?v=") + v, v, false);
+                continue;
+            }
+            m = fbPostRx.match(path);
+            if (m.hasMatch())
+                push(QStringLiteral("https://www.facebook.com/%1/posts/%2").arg(m.captured(1), m.captured(2)), m.captured(2), true);
+        }
+        else // Instagram
+        {
+            const auto m = igRx.match(path);
+            if (m.hasMatch())
+                push(QStringLiteral("https://www.instagram.com/%1/%2/").arg(m.captured(1), m.captured(2)), m.captured(2), false);
+        }
+    }
+    return out;
+}
+
 // ---------------------------------------------------------------------------------------------- yt-dlp
 QStringList ytDlpAnalyzeArguments(const QString& url, int maxItems, const QStringList& extra)
 {
@@ -685,6 +811,10 @@ ResolveResult parseYtDlpJson(const QByteArray& json, const QString& sourceUrl, i
     m.fileName = nameFor(m.title, ext);
     const bool audioOnly = root.value("vcodec").toString() == "none";
     m.mediaType = audioOnly ? "Âm thanh" : "Video";
+    // Bài đăng ẢNH của TikTok: yt-dlp chỉ thấy nhạc nền (định dạng duy nhất là mp3, không có hình) - tải ra chỉ được mp3.
+    // Báo địa chỉ /photo/ để nơi gọi lấy ảnh thật bằng trình duyệt ẩn.
+    if (audioOnly && extractor.startsWith(QStringLiteral("TikTok")))
+        res.photoPostUrl = tiktokPhotoUrlFromVideoUrl(m.url);
     double size = root.value("filesize").toDouble(root.value("filesize_approx").toDouble(-1));
     if (size <= 0)
     {

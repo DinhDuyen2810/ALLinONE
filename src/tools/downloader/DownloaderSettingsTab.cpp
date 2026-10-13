@@ -11,6 +11,7 @@
 #include <QFileDialog>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QAbstractSpinBox>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
@@ -68,6 +69,8 @@ void DownloaderSettingsTab::buildUi()
     l1->setStyleSheet("background: transparent; color: #1f2328;");
     m_concurrentSpin = new QSpinBox(dlGroup);
     m_concurrentSpin->setRange(1, 8);
+    m_concurrentSpin->setButtonSymbols(QAbstractSpinBox::NoButtons); // bỏ mũi tên lên/xuống - gõ số trực tiếp
+    m_concurrentSpin->setFixedWidth(70);
     connect(m_concurrentSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int v) {
         if (!m_refreshing) m_settings->setMaxConcurrent(v);
     });
@@ -81,6 +84,8 @@ void DownloaderSettingsTab::buildUi()
     l2->setStyleSheet("background: transparent; color: #1f2328;");
     m_maxItemsSpin = new QSpinBox(dlGroup);
     m_maxItemsSpin->setRange(1, 1000);
+    m_maxItemsSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
+    m_maxItemsSpin->setFixedWidth(70);
     connect(m_maxItemsSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int v) {
         if (!m_refreshing) m_settings->setProfileMaxItems(v);
     });
@@ -89,7 +94,9 @@ void DownloaderSettingsTab::buildUi()
     row2->addStretch();
     dl->addLayout(row2);
 
-    m_browserCheck = new QCheckBox("Dùng trình duyệt ẩn (Edge/Chrome) để quét sâu trang khi các cách khác không tìm thấy tệp", dlGroup);
+    m_browserCheck = new QCheckBox("Dùng trình duyệt ẩn (Edge/Chrome) để quét sâu", dlGroup);
+    m_browserCheck->setToolTip("Khi các cách khác không tìm thấy tệp: dựng trang bằng Edge/Chrome không giao diện để đọc ảnh/video "
+                               "do JavaScript tạo ra; hồ sơ thì quét từng bài đăng.");
     m_browserCheck->setStyleSheet("background: transparent; color: #1f2328;");
     connect(m_browserCheck, &QCheckBox::toggled, this, [this](bool on) {
         if (!m_refreshing) m_settings->setUseBrowserFallback(on);
@@ -108,7 +115,8 @@ void DownloaderSettingsTab::buildUi()
     auto* ckNote = new QLabel(
         "Instagram, một số trang Facebook và nội dung riêng tư cần đăng nhập mới xem được. yt-dlp có thể dùng cookie đăng "
         "nhập từ trình duyệt của bạn. Firefox ổn định nhất; Chrome/Edge bản mới mã hóa cookie nên có thể không đọc được. "
-        "Cookie chỉ được đọc cục bộ bởi yt-dlp, KHÔNG gửi đi đâu ngoài chính trang bạn tải.",
+        "Tệp cookies.txt (xuất từ trình duyệt của CHÍNH bạn bằng tiện ích \"Get cookies.txt\") còn dùng được để tải tệp bạn có quyền "
+        "(vd Google Drive bạn là chủ sở hữu/người chỉnh sửa). Cookie chỉ được đọc cục bộ và chỉ gửi tới đúng trang tương ứng.",
         ckGroup);
     ckNote->setWordWrap(true);
     ckNote->setStyleSheet("color: #57606a; font-size: 11px; background: transparent;");

@@ -15,6 +15,7 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QSpinBox>
 #include <QStandardPaths>
 #include <QTabWidget>
 #include <QTableWidget>
@@ -240,6 +241,7 @@ int main(int argc, char** argv)
             {
                 urlEdit->setText(http.url("/page.html"));
                 scanBtn->click();
+                CHECK(scanBtn->text() == "⏹ Dừng"); // đang quét: nút chuyển thành "Dừng"
                 QTableWidget* scanTable = findTable(scanTab, 4, "Loại");
                 CHECK(scanTable != nullptr);
                 const bool scanned = waitUntil([&] { return scanTable && scanTable->rowCount() >= 2; });
@@ -255,10 +257,35 @@ int main(int argc, char** argv)
                         allOk = allOk && queueTable->item(r, 4)->text() == "OK" && queueTable->item(r, 7)->text() == "Chưa tải";
                     CHECK(allOk); // đã biết là tải được nên OK ngay, và CHƯA tải
                     CHECK(QDir(dlRoot).entryList(QDir::Files).size() == 1); // vẫn chỉ có tệp lần trước
+                    CHECK(waitUntil([&] { return scanBtn->text() == "🔍 Quét trang"; })); // quét xong: nút trở lại như cũ
+
+                    // "Tải ngay": thêm vào hàng đợi (đã có sẵn từ lần bấm trên) rồi tải luôn các mục đang tick.
+                    findButton(scanTab, "Chọn tất cả")->click();
+                    findButton(scanTab, "⬇ Tải ngay các mục đã chọn")->click();
+                    const bool fetched = waitUntil([&] {
+                        return QFileInfo::exists(dlRoot + "/anh-a.png") && QFileInfo::exists(dlRoot + "/tai-lieu.pdf");
+                    });
+                    CHECK(fetched);
+                    CHECK(QFileInfo(dlRoot + "/anh-a.png").size() == 300);
+                    CHECK(QFileInfo(dlRoot + "/tai-lieu.pdf").size() == 400);
+                    CHECK(queueTable->rowCount() == scanTable->rowCount()); // không nhân đôi mục đã có
                 }
             }
         }
         queue->remove(queue->allIds());
+    }
+
+    // ---- Tab Cài đặt: ô số không còn mũi tên lên/xuống (người dùng yêu cầu bỏ) ----
+    {
+        int spins = 0;
+        bool allNoButtons = true;
+        for (auto* sp : win.findChildren<QSpinBox*>())
+        {
+            ++spins;
+            allNoButtons = allNoButtons && sp->buttonSymbols() == QAbstractSpinBox::NoButtons;
+        }
+        CHECK(spins >= 2);
+        CHECK(allNoButtons);
     }
 
     // ---- Cài đặt dùng chung: đổi thư mục tải ở một nơi là các tab đều thấy ----

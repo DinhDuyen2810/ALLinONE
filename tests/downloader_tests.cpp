@@ -14,6 +14,7 @@
 #include <functional>
 #include <memory>
 
+#include "tools/downloader/engine/CookieFile.h"
 #include "tools/downloader/engine/FileDownloader.h"
 #include "tools/downloader/DownloadHistoryStore.h"
 #include "tools/downloader/DownloaderSettings.h"
@@ -1374,6 +1375,156 @@ int main(int argc, char** argv)
         q.remove({rmId});
         waitUntil([] { return false; }, 200);
         CHECK(!q.item(rmId));
+    }
+
+
+    // ---- Bài đăng trong DOM trang hồ sơ (dữ liệu dựng từ liên kết THẬT lấy ở hồ sơ Facebook/TikTok công khai) ----
+    {
+        using namespace LinkResolverCore;
+        const QString fbDom = R"HTML(
+            <a href="/qynhmaiiiz">profile</a>
+            <a href="https://www.facebook.com/photo/?fbid=2065644177665315&amp;set=a.100132200883199">p1</a>
+            <a href="/photo/?fbid=2187503285479403&set=pb.100026592570107.-2207520000" role="link">p2</a>
+            <a href="/photo/?fbid=2187503285479403&amp;set=a.1">trùng p2</a>
+            <a href="/qynhmaiiiz/videos/1068033449194736/?__tn__=x">video</a>
+            <a href="/reel/777/">reel</a>
+            <a href="/watch/?v=555&t=3">watch</a>
+            <a href="/qynhmaiiiz/posts/pfbid02abc">bài</a>
+            <a href="https://example.com/photo/?fbid=1">trang khác</a>
+            <a href="#">neo</a>
+            <a href="javascript:void(0)">js</a>
+            <a href="/login/device-based/regular/login/?next=x">đăng nhập</a>)HTML";
+        const QList<PostRef> fb = postLinksFromDom(fbDom, "https://www.facebook.com/qynhmaiiiz", 80);
+        CHECK(fb.size() == 6);
+        if (fb.size() == 6)
+        {
+            CHECK(fb[0].photo && fb[0].id == "2065644177665315" && fb[0].url == "https://www.facebook.com/photo/?fbid=2065644177665315");
+            CHECK(fb[1].photo && fb[1].id == "2187503285479403"); // bản trùng bị bỏ
+            CHECK(!fb[2].photo && fb[2].id == "1068033449194736" && fb[2].url == "https://www.facebook.com/qynhmaiiiz/videos/1068033449194736");
+            CHECK(!fb[3].photo && fb[3].url == "https://www.facebook.com/reel/777");
+            CHECK(!fb[4].photo && fb[4].url == "https://www.facebook.com/watch/?v=555");
+            CHECK(fb[5].photo && fb[5].id == "pfbid02abc" && fb[5].url == "https://www.facebook.com/qynhmaiiiz/posts/pfbid02abc");
+        }
+        CHECK(postLinksFromDom(fbDom, "https://www.facebook.com/qynhmaiiiz", 3).size() == 3); // giới hạn số bài
+
+        const QString ttDom = R"(
+            <a href="https://www.tiktok.com/@kiue.oahn/photo/7683433150571121940">ảnh</a>
+            <a href="https://www.tiktok.com/@kiue.oahn/video/7696060155879820545?lang=vi">video</a>
+            <a href="https://www.tiktok.com/@nguoikhac/video/111">của người khác</a>
+            <a href="https://www.tiktok.com/@KIUE.oahn/photo/7690098215537904916">hoa thường</a>
+            <a href="/@kiue.oahn/photo/7683433150571121940">trùng</a>)";
+        const QList<PostRef> tt = postLinksFromDom(ttDom, "https://www.tiktok.com/@kiue.oahn", 80);
+        CHECK(tt.size() == 3);
+        if (tt.size() == 3)
+        {
+            CHECK(tt[0].photo && tt[0].id == "7683433150571121940");
+            CHECK(!tt[1].photo && tt[1].id == "7696060155879820545" && tt[1].url == "https://www.tiktok.com/@kiue.oahn/video/7696060155879820545");
+            CHECK(tt[2].photo && tt[2].id == "7690098215537904916"); // tên người dùng so khớp không phân biệt hoa thường
+        }
+
+        const QString igDom = R"(<a href="/p/CxYz_1-2/">a</a><a href="/someone/reel/ABC123/">b</a><a href="/explore/">c</a><a href="/accounts/login/">d</a>)";
+        const QList<PostRef> ig = postLinksFromDom(igDom, "https://www.instagram.com/someone/", 80);
+        CHECK(ig.size() == 2 && !ig[0].photo && ig[0].url == "https://www.instagram.com/p/CxYz_1-2/" && ig[1].id == "ABC123");
+
+        // Trang không phải mạng xã hội hỗ trợ: không trả gì
+        CHECK(postLinksFromDom(fbDom, "https://example.com/trang", 80).isEmpty());
+        CHECK(postLinksFromDom("", "https://www.tiktok.com/@kiue.oahn", 80).isEmpty());
+
+        CHECK(tiktokPostId("https://www.tiktok.com/@kiue.oahn/video/7683433150571121940?x=1") == "7683433150571121940");
+        CHECK(tiktokPostId("https://www.tiktok.com/@kiue.oahn/photo/55") == "55");
+        CHECK(tiktokPostId("https://www.tiktok.com/@kiue.oahn").isEmpty());
+        CHECK(tiktokPostId("https://www.youtube.com/watch?v=1").isEmpty());
+        CHECK(tiktokPhotoUrlFromVideoUrl("https://www.tiktok.com/@kiue.oahn/video/7683433150571121940?lang=vi") ==
+              "https://www.tiktok.com/@kiue.oahn/photo/7683433150571121940");
+        CHECK(tiktokPhotoUrlFromVideoUrl("https://www.tiktok.com/@kiue.oahn/photo/7683433150571121940").isEmpty());
+        CHECK(tiktokPhotoUrlFromVideoUrl("https://example.com/@a/video/1").isEmpty());
+
+        // yt-dlp trả bài ảnh TikTok chỉ có nhạc (định dạng duy nhất là mp3, vcodec none) - đúng dữ liệu đã đo thật
+        const QByteArray photoJson = R"({"id":"7683433150571121940","title":"#xuhuong","extractor_key":"TikTok","ext":"mp3",
+            "vcodec":"none","acodec":"mp3","webpage_url":"https://www.tiktok.com/@kiue.oahn/video/7683433150571121940",
+            "formats":[{"format_id":"audio","ext":"mp3","vcodec":"none","acodec":"mp3"}]})";
+        const ResolveResult pr = parseYtDlpJson(photoJson, "https://www.tiktok.com/@kiue.oahn/video/7683433150571121940", 10);
+        CHECK(pr.ok() && pr.photoPostUrl == "https://www.tiktok.com/@kiue.oahn/photo/7683433150571121940");
+        const QByteArray videoJson = R"({"id":"1","title":"v","extractor_key":"TikTok","ext":"mp4","vcodec":"h264","acodec":"aac",
+            "webpage_url":"https://www.tiktok.com/@kiue.oahn/video/1","formats":[{"format_id":"v","ext":"mp4","vcodec":"h264"}]})";
+        CHECK(parseYtDlpJson(videoJson, "https://www.tiktok.com/@kiue.oahn/video/1", 10).photoPostUrl.isEmpty());
+        const QByteArray ytAudioJson = R"({"id":"x","title":"nhạc","extractor_key":"Youtube","ext":"m4a","vcodec":"none",
+            "webpage_url":"https://www.youtube.com/watch?v=x","formats":[{"format_id":"140","ext":"m4a","vcodec":"none"}]})";
+        CHECK(parseYtDlpJson(ytAudioJson, "https://www.youtube.com/watch?v=x", 10).photoPostUrl.isEmpty()); // chỉ riêng TikTok
+    }
+
+    // ---- Tệp cookies.txt (Netscape): đọc đúng + gửi đúng cookie tới đúng miền/đường dẫn ----
+    {
+        const QByteArray text =
+            "# Netscape HTTP Cookie File\n"
+            ".example.com\tTRUE\t/\tTRUE\t4102444800\tsid\tabc\n"
+            "#HttpOnly_.example.com\tTRUE\t/app\tFALSE\t0\ttok\txyz\n"
+            "host.test\tFALSE\t/\tFALSE\t1\told\thet-han\n"
+            "\n"
+            "dong-hong-khong-du-cot\n"
+            "# chú thích\n";
+        const QList<QNetworkCookie> cs = CookieFile::parse(text);
+        CHECK(cs.size() == 2); // bỏ cookie hết hạn và dòng hỏng
+        if (cs.size() == 2)
+        {
+            CHECK(cs[0].name() == "sid" && cs[0].value() == "abc" && cs[0].domain() == ".example.com" && cs[0].isSecure());
+            CHECK(cs[0].path() == "/" && !cs[0].isSessionCookie());
+            CHECK(cs[1].name() == "tok" && cs[1].isHttpOnly() && cs[1].path() == "/app" && cs[1].isSessionCookie());
+        }
+        // Miền chỉ riêng máy chủ: không có dấu chấm đầu; miền gồm miền con: tự thêm dấu chấm đầu
+        const QList<QNetworkCookie> d = CookieFile::parse("host.only\tFALSE\t/\tFALSE\t0\ta\t1\nsub.dom\tTRUE\t/\tFALSE\t0\tb\t2\n");
+        CHECK(d.size() == 2 && d[0].domain() == "host.only" && d[1].domain() == ".sub.dom");
+        CHECK(CookieFile::parse("").isEmpty());
+        CHECK(CookieFile::load(QDir::tempPath() + "/khong-ton-tai-cookie.txt").isEmpty());
+        QString err;
+        CookieFile::load(QDir::tempPath() + "/khong-ton-tai-cookie.txt", &err);
+        CHECK(!err.isEmpty());
+
+        // Gửi cookie thật qua FileDownloader tới máy chủ cục bộ
+        QTemporaryDir tmp;
+        MiniHttpServer http;
+        http.handler = [&](const QByteArray&) { return MiniHttpServer::response("200 OK", {"Content-Type: application/octet-stream"}, "du-lieu"); };
+        const QString cookiePath = tmp.path() + "/cookies.txt";
+        {
+            QFile f(cookiePath);
+            f.open(QIODevice::WriteOnly);
+            f.write("127.0.0.1\tFALSE\t/\tFALSE\t0\tsid\tabc123\n"
+                    "127.0.0.1\tFALSE\t/private\tFALSE\t0\tpv\t1\n"
+                    "127.0.0.1\tFALSE\t/\tTRUE\t0\tsec\t1\n"       // chỉ https - KHÔNG được gửi qua http
+                    "khac.example\tFALSE\t/\tFALSE\t0\tkhac\t1\n"); // miền khác - KHÔNG được gửi
+        }
+        FileDownloader dl;
+        dl.setCookieFile(cookiePath);
+        int finished = 0;
+        QObject::connect(&dl, &FileDownloader::itemFinished, [&](int, bool) { ++finished; });
+        const int a = dl.enqueue(http.url("/file"), tmp.path() + "/a.bin");
+        dl.start(a);
+        CHECK(waitUntil([&] { return finished >= 1; }));
+        const QByteArray cookieA = http.requests.isEmpty() ? QByteArray() : MiniHttpServer::header(http.requests.last(), "Cookie");
+        CHECK(cookieA.contains("sid=abc123"));
+        CHECK(!cookieA.contains("pv=") && !cookieA.contains("sec=") && !cookieA.contains("khac="));
+        const int b = dl.enqueue(http.url("/private/f"), tmp.path() + "/b.bin");
+        dl.start(b);
+        CHECK(waitUntil([&] { return finished >= 2; }));
+        const QByteArray cookieB = MiniHttpServer::header(http.requests.last(), "Cookie");
+        CHECK(cookieB.contains("sid=abc123") && cookieB.contains("pv=1"));
+
+        // Bỏ tệp cookie: không còn gửi cookie nào
+        dl.setCookieFile(QString());
+        const int c2 = dl.enqueue(http.url("/file2"), tmp.path() + "/c.bin");
+        dl.start(c2);
+        CHECK(waitUntil([&] { return finished >= 3; }));
+        CHECK(MiniHttpServer::header(http.requests.last(), "Cookie").isEmpty());
+
+        // Cài đặt: chỉ chế độ "tệp" mới có tệp cookie cho yêu cầu HTTP
+        DownloaderSettings st(tmp.path() + "/st.json");
+        CHECK(st.httpCookieFile().isEmpty());
+        st.setCookies(DownloaderSettings::CookieMode::File, "firefox", cookiePath);
+        CHECK(st.httpCookieFile() == cookiePath);
+        st.setCookies(DownloaderSettings::CookieMode::File, "firefox", tmp.path() + "/khong-co.txt");
+        CHECK(st.httpCookieFile().isEmpty());
+        st.setCookies(DownloaderSettings::CookieMode::Browser, "firefox", cookiePath);
+        CHECK(st.httpCookieFile().isEmpty()); // cookie "từ trình duyệt" chỉ yt-dlp đọc được
     }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);

@@ -44,6 +44,9 @@ public:
     void setCookies(CookieMode mode, const QString& browser, const QString& file);
     /// Đối số yt-dlp ứng với cài đặt cookie (rỗng nếu không dùng / tệp không tồn tại).
     QStringList ytDlpExtraArguments() const;
+    /// Tệp cookies.txt cho các yêu cầu HTTP của chính ứng dụng (quét link, tải tệp - vd tệp Google Drive người dùng có quyền):
+    /// chỉ khi chế độ cookie là "tệp" và tệp tồn tại; ngược lại rỗng. (Cookie "từ trình duyệt" chỉ yt-dlp đọc được.)
+    QString httpCookieFile() const;
 
     /// Trình duyệt hợp lệ cho `--cookies-from-browser`.
     static QStringList supportedCookieBrowsers();

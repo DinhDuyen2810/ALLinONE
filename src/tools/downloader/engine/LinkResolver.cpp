@@ -1,10 +1,12 @@
 #include "LinkResolver.h"
 
+#include "CookieFile.h"
 #include "FileDownloader.h"
 #include "HeadlessBrowser.h"
 #include "LinkResolverCore.h"
 #include "PageMediaScanner.h"
 #include "YtDlpController.h"
+#include "core/Logger.h"
 #include "core/WinProcessTree.h"
 
 #include <QNetworkAccessManager>
@@ -84,6 +86,22 @@ void LinkResolver::resetState()
     m_browserError.clear();
     m_warning.clear();
     m_ytAttempts = 0;
+    m_workUrl.clear();
+    m_browserAttempt = 0;
+    m_browserFirstError.clear();
+    m_browserRefine = false;
+    m_pendingCollection = ResolveResult();
+    m_slots.clear();
+    m_expFallback.clear();
+}
+
+void LinkResolver::logOutcome(const QString& text) const
+{
+    // Chỉ ghi máy chủ + đường dẫn (không ghi chuỗi truy vấn - có thể chứa mã/token) để chẩn đoán "vì sao link này không ra".
+    QUrl u(m_url);
+    u.setQuery(QString());
+    u.setFragment(QString());
+    Logger::instance().info("Downloader", QString("Phân giải %1 -> %2").arg(u.toString().left(160), text));
 }
 
 void LinkResolver::finishOk(const QList<ResolvedMedia>& items, bool collection, bool truncated)
@@ -92,6 +110,8 @@ void LinkResolver::finishOk(const QList<ResolvedMedia>& items, bool collection, 
         return;
     m_done = true;
     m_running = false;
+    logOutcome(items.isEmpty() ? QString("không có mục (%1)").arg(bestFailureMessage().left(200))
+                               : QString("%1 mục%2").arg(items.size()).arg(m_warning.isEmpty() ? QString() : QString(" (có cảnh báo)")));
     ResolveResult r;
     r.sourceUrl = m_url;
     r.items = items;
@@ -112,6 +132,7 @@ void LinkResolver::finishError(const QString& message)
     ResolveResult r;
     r.sourceUrl = m_url;
     r.error = message.isEmpty() ? bestFailureMessage() : message;
+    logOutcome("lỗi: " + r.error.left(240));
     emit finished(r);
 }
 
@@ -160,6 +181,13 @@ void LinkResolver::cancel()
         m_browser->disconnect(this);
         m_browser->cancel();
     }
+    for (LinkResolver* child : std::as_const(m_children))
+    {
+        child->disconnect(this);
+        child->cancel();
+        child->deleteLater();
+    }
+    m_children.clear();
     finishError("Đã hủy.");
 }
 
@@ -172,6 +200,12 @@ void LinkResolver::resolve(const QString& url)
     m_running = true;
     m_done = false;
     m_canceled = false;
+    const QString stamp = CookieFile::stamp(m_opts.cookieFile);
+    if (stamp != m_cookieStamp)
+    {
+        CookieFile::applyTo(m_nam, m_opts.cookieFile);
+        m_cookieStamp = stamp;
+    }
 
     if (!FileDownloaderInternal::isHttpUrl(m_url))
     {
@@ -359,8 +393,15 @@ void LinkResolver::stageDrive(const QString& fileId)
                 return;
             }
         }
-        const QString msg = driveBlockMessage(block);
-        finishError(msg.isEmpty() ? QString("Google Drive không trả về tệp (tệp bị xóa, riêng tư hoặc không cho tải).") : msg);
+        QString msg = driveBlockMessage(block);
+        if (msg.isEmpty())
+            msg = "Google Drive không trả về tệp (tệp bị xóa, riêng tư hoặc không cho tải).";
+        else if (block == DriveBlock::NoPermission || block == DriveBlock::SignIn)
+            msg += m_opts.cookieFile.isEmpty()
+                       ? " Nếu bạn là chủ sở hữu/người chỉnh sửa: chọn tệp cookies.txt (xuất từ trình duyệt đã đăng nhập đúng tài khoản Google đó) "
+                         "ở tab Cài đặt rồi \"Kiểm tra lại\"."
+                       : " (Đã dùng tệp cookies.txt của bạn nhưng tài khoản đó vẫn không có quyền tải, hoặc cookie đã hết hạn.)";
+        finishError(msg);
     });
 }
 
@@ -396,7 +437,7 @@ void LinkResolver::stageProbe()
 void LinkResolver::stagePage()
 {
     // Bài đăng ảnh (Facebook/TikTok) yt-dlp KHÔNG hỗ trợ (đã xác nhận: "Unsupported URL") - bỏ qua cho đỡ tốn thời gian.
-    if (!m_opts.useYtDlp || LinkResolverCore::isPhotoPostUrl(m_url))
+    if (!m_opts.useYtDlp || LinkResolverCore::isPhotoPostUrl(workUrl()))
         stageStatic();
     else
         stageYtDlp();
@@ -446,6 +487,24 @@ void LinkResolver::stageYtDlp()
             const ResolveResult r = LinkResolverCore::parseYtDlpJson(*out, m_url, m_opts.maxItems);
             if (r.ok())
             {
+                // Bài đăng ẢNH của TikTok: yt-dlp chỉ thấy nhạc nền - lấy ảnh thật bằng cách dựng trang /photo/.
+                if (!r.photoPostUrl.isEmpty())
+                {
+                    m_workUrl = r.photoPostUrl;
+                    m_html.clear();
+                    m_finalUrl.clear();
+                    m_iframes.clear();
+                    m_challenge = false;
+                    emit progress("Bài đăng ảnh TikTok - đang lấy ảnh...");
+                    stageStatic();
+                    return;
+                }
+                // Hồ sơ TikTok: yt-dlp liệt kê bài ảnh dưới dạng /video/... - phân loại bằng trình duyệt ẩn.
+                if (r.isCollection && m_opts.useBrowser && m_opts.expandPosts && LinkResolverCore::siteOf(m_url) == LinkResolverCore::Site::TikTok)
+                {
+                    refineTikTokCollection(r);
+                    return;
+                }
                 finishOk(r.items, r.isCollection, r.truncated);
                 return;
             }
@@ -504,7 +563,7 @@ void LinkResolver::stageStatic()
         const LinkResolverCore::DeepScan scan = LinkResolverCore::deepScanHtml(m_html, m_finalUrl.isEmpty() ? m_url : m_finalUrl);
         m_pageTitle = scan.title;
         m_iframes = scan.iframes;
-        const bool photoPost = LinkResolverCore::isPhotoPostUrl(m_url);
+        const bool photoPost = LinkResolverCore::isPhotoPostUrl(workUrl());
         QSet<QString> seen;
         for (const MediaLink& l : scan.media)
         {
@@ -622,87 +681,327 @@ void LinkResolver::stageBrowser()
         return;
     }
     emit progress("Đang dựng trang bằng trình duyệt ẩn (có thể mất ~20 giây)...");
+    m_browserRefine = false;
+    m_browserAttempt = 0;
+    m_browserFirstError.clear();
+    startBrowser(workUrl());
+}
+
+void LinkResolver::startBrowser(const QString& url)
+{
     if (!m_browser)
         m_browser = new HeadlessBrowser(this);
     m_browser->disconnect(this);
-    connect(m_browser, &HeadlessBrowser::finished, this, [this](bool ok, QString dom, QByteArray netLog, QString error) {
-        if (m_done || m_canceled)
-            return;
-        if (!ok)
+    connect(m_browser, &HeadlessBrowser::finished, this, &LinkResolver::onBrowserFinished);
+    m_browser->start(url, m_opts.browserTimeoutMs, m_browserAttempt > 0);
+}
+
+void LinkResolver::onBrowserFinished(bool ok, QString dom, QByteArray netLog, QString error)
+{
+    if (m_done || m_canceled)
+        return;
+    if (!ok)
+    {
+        // Lần đầu thất bại vì chế độ ẩn mới không chạy được (chính sách máy, phiên bản cũ...) thì thử chế độ ẩn cũ. Không thử
+        // lại khi chẳng có trình duyệt, hết giờ (mạng chậm - thử lại chỉ chờ thêm) hay bị hủy.
+        const bool retryable = m_browserAttempt == 0 && !error.contains(QStringLiteral("Không tìm thấy")) &&
+                               !error.contains(QStringLiteral("quá thời gian")) && !error.contains(QStringLiteral("Đã hủy")) &&
+                               !error.contains(QStringLiteral("Địa chỉ không hợp lệ"));
+        if (retryable)
         {
-            m_browserError = error;
-            finishError(QString());
+            ++m_browserAttempt;
+            m_browserFirstError = error;
+            emit progress("Trình duyệt ẩn lỗi - thử lại bằng chế độ ẩn cũ...");
+            startBrowser(m_browserRefine ? m_url : workUrl());
             return;
         }
-        const QString pageUrl = m_finalUrl.isEmpty() ? m_url : m_finalUrl;
-        const LinkResolverCore::DeepScan scan = LinkResolverCore::deepScanHtml(dom, pageUrl);
-        if (m_pageTitle.isEmpty())
-            m_pageTitle = scan.title;
-        const bool challengeNow = LinkResolverCore::looksLikeChallengePage(dom);
-        if (challengeNow)
-            m_challenge = true;
+        m_browserError = m_browserFirstError.isEmpty() ? error : QString("lần 1: %1 | lần 2: %2").arg(m_browserFirstError, error);
+        if (m_browserRefine)
+        {
+            // Không phân loại được bài của hồ sơ TikTok: giữ danh sách yt-dlp, mọi mục chưa rõ là ảnh hay video.
+            QList<ResolvedMedia> items = m_pendingCollection.items;
+            for (ResolvedMedia& m : items)
+                m.maybePhotoPost = true;
+            m_warning = "Không dùng được trình duyệt ẩn để phân biệt bài ảnh/video của hồ sơ này (" + m_browserError +
+                        ") - bài ảnh sẽ được kiểm tra lại lúc tải.";
+            finishOk(items, true, m_pendingCollection.truncated);
+            return;
+        }
+        finishError(QString());
+        return;
+    }
+    if (m_browserRefine)
+        onRefineDom(dom);
+    else
+        onPageDom(dom, netLog);
+}
 
-        QList<ResolvedMedia> items;
-        QSet<QString> seen;
-        auto addMedia = [&](const QString& url, MediaLink::Type type, const QString& note) {
-            if (seen.contains(url))
+void LinkResolver::onPageDom(const QString& dom, const QByteArray& netLog)
+{
+    const QString pageUrl = m_finalUrl.isEmpty() ? workUrl() : m_finalUrl;
+    const LinkResolverCore::DeepScan scan = LinkResolverCore::deepScanHtml(dom, pageUrl);
+    if (m_pageTitle.isEmpty())
+        m_pageTitle = scan.title;
+    const bool challengeNow = LinkResolverCore::looksLikeChallengePage(dom);
+    if (challengeNow)
+        m_challenge = true;
+
+    QList<ResolvedMedia> items;
+    QSet<QString> seen;
+    auto addMedia = [&](const QString& url, MediaLink::Type type, const QString& note) {
+        if (seen.contains(url))
+            return;
+        seen.insert(url);
+        ResolvedMedia m;
+        m.url = url;
+        m.referer = pageUrl;
+        m.note = note;
+        if (LinkResolverCore::isManifestUrl(url))
+        {
+            m.kind = ResolvedMedia::Kind::YtDlp;
+            m.mediaType = "Video";
+            m.title = m_pageTitle;
+            const QString base = FileDownloaderInternal::sanitizeFileName(m_pageTitle);
+            m.fileName = base.isEmpty() ? QString() : base + ".mp4";
+        }
+        else
+        {
+            m.kind = ResolvedMedia::Kind::HttpFile;
+            m.fileName = FileDownloaderInternal::fileNameFromUrl(url);
+            m.title = m.fileName;
+            m.mediaType = type == MediaLink::Type::Image ? QString("Ảnh") : LinkResolverCore::friendlyTypeLabel(QString(), url);
+        }
+        items << m;
+    };
+    const bool photoPost = LinkResolverCore::isPhotoPostUrl(workUrl());
+    const bool profile = LinkResolverCore::isLikelyProfileOrCollectionUrl(workUrl());
+    // Yêu cầu mạng thật của trang (luồng .m3u8/.mp4 do trình phát gọi) - thứ DevTools > Network hiện ra.
+    // Bài đăng ảnh thì video/âm thanh trong trang chỉ là phần giao diện/đề xuất - bỏ qua.
+    if (!photoPost && !profile)
+    {
+        for (const QString& u : LinkResolverCore::mediaUrlsFromNetLog(netLog))
+            addMedia(u, MediaLink::Type::Video, "trình duyệt ẩn (mạng)");
+        // Video/âm thanh/tài liệu trong DOM đã dựng (bỏ tệp của giao diện trang).
+        for (const MediaLink& l : scan.media)
+            if ((l.type == MediaLink::Type::Video || l.type == MediaLink::Type::Audio || l.type == MediaLink::Type::Document) &&
+                !LinkResolverCore::isJunkMediaUrl(l.url))
+                addMedia(l.url, l.type, "trình duyệt ẩn (DOM)");
+    }
+    // Bài đăng ảnh, hồ sơ, hoặc không có video nào: lấy ảnh nội dung trong DOM.
+    if (photoPost || profile || items.isEmpty())
+        for (const MediaLink& l : LinkResolverCore::photosFromDom(dom, pageUrl))
+            addMedia(l.url, MediaLink::Type::Image, "trình duyệt ẩn (ảnh)");
+
+    if (profile)
+    {
+        m_warning = "Chỉ lấy được phần công khai nhìn thấy khi chưa đăng nhập (không phải toàn bộ bài đăng của hồ sơ). "
+                    "Facebook/Instagram yêu cầu đăng nhập để xem đầy đủ.";
+        if (!m_ytError.isEmpty() && !m_ytUnsupported)
+            m_warning += " yt-dlp báo: " + m_ytError;
+
+        // QUÉT TỪNG BÀI ĐĂNG: ảnh trên trang hồ sơ chỉ là bản thu nhỏ/cắt vuông; mỗi bài ảnh được dựng riêng để lấy ảnh đầy
+        // đủ, bài video giao cho yt-dlp.
+        if (m_opts.expandPosts)
+        {
+            const QList<LinkResolverCore::PostRef> posts = LinkResolverCore::postLinksFromDom(dom, pageUrl, m_opts.maxItems);
+            if (!posts.isEmpty())
+            {
+                QList<Slot> plan;
+                for (const LinkResolverCore::PostRef& post : posts)
+                {
+                    Slot sl;
+                    if (post.photo)
+                    {
+                        sl.isPhoto = true;
+                        sl.photoUrl = post.url;
+                    }
+                    else
+                    {
+                        sl.fixed.kind = ResolvedMedia::Kind::YtDlp;
+                        sl.fixed.url = post.url;
+                        sl.fixed.title = QString("Video %1").arg(post.id);
+                        sl.fixed.fileName = FileDownloaderInternal::sanitizeFileName(sl.fixed.title);
+                        sl.fixed.mediaType = "Video";
+                        sl.fixed.referer = pageUrl;
+                        sl.fixed.note = "bài đăng trong hồ sơ";
+                    }
+                    plan << sl;
+                }
+                startExpansion(plan, true, posts.size() >= m_opts.maxItems, items);
                 return;
-            seen.insert(url);
-            ResolvedMedia m;
-            m.url = url;
-            m.referer = pageUrl;
-            m.note = note;
-            if (LinkResolverCore::isManifestUrl(url))
-            {
-                m.kind = ResolvedMedia::Kind::YtDlp;
-                m.mediaType = "Video";
-                m.title = m_pageTitle;
-                const QString base = FileDownloaderInternal::sanitizeFileName(m_pageTitle);
-                m.fileName = base.isEmpty() ? QString() : base + ".mp4";
             }
-            else
-            {
-                m.kind = ResolvedMedia::Kind::HttpFile;
-                m.fileName = FileDownloaderInternal::fileNameFromUrl(url);
-                m.title = m.fileName;
-                m.mediaType = type == MediaLink::Type::Image ? QString("Ảnh") : LinkResolverCore::friendlyTypeLabel(QString(), url);
-            }
-            items << m;
-        };
-        const bool photoPost = LinkResolverCore::isPhotoPostUrl(m_url);
-        // Yêu cầu mạng thật của trang (luồng .m3u8/.mp4 do trình phát gọi) - thứ DevTools > Network hiện ra.
-        // Bài đăng ảnh thì video/âm thanh trong trang chỉ là phần giao diện/đề xuất - bỏ qua.
-        if (!photoPost)
-        {
-            for (const QString& u : LinkResolverCore::mediaUrlsFromNetLog(netLog))
-                addMedia(u, MediaLink::Type::Video, "trình duyệt ẩn (mạng)");
-            // Video/âm thanh/tài liệu trong DOM đã dựng (bỏ tệp của giao diện trang).
-            for (const MediaLink& l : scan.media)
-                if ((l.type == MediaLink::Type::Video || l.type == MediaLink::Type::Audio || l.type == MediaLink::Type::Document) &&
-                    !LinkResolverCore::isJunkMediaUrl(l.url))
-                    addMedia(l.url, l.type, "trình duyệt ẩn (DOM)");
         }
-        // Bài đăng ảnh, hoặc không có video nào: lấy ảnh nội dung trong DOM.
-        if (photoPost || items.isEmpty())
-            for (const MediaLink& l : LinkResolverCore::photosFromDom(dom, pageUrl))
-                addMedia(l.url, MediaLink::Type::Image, "trình duyệt ẩn (ảnh)");
-        // Hồ sơ mà yt-dlp không đọc được: trình duyệt ẩn chỉ thấy phần công khai ở đầu trang khi chưa đăng nhập.
-        if (!items.isEmpty() && LinkResolverCore::isLikelyProfileOrCollectionUrl(m_url))
-        {
-            m_warning = "Chỉ lấy được phần công khai nhìn thấy khi chưa đăng nhập (không phải toàn bộ bài đăng của hồ sơ). "
-                        "Facebook/Instagram yêu cầu đăng nhập để xem đầy đủ.";
-            if (!m_ytError.isEmpty() && !m_ytUnsupported)
-                m_warning += " yt-dlp báo: " + m_ytError;
-        }
+    }
 
-        if (items.isEmpty())
+    if (items.isEmpty())
+    {
+        if (!challengeNow && LinkResolverCore::looksLikeLoginWall(dom))
+            m_loginWall = true;
+        finishError(QString());
+        return;
+    }
+    finishOk(items, profile);
+}
+
+// ------------------------------------------------------------------------------------------------ Hồ sơ TikTok
+void LinkResolver::refineTikTokCollection(const ResolveResult& collection)
+{
+    m_pendingCollection = collection;
+    m_browserRefine = true;
+    m_browserAttempt = 0;
+    m_browserFirstError.clear();
+    emit progress("Đang phân biệt bài ảnh/video của hồ sơ bằng trình duyệt ẩn...");
+    startBrowser(m_url);
+}
+
+void LinkResolver::onRefineDom(const QString& dom)
+{
+    // DOM của hồ sơ liệt kê bài ảnh dưới dạng /@user/photo/<id> và bài video /@user/video/<id> (đã đo thật: yt-dlp liệt kê
+    // CẢ HAI loại dưới dạng /video/). Chỉ các bài hiện ở đầu trang được biết; bài còn lại đánh dấu "có thể là ảnh".
+    QSet<QString> photoIds, videoIds;
+    for (const LinkResolverCore::PostRef& post : LinkResolverCore::postLinksFromDom(dom, m_url, 300))
+        (post.photo ? photoIds : videoIds).insert(post.id);
+
+    QList<Slot> plan;
+    bool anyPhoto = false;
+    for (ResolvedMedia m : m_pendingCollection.items)
+    {
+        const QString id = LinkResolverCore::tiktokPostId(m.url);
+        Slot sl;
+        const QString photoUrl = photoIds.contains(id) ? LinkResolverCore::tiktokPhotoUrlFromVideoUrl(m.url) : QString();
+        if (!photoUrl.isEmpty())
         {
-            if (!challengeNow && LinkResolverCore::looksLikeLoginWall(dom))
-                m_loginWall = true;
-            finishError(QString());
-            return;
+            sl.isPhoto = true;
+            sl.photoUrl = photoUrl;
+            anyPhoto = true;
         }
-        finishOk(items, !m_warning.isEmpty());
-    });
-    m_browser->start(m_url, m_opts.browserTimeoutMs);
+        else
+        {
+            m.maybePhotoPost = !videoIds.contains(id);
+            sl.fixed = m;
+        }
+        plan << sl;
+    }
+    QList<ResolvedMedia> fallback;
+    for (const Slot& sl : std::as_const(plan))
+        if (!sl.isPhoto)
+            fallback << sl.fixed;
+    if (!anyPhoto)
+    {
+        finishOk(fallback, true, m_pendingCollection.truncated);
+        return;
+    }
+    startExpansion(plan, true, m_pendingCollection.truncated, fallback);
+}
+
+// ------------------------------------------------------------------------------------------------ Quét từng bài đăng
+void LinkResolver::startExpansion(const QList<Slot>& plan, bool collection, bool truncated, const QList<ResolvedMedia>& fallback)
+{
+    m_slots = plan;
+    m_expCollection = collection;
+    m_expTruncated = truncated;
+    m_expFallback = fallback;
+    pumpSlots();
+}
+
+void LinkResolver::pumpSlots()
+{
+    if (m_done || m_canceled)
+        return;
+    int active = 0;
+    for (const Slot& sl : std::as_const(m_slots))
+        if (sl.isPhoto && sl.started && !sl.done)
+            ++active;
+    for (int i = 0; i < m_slots.size() && active < qMax(1, m_opts.maxParallelChildren); ++i)
+    {
+        Slot& sl = m_slots[i];
+        if (!sl.isPhoto || sl.started)
+            continue;
+        sl.started = true;
+        ++active;
+        auto* child = new LinkResolver(this);
+        Options o = m_opts;
+        o.maxItems = 60;
+        o.expandPosts = false; // bộ phân giải con xử lý MỘT bài, không đệ quy
+        child->setOptions(o);
+        m_children << child;
+        connect(child, &LinkResolver::finished, this, [this, i, child](ResolveResult r) {
+            m_children.removeAll(child);
+            child->deleteLater();
+            if (m_done || m_canceled)
+                return;
+            Slot& done = m_slots[i];
+            done.done = true;
+            if (r.ok())
+                done.children = r.items;
+            else
+                done.error = r.error;
+            pumpSlots();
+        });
+        child->resolve(sl.photoUrl);
+    }
+
+    int total = 0, finished = 0;
+    for (const Slot& sl : std::as_const(m_slots))
+        if (sl.isPhoto)
+        {
+            ++total;
+            if (sl.done)
+                ++finished;
+        }
+    if (finished < total)
+    {
+        emit progress(QString("Đang quét từng bài đăng ảnh (%1/%2)...").arg(finished).arg(total));
+        return;
+    }
+    finishExpansion();
+}
+
+void LinkResolver::finishExpansion()
+{
+    QList<ResolvedMedia> items;
+    QSet<QString> seen;
+    int photoPosts = 0, photoOk = 0;
+    QString firstError;
+    for (const Slot& sl : std::as_const(m_slots))
+    {
+        if (!sl.isPhoto)
+        {
+            if (!seen.contains(sl.fixed.url))
+            {
+                seen.insert(sl.fixed.url);
+                items << sl.fixed;
+            }
+            continue;
+        }
+        ++photoPosts;
+        if (!sl.children.isEmpty())
+            ++photoOk;
+        else if (firstError.isEmpty())
+            firstError = sl.error;
+        for (ResolvedMedia m : sl.children)
+        {
+            if (seen.contains(m.url))
+                continue;
+            seen.insert(m.url);
+            m.note = "bài đăng ảnh";
+            items << m;
+        }
+    }
+    if (items.isEmpty())
+        items = m_expFallback; // không quét được bài nào: dùng những gì thấy ngay trên trang hồ sơ
+    if (photoPosts > photoOk)
+    {
+        const QString note = QString("%1/%2 bài ảnh không lấy được ảnh%3.")
+                                 .arg(photoPosts - photoOk)
+                                 .arg(photoPosts)
+                                 .arg(firstError.isEmpty() ? QString() : " (" + firstError.left(120) + ")");
+        m_warning = m_warning.isEmpty() ? note : m_warning + " " + note;
+    }
+    if (items.isEmpty())
+    {
+        finishError(firstError);
+        return;
+    }
+    finishOk(items, m_expCollection, m_expTruncated);
 }

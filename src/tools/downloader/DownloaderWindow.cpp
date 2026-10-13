@@ -60,6 +60,8 @@ void DownloaderWindow::closeEvent(QCloseEvent* event)
         m_platformTab->cancelActiveDownload();
     if (m_queue)
         m_queue->stopProcesses();
+    if (m_pageScanTab)
+        m_pageScanTab->cancelScan();
     event->accept();
 }
 

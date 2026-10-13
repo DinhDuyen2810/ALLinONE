@@ -1,5 +1,7 @@
 #include "FileDownloader.h"
 
+#include "CookieFile.h"
+
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -182,10 +184,23 @@ void FileDownloader::failItem(int id, const QString& error)
     emit itemFinished(id, false);
 }
 
+void FileDownloader::setCookieFile(const QString& path)
+{
+    m_cookiePath = path;
+}
+
 void FileDownloader::startNetworkRequest(int id)
 {
     using FileDownloaderInternal::kPartSuffix;
     auto& it = m_items[id];
+
+    // Nạp lại cookie chỉ khi đường dẫn/nội dung tệp đổi (tránh đọc lại tệp cho từng yêu cầu).
+    const QString stamp = CookieFile::stamp(m_cookiePath);
+    if (stamp != m_cookieStamp)
+    {
+        CookieFile::applyTo(m_nam, m_cookiePath);
+        m_cookieStamp = stamp;
+    }
 
     if (!FileDownloaderInternal::isHttpUrl(it.url))
     {

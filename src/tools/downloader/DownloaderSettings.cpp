@@ -106,6 +106,11 @@ QStringList DownloaderSettings::ytDlpExtraArguments() const
     return {};
 }
 
+QString DownloaderSettings::httpCookieFile() const
+{
+    return (m_cookieMode == CookieMode::File && !m_cookieFile.isEmpty() && QFileInfo::exists(m_cookieFile)) ? m_cookieFile : QString();
+}
+
 QJsonObject DownloaderSettings::toJson() const
 {
     QJsonObject o;

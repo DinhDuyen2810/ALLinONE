@@ -47,6 +47,10 @@ public:
     /// yêu cầu thiếu Referer của trang nguồn hoặc có User-Agent lạ.
     int enqueue(const QString& url, const QString& destPath, const QString& referer = QString());
 
+    /// Tệp cookies.txt (Netscape) cho các yêu cầu - chỉ cookie khớp miền/đường dẫn của từng yêu cầu mới được gửi. Rỗng = không
+    /// dùng cookie. Đổi giữa các lần gọi được (chỉ đọc lại khi tệp thay đổi); không ảnh hưởng yêu cầu đang chạy.
+    void setCookieFile(const QString& path);
+
     void start(int id);
     void pause(int id);
     void cancel(int id);
@@ -87,6 +91,8 @@ private:
     int m_nextId{1};
     int m_maxConcurrent{3};
     bool m_shuttingDown{false};
+    QString m_cookiePath;
+    QString m_cookieStamp;
 };
 
 namespace FileDownloaderInternal

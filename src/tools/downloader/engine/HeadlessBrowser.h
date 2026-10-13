@@ -31,7 +31,9 @@ public:
 
     bool isRunning() const;
     /// `timeoutMs`: quá hạn thì buộc dừng và báo lỗi (Edge sinh nhiều tiến trình con - dọn cả cây).
-    void start(const QString& url, int timeoutMs = 70000);
+    /// `legacyHeadless`: dùng chế độ ẩn cũ `--headless` thay vì `--headless=new` - phương án dự phòng cho máy mà chế độ mới
+    /// không chạy được (chính sách doanh nghiệp, phiên bản trình duyệt cũ...).
+    void start(const QString& url, int timeoutMs = 70000, bool legacyHeadless = false);
     void cancel();
 
 signals:
@@ -45,6 +47,7 @@ private:
     QTimer* m_timeout{nullptr};
     std::unique_ptr<QTemporaryDir> m_tmp;
     QByteArray m_stdout;
+    QByteArray m_stderrTail; ///< Vài trăm byte cuối stderr - đưa vào thông báo lỗi để chẩn đoán máy người dùng
     qint64 m_pid{0};
     bool m_canceled{false};
     bool m_timedOut{false};
@@ -55,6 +58,6 @@ namespace HeadlessBrowserInternal
 {
 /// Đối số dòng lệnh - thuần, test được. `url` PHẢI là http(s) (nơi gọi đã kiểm); đặt SAU cùng nên không bao giờ
 /// bị hiểu là một tùy chọn.
-QStringList buildArguments(const QString& url, const QString& profileDir, const QString& netLogPath);
+QStringList buildArguments(const QString& url, const QString& profileDir, const QString& netLogPath, bool legacyHeadless = false);
 QStringList candidatePaths();
 } // namespace HeadlessBrowserInternal

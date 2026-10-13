@@ -83,6 +83,8 @@ public:
     void stopProcesses();
 
     const QueueItem* item(int id) const;
+    /// ID mục OK đã có trong hàng đợi với đúng link tệp này, hoặc -1.
+    int idOfMediaUrl(const QString& url) const { return findItemByMediaUrl(url); }
     QList<int> allIds() const { return m_order; }
     int resolvingCount() const { return m_resolvers.size() + m_resolveQueue.size(); }
 
@@ -100,7 +102,9 @@ private slots:
 
 private:
     void pumpResolve();
-    void onResolved(int id, const ResolveResult& result);
+    void onResolved(int id, const ResolveResult& result, QList<int>* createdIds = nullptr);
+    bool startPhotoCheck(int id);
+    void onPhotoChecked(int id, const ResolveResult& result);
     void insertItem(const QueueItem& item, int afterId);
     bool startHttp(int id);
     void queueYt(int id);
@@ -123,6 +127,7 @@ private:
     int m_nextId{1};
 
     QHash<int, LinkResolver*> m_resolvers; ///< id -> bộ phân giải đang chạy
+    QHash<int, LinkResolver*> m_photoChecks; ///< id -> kiểm tra "bài ảnh hay video" ngay trước khi tải (hồ sơ TikTok)
     QList<int> m_resolveQueue;
     QHash<int, int> m_httpToItem;
     bool m_enqueueingOwn{false};

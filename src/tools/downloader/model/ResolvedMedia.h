@@ -20,6 +20,9 @@ struct ResolvedMedia
     QString contentType;
     QString referer;     ///< Referer cần gửi khi tải (thường là trang nguồn) - nhiều CDN chặn nếu thiếu.
     QString note;        ///< Nguồn tìm ra, vd "tệp trực tiếp", "yt-dlp (Facebook)", "mã nguồn trang", "trình duyệt ẩn".
+    /// Mục của một hồ sơ TikTok mà chưa biết là video hay BÀI ẢNH (yt-dlp liệt kê bài ảnh dưới dạng /video/...). Hàng đợi
+    /// kiểm tra lại đúng mục này TRƯỚC khi tải: là bài ảnh thì tách thành các ảnh, không thì tải video như thường.
+    bool maybePhotoPost{false};
 };
 
 /// Kết quả một lần phân giải: hoặc có `items` (thành công, error rỗng) hoặc `error` (không ra được tệp nào).
@@ -31,6 +34,8 @@ struct ResolveResult
     bool isCollection{false}; ///< Hồ sơ/kênh/danh sách phát (nhiều bài đăng).
     bool truncated{false};    ///< Danh sách bị cắt theo giới hạn số mục.
     QString warning;          ///< Lưu ý khi vẫn có kết quả nhưng CHƯA ĐẦY ĐỦ (vd hồ sơ chỉ lấy được phần công khai).
+    /// yt-dlp trả về một bài đăng TikTok chỉ có âm thanh = bài ẢNH (yt-dlp không tải được ảnh): địa chỉ /photo/ tương ứng.
+    QString photoPostUrl;
 
     bool ok() const { return error.isEmpty() && !items.isEmpty(); }
 };

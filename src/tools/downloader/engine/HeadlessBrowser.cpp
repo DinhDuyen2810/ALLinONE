@@ -37,10 +37,10 @@ QStringList candidatePaths()
     return out;
 }
 
-QStringList buildArguments(const QString& url, const QString& profileDir, const QString& netLogPath)
+QStringList buildArguments(const QString& url, const QString& profileDir, const QString& netLogPath, bool legacyHeadless)
 {
     return {
-        "--headless=new",
+        legacyHeadless ? "--headless" : "--headless=new",
         "--disable-gpu",
         "--no-first-run",
         "--no-default-browser-check",
@@ -120,7 +120,7 @@ void HeadlessBrowser::killTree()
     WinProcessTree::terminateProcessList(descendants); // Edge sinh renderer/GPU/network service - dọn cả cây
 }
 
-void HeadlessBrowser::start(const QString& url, int timeoutMs)
+void HeadlessBrowser::start(const QString& url, int timeoutMs, bool legacyHeadless)
 {
     if (isRunning())
         return;
@@ -128,6 +128,7 @@ void HeadlessBrowser::start(const QString& url, int timeoutMs)
     m_canceled = false;
     m_timedOut = false;
     m_stdout.clear();
+    m_stderrTail.clear();
 
     const QString exe = findBrowserExecutable();
     if (exe.isEmpty())
@@ -154,7 +155,7 @@ void HeadlessBrowser::start(const QString& url, int timeoutMs)
         m_process->deleteLater();
     m_process = new QProcess(this);
     m_process->setProgram(exe);
-    m_process->setArguments(HeadlessBrowserInternal::buildArguments(url, m_tmp->filePath("profile"), m_tmp->filePath("net.json")));
+    m_process->setArguments(HeadlessBrowserInternal::buildArguments(url, m_tmp->filePath("profile"), m_tmp->filePath("net.json"), legacyHeadless));
     m_process->setProcessChannelMode(QProcess::SeparateChannels);
 
     QProcess* process = m_process;
@@ -163,8 +164,13 @@ void HeadlessBrowser::start(const QString& url, int timeoutMs)
         if (m_stdout.size() + chunk.size() <= kMaxDomBytes)
             m_stdout += chunk;
     });
-    // Edge ghi rất nhiều cảnh báo ra stderr - không cần giữ, nhưng PHẢI đọc bỏ để pipe không đầy làm treo tiến trình.
-    connect(process, &QProcess::readyReadStandardError, this, [process]() { process->readAllStandardError(); });
+    // Edge ghi rất nhiều cảnh báo ra stderr - PHẢI đọc bỏ để pipe không đầy làm treo tiến trình; chỉ giữ phần cuối để
+    // chẩn đoán khi trình duyệt không trả về trang.
+    connect(process, &QProcess::readyReadStandardError, this, [this, process]() {
+        m_stderrTail += process->readAllStandardError();
+        if (m_stderrTail.size() > 1200)
+            m_stderrTail = m_stderrTail.right(1200);
+    });
     connect(process, &QProcess::errorOccurred, this, [this, process](QProcess::ProcessError e) {
         if (e == QProcess::FailedToStart)
             emitOnce(false, "Không khởi chạy được trình duyệt (" + process->errorString() + ").");
@@ -188,7 +194,15 @@ void HeadlessBrowser::start(const QString& url, int timeoutMs)
         // Có DOM là đủ dùng (mã thoát khác 0 khi vài tài nguyên lỗi vẫn thường có DOM).
         if (m_stdout.isEmpty())
         {
-            emitOnce(false, QString("Trình duyệt ẩn không trả về nội dung trang (mã %1).").arg(exitCode));
+            // Dòng cuối có chữ của stderr thường nói rõ lý do (chính sách, thiếu quyền, đường dẫn...).
+            QString detail;
+            const QStringList lines = QString::fromUtf8(m_stderrTail).split('\n', Qt::SkipEmptyParts);
+            for (int i = lines.size() - 1; i >= 0 && detail.isEmpty(); --i)
+                detail = lines[i].trimmed();
+            QString msg = QString("Trình duyệt ẩn không trả về nội dung trang (mã %1)").arg(exitCode);
+            if (!detail.isEmpty())
+                msg += ": " + detail.left(160);
+            emitOnce(false, msg + ".");
             return;
         }
         emitOnce(true, QString());
