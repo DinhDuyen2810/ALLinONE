@@ -37,6 +37,40 @@ QStringList DownloaderSettings::supportedCookieBrowsers()
     return {"firefox", "edge", "chrome", "brave", "opera", "vivaldi", "chromium"};
 }
 
+QStringList DownloaderSettings::videoQualityKeys()
+{
+    return {"auto", "2160", "1440", "1080", "720", "480", "360", "audio"};
+}
+
+QString DownloaderSettings::videoQualityLabel(const QString& key)
+{
+    if (key == "auto")
+        return QStringLiteral("Tự động - tốt nhất");
+    if (key == "audio")
+        return QStringLiteral("Chỉ âm thanh");
+    return videoQualityKeys().contains(key) ? key + "p" : videoQualityLabel("auto");
+}
+
+QString DownloaderSettings::formatSelectorForQuality(const QString& key)
+{
+    if (key == "audio")
+        return QStringLiteral("ba/b");
+    if (!videoQualityKeys().contains(key) || key == "auto")
+        return {};
+    // Giới hạn chiều cao; không có định dạng nào đủ thấp thì lấy tốt nhất có thể (đỡ báo "Requested format is not available").
+    return QString("bv*[height<=%1]+ba/b[height<=%1]/b").arg(key);
+}
+
+void DownloaderSettings::setVideoQuality(const QString& key)
+{
+    const QString k = videoQualityKeys().contains(key) ? key : QStringLiteral("auto");
+    if (k == m_videoQuality)
+        return;
+    m_videoQuality = k;
+    save();
+    emit changed();
+}
+
 void DownloaderSettings::setDownloadFolder(const QString& folder)
 {
     const QString f = QDir::cleanPath(folder.trimmed());
@@ -119,6 +153,7 @@ QJsonObject DownloaderSettings::toJson() const
     o["maxConcurrent"] = m_maxConcurrent;
     o["profileMaxItems"] = m_profileMaxItems;
     o["useBrowserFallback"] = m_useBrowser;
+    o["videoQuality"] = m_videoQuality;
     o["cookieMode"] = m_cookieMode == CookieMode::Browser ? "browser" : m_cookieMode == CookieMode::File ? "file" : "none";
     o["cookieBrowser"] = m_cookieBrowser;
     o["cookieFile"] = m_cookieFile;
@@ -133,6 +168,8 @@ void DownloaderSettings::fromJson(const QJsonObject& o)
     m_maxConcurrent = qBound(1, o.value("maxConcurrent").toInt(3), 8);
     m_profileMaxItems = qBound(1, o.value("profileMaxItems").toInt(100), 1000);
     m_useBrowser = o.value("useBrowserFallback").toBool(true);
+    const QString quality = o.value("videoQuality").toString("auto");
+    m_videoQuality = videoQualityKeys().contains(quality) ? quality : QStringLiteral("auto");
     const QString mode = o.value("cookieMode").toString();
     m_cookieMode = mode == "browser" ? CookieMode::Browser : mode == "file" ? CookieMode::File : CookieMode::None;
     const QString b = o.value("cookieBrowser").toString("firefox");

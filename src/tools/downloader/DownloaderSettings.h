@@ -48,6 +48,16 @@ public:
     /// chỉ khi chế độ cookie là "tệp" và tệp tồn tại; ngược lại rỗng. (Cookie "từ trình duyệt" chỉ yt-dlp đọc được.)
     QString httpCookieFile() const;
 
+    /// Chất lượng cho các mục tải bằng yt-dlp (video nền tảng): "auto" (tốt nhất), "2160", "1440", "1080", "720", "480",
+    /// "360" (giới hạn chiều cao ảnh, không có thì lấy gần nhất thấp hơn) hoặc "audio" (chỉ âm thanh). Mục nào đã tự chọn
+    /// định dạng riêng (QueueItem::formatSelector) thì không theo cài đặt này.
+    QString videoQuality() const { return m_videoQuality; }
+    void setVideoQuality(const QString& key);
+    static QStringList videoQualityKeys();
+    static QString videoQualityLabel(const QString& key);
+    /// Giá trị `-f` của yt-dlp cho một mức chất lượng ("auto"/khóa lạ -> rỗng = để yt-dlp tự chọn). Thuần chuỗi, test được.
+    static QString formatSelectorForQuality(const QString& key);
+
     /// Trình duyệt hợp lệ cho `--cookies-from-browser`.
     static QStringList supportedCookieBrowsers();
 
@@ -66,6 +76,7 @@ private:
     int m_maxConcurrent{3};
     int m_profileMaxItems{100};
     bool m_useBrowser{true};
+    QString m_videoQuality{"auto"};
     CookieMode m_cookieMode{CookieMode::None};
     QString m_cookieBrowser{"firefox"};
     QString m_cookieFile;

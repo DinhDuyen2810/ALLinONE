@@ -54,6 +54,13 @@ inline QString tableStyle()
            "QHeaderView::section { background-color: #f6f8fa; color: #57606a; font-weight: bold; border: none; padding: 6px; border-bottom: 1px solid #d0d7de; }";
 }
 
+/// Thanh tiến độ phẳng trong ô bảng (nối sau tableStyle()): nền trắng, viền mảnh, phần đã tải màu xanh chủ đạo.
+inline QString progressBarStyle()
+{
+    return "QProgressBar { background-color: #ffffff; color: #1f2328; border: 1px solid #d0d7de; border-radius: 6px; text-align: center; font-size: 11px; }"
+           "QProgressBar::chunk { background-color: #54aeff; border-radius: 5px; }";
+}
+
 inline QString statusColor(bool connected)
 {
     return connected ? "#1a7f37" : "#57606a";

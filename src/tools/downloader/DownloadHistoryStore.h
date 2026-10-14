@@ -23,7 +23,7 @@ struct DownloadHistoryEntry
 
 /// Lịch sử tải của công cụ Downloader, lưu ở `AppPaths::profileFile("downloader_history.json")` - tức
 /// `%LOCALAPPDATA%\OneForAll\profiles\downloader_history.json` (tối đa 2000 mục, mới nhất đứng đầu). Một đối tượng
-/// do DownloaderWindow sở hữu và chia sẻ cho hàng đợi, tab Lịch sử, tab Video nền tảng.
+/// do DownloaderWindow sở hữu và chia sẻ cho hàng đợi, tab Lịch sử.
 class DownloadHistoryStore : public QObject
 {
     Q_OBJECT

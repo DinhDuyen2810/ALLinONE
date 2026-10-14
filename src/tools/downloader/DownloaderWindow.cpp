@@ -1,12 +1,10 @@
 #include "DownloaderWindow.h"
 
-#include "DirectDownloadTab.h"
 #include "DownloadHistoryStore.h"
 #include "DownloadHistoryTab.h"
+#include "DownloadTab.h"
 #include "DownloaderSettings.h"
 #include "DownloaderSettingsTab.h"
-#include "PageScanTab.h"
-#include "PlatformVideoTab.h"
 #include "engine/DownloadQueue.h"
 #include "engine/FileDownloader.h"
 #include "core/IconHelper.h"
@@ -22,8 +20,8 @@ DownloaderWindow::DownloaderWindow(QWidget* parent)
 {
     setWindowTitle("One for ALL - Downloader");
     setWindowIcon(IconHelper::makeBadgedIcon(":/icons/download.png", 48, 10, 4));
-    resize(920, 680);
-    setMinimumSize(760, 540);
+    resize(920, 700);
+    setMinimumSize(760, 620); // dưới mức này phần điều khiển phía trên chiếm gần hết chiều cao, bảng chỉ còn thấy ~1 dòng
     setStyleSheet(
         "QWidget { background-color: #f6f8fa; color: #1f2328; font-family: 'Segoe UI', sans-serif; }"
         "QScrollBar:horizontal { height: 0px; background: transparent; }"
@@ -56,12 +54,10 @@ void DownloaderWindow::closeEvent(QCloseEvent* event)
     // công cụ này - đúng lớp lỗi đã gặp với Android (xem AndroidControlWindow::closeEvent/ScrcpyLauncher.cpp).
     // Tải tệp HTTP (FileDownloader, thuần QNetworkAccessManager) không có tiến trình ngoài nào có thể mồ côi nên
     // không cần dừng ở đây.
-    if (m_platformTab)
-        m_platformTab->cancelActiveDownload();
+    if (m_downloadTab)
+        m_downloadTab->cancelBackgroundWork(); // quét trang (yt-dlp/trình duyệt ẩn) + lấy danh sách chất lượng
     if (m_queue)
         m_queue->stopProcesses();
-    if (m_pageScanTab)
-        m_pageScanTab->cancelScan();
     event->accept();
 }
 
@@ -77,14 +73,10 @@ void DownloaderWindow::buildUi()
     m_queue = new DownloadQueue(m_settings, m_history, m_downloader, this);
 
     m_tabs = new QTabWidget(this);
-    m_directTab = new DirectDownloadTab(m_queue, m_settings, this);
-    m_pageScanTab = new PageScanTab(m_queue, m_settings, this);
-    m_platformTab = new PlatformVideoTab(m_settings, m_history, this);
+    m_downloadTab = new DownloadTab(m_queue, m_settings, this);
     m_historyTab = new DownloadHistoryTab(m_history, this);
     m_settingsTab = new DownloaderSettingsTab(m_settings, this);
-    m_tabs->addTab(m_directTab, "⬇️  Tải trực tiếp");
-    m_tabs->addTab(m_pageScanTab, "🔍  Quét trang web");
-    m_tabs->addTab(m_platformTab, "🎬  Video nền tảng");
+    m_tabs->addTab(m_downloadTab, "⬇️  Tải xuống");
     m_tabs->addTab(m_historyTab, "🕘  Lịch sử");
     m_tabs->addTab(m_settingsTab, "⚙️  Cài đặt");
     root->addWidget(m_tabs, 1);

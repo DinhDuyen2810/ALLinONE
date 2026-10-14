@@ -3,18 +3,16 @@
 #include <QWidget>
 
 class QTabWidget;
-class DirectDownloadTab;
+class DownloadTab;
 class DownloadHistoryStore;
 class DownloadHistoryTab;
 class DownloadQueue;
 class DownloaderSettings;
 class DownloaderSettingsTab;
-class PageScanTab;
-class PlatformVideoTab;
 class FileDownloader;
 
-/// Cửa sổ Downloader: tải trực tiếp (hàng đợi hợp nhất: dán link -> kiểm tra OK/ERR -> chọn và tải), quét trang web,
-/// tải video nền tảng (YouTube/Facebook/TikTok... qua yt-dlp), lịch sử tải và cài đặt (thư mục tải...).
+/// Cửa sổ Downloader: tab Tải xuống (hàng đợi hợp nhất: dán link/quét trang -> kiểm tra OK/ERR -> chọn và tải; gộp tải trực
+/// tiếp, quét trang web và video nền tảng YouTube/Facebook/TikTok... qua yt-dlp), lịch sử tải và cài đặt (thư mục tải...).
 class DownloaderWindow : public QWidget
 {
     Q_OBJECT
@@ -39,9 +37,7 @@ private:
     DownloadHistoryStore* m_history{nullptr};     ///< Lịch sử CHUNG
     FileDownloader* m_downloader{nullptr};        ///< Tải tệp HTTP, dùng chung qua hàng đợi
     DownloadQueue* m_queue{nullptr};              ///< Hàng đợi hợp nhất
-    DirectDownloadTab* m_directTab{nullptr};
-    PageScanTab* m_pageScanTab{nullptr};
-    PlatformVideoTab* m_platformTab{nullptr};
+    DownloadTab* m_downloadTab{nullptr};
     DownloadHistoryTab* m_historyTab{nullptr};
     DownloaderSettingsTab* m_settingsTab{nullptr};
 };

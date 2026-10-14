@@ -1182,6 +1182,35 @@ int main(int argc, char** argv)
             CHECK(s.cookieMode() == DownloaderSettings::CookieMode::None && s.cookieBrowser() == "firefox");
         }
 
+        // ---- Chất lượng video (cài đặt chung cho các mục yt-dlp) ----
+        {
+            const QString qf = tmp.filePath("quality.json");
+            DownloaderSettings s(qf);
+            CHECK(s.videoQuality() == "auto");
+            CHECK(DownloaderSettings::formatSelectorForQuality("auto").isEmpty()); // rỗng = yt-dlp tự chọn
+            CHECK(DownloaderSettings::formatSelectorForQuality("khong-biet").isEmpty());
+            CHECK(DownloaderSettings::formatSelectorForQuality("720") == "bv*[height<=720]+ba/b[height<=720]/b");
+            CHECK(DownloaderSettings::formatSelectorForQuality("audio") == "ba/b");
+            CHECK(DownloaderSettings::formatSelectorForQuality("720]; calc").isEmpty()); // chuỗi lạ không bao giờ lọt vào "-f"
+            for (const QString& key : DownloaderSettings::videoQualityKeys())
+                CHECK(key == "auto" || DownloaderSettings::formatSelectorForQuality(key).contains(key == "audio" ? "ba" : key));
+            CHECK(DownloaderSettings::videoQualityLabel("720") == "720p" && DownloaderSettings::videoQualityLabel("audio") == "Chỉ âm thanh");
+            CHECK(DownloaderSettings::videoQualityLabel("lung tung") == DownloaderSettings::videoQualityLabel("auto"));
+            int changes = 0;
+            QObject::connect(&s, &DownloaderSettings::changed, [&] { ++changes; });
+            s.setVideoQuality("1080");
+            s.setVideoQuality("1080"); // không đổi -> không phát tín hiệu
+            CHECK(s.videoQuality() == "1080" && changes == 1);
+            s.setVideoQuality("huge"); // khóa lạ -> về "auto"
+            CHECK(s.videoQuality() == "auto" && changes == 2);
+            s.setVideoQuality("480");
+            CHECK(DownloaderSettings(qf).videoQuality() == "480"); // lưu bền
+            QJsonObject o;
+            o["videoQuality"] = "9999";
+            s.fromJson(o);
+            CHECK(s.videoQuality() == "auto");
+        }
+
         // ---- DownloadHistoryStore ----
         {
             const QString hp = tmp.filePath("history.json");

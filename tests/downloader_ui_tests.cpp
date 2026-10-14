@@ -1,11 +1,12 @@
-// Kiểm thử cho giao diện Downloader: dựng cửa sổ, không crash, đủ 5 tab, hàng đợi hợp nhất (thêm -> OK/ERR -> chọn -> tải),
-// quét trang -> hàng đợi, lịch sử, cài đặt. CÓ tải THẬT một tệp nhỏ
+// Kiểm thử cho giao diện Downloader: dựng cửa sổ, không crash, đủ 3 tab (Tải xuống gộp tải trực tiếp + quét trang + video nền
+// tảng), hàng đợi hợp nhất (thêm -> OK/ERR -> chọn -> tải), quét trang -> hàng đợi, chọn chất lượng, lịch sử, cài đặt. CÓ tải THẬT một tệp nhỏ
 // công khai, ổn định (logo Google, ~5KB) qua FileDownloader để xác nhận plumbing HTTP thật hoạt động -
 // giống mẫu PublicIpChecker/SpeedTestRunner đã dùng thật trong module VPN/WiFi. KHÔNG tự động chạy
 // yt-dlp.exe thật (cần mạng + có thể chậm, chỉ nên tự kiểm tra tay qua UI) và KHÔNG tự động quét trang
 // web thật trong test này (PageMediaScanner đã có test lõi riêng bằng HTML mẫu dựng sẵn).
 #include <QApplication>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
@@ -14,6 +15,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QStandardPaths>
@@ -26,11 +28,10 @@
 #include <cstdio>
 
 #include "core/AppPaths.h"
-#include "tools/downloader/DirectDownloadTab.h"
 #include "tools/downloader/DownloadHistoryStore.h"
+#include "tools/downloader/DownloadTab.h"
 #include "tools/downloader/DownloaderSettings.h"
 #include "tools/downloader/DownloaderWindow.h"
-#include "tools/downloader/PageScanTab.h"
 #include "tools/downloader/engine/DownloadQueue.h"
 #include "tools/downloader/engine/FileDownloader.h"
 
@@ -83,11 +84,12 @@ int main(int argc, char** argv)
     CHECK(true); // tới được đây tức là dựng cửa sổ không crash
 
     auto* tabs = win.findChild<QTabWidget*>();
-    CHECK(tabs != nullptr && tabs->count() == 5);
-    if (tabs && tabs->count() == 5)
+    CHECK(tabs != nullptr && tabs->count() == 3);
+    if (tabs && tabs->count() == 3)
     {
-        CHECK(tabs->tabText(3).contains("Lịch sử"));
-        CHECK(tabs->tabText(4).contains("Cài đặt"));
+        CHECK(tabs->tabText(0).contains("Tải xuống"));
+        CHECK(tabs->tabText(1).contains("Lịch sử"));
+        CHECK(tabs->tabText(2).contains("Cài đặt"));
     }
 
     const auto buttons = win.findChildren<QPushButton*>();
@@ -117,10 +119,11 @@ int main(int argc, char** argv)
 
     QTableWidget* queueTable = findTable(&win, 9, "Tên / Tiêu đề");
     CHECK(queueTable != nullptr);
-    auto* directTab = win.findChild<DirectDownloadTab*>();
-    CHECK(directTab != nullptr);
+    auto* downloadTab = win.findChild<DownloadTab*>();
+    CHECK(downloadTab != nullptr);
+    CHECK(win.findChildren<DownloadTab*>().size() == 1);
 
-    // Hồi quy lỗi THẬT: mục đưa vào FileDownloader dùng chung KHÔNG qua tab "Tải trực tiếp" từng tải mà không có hàng nào
+    // Hồi quy lỗi THẬT: mục đưa vào FileDownloader dùng chung KHÔNG qua tab Tải xuống từng tải mà không có hàng nào
     // trong bảng hàng đợi - không thấy tiến độ/lỗi, không dừng/hủy được. KHÔNG start() ở đây nên không có yêu cầu mạng.
     {
         auto* shared = win.findChild<FileDownloader*>();
@@ -128,9 +131,9 @@ int main(int argc, char** argv)
         if (shared && queueTable)
         {
             CHECK(queueTable->rowCount() == 0);
-            const int id = shared->enqueue("https://example.invalid/anh.jpg", QDir::tempPath() + "/oneforall_downloader_test/tu-tab-quet-trang.jpg");
+            const int id = shared->enqueue("https://example.invalid/anh.jpg", QDir::tempPath() + "/oneforall_downloader_test/tu-noi-khac.jpg");
             CHECK(queueTable->rowCount() == 1);
-            CHECK(queueTable->item(0, 1) && queueTable->item(0, 1)->text() == "tu-tab-quet-trang.jpg");
+            CHECK(queueTable->item(0, 1) && queueTable->item(0, 1)->text() == "tu-noi-khac.jpg");
             CHECK(queueTable->item(0, 4) && queueTable->item(0, 4)->text() == "OK"); // mục phản chiếu: đã biết link tệp
             CHECK(queueTable->item(0, 7) && queueTable->item(0, 7)->text() == "Đang chờ");
             shared->cancel(id);
@@ -142,7 +145,7 @@ int main(int argc, char** argv)
     }
 
     // ---- Quy trình mới: dán link -> vào hàng đợi (CHƯA tải) -> OK/ERR -> chọn -> tải ----
-    if (queueTable && directTab)
+    if (queueTable && downloadTab)
     {
         MiniHttpServer http;
         const QByteArray fileBody(5000, 'A');
@@ -164,7 +167,7 @@ int main(int argc, char** argv)
             return MiniHttpServer::response("404 Not Found", {"Content-Type: text/plain"}, "khong co");
         };
 
-        directTab->enqueueText(http.url("/file.bin") + "\n" + http.url("/missing.bin") + "\nkhong-phai-link");
+        downloadTab->enqueueText(http.url("/file.bin") + "\n" + http.url("/missing.bin") + "\nkhong-phai-link");
         CHECK(queueTable->rowCount() == 2); // dòng "khong-phai-link" bị bỏ qua
         // Vừa thêm: CHƯA tải gì - thư mục đích chưa có tệp nào.
         CHECK(QDir(dlRoot).entryList(QDir::Files).isEmpty());
@@ -193,13 +196,16 @@ int main(int argc, char** argv)
         {
             CHECK(queueTable->item(okRow, 1)->text() == "du-lieu.bin"); // tên lấy từ Content-Disposition
             CHECK(queueTable->item(errRow, 7)->text().startsWith("✖")); // lý do hiện ở cột trạng thái
-            CHECK(queueTable->cellWidget(okRow, 8) != nullptr && queueTable->cellWidget(errRow, 8) != nullptr); // nút 🌐 mỗi dòng
+            // Cột "Mở" là chữ trong ô (không phải nút/widget) nên dòng chọn đổi màu cả ô, không có khung trắng nằm trên nền xanh.
+            CHECK(queueTable->item(okRow, 8) && queueTable->item(okRow, 8)->text() == "↗");
+            CHECK(queueTable->cellWidget(okRow, 8) == nullptr && queueTable->cellWidget(errRow, 8) == nullptr);
+            CHECK(queueTable->focusPolicy() == Qt::NoFocus);
             CHECK(QDir(dlRoot).entryList(QDir::Files).isEmpty()); // kiểm tra link KHÔNG được tải tệp về
 
             // Chọn CẢ dòng ERR lẫn OK rồi tải: chỉ dòng OK được tải.
             queueTable->item(okRow, 0)->setCheckState(Qt::Checked);
             queueTable->item(errRow, 0)->setCheckState(Qt::Checked);
-            QPushButton* dlBtn = findButton(directTab, "⬇ Tải các mục đã chọn");
+            QPushButton* dlBtn = findButton(downloadTab, "⬇ Tải các mục đã chọn");
             CHECK(dlBtn != nullptr);
             if (dlBtn)
                 dlBtn->click();
@@ -227,49 +233,120 @@ int main(int argc, char** argv)
             CHECK(historyTable != nullptr && historyTable->rowCount() == history->entries().size());
         }
 
-        // ---- Tab "Quét trang web": quét trang HTML mẫu -> thêm vào hàng đợi (chưa tải) ----
+        // ---- "Quét trang" trong tab Tải xuống: quét trang HTML mẫu -> mục OK vào hàng đợi (chưa tải) ----
         queue->remove(queue->allIds());
         CHECK(queueTable->rowCount() == 0);
-        auto* scanTab = win.findChild<PageScanTab*>();
-        CHECK(scanTab != nullptr);
-        if (scanTab)
+        auto* urlEdit = downloadTab->findChild<QPlainTextEdit*>();
+        QPushButton* scanBtn = findButton(downloadTab, "🔍 Quét trang");
+        CHECK(urlEdit && scanBtn);
+        if (urlEdit && scanBtn)
         {
-            auto* urlEdit = scanTab->findChild<QLineEdit*>();
-            QPushButton* scanBtn = findButton(scanTab, "🔍 Quét trang");
-            CHECK(urlEdit && scanBtn);
-            if (urlEdit && scanBtn)
-            {
-                urlEdit->setText(http.url("/page.html"));
-                scanBtn->click();
-                CHECK(scanBtn->text() == "⏹ Dừng"); // đang quét: nút chuyển thành "Dừng"
-                QTableWidget* scanTable = findTable(scanTab, 4, "Loại");
-                CHECK(scanTable != nullptr);
-                const bool scanned = waitUntil([&] { return scanTable && scanTable->rowCount() >= 2; });
-                CHECK(scanned);
-                if (scanTable && scanned)
-                {
-                    CHECK(scanTable->cellWidget(0, 3) != nullptr); // nút 🌐 mở link trên trình duyệt
-                    findButton(scanTab, "Chọn tất cả")->click();
-                    findButton(scanTab, "+ Thêm các mục đã chọn vào hàng đợi")->click();
-                    CHECK(queueTable->rowCount() == scanTable->rowCount());
-                    bool allOk = true;
-                    for (int r = 0; r < queueTable->rowCount(); ++r)
-                        allOk = allOk && queueTable->item(r, 4)->text() == "OK" && queueTable->item(r, 7)->text() == "Chưa tải";
-                    CHECK(allOk); // đã biết là tải được nên OK ngay, và CHƯA tải
-                    CHECK(QDir(dlRoot).entryList(QDir::Files).size() == 1); // vẫn chỉ có tệp lần trước
-                    CHECK(waitUntil([&] { return scanBtn->text() == "🔍 Quét trang"; })); // quét xong: nút trở lại như cũ
+            urlEdit->setPlainText(http.url("/page.html"));
+            scanBtn->click();
+            CHECK(scanBtn->text() == "⏹ Dừng quét"); // đang quét: nút chuyển thành "Dừng quét"
+            CHECK(urlEdit->toPlainText().isEmpty());   // link đã được nhận
+            const bool scanned = waitUntil([&] { return queueTable->rowCount() >= 2 && scanBtn->text() == "🔍 Quét trang"; });
+            CHECK(scanned); // quét xong: nút trở lại như cũ
+            CHECK(queueTable->rowCount() == 2);
+            bool allOk = true;
+            for (int r = 0; r < queueTable->rowCount(); ++r)
+                allOk = allOk && queueTable->item(r, 4)->text() == "OK" && queueTable->item(r, 7)->text() == "Chưa tải";
+            CHECK(allOk); // đã biết là tải được nên OK ngay, và CHƯA tải
+            CHECK(QDir(dlRoot).entryList(QDir::Files).size() == 1); // vẫn chỉ có tệp lần trước
 
-                    // "Tải ngay": thêm vào hàng đợi (đã có sẵn từ lần bấm trên) rồi tải luôn các mục đang tick.
-                    findButton(scanTab, "Chọn tất cả")->click();
-                    findButton(scanTab, "⬇ Tải ngay các mục đã chọn")->click();
-                    const bool fetched = waitUntil([&] {
-                        return QFileInfo::exists(dlRoot + "/anh-a.png") && QFileInfo::exists(dlRoot + "/tai-lieu.pdf");
-                    });
-                    CHECK(fetched);
-                    CHECK(QFileInfo(dlRoot + "/anh-a.png").size() == 300);
-                    CHECK(QFileInfo(dlRoot + "/tai-lieu.pdf").size() == 400);
-                    CHECK(queueTable->rowCount() == scanTable->rowCount()); // không nhân đôi mục đã có
-                }
+            // Quét lại đúng trang đó: không nhân đôi mục đã có.
+            downloadTab->scanText(http.url("/page.html"));
+            CHECK(waitUntil([&] { return scanBtn->text() == "🔍 Quét trang"; }));
+            CHECK(queueTable->rowCount() == 2);
+
+            // Tick tất cả rồi tải: hai tệp quét được về đủ, đúng kích thước.
+            QPushButton* selectAllBtn = findButton(downloadTab, "☑ Chọn tất cả");
+            QPushButton* dlBtn = findButton(downloadTab, "⬇ Tải các mục đã chọn");
+            CHECK(selectAllBtn && dlBtn);
+            if (selectAllBtn && dlBtn)
+            {
+                selectAllBtn->click();
+                dlBtn->click();
+                const bool fetched = waitUntil([&] {
+                    return QFileInfo::exists(dlRoot + "/anh-a.png") && QFileInfo::exists(dlRoot + "/tai-lieu.pdf");
+                });
+                CHECK(fetched);
+                CHECK(QFileInfo(dlRoot + "/anh-a.png").size() == 300);
+                CHECK(QFileInfo(dlRoot + "/tai-lieu.pdf").size() == 400);
+            }
+        }
+
+        // Quét một trang KHÔNG tồn tại (404): không thêm mục nào, nút trở lại như cũ, lý do hiện ở dòng thông báo.
+        queue->remove(queue->allIds());
+        downloadTab->scanText(http.url("/khong-co.html"));
+        CHECK(waitUntil([&] { return scanBtn && scanBtn->text() == "🔍 Quét trang"; }));
+        CHECK(queueTable->rowCount() == 0);
+        {
+            bool shownReason = false;
+            for (auto* l : downloadTab->findChildren<QLabel*>())
+                shownReason = shownReason || (l->isVisibleTo(downloadTab) && l->text().contains("⚠") && l->text().contains("khong-co.html"));
+            CHECK(shownReason);
+        }
+
+        // Dừng giữa chừng: bấm "Dừng quét" ngay sau khi bắt đầu thì nút trở lại như cũ ngay.
+        downloadTab->scanText(http.url("/page.html"));
+        CHECK(scanBtn && scanBtn->text() == "⏹ Dừng quét");
+        if (scanBtn)
+        {
+            scanBtn->click();
+            CHECK(scanBtn->text() == "🔍 Quét trang");
+        }
+        waitUntil([] { return false; }, 300); // để mọi tín hiệu muộn (nếu có) được xử lý - không được làm gì thêm
+        CHECK(queueTable->rowCount() == 0);
+
+        // ---- Chất lượng video: combo chung lưu vào cài đặt; chọn riêng từng mục yt-dlp ----
+        {
+            QComboBox* quality = nullptr;
+            for (auto* c : downloadTab->findChildren<QComboBox*>())
+                if (c->findData("720") >= 0)
+                    quality = c;
+            CHECK(quality != nullptr);
+            if (quality)
+            {
+                CHECK(quality->currentData().toString() == "auto");
+                quality->setCurrentIndex(quality->findData("720"));
+                CHECK(settings->videoQuality() == "720");
+                settings->setVideoQuality("1080"); // đổi từ nơi khác -> combo đi theo
+                CHECK(quality->currentData().toString() == "1080");
+                settings->setVideoQuality("auto");
+            }
+            ResolvedMedia yt;
+            yt.kind = ResolvedMedia::Kind::YtDlp;
+            yt.url = "https://www.youtube.com/watch?v=khong-that";
+            yt.title = "Video thu";
+            yt.mediaType = "Video";
+            const int ytId = queue->addResolved(yt);
+            CHECK(ytId >= 0);
+            queue->setItemFormat(ytId, "137+bestaudio/best", "1920x1080 - mp4");
+            CHECK(queue->item(ytId) && queue->item(ytId)->formatSelector == "137+bestaudio/best");
+            queue->setItemFormat(ytId, QString(), QString());
+            CHECK(queue->item(ytId) && queue->item(ytId)->formatSelector.isEmpty() && queue->item(ytId)->formatLabel.isEmpty());
+            ResolvedMedia fileMedia;
+            fileMedia.url = "https://example.invalid/a.png";
+            const int fileId = queue->addResolved(fileMedia);
+            queue->setItemFormat(fileId, "best", "x"); // tệp HTTP không có chất lượng để chọn
+            CHECK(queue->item(fileId) && queue->item(fileId)->formatSelector.isEmpty());
+        }
+        queue->remove(queue->allIds());
+
+        // ---- Chọn đúng MỘT dòng ERR: lý do ĐẦY ĐỦ hiện ở dòng thông báo (cột trạng thái chỉ đủ chỗ cho một đoạn) ----
+        {
+            downloadTab->enqueueText(http.url("/missing-2.bin"));
+            CHECK(waitUntil([&] { return queueTable->rowCount() == 1 && queueTable->item(0, 4)->text() == "ERR"; }));
+            if (queueTable->rowCount() == 1)
+            {
+                queueTable->selectRow(0);
+                bool shownFull = false;
+                const QString full = queue->item(queue->allIds().first())->checkNote;
+                for (auto* l : downloadTab->findChildren<QLabel*>())
+                    shownFull = shownFull || (l->isVisibleTo(downloadTab) && l->text() == "✖ Không tải được - " + full);
+                CHECK(shownFull);
+                CHECK(!full.isEmpty());
             }
         }
         queue->remove(queue->allIds());
@@ -297,7 +374,7 @@ int main(int argc, char** argv)
         for (auto* l : win.findChildren<QLabel*>())
             if (l->text() == QDir::toNativeSeparators(newFolder)) // nhãn hiện đường dẫn kiểu Windows (\)
                 ++shown;
-        CHECK(shown >= 4); // tab Tải trực tiếp, Quét trang, Video nền tảng, Cài đặt
+        CHECK(shown >= 2); // tab Tải xuống và tab Cài đặt
         CHECK(settings->downloadFolder() == newFolder);
     }
 

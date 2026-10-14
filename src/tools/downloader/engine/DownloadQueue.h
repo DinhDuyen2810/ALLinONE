@@ -36,6 +36,8 @@ struct QueueItem
     QString destPath;      ///< HttpFile: biết khi bắt đầu tải; yt-dlp: biết khi xong
     int httpId{-1};        ///< ID trong FileDownloader (HttpFile)
     QString ytBase;        ///< Tên tệp (không đuôi) đã chọn cho yt-dlp
+    QString formatSelector; ///< Bộ chọn `-f` riêng của mục (yt-dlp); rỗng = theo chất lượng chung ở DownloaderSettings
+    QString formatLabel;    ///< Mô tả định dạng đã chọn riêng (để hiện cho người dùng)
     QDateTime startedAt;
     bool foreign{false};   ///< Mục do nơi khác enqueue thẳng vào FileDownloader (phản chiếu để hiện cùng một hàng đợi)
     bool historyDone{false};
@@ -65,7 +67,7 @@ public:
     /// Thêm một link (CHƯA tải). Trả ID, hoặc -1 nếu không hợp lệ/đã có trong hàng đợi (có tín hiệu message()).
     int addSource(const QString& url);
     QList<int> addSources(const QStringList& urls);
-    /// Thêm thẳng một mục đã biết là tải được (vd từ tab Quét trang web) - check = OK ngay. -1 nếu trùng link tệp.
+    /// Thêm thẳng một mục đã biết là tải được (vd từ chức năng Quét trang) - check = OK ngay. -1 nếu trùng link tệp.
     int addResolved(const ResolvedMedia& media, const QString& sourceUrl = QString());
 
     /// Bắt đầu tải các mục; mục chưa OK/đã hoàn tất bị bỏ qua. Trả số mục thực sự được bắt đầu/xếp hàng.
@@ -77,6 +79,9 @@ public:
     /// Xóa các mục đã Hoàn tất (và, nếu includeFailed, cả mục Thất bại/Đã hủy/ERR). Trả số mục đã xóa.
     int removeFinished(bool includeFailed);
     void recheck(int id);
+    /// Chọn định dạng/chất lượng RIÊNG cho một mục yt-dlp (selector rỗng = quay về chất lượng chung). Chỉ có tác dụng với
+    /// lượt tải sau đó; mục đang tải/đã xong không đổi.
+    void setItemFormat(int id, const QString& selector, const QString& label);
     /// Dừng NGAY mọi tiến trình ngoài do hàng đợi sinh ra (kiểm tra link: yt-dlp/trình duyệt ẩn; tải video: yt-dlp/ffmpeg).
     /// Gọi khi đóng cửa sổ/thoát ứng dụng - nếu không các tiến trình này mồ côi chạy ngầm (xem core/WinProcessTree.h).
     /// Tải tệp HTTP (thuần QNetworkAccessManager) không có tiến trình ngoài nên không bị đụng tới.

@@ -45,7 +45,7 @@ Ghi chú tích hợp:
 ## Công cụ nhị phân được đóng gói (vendored) trong `vendor/yt-dlp/` (KHÔNG commit vào Git - xem dưới)
 | Công cụ | Dùng để | Giấy phép | Nguồn |
 |---|---|---|---|
-| **yt-dlp** | Tải video/âm thanh từ YouTube/Facebook/TikTok và hơn 1000 nền tảng khác - dùng cho tab "Video nền tảng" của Downloader | Mã nguồn: Unlicense (public domain). **Bản thực thi `yt-dlp.exe` đã biên dịch (PyInstaller) là GPLv3+ dạng kết hợp** (chứa mã khởi động PyInstaller thuộc GPLv3+) - đã xác nhận qua README chính thức của dự án, không phải Unlicense thuần như mã nguồn | https://github.com/yt-dlp/yt-dlp |
+| **yt-dlp** | Tải video/âm thanh từ YouTube/Facebook/TikTok và hơn 1000 nền tảng khác - dùng cho tải video nền tảng trong tab "Tải xuống" của Downloader | Mã nguồn: Unlicense (public domain). **Bản thực thi `yt-dlp.exe` đã biên dịch (PyInstaller) là GPLv3+ dạng kết hợp** (chứa mã khởi động PyInstaller thuộc GPLv3+) - đã xác nhận qua README chính thức của dự án, không phải Unlicense thuần như mã nguồn | https://github.com/yt-dlp/yt-dlp |
 | **FFmpeg** (`ffmpeg.exe`/`ffprobe.exe`, bản dựng tĩnh BtbN/FFmpeg-Builds) | Ghép luồng video+âm thanh tải riêng thành 1 tệp hoàn chỉnh - YouTube chất lượng cao hiện đại hầu hết không còn định dạng ghép sẵn, **bắt buộc cần ffmpeg** (đã xác nhận thật: thử `-f best` không có ffmpeg báo lỗi "Requested format is not available" trên video thật) | GPL (bản dựng "gpl", gồm codec GPL) | https://github.com/BtbN/FFmpeg-Builds |
 
 Ghi chú tích hợp:

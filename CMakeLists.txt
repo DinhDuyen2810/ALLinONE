@@ -479,16 +479,12 @@ target_link_libraries(update_tests PRIVATE update_core)
 # ---- Giao diện Downloader ----
 add_library(downloader_ui STATIC
     src/tools/downloader/DownloaderUiStyle.h
-    src/tools/downloader/DirectDownloadTab.h
-    src/tools/downloader/DirectDownloadTab.cpp
+    src/tools/downloader/DownloadTab.h
+    src/tools/downloader/DownloadTab.cpp
     src/tools/downloader/DownloadHistoryTab.h
     src/tools/downloader/DownloadHistoryTab.cpp
     src/tools/downloader/DownloaderSettingsTab.h
     src/tools/downloader/DownloaderSettingsTab.cpp
-    src/tools/downloader/PageScanTab.h
-    src/tools/downloader/PageScanTab.cpp
-    src/tools/downloader/PlatformVideoTab.h
-    src/tools/downloader/PlatformVideoTab.cpp
     src/tools/downloader/DownloaderWindow.h
     src/tools/downloader/DownloaderWindow.cpp
 )

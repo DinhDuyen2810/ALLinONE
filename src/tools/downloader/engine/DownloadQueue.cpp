@@ -330,9 +330,21 @@ void DownloadQueue::recheck(int id)
     found->media.url = found->sourceUrl;
     found->state = QueueItem::State::Idle;
     found->error.clear();
+    found->formatSelector.clear(); // kiểm tra lại có thể ra video khác - định dạng đã chọn không còn đúng
+    found->formatLabel.clear();
     emit itemUpdated(id);
     m_resolveQueue << id;
     pumpResolve();
+}
+
+void DownloadQueue::setItemFormat(int id, const QString& selector, const QString& label)
+{
+    auto found = m_items.find(id);
+    if (found == m_items.end() || found->media.kind != ResolvedMedia::Kind::YtDlp)
+        return;
+    found->formatSelector = selector;
+    found->formatLabel = selector.isEmpty() ? QString() : label;
+    emit itemUpdated(id);
 }
 
 // ---------------------------------------------------------------------------------------------- Bắt đầu / dừng
@@ -715,6 +727,8 @@ void DownloadQueue::startYtWorker(int id)
     o.url = it.media.url;
     o.destDir = m_settings->downloadFolder();
     o.outputBaseName = it.ytBase;
+    o.formatSelector = it.formatSelector.isEmpty() ? DownloaderSettings::formatSelectorForQuality(m_settings->videoQuality())
+                                                   : it.formatSelector;
     o.extraArgs = m_settings->ytDlpExtraArguments();
     if (!it.media.referer.isEmpty())
         o.extraArgs << "--referer" << it.media.referer;
