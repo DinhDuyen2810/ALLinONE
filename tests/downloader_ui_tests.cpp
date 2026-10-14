@@ -16,6 +16,7 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPlainTextEdit>
+#include <QProgressBar>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QStandardPaths>
@@ -23,6 +24,7 @@
 #include <QTableWidget>
 #include <QTemporaryDir>
 #include "MiniHttpServer.h"
+#include "MockDriveViewer.h"
 #include "TestDataDir.h"
 #include <QTimer>
 #include <cstdio>
@@ -34,6 +36,7 @@
 #include "tools/downloader/DownloaderWindow.h"
 #include "tools/downloader/engine/DownloadQueue.h"
 #include "tools/downloader/engine/FileDownloader.h"
+#include "tools/downloader/engine/HeadlessBrowser.h"
 
 static int g_fail = 0, g_pass = 0;
 #define CHECK(cond)                                                            \
@@ -374,6 +377,54 @@ int main(int argc, char** argv)
             }
         }
         queue->remove(queue->allIds());
+    }
+
+    // ---- Tài liệu Google Drive bị tắt "tải xuống" (chế độ xem): hàng hiện tiến độ THEO TRANG, hủy được ----
+    // Dùng trang xem giả lập trên 127.0.0.1 + Edge/Chrome ẩn thật; máy không có trình duyệt thì bỏ qua.
+    if (!HeadlessBrowser::findBrowserExecutable().isEmpty() && queueTable)
+    {
+        {
+            queue->remove(queue->allIds());
+            queue->setAllowAnyViewerHost(true);
+            MiniHttpServer viewer;
+            const QByteArray html = mockDriveViewerHtml(10);
+            viewer.handler = [&](const QByteArray& head) -> QByteArray {
+                if (MiniHttpServer::path(head).startsWith("/viewer"))
+                    return MiniHttpServer::response("200 OK", {"Content-Type: text/html; charset=utf-8"}, html);
+                return MiniHttpServer::response("404 Not Found", {"Content-Type: text/html"}, "x");
+            };
+            ResolvedMedia m;
+            m.kind = ResolvedMedia::Kind::DriveViewer;
+            m.url = viewer.url("/viewer");
+            m.fileName = "Tai lieu Drive.pdf";
+            m.mediaType = "Tài liệu";
+            m.note = "Google Drive (chế độ xem - chụp từng trang)";
+            const int id = queue->addResolved(m);
+            CHECK(id > 0 && queueTable->rowCount() == 1);
+            CHECK(queueTable->item(0, 2)->text() == "Tài liệu" && queueTable->item(0, 4)->text() == "OK" &&
+                  queueTable->item(0, 7)->text() == "Chưa tải");
+            CHECK(queue->startItems({id}) == 1);
+            // Đang chụp: cột Trạng thái ghi "trang x/y", thanh tiến độ chạy theo số trang (không phải %-byte).
+            bool sawPageText = false, barByPages = false;
+            waitUntil([&] {
+                const QString st = queueTable->item(0, 7)->text();
+                auto* bar = qobject_cast<QProgressBar*>(queueTable->cellWidget(0, 5));
+                if (st.contains("trang ") && st.contains("/10") && bar && bar->maximum() == 10 && bar->value() >= 1)
+                {
+                    sawPageText = true;
+                    barByPages = true;
+                }
+                return sawPageText || queue->item(id)->state == QueueItem::State::Completed ||
+                       queue->item(id)->state == QueueItem::State::Failed;
+            }, 90000);
+            CHECK(sawPageText && barByPages);
+            std::printf("Drive che do xem (UI): sawPageText=%d barByPages=%d\n", sawPageText, barByPages);
+            queue->cancel(id);
+            CHECK(waitUntil([&] { return queue->item(id)->state == QueueItem::State::Canceled; }, 30000));
+            CHECK(queueTable->item(0, 7)->text() == "Đã hủy");
+            queue->remove(queue->allIds());
+            queue->setAllowAnyViewerHost(false);
+        }
     }
 
     // ---- Tab Cài đặt: ô số không còn mũi tên lên/xuống (người dùng yêu cầu bỏ) ----

@@ -11,6 +11,7 @@
 class DownloaderSettings;
 class DownloadHistoryStore;
 class FileDownloader;
+class DriveViewerCapture;
 class LinkResolver;
 class YtDlpDownloadWorker;
 
@@ -32,8 +33,10 @@ struct QueueItem
     qint64 total{-1};
     qint64 received{0};
     qint64 speed{0};
+    int pagesDone{0};      ///< DriveViewer: số trang đã chụp
+    int pagesTotal{0};     ///< DriveViewer: tổng số trang (0 = chưa biết)
     QString error;
-    QString destPath;      ///< HttpFile: biết khi bắt đầu tải; yt-dlp: biết khi xong
+    QString destPath;      ///< HttpFile/DriveViewer: biết khi bắt đầu tải; yt-dlp: biết khi xong
     int httpId{-1};        ///< ID trong FileDownloader (HttpFile)
     QString ytBase;        ///< Tên tệp (không đuôi) đã chọn cho yt-dlp
     QString formatSelector; ///< Bộ chọn `-f` riêng của mục (yt-dlp); rỗng = theo chất lượng chung ở DownloaderSettings
@@ -52,7 +55,8 @@ struct QueueItem
 ///  - addSource(): người dùng dán link -> thêm vào hàng đợi, CHƯA TẢI; bộ phân giải (LinkResolver) kiểm tra link và
 ///    đánh dấu OK (ra được tệp/video để tải) hoặc ERR (kèm lý do). Một link có thể bung thành NHIỀU mục (hồ sơ, danh sách
 ///    phát, nhiều ảnh trong bài đăng).
-///  - startItems(): chỉ các mục OK mới được tải; tệp HTTP đi qua FileDownloader, video/luồng đi qua yt-dlp.
+///  - startItems(): chỉ các mục OK mới được tải; tệp HTTP đi qua FileDownloader, video/luồng đi qua yt-dlp, tài liệu Google
+///    Drive bị chủ tệp tắt "tải xuống" đi qua DriveViewerCapture (chụp từng trang ở chế độ xem -> PDF).
 ///  - Mục do tab khác đưa thẳng vào FileDownloader cũng hiện ở đây (phản chiếu).
 ///  - Mỗi mục tải xong/thất bại/bị hủy được ghi vào lịch sử.
 class DownloadQueue : public QObject
@@ -97,6 +101,9 @@ public:
     QList<int> allIds() const { return m_order; }
     int resolvingCount() const { return m_resolvers.size() + m_resolveQueue.size(); }
 
+    /// CHỈ cho kiểm thử: cho phép mục DriveViewer trỏ tới máy chủ cục bộ thay vì chỉ drive.google.com.
+    void setAllowAnyViewerHost(bool allow) { m_allowAnyViewerHost = allow; }
+
 signals:
     void itemAdded(int id);
     void itemUpdated(int id);
@@ -116,6 +123,10 @@ private:
     void onPhotoChecked(int id, const ResolveResult& result);
     void insertItem(const QueueItem& item, int afterId);
     bool startHttp(int id);
+    void queueDrive(int id);
+    void pumpDrive();
+    void startDriveWorker(int id);
+    void onDriveFinished(int id, DriveViewerCapture* worker, bool ok, const QString& path, const QString& message);
     void queueYt(int id);
     void pumpYt();
     void startYtWorker(int id);
@@ -142,4 +153,7 @@ private:
     bool m_enqueueingOwn{false};
     QHash<int, YtDlpDownloadWorker*> m_ytActive;
     QList<int> m_ytQueue;
+    QHash<int, DriveViewerCapture*> m_driveActive; ///< id -> luồng chụp trang Drive đang chạy (tối đa 1: mỗi luồng là một trình duyệt ẩn)
+    QList<int> m_driveQueue;
+    bool m_allowAnyViewerHost{false};
 };

@@ -2,6 +2,7 @@
 
 #include "../DownloadHistoryStore.h"
 #include "../DownloaderSettings.h"
+#include "DriveViewerCapture.h"
 #include "FileDownloader.h"
 #include "LinkResolver.h"
 #include "LinkResolverCore.h"
@@ -16,6 +17,7 @@ namespace
 {
 constexpr int kMaxResolvers = 2; ///< Mỗi bộ phân giải có thể bật yt-dlp/Edge ẩn - không chạy quá nhiều cùng lúc
 constexpr int kMaxYtConcurrent = 2;
+constexpr int kMaxDriveConcurrent = 1; ///< Mỗi lượt chụp Drive là một trình duyệt ẩn chạy vài phút - làm lần lượt
 
 QueueItem::State stateFromHttp(DownloadItem::Status s)
 {
@@ -135,6 +137,13 @@ DownloadQueue::~DownloadQueue()
         w->cancel();
     }
     m_ytActive.clear();
+    for (DriveViewerCapture* w : m_driveActive)
+    {
+        w->disconnect(this);
+        w->requestCancel(); // luồng tự dọn trình duyệt ẩn rồi tự xóa mình (finished -> deleteLater)
+        w->wait(15000);
+    }
+    m_driveActive.clear();
 }
 
 const QueueItem* DownloadQueue::item(int id) const
@@ -419,6 +428,11 @@ bool DownloadQueue::startItem(int id)
     found->historyDone = false;
     if (found->media.kind == ResolvedMedia::Kind::HttpFile)
         return startHttp(id);
+    if (found->media.kind == ResolvedMedia::Kind::DriveViewer)
+    {
+        queueDrive(id);
+        return true;
+    }
     // Mục của hồ sơ TikTok chưa biết là video hay bài ảnh: yt-dlp tải bài ảnh ra file nhạc mp3 chứ không có ảnh - kiểm tra lại
     // đúng mục này trước khi tải.
     if (found->media.maybePhotoPost)
@@ -540,6 +554,8 @@ void DownloadQueue::pause(int id)
         m_downloader->pause(found->httpId);
     else if (found->media.kind == ResolvedMedia::Kind::YtDlp)
         emit message("Video/luồng tải bằng yt-dlp không tạm dừng được - hãy dùng \"Hủy\" rồi tải lại.");
+    else if (found->media.kind == ResolvedMedia::Kind::DriveViewer)
+        emit message("Tài liệu Drive đang chụp từng trang không tạm dừng được - hãy dùng \"Hủy\" rồi tải lại.");
 }
 
 void DownloadQueue::stopProcesses()
@@ -560,11 +576,16 @@ void DownloadQueue::stopProcesses()
     const QList<int> waitingYt = m_ytQueue;
     for (int id : waitingYt)
         cancel(id);
+    const QList<int> waitingDrive = m_driveQueue;
+    for (int id : waitingDrive)
+        cancel(id);
     for (int id : m_resolvers.keys())
         cancel(id);
     for (int id : m_photoChecks.keys())
         cancel(id);
     for (int id : m_ytActive.keys())
+        cancel(id);
+    for (int id : m_driveActive.keys())
         cancel(id);
 }
 
@@ -606,6 +627,18 @@ void DownloadQueue::cancel(int id)
         found->state = QueueItem::State::Canceled;
         emit itemUpdated(id);
         finalize(id, false);
+        return;
+    }
+    if (DriveViewerCapture* w = m_driveActive.value(id, nullptr))
+    {
+        w->requestCancel(); // captureFinished(false, "", "Đã hủy.") -> onDriveFinished
+        return;
+    }
+    if (m_driveQueue.removeAll(id) > 0)
+    {
+        found->state = QueueItem::State::Canceled;
+        emit itemUpdated(id);
+        finalize(id, false);
     }
 }
 
@@ -630,11 +663,17 @@ void DownloadQueue::remove(const QList<int>& ids)
         }
         m_resolveQueue.removeAll(id);
         m_ytQueue.removeAll(id);
+        m_driveQueue.removeAll(id);
         if (YtDlpDownloadWorker* w = m_ytActive.take(id))
         {
             w->disconnect(this);
             w->cancel();
             w->deleteLater();
+        }
+        if (DriveViewerCapture* w = m_driveActive.take(id))
+        {
+            w->disconnect(this);
+            w->requestCancel(); // luồng tự dọn rồi tự xóa mình (finished -> deleteLater)
         }
         if (found->httpId >= 0)
         {
@@ -650,6 +689,7 @@ void DownloadQueue::remove(const QList<int>& ids)
     }
     pumpResolve();
     pumpYt();
+    pumpDrive();
 }
 
 int DownloadQueue::removeFinished(bool includeFailed)
@@ -791,6 +831,105 @@ void DownloadQueue::onYtFinished(int id, YtDlpDownloadWorker* worker, bool ok, c
     pumpYt();
 }
 
+// ---------------------------------------------------------------------------------------------- Drive (chế độ xem)
+void DownloadQueue::queueDrive(int id)
+{
+    QueueItem& it = m_items[id];
+    it.state = QueueItem::State::Queued;
+    it.received = 0;
+    it.speed = 0;
+    it.pagesDone = 0;
+    it.pagesTotal = 0;
+    emit itemUpdated(id);
+    if (!m_driveQueue.contains(id))
+        m_driveQueue << id;
+    pumpDrive();
+}
+
+void DownloadQueue::pumpDrive()
+{
+    while (m_driveActive.size() < kMaxDriveConcurrent && !m_driveQueue.isEmpty())
+    {
+        const int id = m_driveQueue.takeFirst();
+        if (m_items.contains(id))
+            startDriveWorker(id);
+    }
+}
+
+void DownloadQueue::startDriveWorker(int id)
+{
+    QueueItem& it = m_items[id];
+    it.state = QueueItem::State::Downloading;
+    it.startedAt = QDateTime::currentDateTime();
+    it.destPath = chooseHttpDestPath(it);
+    it.received = 0;
+    it.speed = 0;
+    it.pagesDone = 0;
+    it.pagesTotal = 0;
+    emit itemUpdated(id);
+
+    auto* worker = new DriveViewerCapture(); // không cha: hủy QThread đang chạy cùng cha sẽ làm sập chương trình
+    connect(worker, &QThread::finished, worker, &QObject::deleteLater);
+    m_driveActive.insert(id, worker);
+    connect(worker, &DriveViewerCapture::pageProgress, this, [this, id](int done, int total) {
+        auto f = m_items.find(id);
+        if (f == m_items.end())
+            return;
+        f->pagesDone = done;
+        f->pagesTotal = total;
+        emit itemUpdated(id);
+    });
+    connect(worker, &DriveViewerCapture::captureFinished, this, [this, id, worker](bool ok, QString path, QString msg) {
+        onDriveFinished(id, worker, ok, path, msg);
+    });
+
+    DriveViewerCapture::Params p;
+    p.url = it.media.url;
+    p.outputPath = it.destPath;
+    p.allowAnyHttpUrl = m_allowAnyViewerHost;
+    QDir().mkpath(QFileInfo(it.destPath).absolutePath());
+    worker->setParams(p);
+    worker->start();
+}
+
+void DownloadQueue::onDriveFinished(int id, DriveViewerCapture* worker, bool ok, const QString& path, const QString& msg)
+{
+    if (m_driveActive.value(id, nullptr) == worker)
+        m_driveActive.remove(id);
+
+    auto found = m_items.find(id);
+    if (found != m_items.end())
+    {
+        QueueItem& it = *found;
+        it.speed = 0;
+        if (ok)
+        {
+            it.destPath = path;
+            it.state = QueueItem::State::Completed;
+            const qint64 size = QFileInfo(path).size();
+            if (size > 0)
+                it.total = it.received = size;
+            if (!msg.isEmpty())
+            {
+                it.warning = msg;
+                emit message(msg);
+            }
+        }
+        else if (worker->wasCanceled())
+        {
+            it.state = QueueItem::State::Canceled;
+        }
+        else
+        {
+            it.state = QueueItem::State::Failed;
+            it.error = msg;
+        }
+        emit itemUpdated(id);
+        finalize(id, ok);
+    }
+    pumpDrive();
+}
+
 // ---------------------------------------------------------------------------------------------- FileDownloader
 void DownloadQueue::onHttpAdded(int httpId)
 {
@@ -871,6 +1010,8 @@ void DownloadQueue::recordHistory(QueueItem& it, bool ok)
     e.status = QueueItem::stateLabel(it.state);
     e.error = it.error;
     e.size = (ok && !it.destPath.isEmpty() && QFileInfo::exists(it.destPath)) ? QFileInfo(it.destPath).size() : -1;
-    e.kind = it.media.kind == ResolvedMedia::Kind::YtDlp ? "yt-dlp" : "http";
+    e.kind = it.media.kind == ResolvedMedia::Kind::YtDlp ? "yt-dlp"
+             : it.media.kind == ResolvedMedia::Kind::DriveViewer ? "drive-viewer"
+                                                                  : "http";
     m_history->add(e);
 }

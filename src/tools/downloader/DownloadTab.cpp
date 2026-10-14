@@ -409,6 +409,19 @@ void DownloadTab::fillRow(int row, int id)
             bar->setRange(0, 100);
             bar->setValue(100);
         }
+        else if (it->media.kind == ResolvedMedia::Kind::DriveViewer && it->state == QueueItem::State::Downloading)
+        {
+            // Tài liệu Drive chụp từng trang: tiến độ theo SỐ TRANG, không theo byte.
+            if (it->pagesTotal > 0)
+            {
+                bar->setRange(0, it->pagesTotal);
+                bar->setValue(qMin(it->pagesDone, it->pagesTotal));
+            }
+            else
+            {
+                bar->setRange(0, 0);
+            }
+        }
         else if (it->total > 0)
         {
             bar->setRange(0, 100);
@@ -438,6 +451,9 @@ void DownloadTab::fillRow(int row, int id)
             state = QueueItem::stateLabel(it->state);
             if (it->state == QueueItem::State::Failed && !it->error.isEmpty())
                 state += " (" + elided(it->error, 40) + ")";
+            else if (it->media.kind == ResolvedMedia::Kind::DriveViewer && it->state == QueueItem::State::Downloading)
+                state += it->pagesTotal > 0 ? QString(" - trang %1/%2").arg(it->pagesDone).arg(it->pagesTotal)
+                                            : QString(" - đang mở trang xem...");
             break;
     }
     QTableWidgetItem* st = m_table->item(row, kState);

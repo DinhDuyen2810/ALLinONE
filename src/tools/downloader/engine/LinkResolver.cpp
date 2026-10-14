@@ -353,11 +353,24 @@ void LinkResolver::stageGoogleDocs(const QString& exportUrl, const QString& ext)
     });
 }
 
+QString LinkResolver::driveDirectUrl(const QString& fileId) const
+{
+    if (m_opts.driveBaseOverride.isEmpty())
+        return LinkResolverCore::driveDirectUrl(fileId);
+    return m_opts.driveBaseOverride + "/download?id=" + fileId + "&export=download&confirm=t";
+}
+
+QString LinkResolver::driveViewUrl(const QString& fileId) const
+{
+    return (m_opts.driveBaseOverride.isEmpty() ? QStringLiteral("https://drive.google.com") : m_opts.driveBaseOverride) +
+           "/file/d/" + fileId + "/view";
+}
+
 void LinkResolver::stageDrive(const QString& fileId)
 {
     emit progress("Đang kiểm tra tệp Google Drive...");
-    const QString direct = LinkResolverCore::driveDirectUrl(fileId);
-    fetch(direct, QString(), [this, direct](const Fetch& f) {
+    const QString direct = driveDirectUrl(fileId);
+    fetch(direct, QString(), [this, direct, fileId](const Fetch& f) {
         if (f.isFile)
         {
             ResolvedMedia m = fileItem(direct, f, QString());
@@ -395,14 +408,82 @@ void LinkResolver::stageDrive(const QString& fileId)
             }
         }
         QString msg = driveBlockMessage(block);
+        if (block == DriveBlock::NoPermission)
+        {
+            // Chủ tệp tắt "tải xuống" nhưng người xem vẫn XEM được: viewer của Drive gửi từng trang về trình duyệt - chụp lại
+            // và ghép PDF (cần trình duyệt ẩn). Lý do ERR cũ vẫn được giữ làm đầu thông báo nếu không làm được.
+            stageDriveViewer(fileId, msg);
+            return;
+        }
         if (msg.isEmpty())
             msg = "Google Drive không trả về tệp (tệp bị xóa, riêng tư hoặc không cho tải).";
-        else if (block == DriveBlock::NoPermission || block == DriveBlock::SignIn)
+        else if (block == DriveBlock::SignIn)
             msg += m_opts.cookieFile.isEmpty()
                        ? " Nếu bạn là chủ sở hữu/người chỉnh sửa: chọn tệp cookies.txt (xuất từ trình duyệt đã đăng nhập đúng tài khoản Google đó) "
                          "ở tab Cài đặt rồi \"Kiểm tra lại\"."
                        : " (Đã dùng tệp cookies.txt của bạn nhưng tài khoản đó vẫn không có quyền tải, hoặc cookie đã hết hạn.)";
         finishError(msg);
+    });
+}
+
+void LinkResolver::stageDriveViewer(const QString& fileId, const QString& blockMessage)
+{
+    QString hint = m_opts.cookieFile.isEmpty()
+                       ? " Nếu bạn là chủ sở hữu/người chỉnh sửa: chọn tệp cookies.txt (xuất từ trình duyệt đã đăng nhập đúng tài khoản Google đó) "
+                         "ở tab Cài đặt rồi \"Kiểm tra lại\"."
+                       : " (Đã dùng tệp cookies.txt của bạn nhưng tài khoản đó vẫn không có quyền tải, hoặc cookie đã hết hạn.)";
+    if (!m_opts.useBrowser)
+    {
+        finishError(blockMessage + hint + " Hoặc bật \"Dùng trình duyệt ẩn\" ở tab Cài đặt để thử lấy qua chế độ xem (chụp từng trang thành PDF).");
+        return;
+    }
+    if (HeadlessBrowser::findBrowserExecutable().isEmpty())
+    {
+        finishError(blockMessage + hint + " (Không tìm thấy Microsoft Edge/Google Chrome để thử lấy qua chế độ xem.)");
+        return;
+    }
+    emit progress("Chủ tệp tắt tải xuống - đang kiểm tra chế độ xem...");
+    const QString viewUrl = driveViewUrl(fileId);
+    fetch(viewUrl, QString(), [this, fileId, blockMessage, viewUrl](const Fetch& f) {
+        if (!f.error.isEmpty())
+        {
+            finishError(blockMessage + " (Không mở được trang xem: " + f.error + ")");
+            return;
+        }
+        if (f.finalUrl.contains("accounts.google.com") || f.status == 401 || f.status == 403)
+        {
+            finishError(blockMessage + " Tệp cũng không xem được khi chưa đăng nhập (chưa chia sẻ \"Bất kỳ ai có đường liên kết\").");
+            return;
+        }
+        if (f.status >= 400)
+        {
+            finishError(blockMessage + QString(" (Trang xem trả HTTP %1 - tệp có thể đã bị xóa hoặc riêng tư.)").arg(f.status));
+            return;
+        }
+        const LinkResolverCore::DriveViewerName vn = LinkResolverCore::driveViewerName(LinkResolverCore::htmlTitle(f.html));
+        if (!vn.pageable)
+        {
+            finishError(blockMessage + QString(" Tệp .%1 không phải tài liệu xem theo trang nên không thể lấy qua chế độ xem.").arg(vn.extension));
+            return;
+        }
+        QString base = FileDownloaderInternal::sanitizeFileName(vn.baseName);
+        if (base.isEmpty())
+            base = "drive_" + fileId.left(12);
+        if (base.endsWith(".pdf", Qt::CaseInsensitive))
+            base.chop(4);
+
+        ResolvedMedia m;
+        m.kind = ResolvedMedia::Kind::DriveViewer;
+        m.url = viewUrl;
+        m.title = base;
+        m.fileName = base + ".pdf";
+        m.mediaType = "Tài liệu";
+        m.contentType = "application/pdf";
+        m.note = "Google Drive (chế độ xem - chụp từng trang)";
+        m_warning = "Chủ tệp đã tắt tải xuống: PDF được ghép từ ảnh từng trang ở chế độ xem (không chọn/tìm kiếm được chữ), cần Edge/Chrome, "
+                    "tài liệu dài mất vài phút. Chỉ dùng cho tài liệu bạn có quyền sử dụng - không khuyến khích dùng cho mục đích vi phạm "
+                    "pháp luật hoặc bản quyền.";
+        finishOk({m});
     });
 }
 

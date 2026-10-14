@@ -279,6 +279,41 @@ QString driveBlockMessage(DriveBlock block)
     return {};
 }
 
+DriveViewerName driveViewerName(const QString& pageTitle)
+{
+    DriveViewerName out;
+    static const QRegularExpression suffix(QStringLiteral(R"(\s*[-–]\s*Google Drive\s*$)"), QRegularExpression::CaseInsensitiveOption);
+    QString title = pageTitle;
+    title.remove(suffix);
+    title = title.simplified();
+    if (title.isEmpty() || title.compare(QStringLiteral("Google Drive"), Qt::CaseInsensitive) == 0)
+        return out; // trang không mang tên tệp (đăng nhập, lỗi...)
+
+    out.baseName = title;
+    const int dot = title.lastIndexOf('.');
+    if (dot > 0 && title.size() - dot - 1 <= 5)
+    {
+        const QString ext = title.mid(dot + 1).toLower();
+        static const QRegularExpression extRx(QStringLiteral("^[a-z0-9]{1,5}$"));
+        if (extRx.match(ext).hasMatch())
+        {
+            out.extension = ext;
+            // Tài liệu quen thuộc: bỏ đuôi (PDF kết quả sẽ có đuôi .pdf). Đuôi lạ: giữ cả tên.
+            static const QSet<QString> documentExt = {"pdf", "ppt", "pptx", "pps", "ppsx", "doc", "docx", "xls", "xlsx", "odt", "odp",
+                                                      "ods", "rtf", "txt", "csv", "epub", "key", "pages", "numbers"};
+            // Loại KHÔNG xem theo trang: không chụp từng trang thành PDF được.
+            static const QSet<QString> nonPaged = {"mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v", "3gp", "mp3", "wav", "flac",
+                                                   "m4a", "ogg", "aac", "zip", "rar", "7z", "gz", "tar", "iso", "exe", "msi", "apk",
+                                                   "dmg", "jpg", "jpeg", "png", "gif", "bmp", "webp", "svg", "heic", "tif", "tiff"};
+            if (documentExt.contains(ext))
+                out.baseName = title.left(dot);
+            if (nonPaged.contains(ext))
+                out.pageable = false;
+        }
+    }
+    return out;
+}
+
 // ---------------------------------------------------------------------------------------------- Loại link
 bool isLikelyProfileOrCollectionUrl(const QString& url)
 {

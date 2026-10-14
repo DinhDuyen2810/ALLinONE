@@ -12,9 +12,13 @@
 #include <QTemporaryDir>
 #include <cstdio>
 #include <functional>
+#include <map>
 #include <memory>
 
+#include "tools/downloader/engine/CdpClient.h"
 #include "tools/downloader/engine/CookieFile.h"
+#include "tools/downloader/engine/DriveViewerCapture.h"
+#include "tools/downloader/engine/ImagePdf.h"
 #include "tools/downloader/engine/FileDownloader.h"
 #include "tools/downloader/DownloadHistoryStore.h"
 #include "tools/downloader/DownloaderSettings.h"
@@ -31,6 +35,7 @@
 #include "tools/downloader/model/VideoInfo.h"
 
 #include "MiniHttpServer.h"
+#include "MockDriveViewer.h"
 
 static int g_fail = 0, g_pass = 0;
 #define CHECK(cond)                                                            \
@@ -1564,6 +1569,346 @@ int main(int argc, char** argv)
         CHECK(st.httpCookieFile().isEmpty());
         st.setCookies(DownloaderSettings::CookieMode::Browser, "firefox", cookiePath);
         CHECK(st.httpCookieFile().isEmpty()); // cookie "từ trình duyệt" chỉ yt-dlp đọc được
+    }
+
+    // ====================================================================================================
+    // Google Drive chế độ xem (chủ tệp tắt "tải xuống") - từ v1.19.22: ImagePdf, tên tệp từ tiêu đề trang, CdpClient (khung
+    // WebSocket), bộ phân giải (máy chủ cục bộ giả Drive), rồi CHỤP THẬT bằng Edge/Chrome ẩn trên một trang xem giả lập
+    // dựng đúng cấu trúc DOM của viewer (h2 "Trang n / N" + khung padding-bottom + <img blob:> nạp chậm, bị gỡ khi cuộn qua).
+    // Mọi thứ chỉ nói chuyện với 127.0.0.1; hồ sơ trình duyệt là thư mục tạm riêng. Không có trình duyệt thì bỏ qua phần chụp THẬT.
+    // ====================================================================================================
+    {
+        QTemporaryDir tmp;
+
+        // ---- ImagePdf: cấu trúc PDF hợp lệ (xref khớp từng vị trí đối tượng), thứ tự trang theo SỐ TRANG ----
+        auto fakeJpeg = [](char fill) { return QByteArray("\xFF\xD8\xFF\xE0", 4) + QByteArray(40, fill) + QByteArray("\xFF\xD9", 2); };
+        auto validatePdf = [](const QByteArray& pdf, int pages) {
+            bool ok = pdf.startsWith("%PDF-1.4") && pdf.endsWith("%%EOF");
+            const int sx = int(pdf.lastIndexOf("startxref\n"));
+            ok = ok && sx > 0;
+            const qint64 xrefPos = ok ? pdf.mid(sx + 10, pdf.indexOf('\n', sx + 10) - (sx + 10)).toLongLong() : -1;
+            ok = ok && xrefPos > 0 && pdf.mid(int(xrefPos), 4) == "xref";
+            const int objects = 3 * pages + 2; // id 1..objects
+            ok = ok && pdf.mid(int(xrefPos)).startsWith("xref\n0 " + QByteArray::number(objects + 1) + "\n0000000000 65535 f \n");
+            for (int id = 1; ok && id <= objects; ++id)
+            {
+                const int row = int(xrefPos) + int(QByteArray("xref\n0 " + QByteArray::number(objects + 1) + "\n").size()) + 20 * id;
+                const QByteArray line = pdf.mid(row, 20);
+                ok = ok && line.size() == 20 && line.endsWith(" 00000 n \n");
+                const int off = line.left(10).toInt();
+                ok = ok && pdf.mid(off, QByteArray::number(id).size() + 6) == QByteArray::number(id) + " 0 obj";
+            }
+            ok = ok && pdf.contains("/Count " + QByteArray::number(pages));
+            return ok;
+        };
+        CHECK(ImagePdf::build({}).isEmpty());
+        {
+            std::map<int, ImagePdf::Page> bad;
+            bad[1] = {QByteArray(), 100, 100}; // không có ảnh
+            bad[2] = {fakeJpeg('a'), 0, 100};  // kích thước hỏng
+            CHECK(ImagePdf::build(bad).isEmpty());
+        }
+        std::map<int, ImagePdf::Page> three;
+        three[3] = {fakeJpeg('c'), 1003, 720};
+        three[1] = {fakeJpeg('a'), 1001, 720};
+        three[2] = {fakeJpeg('b'), 1002, 600};
+        const QByteArray pdf3 = ImagePdf::build(three);
+        CHECK(validatePdf(pdf3, 3));
+        CHECK(pdf3.contains(fakeJpeg('a')) && pdf3.contains(fakeJpeg('b')) && pdf3.contains(fakeJpeg('c'))); // nguyên bytes, không nén lại
+        {
+            // Thứ tự trang trong PDF theo số trang (1,2,3), dù chèn vào map lộn xộn.
+            const int w1 = int(pdf3.indexOf("/Width 1001")), w2 = int(pdf3.indexOf("/Width 1002")), w3 = int(pdf3.indexOf("/Width 1003"));
+            CHECK(w1 > 0 && w1 < w2 && w2 < w3);
+            CHECK(pdf3.contains("/MediaBox [0 0 750.75 540.00]") && pdf3.contains("/MediaBox [0 0 751.50 450.00]")); // px*0,75, dấu chấm
+            const int mb = int(pdf3.indexOf("/MediaBox"));
+            CHECK(mb > 0 && !pdf3.mid(mb, 40).contains(',')); // không bao giờ có dấu phẩy thập phân
+        }
+
+        // ---- Tên PDF từ tiêu đề trang xem ----
+        {
+            using namespace LinkResolverCore;
+            DriveViewerName n = driveViewerName("Giáo trình TOPIK.pptx - Google Drive");
+            CHECK(n.baseName == "Giáo trình TOPIK" && n.extension == "pptx" && n.pageable);
+            n = driveViewerName("Bao cao.PDF - Google Drive");
+            CHECK(n.baseName == "Bao cao" && n.extension == "pdf" && n.pageable);
+            n = driveViewerName("Ten khong duoi - Google Drive");
+            CHECK(n.baseName == "Ten khong duoi" && n.extension.isEmpty() && n.pageable);
+            n = driveViewerName("ghi chu.v2 - Google Drive");
+            CHECK(n.baseName == "ghi chu.v2" && n.extension == "v2" && n.pageable); // đuôi lạ: giữ cả tên
+            n = driveViewerName("phim ngan.mp4 - Google Drive");
+            CHECK(!n.pageable && n.extension == "mp4");
+            n = driveViewerName("anh.JPG - Google Drive");
+            CHECK(!n.pageable);
+            n = driveViewerName("Google Drive");
+            CHECK(n.baseName.isEmpty() && n.pageable);
+            n = driveViewerName("");
+            CHECK(n.baseName.isEmpty());
+        }
+
+        // ---- Địa chỉ được phép + đối số trình duyệt ----
+        {
+            using namespace DriveViewerCaptureInternal;
+            QString id;
+            CHECK(isAllowedUrl("https://drive.google.com/file/d/1ObltgwgTX8QHw7S36wFToyNJNUdosyKn/view", false, &id) &&
+                  id == "1ObltgwgTX8QHw7S36wFToyNJNUdosyKn");
+            CHECK(!isAllowedUrl("http://drive.google.com/file/d/1ObltgwgTX8QHw7S36wFToyNJNUdosyKn/view", false)); // phải https
+            CHECK(!isAllowedUrl("https://evil.example/file/d/1ObltgwgTX8QHw7S36wFToyNJNUdosyKn/view", false));
+            CHECK(!isAllowedUrl("https://drive.google.com/uc?id=1ObltgwgTX8QHw7S36wFToyNJNUdosyKn", false));
+            CHECK(!isAllowedUrl("file:///C:/Windows/win.ini", true)); // allowAny cũng chỉ nhận http/https
+            CHECK(isAllowedUrl("http://127.0.0.1:1234/viewer", true) && !isAllowedUrl("http://127.0.0.1:1234/viewer", false));
+            const QStringList a = buildArguments(9333, "C:/tmp/p", "https://drive.google.com/file/d/x/view", false, 2.0);
+            CHECK(a.last() == "https://drive.google.com/file/d/x/view" && a.contains("--remote-debugging-port=9333") &&
+                  a.contains("--headless=new") && a.contains("--force-device-scale-factor=2.0"));
+            CHECK(!a.contains("--remote-debugging-address=0.0.0.0")); // cổng DevTools chỉ ở 127.0.0.1 (mặc định của trình duyệt)
+            CHECK(!buildArguments(9333, "C:/tmp/p", "https://x", true, 1.0).contains("--headless=new"));
+            const QString js = injectedScript();
+            CHECK(js.startsWith("(function") && js.trimmed().endsWith("})") && js.contains("window.__dx") && js.contains("blob:"));
+        }
+
+        // ---- CdpClient: khung WebSocket từ máy khách phải che đúng chuẩn RFC 6455 ----
+        {
+            const char mask[4] = {1, 2, 3, 4};
+            const QByteArray f = CdpClient::encodeClientFrame(0x01, "hi", mask);
+            CHECK(f.size() == 8 && quint8(f[0]) == 0x81 && quint8(f[1]) == 0x82 && f.mid(2, 4) == QByteArray("\x01\x02\x03\x04", 4));
+            CHECK(quint8(f[6]) == ('h' ^ 1) && quint8(f[7]) == ('i' ^ 2));
+            const QByteArray mid = CdpClient::encodeClientFrame(0x01, QByteArray(130, 'x'), mask);
+            CHECK(mid.size() == 2 + 2 + 4 + 130 && quint8(mid[1]) == (0x80 | 126) && quint8(mid[2]) == 0 && quint8(mid[3]) == 130);
+            const QByteArray big = CdpClient::encodeClientFrame(0x01, QByteArray(70000, 'x'), mask);
+            CHECK(big.size() == 2 + 8 + 4 + 70000 && quint8(big[1]) == (0x80 | 127) && quint8(big[6]) == 0 && quint8(big[7]) == 0x01 && quint8(big[8]) == 0x11 &&
+                  quint8(big[9]) == 0x70); // 70000 = 0x11170
+            CHECK(quint8(CdpClient::encodeClientFrame(0x0A, "", mask)[0]) == 0x8A); // pong
+        }
+
+        const QString browser = HeadlessBrowser::findBrowserExecutable();
+
+        // ---- Bộ phân giải: Drive báo "chủ không cho tải" -> mục DriveViewer (máy chủ cục bộ giả Drive) ----
+        {
+            MiniHttpServer drive;
+            const QString idOk = "1AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", idVideo = "1BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+                          idGone = "1CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC", idLogin = "1DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD";
+            drive.handler = [&](const QByteArray& head) -> QByteArray {
+                const QByteArray path = MiniHttpServer::path(head);
+                const QList<QByteArray> html = {"Content-Type: text/html; charset=utf-8"};
+                if (path.startsWith("/download?id="))
+                    return MiniHttpServer::response("200 OK", html,
+                        "<html><head><title>Google Drive - Can&#39;t download file</title></head><body><p class=\"uc-error-caption\">"
+                        "Sorry, the owner hasn&#39;t given you permission to download this file.</p></body></html>");
+                if (path == "/file/d/" + idOk.toUtf8() + "/view")
+                    return MiniHttpServer::response("200 OK", html, "<html><head><title>Giáo trình mẫu.pptx - Google Drive</title></head><body>viewer</body></html>");
+                if (path == "/file/d/" + idVideo.toUtf8() + "/view")
+                    return MiniHttpServer::response("200 OK", html, "<html><head><title>phim.mp4 - Google Drive</title></head><body>viewer</body></html>");
+                if (path == "/file/d/" + idLogin.toUtf8() + "/view")
+                    return MiniHttpServer::response("403 Forbidden", html, "<html>can dang nhap</html>");
+                return MiniHttpServer::response("404 Not Found", html, "<html>khong co</html>");
+            };
+            auto resolveDrive = [&](const QString& id, bool useBrowser) {
+                LinkResolver r;
+                LinkResolver::Options o;
+                o.useYtDlp = false;
+                o.useBrowser = useBrowser;
+                o.driveBaseOverride = drive.url("");
+                r.setOptions(o);
+                ResolveResult out;
+                int count = 0;
+                QObject::connect(&r, &LinkResolver::finished, [&](ResolveResult res) { out = res; ++count; });
+                r.resolve("https://drive.google.com/file/d/" + id + "/view");
+                waitUntil([&] { return count > 0; }, 20000);
+                CHECK(count == 1);
+                return out;
+            };
+
+            // Tắt trình duyệt ẩn: vẫn ERR với lý do cũ + gợi ý bật tính năng
+            ResolveResult r = resolveDrive(idOk, false);
+            CHECK(!r.ok() && r.error.contains("Chủ sở hữu không cho phép") && r.error.contains("trình duyệt ẩn"));
+
+            if (!browser.isEmpty())
+            {
+                r = resolveDrive(idOk, true);
+                CHECK(r.ok() && r.items.size() == 1);
+                if (r.ok() && r.items.size() == 1)
+                {
+                    const ResolvedMedia& m = r.items[0];
+                    CHECK(m.kind == ResolvedMedia::Kind::DriveViewer && m.fileName == "Giáo trình mẫu.pdf" && m.mediaType == "Tài liệu");
+                    CHECK(m.url == drive.url("/file/d/" + idOk + "/view") && m.note.contains("chế độ xem"));
+                    CHECK(!r.warning.isEmpty() && r.warning.contains("ảnh từng trang")); // nói rõ PDF là ảnh, không chọn được chữ
+                }
+                r = resolveDrive(idVideo, true);
+                CHECK(!r.ok() && r.error.contains(".mp4") && r.error.contains("Chủ sở hữu không cho phép"));
+                r = resolveDrive(idLogin, true);
+                CHECK(!r.ok() && r.error.contains("chưa đăng nhập"));
+                r = resolveDrive(idGone, true);
+                CHECK(!r.ok() && r.error.contains("404"));
+            }
+        }
+
+        // ---- Chụp THẬT bằng Edge/Chrome ẩn trên trang xem giả lập ----
+        if (browser.isEmpty())
+        {
+            std::printf("BO QUA: may nay khong co Edge/Chrome - khong chay duoc phan chup trang Drive that.\n");
+        }
+        else
+        {
+            const int kPages = 10;
+            // Trang xem giả lập (xem MockDriveViewer.h): ảnh blob nạp chậm, gỡ khi cuộn qua; ảnh trang i rộng 1000+i pixel.
+            const QByteArray viewerHtml = mockDriveViewerHtml(kPages);
+            MiniHttpServer viewer;
+            viewer.handler = [&](const QByteArray& head) -> QByteArray {
+                if (MiniHttpServer::path(head).startsWith("/viewer"))
+                    return MiniHttpServer::response("200 OK", {"Content-Type: text/html; charset=utf-8"}, viewerHtml);
+                return MiniHttpServer::response("404 Not Found", {"Content-Type: text/html"}, "x");
+            };
+
+            auto countTempDirs = [] {
+                return QDir(QDir::tempPath()).entryList({QFileInfo(QCoreApplication::applicationFilePath()).completeBaseName() + "-*"},
+                                                        QDir::Dirs | QDir::NoDotAndDotDot).size();
+            };
+            const int tempBefore = countTempDirs();
+
+            // (a) Chụp đủ trang, ghép PDF đúng thứ tự
+            {
+                DriveViewerCapture cap;
+                DriveViewerCapture::Params p;
+                p.url = viewer.url("/viewer");
+                p.outputPath = tmp.filePath("captured/Mau.pdf");
+                p.allowAnyHttpUrl = true;
+                p.timeoutMs = 120000;
+                cap.setParams(p);
+                bool done = false, ok = false;
+                QString outPath, message;
+                int lastDone = 0, lastTotal = 0;
+                QObject::connect(&cap, &DriveViewerCapture::pageProgress, [&](int d, int t) { lastDone = d; lastTotal = t; });
+                QObject::connect(&cap, &DriveViewerCapture::captureFinished, [&](bool o, QString path, QString msg) {
+                    ok = o; outPath = path; message = msg; done = true;
+                });
+                cap.start();
+                CHECK(waitUntil([&] { return done; }, 150000));
+                cap.wait();
+                CHECK(ok && message.isEmpty() && outPath == p.outputPath);
+                CHECK(lastDone == kPages && lastTotal == kPages);
+                const QByteArray pdf = readFileBytes(p.outputPath);
+                CHECK(validatePdf(pdf, kPages));
+                int prev = -1;
+                bool ordered = true;
+                for (int i = 1; i <= kPages; ++i)
+                {
+                    const int pos = int(pdf.indexOf("/Width " + QByteArray::number(1000 + i) + " "));
+                    ordered = ordered && pos > prev;
+                    prev = pos;
+                }
+                CHECK(ordered);
+                CHECK(!QFileInfo::exists(p.outputPath + ".tmp") && QDir(tmp.filePath("captured")).entryList(QDir::Files).size() == 1);
+            }
+
+            // (b) Hủy giữa chừng: báo "Đã hủy.", không ghi PDF, dọn hết trình duyệt + hồ sơ tạm
+            {
+                DriveViewerCapture cap;
+                DriveViewerCapture::Params p;
+                p.url = viewer.url("/viewer");
+                p.outputPath = tmp.filePath("canceled/Huy.pdf");
+                p.allowAnyHttpUrl = true;
+                cap.setParams(p);
+                bool done = false, ok = true;
+                QString message;
+                int progress = 0;
+                QObject::connect(&cap, &DriveViewerCapture::pageProgress, [&](int d, int) { progress = d; });
+                QObject::connect(&cap, &DriveViewerCapture::captureFinished, [&](bool o, QString, QString msg) { ok = o; message = msg; done = true; });
+                cap.start();
+                waitUntil([&] { return progress >= 2 || done; }, 60000); // đã chụp được vài trang rồi mới hủy
+                cap.requestCancel();
+                QElapsedTimer cancelClock;
+                cancelClock.start();
+                CHECK(waitUntil([&] { return done; }, 30000));
+                CHECK(cancelClock.elapsed() < 15000); // hủy có hiệu lực nhanh (cả dọn trình duyệt)
+                cap.wait();
+                CHECK(!ok && message == "Đã hủy." && cap.wasCanceled());
+                CHECK(!QFileInfo::exists(p.outputPath));
+            }
+
+            // (c) Từ chối URL không phải Drive (không cho thao tác nếu allowAny tắt) - không khởi chạy trình duyệt
+            {
+                DriveViewerCapture cap;
+                DriveViewerCapture::Params p;
+                p.url = viewer.url("/viewer");
+                p.outputPath = tmp.filePath("rejected/x.pdf");
+                cap.setParams(p);
+                bool done = false, ok = true;
+                QString message;
+                QObject::connect(&cap, &DriveViewerCapture::captureFinished, [&](bool o, QString, QString msg) { ok = o; message = msg; done = true; });
+                cap.start();
+                CHECK(waitUntil([&] { return done; }, 10000));
+                cap.wait();
+                CHECK(!ok && message.contains("không phải trang xem Google Drive") && !QFileInfo::exists(p.outputPath));
+            }
+
+            // (d) Qua hàng đợi hợp nhất: DriveViewer -> Đang tải (tiến độ theo trang) -> Hoàn tất, ghi lịch sử, hủy được
+            {
+                const QString dlFolder = tmp.filePath("queue-downloads");
+                DownloaderSettings qs(tmp.filePath("dv-settings.json"));
+                qs.setDownloadFolder(dlFolder);
+                DownloadHistoryStore qh(tmp.filePath("dv-history.json"));
+                FileDownloader qd;
+                DownloadQueue q(&qs, &qh, &qd);
+                q.setAllowAnyViewerHost(true);
+                QStringList msgs;
+                QObject::connect(&q, &DownloadQueue::message, [&](QString m) { msgs << m; });
+
+                ResolvedMedia m;
+                m.kind = ResolvedMedia::Kind::DriveViewer;
+                m.url = viewer.url("/viewer");
+                m.fileName = "Tai lieu Drive.pdf";
+                m.mediaType = "Tài liệu";
+                m.note = "Google Drive (chế độ xem - chụp từng trang)";
+                const int id = q.addResolved(m, "https://drive.google.com/file/d/1ObltgwgTX8QHw7S36wFToyNJNUdosyKn/view");
+                CHECK(id > 0 && q.item(id)->check == QueueItem::Check::Ok);
+                CHECK(q.startItems({id}) == 1);
+                CHECK(q.item(id)->state == QueueItem::State::Queued || q.item(id)->state == QueueItem::State::Downloading);
+                bool sawPages = false;
+                QObject::connect(&q, &DownloadQueue::itemUpdated, [&](int uid) {
+                    const QueueItem* it = q.item(uid);
+                    if (it && it->state == QueueItem::State::Downloading && it->pagesTotal == kPages && it->pagesDone > 0)
+                        sawPages = true;
+                });
+                CHECK(waitUntil([&] { return q.item(id)->state == QueueItem::State::Completed || q.item(id)->state == QueueItem::State::Failed; }, 150000));
+                const QueueItem* it = q.item(id);
+                CHECK(it && it->state == QueueItem::State::Completed && it->error.isEmpty());
+                CHECK(sawPages); // giao diện thấy tiến độ theo trang
+                if (it)
+                {
+                    CHECK(QFileInfo(it->destPath).fileName() == "Tai lieu Drive.pdf" && QFileInfo(it->destPath).dir().absolutePath() == QDir(dlFolder).absolutePath());
+                    CHECK(validatePdf(readFileBytes(it->destPath), kPages));
+                    CHECK(it->total == QFileInfo(it->destPath).size() && it->pagesDone == kPages);
+                }
+                CHECK(qh.entries().size() == 1 && qh.entries()[0].kind == "drive-viewer" && qh.entries()[0].status == "Hoàn tất" &&
+                      qh.entries()[0].size > 0);
+
+                // Tải lại cùng mục: tên tệp mới không đè lên tệp cũ
+                CHECK(q.startItem(id) == false); // đã Hoàn tất
+                ResolvedMedia m2 = m;
+                m2.url = viewer.url("/viewer?second");
+                const int id2 = q.addResolved(m2);
+                CHECK(id2 > 0 && q.startItems({id2}) == 1);
+                // Hủy ngay khi đang chạy
+                waitUntil([&] { return q.item(id2)->pagesDone >= 1; }, 60000);
+                q.cancel(id2);
+                CHECK(waitUntil([&] { return q.item(id2)->state == QueueItem::State::Canceled; }, 30000));
+                CHECK(qh.entries().size() == 2 && qh.entries()[0].status == "Đã hủy");
+                const QStringList pdfs = QDir(dlFolder).entryList({"*.pdf"}, QDir::Files);
+                CHECK(pdfs.size() == 1); // bản bị hủy không để lại tệp
+
+                // Đóng sạch: stopProcesses() khi còn mục đang chạy
+                ResolvedMedia m3 = m;
+                m3.url = viewer.url("/viewer?third");
+                const int id3 = q.addResolved(m3);
+                CHECK(q.startItems({id3}) == 1);
+                waitUntil([&] { return q.item(id3)->state == QueueItem::State::Downloading; }, 10000);
+                q.stopProcesses();
+                CHECK(waitUntil([&] { return q.item(id3)->state == QueueItem::State::Canceled; }, 30000));
+            }
+
+            // Không để sót thư mục hồ sơ tạm của trình duyệt (Edge giữ khóa tệp một lúc - đã dọn có thử lại)
+            waitUntil([] { return false; }, 1500);
+            CHECK(countTempDirs() <= tempBefore);
+        }
     }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);

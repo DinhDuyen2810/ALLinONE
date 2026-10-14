@@ -38,6 +38,17 @@ DriveBlock classifyDriveHtml(const QString& html);
 QString driveConfirmUrl(const QString& html, const QString& baseUrl);
 QString driveBlockMessage(DriveBlock block);
 
+/// Tên tệp rút ra từ tiêu đề trang xem Drive ("Giáo trình.pptx - Google Drive"). `pageable` = false nếu loại tệp KHÔNG phải
+/// tài liệu xem theo trang (video, âm thanh, ảnh, tệp nén, chương trình...) nên không chụp từng trang được. `baseName` = tên
+/// bỏ đuôi tài liệu quen thuộc (pdf/pptx/docx/xlsx...), giữ nguyên nếu đuôi lạ; rỗng nếu tiêu đề không có tên (trang đăng nhập...).
+struct DriveViewerName
+{
+    QString baseName;
+    QString extension; ///< Đuôi gốc, viết thường, không dấu chấm (rỗng nếu không có)
+    bool pageable{true};
+};
+DriveViewerName driveViewerName(const QString& pageTitle);
+
 // ---------------------------------------------------------------- Loại link
 /// Hồ sơ/kênh/danh sách phát (nhiều bài đăng): YouTube @kênh/channel/playlist, TikTok @user, Instagram trang cá
 /// nhân, Facebook trang/hồ sơ (kể cả /videos, /reels).

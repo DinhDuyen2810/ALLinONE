@@ -18,7 +18,8 @@ class HeadlessBrowser;
 ///
 /// Các bậc, dừng ở bậc đầu tiên ra kết quả (logic thuần nằm ở LinkResolverCore, test được không cần mạng):
 ///  1. Google Docs/Sheets/Slides công khai -> xuất PDF/XLSX/PPTX; Google Drive -> tải trực tiếp (xử lý trang "xác
-///     nhận tải", nhận ra "chủ sở hữu không cho tải"/vượt hạn mức).
+///     nhận tải", nhận ra "chủ sở hữu không cho tải"/vượt hạn mức). Chủ tệp tắt "tải xuống" -> nếu bật trình duyệt ẩn thì
+///     trả mục DriveViewer (chụp từng trang ở chế độ xem rồi ghép PDF - xem DriveViewerCapture).
 ///  2. Một yêu cầu GET: nếu server trả TỆP (không phải HTML) -> xong. Lỗi 404 -> báo ngay.
 ///  3. yt-dlp (`--dump-single-json --flat-playlist`): video nền tảng (Facebook/TikTok/YouTube/...), luồng HLS và cả
 ///     HỒ SƠ/KÊNH/DANH SÁCH PHÁT (nhiều mục). Bỏ qua với bài đăng ẢNH mà yt-dlp không hỗ trợ.
@@ -45,6 +46,9 @@ public:
         QString cookieFile;            ///< cookies.txt cho các yêu cầu HTTP của chính bộ phân giải (vd Google Drive có quyền)
         bool expandPosts{true};        ///< Hồ sơ: quét từng bài đăng (bộ phân giải con); tắt cho chính bộ phân giải con
         int maxParallelChildren{3};    ///< Số bài ảnh quét cùng lúc (mỗi bài một trình duyệt ẩn)
+        /// CHỈ cho kiểm thử: thay "https://drive.google.com" + "https://drive.usercontent.google.com" bằng máy chủ cục bộ
+        /// (khi đó <base>/download?id=... là tải trực tiếp, <base>/file/d/<ID>/view là trang xem).
+        QString driveBaseOverride;
     };
 
     explicit LinkResolver(QObject* parent = nullptr);
@@ -76,6 +80,9 @@ private:
 
     void stageGoogleDocs(const QString& exportUrl, const QString& ext);
     void stageDrive(const QString& fileId);
+    void stageDriveViewer(const QString& fileId, const QString& blockMessage);
+    QString driveDirectUrl(const QString& fileId) const;
+    QString driveViewUrl(const QString& fileId) const;
     void stageProbe();
     void stagePage();
     void stageYtDlp();

@@ -96,7 +96,9 @@ void DownloaderSettingsTab::buildUi()
 
     m_browserCheck = new QCheckBox("Dùng trình duyệt ẩn (Edge/Chrome) để quét sâu", dlGroup);
     m_browserCheck->setToolTip("Khi các cách khác không tìm thấy tệp: dựng trang bằng Edge/Chrome không giao diện để đọc ảnh/video "
-                               "do JavaScript tạo ra; hồ sơ thì quét từng bài đăng.");
+                               "do JavaScript tạo ra; hồ sơ thì quét từng bài đăng. Tài liệu Google Drive mà chủ tệp tắt \"tải xuống\" "
+                               "cũng cần mục này: trang xem được mở trong trình duyệt ẩn, chụp từng trang rồi ghép thành PDF (không khuyến khích dùng cho "
+                               "mục đích vi phạm pháp luật hoặc bản quyền - chỉ dùng cho tài liệu bạn có quyền sử dụng).");
     m_browserCheck->setStyleSheet("background: transparent; color: #1f2328;");
     connect(m_browserCheck, &QCheckBox::toggled, this, [this](bool on) {
         if (!m_refreshing) m_settings->setUseBrowserFallback(on);

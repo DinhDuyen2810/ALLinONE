@@ -438,6 +438,12 @@ add_library(downloader_core STATIC
     src/tools/downloader/engine/LinkResolver.cpp
     src/tools/downloader/engine/HeadlessBrowser.h
     src/tools/downloader/engine/HeadlessBrowser.cpp
+    src/tools/downloader/engine/ImagePdf.h
+    src/tools/downloader/engine/ImagePdf.cpp
+    src/tools/downloader/engine/CdpClient.h
+    src/tools/downloader/engine/CdpClient.cpp
+    src/tools/downloader/engine/DriveViewerCapture.h
+    src/tools/downloader/engine/DriveViewerCapture.cpp
     src/tools/downloader/engine/DownloadQueue.h
     src/tools/downloader/engine/DownloadQueue.cpp
     src/tools/downloader/DownloaderSettings.h

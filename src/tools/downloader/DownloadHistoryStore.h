@@ -18,7 +18,7 @@ struct DownloadHistoryEntry
     QString status;     ///< "Hoàn tất" / "Thất bại" / "Đã hủy"
     QString error;
     qint64 size{-1};
-    QString kind;       ///< "http" / "yt-dlp"
+    QString kind;       ///< "http" / "yt-dlp" / "drive-viewer"
 };
 
 /// Lịch sử tải của công cụ Downloader, lưu ở `AppPaths::profileFile("downloader_history.json")` - tức

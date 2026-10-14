@@ -8,11 +8,12 @@
 struct ResolvedMedia
 {
     /// Cách tải: HttpFile = tải thẳng một tệp qua HTTP(S) (FileDownloader); YtDlp = giao cho yt-dlp.exe (video
-    /// nền tảng, luồng HLS .m3u8/.mpd, bài đăng...).
-    enum class Kind { HttpFile, YtDlp };
+    /// nền tảng, luồng HLS .m3u8/.mpd, bài đăng...); DriveViewer = tài liệu Google Drive mà chủ tệp tắt "tải xuống":
+    /// mở trang xem trong trình duyệt ẩn, chụp từng trang rồi ghép PDF (DriveViewerCapture).
+    enum class Kind { HttpFile, YtDlp, DriveViewer };
 
     Kind kind{Kind::HttpFile};
-    QString url;         ///< HttpFile: URL tệp trực tiếp. YtDlp: URL trang/luồng để yt-dlp xử lý.
+    QString url;         ///< HttpFile: URL tệp trực tiếp. YtDlp: URL trang/luồng để yt-dlp xử lý. DriveViewer: URL trang xem /file/d/<ID>/view.
     QString title;       ///< Tiêu đề hiển thị (có thể rỗng).
     QString fileName;    ///< Tên tệp gợi ý (đã làm sạch; rỗng = tự suy ra lúc tải).
     QString mediaType;   ///< "Ảnh" / "Video" / "Âm thanh" / "Tài liệu" / "Tệp".
