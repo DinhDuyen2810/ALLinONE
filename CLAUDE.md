@@ -46,17 +46,12 @@ Báo "đã sửa" chỉ khi đã build và chạy được. Điều gì không k
 điện thoại Android, tài khoản VPN, hộp thoại UAC...) thì ghi rõ là CHƯA kiểm chứng, trong cả câu trả lời
 lẫn tài liệu.
 
-### 3. WiFi Connection: chỉ quản lý kết nối hợp pháp
-
-Xem mật khẩu đã lưu trên chính máy này, kết nối bằng ĐÚNG MỘT mật khẩu người dùng nhập. KHÔNG thêm bất
-kỳ cơ chế thử nhiều mật khẩu / dò mật khẩu WiFi nào, dưới bất kỳ biến thể nào.
-
-### 4. Không tự ký số (code-signing)
+### 3. Không tự ký số (code-signing)
 
 Không ký `.exe`/`.msi`, không thêm chứng chỉ vào kho tin cậy của máy. Việc ký chỉ do chủ dự án làm, hoặc
 qua SignPath trong CI khi chứng chỉ được cấp.
 
-### 5. Giữ đầy đủ metadata phiên bản Win32 (VERSIONINFO) khi phát hành
+### 4. Giữ đầy đủ metadata phiên bản Win32 (VERSIONINFO) khi phát hành
 
 `assets/app_icon.rc` (cho `OneForAll.exe`), `installer/OneForAll.iss` (cho `OneForAll_Setup.exe`),
 `installer/Product.wxs` (cho `OneForAll_Setup.msi`) đều có khối VERSIONINFO/properties đầy đủ
@@ -66,7 +61,7 @@ cải thiện uy tín SmartScreen, nhưng KHÔNG đảm bảo tắt hẳn cảnh
 trên máy Windows 11 có Smart App Control ở chế độ "On". Nếu tăng `VERSION`, nhớ `OBJECT_DEPENDS` trong
 `CMakeLists.txt` đã khai cho `app_icon.rc` - không tự dò lại, Ninja không phát hiện `#include` trong `.rc`.
 
-### 6. Không thao tác hệ thống thật khi kiểm thử
+### 5. Không thao tác hệ thống thật khi kiểm thử
 
 Test tự động không được: đổi kích thước phân vùng, sửa file hosts thật, `Set-MpPreference`, kết nối VPN
 thật, đổi cấu hình WiFi của máy, tiêm chuột/phím thật, xóa gì ngoài thư mục tạm do test tự tạo. Test đụng
