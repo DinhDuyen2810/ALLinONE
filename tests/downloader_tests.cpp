@@ -1339,6 +1339,16 @@ int main(int argc, char** argv)
         CHECK(waitUntil([&] { return q.item(dupId)->state == QueueItem::State::Completed; }));
         CHECK(QFileInfo::exists(dlFolder + "/img (1).png") && QFileInfo::exists(dlFolder + "/img.png"));
 
+        // 4b) Link quét mà không ra tệp nào -> dòng ERR kèm lý do (không tải được); quét lại đúng link thì cập nhật lý do chứ không nhân đôi.
+        const int errNew = q.addFailed("http://khong-ra-gi.example/trang", "lý do một");
+        CHECK(errNew > 0 && q.item(errNew)->check == QueueItem::Check::Err && q.item(errNew)->checkNote == "lý do một");
+        CHECK(q.item(errNew)->sourceUrl == "http://khong-ra-gi.example/trang" && q.item(errNew)->state == QueueItem::State::Idle);
+        const int errCount = q.allIds().size();
+        CHECK(q.addFailed("http://khong-ra-gi.example/trang", "lý do hai") == errNew && q.allIds().size() == errCount);
+        CHECK(q.item(errNew)->checkNote == "lý do hai");
+        CHECK(q.startItems({errNew}) == 0 && q.item(errNew)->state == QueueItem::State::Idle); // dòng ERR không bao giờ được tải
+        q.remove({errNew});
+
         // 5) Referer + User-Agent trình duyệt khi mục có trang nguồn.
         heads.clear();
         ResolvedMedia ref;

@@ -70,6 +70,10 @@ public:
     /// Thêm thẳng một mục đã biết là tải được (vd từ chức năng Quét trang) - check = OK ngay. -1 nếu trùng link tệp.
     int addResolved(const ResolvedMedia& media, const QString& sourceUrl = QString());
 
+    /// Thêm một dòng ERR (link đã quét mà không ra tệp nào) kèm lý do. Đã có dòng ERR của đúng link này thì chỉ cập nhật lý do.
+    /// Trả ID dòng đó. "Kiểm tra lại" trên dòng này chạy lại bộ phân giải của hàng đợi.
+    int addFailed(const QString& url, const QString& reason);
+
     /// Bắt đầu tải các mục; mục chưa OK/đã hoàn tất bị bỏ qua. Trả số mục thực sự được bắt đầu/xếp hàng.
     int startItems(const QList<int>& ids);
     bool startItem(int id);

@@ -167,13 +167,27 @@ int main(int argc, char** argv)
             return MiniHttpServer::response("404 Not Found", {"Content-Type: text/plain"}, "khong co");
         };
 
-        downloadTab->enqueueText(http.url("/file.bin") + "\n" + http.url("/missing.bin") + "\nkhong-phai-link");
-        CHECK(queueTable->rowCount() == 2); // dòng "khong-phai-link" bị bỏ qua
-        // Vừa thêm: CHƯA tải gì - thư mục đích chưa có tệp nào.
+        // MỘT nút "Quét" duy nhất: không còn "+ Thêm vào hàng đợi"/"Quét trang" riêng, cũng không còn "Đổi..."/"Mở thư mục" (đổi
+        // thư mục ở tab Cài đặt).
+        QPushButton* scanBtn = findButton(downloadTab, "🔍 Quét");
+        CHECK(scanBtn != nullptr);
+        {
+            int scanLike = 0;
+            for (auto* b : downloadTab->findChildren<QPushButton*>())
+                if (b->text().contains("Quét") || b->text().contains("Thêm vào hàng đợi"))
+                    ++scanLike;
+            CHECK(scanLike == 1);
+            CHECK(findButton(downloadTab, "+ Thêm vào hàng đợi") == nullptr);
+            CHECK(findButton(downloadTab, "Đổi...") == nullptr && findButton(downloadTab, "Mở thư mục") == nullptr);
+        }
+
+        downloadTab->scanText(http.url("/file.bin") + "\n" + http.url("/missing.bin") + "\nkhong-phai-link");
+        CHECK(scanBtn && scanBtn->text() == "⏹ Dừng quét"); // dòng "khong-phai-link" bị bỏ qua, còn 2 link đang quét
+        // Đang quét: CHƯA tải gì - thư mục đích chưa có tệp nào.
         CHECK(QDir(dlRoot).entryList(QDir::Files).isEmpty());
 
         const bool checked = waitUntil([&] {
-            if (queueTable->rowCount() != 2)
+            if (queueTable->rowCount() != 2 || !scanBtn || scanBtn->text() != "🔍 Quét")
                 return false;
             for (int r = 0; r < 2; ++r)
             {
@@ -196,6 +210,7 @@ int main(int argc, char** argv)
         {
             CHECK(queueTable->item(okRow, 1)->text() == "du-lieu.bin"); // tên lấy từ Content-Disposition
             CHECK(queueTable->item(errRow, 7)->text().startsWith("✖")); // lý do hiện ở cột trạng thái
+            CHECK(queueTable->item(okRow, 0) && queueTable->item(errRow, 0)); // link lỗi cũng có dòng ERR trong bảng
             // Cột "Mở" là chữ trong ô (không phải nút/widget) nên dòng chọn đổi màu cả ô, không có khung trắng nằm trên nền xanh.
             CHECK(queueTable->item(okRow, 8) && queueTable->item(okRow, 8)->text() == "↗");
             CHECK(queueTable->cellWidget(okRow, 8) == nullptr && queueTable->cellWidget(errRow, 8) == nullptr);
@@ -237,7 +252,6 @@ int main(int argc, char** argv)
         queue->remove(queue->allIds());
         CHECK(queueTable->rowCount() == 0);
         auto* urlEdit = downloadTab->findChild<QPlainTextEdit*>();
-        QPushButton* scanBtn = findButton(downloadTab, "🔍 Quét trang");
         CHECK(urlEdit && scanBtn);
         if (urlEdit && scanBtn)
         {
@@ -245,7 +259,7 @@ int main(int argc, char** argv)
             scanBtn->click();
             CHECK(scanBtn->text() == "⏹ Dừng quét"); // đang quét: nút chuyển thành "Dừng quét"
             CHECK(urlEdit->toPlainText().isEmpty());   // link đã được nhận
-            const bool scanned = waitUntil([&] { return queueTable->rowCount() >= 2 && scanBtn->text() == "🔍 Quét trang"; });
+            const bool scanned = waitUntil([&] { return queueTable->rowCount() >= 2 && scanBtn->text() == "🔍 Quét"; });
             CHECK(scanned); // quét xong: nút trở lại như cũ
             CHECK(queueTable->rowCount() == 2);
             bool allOk = true;
@@ -256,7 +270,7 @@ int main(int argc, char** argv)
 
             // Quét lại đúng trang đó: không nhân đôi mục đã có.
             downloadTab->scanText(http.url("/page.html"));
-            CHECK(waitUntil([&] { return scanBtn->text() == "🔍 Quét trang"; }));
+            CHECK(waitUntil([&] { return scanBtn->text() == "🔍 Quét"; }));
             CHECK(queueTable->rowCount() == 2);
 
             // Tick tất cả rồi tải: hai tệp quét được về đủ, đúng kích thước.
@@ -276,17 +290,27 @@ int main(int argc, char** argv)
             }
         }
 
-        // Quét một trang KHÔNG tồn tại (404): không thêm mục nào, nút trở lại như cũ, lý do hiện ở dòng thông báo.
+        // Quét một trang KHÔNG tồn tại (404): không có mục tải được nào nhưng có đúng MỘT dòng ERR kèm lý do (quét lại không nhân
+        // đôi dòng), nút trở lại như cũ, lý do cũng hiện ở dòng thông báo.
         queue->remove(queue->allIds());
         downloadTab->scanText(http.url("/khong-co.html"));
-        CHECK(waitUntil([&] { return scanBtn && scanBtn->text() == "🔍 Quét trang"; }));
-        CHECK(queueTable->rowCount() == 0);
+        CHECK(waitUntil([&] { return scanBtn && scanBtn->text() == "🔍 Quét"; }));
+        CHECK(queueTable->rowCount() == 1);
+        if (queueTable->rowCount() == 1)
+        {
+            CHECK(queueTable->item(0, 4)->text() == "ERR" && queueTable->item(0, 7)->text().startsWith("✖"));
+            CHECK(queue->item(queue->allIds().first())->checkNote.contains("404"));
+        }
         {
             bool shownReason = false;
             for (auto* l : downloadTab->findChildren<QLabel*>())
                 shownReason = shownReason || (l->isVisibleTo(downloadTab) && l->text().contains("⚠") && l->text().contains("khong-co.html"));
             CHECK(shownReason);
         }
+        downloadTab->scanText(http.url("/khong-co.html"));
+        CHECK(waitUntil([&] { return scanBtn && scanBtn->text() == "🔍 Quét"; }));
+        CHECK(queueTable->rowCount() == 1); // quét lại đúng link: cập nhật dòng ERR cũ, không thêm dòng mới
+        queue->remove(queue->allIds());
 
         // Dừng giữa chừng: bấm "Dừng quét" ngay sau khi bắt đầu thì nút trở lại như cũ ngay.
         downloadTab->scanText(http.url("/page.html"));
@@ -294,7 +318,7 @@ int main(int argc, char** argv)
         if (scanBtn)
         {
             scanBtn->click();
-            CHECK(scanBtn->text() == "🔍 Quét trang");
+            CHECK(scanBtn->text() == "🔍 Quét");
         }
         waitUntil([] { return false; }, 300); // để mọi tín hiệu muộn (nếu có) được xử lý - không được làm gì thêm
         CHECK(queueTable->rowCount() == 0);
@@ -336,7 +360,7 @@ int main(int argc, char** argv)
 
         // ---- Chọn đúng MỘT dòng ERR: lý do ĐẦY ĐỦ hiện ở dòng thông báo (cột trạng thái chỉ đủ chỗ cho một đoạn) ----
         {
-            downloadTab->enqueueText(http.url("/missing-2.bin"));
+            downloadTab->scanText(http.url("/missing-2.bin"));
             CHECK(waitUntil([&] { return queueTable->rowCount() == 1 && queueTable->item(0, 4)->text() == "ERR"; }));
             if (queueTable->rowCount() == 1)
             {

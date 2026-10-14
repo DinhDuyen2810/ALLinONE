@@ -216,6 +216,26 @@ int DownloadQueue::addResolved(const ResolvedMedia& media, const QString& source
     return it.id;
 }
 
+int DownloadQueue::addFailed(const QString& url, const QString& reason)
+{
+    const QString u = url.trimmed();
+    for (auto it = m_items.begin(); it != m_items.end(); ++it)
+        if (it->sourceUrl == u && it->check == QueueItem::Check::Err)
+        {
+            it->checkNote = reason;
+            emit itemUpdated(it.key());
+            return it.key();
+        }
+    QueueItem it;
+    it.id = m_nextId++;
+    it.sourceUrl = u;
+    it.media.url = u;
+    it.check = QueueItem::Check::Err;
+    it.checkNote = reason;
+    insertItem(it, -1);
+    return it.id;
+}
+
 // ---------------------------------------------------------------------------------------------- Kiểm tra link
 void DownloadQueue::pumpResolve()
 {

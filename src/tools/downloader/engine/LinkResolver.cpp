@@ -141,7 +141,8 @@ QString LinkResolver::bestFailureMessage() const
     if (!m_blockMessage.isEmpty())
         return m_blockMessage;
     if (m_challenge)
-        return "Trang được bảo vệ chống truy cập tự động (Cloudflare) hoặc yêu cầu đăng nhập/trả phí - không lấy được tệp.";
+        return "Trang được bảo vệ chống truy cập tự động (Cloudflare) hoặc yêu cầu đăng nhập/trả phí - không lấy được tệp. "
+               "Nếu bạn có quyền truy cập: mở trang bằng trình duyệt (bấm ↗) rồi tải bằng chính tài khoản của bạn.";
     if (m_loginWall)
         return "Trang yêu cầu đăng nhập - đặt cookie trình duyệt ở tab \"Cài đặt\" (nếu yt-dlp hỗ trợ trang này) hoặc dán link tệp trực tiếp.";
     if (!m_ytError.isEmpty() && !m_ytUnsupported)

@@ -19,7 +19,6 @@
 #include <QDesktopServices>
 #include <QDir>
 #include <QFile>
-#include <QFileDialog>
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QHBoxLayout>
@@ -114,10 +113,9 @@ void DownloadTab::buildUi()
 
     auto* introLabel = new QLabel(
         "Dán MỘT hoặc NHIỀU link (mỗi dòng một link): tệp trực tiếp, video Facebook/TikTok/YouTube, Google Drive, trang phim, "
-        "ảnh bài đăng hoặc cả hồ sơ/kênh. \"+ Thêm vào hàng đợi\": ứng dụng tự kiểm tra từng link (OK = tải được, ERR = không "
-        "tải được, kèm lý do), CHƯA tải. \"🔍 Quét trang\": liệt kê MỌI ảnh/video/âm thanh/tài liệu của một trang hoặc hồ sơ. "
-        "Sau đó tick các dòng muốn tải rồi bấm \"Tải các mục đã chọn\". Bạn tự chịu trách nhiệm tuân thủ điều khoản của trang "
-        "nguồn và luật bản quyền.",
+        "ảnh bài đăng, trang web hoặc cả hồ sơ/kênh, rồi bấm \"Quét\". Ứng dụng liệt kê mọi ảnh/video/âm thanh/tài liệu tìm "
+        "được vào bảng: OK = tải được, ERR = không tải được (kèm lý do) - CHƯA tải gì. Tick các dòng muốn tải rồi bấm \"Tải các "
+        "mục đã chọn\". Bạn tự chịu trách nhiệm tuân thủ điều khoản của trang nguồn và luật bản quyền.",
         this);
     introLabel->setWordWrap(true);
     introLabel->setStyleSheet(DownloaderUi::bannerStyle("info"));
@@ -127,31 +125,23 @@ void DownloadTab::buildUi()
     m_urlEdit->setStyleSheet(
         "QPlainTextEdit { background-color: #ffffff; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 6px 8px; "
         "font-size: 12px; } QPlainTextEdit:focus { border-color: #0969da; }");
-    m_urlEdit->setPlaceholderText("https://...   (nhiều link: mỗi dòng một link; Ctrl+Enter để thêm vào hàng đợi)");
+    m_urlEdit->setPlaceholderText("https://...   (nhiều link: mỗi dòng một link; Ctrl+Enter để quét)");
     m_urlEdit->setFixedHeight(76);
     m_urlEdit->setTabChangesFocus(true);
-    new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Return), m_urlEdit, this, [this]() { onAddClicked(); }, Qt::WidgetShortcut);
+    new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Return), m_urlEdit, this, [this]() { onScanClicked(); }, Qt::WidgetShortcut);
 
     auto* urlRow = new QHBoxLayout();
     urlRow->addWidget(m_urlEdit, 1);
-    auto* urlButtons = new QVBoxLayout();
-    urlButtons->setSpacing(4);
-    m_addBtn = new QPushButton("+ Thêm vào hàng đợi", this);
-    m_addBtn->setStyleSheet(DownloaderUi::primaryButtonStyle());
-    m_addBtn->setFixedSize(170, 36);
-    connect(m_addBtn, &QPushButton::clicked, this, &DownloadTab::onAddClicked);
-    urlButtons->addWidget(m_addBtn);
-    m_scanBtn = new QPushButton("🔍 Quét trang", this);
-    m_scanBtn->setStyleSheet(DownloaderUi::buttonStyle());
-    m_scanBtn->setFixedSize(170, 36);
-    m_scanBtn->setToolTip("Liệt kê MỌI ảnh/video/âm thanh/tài liệu tìm được trong trang hoặc hồ sơ rồi đưa vào hàng đợi");
+    m_scanBtn = new QPushButton("🔍 Quét", this);
+    m_scanBtn->setStyleSheet(DownloaderUi::primaryButtonStyle());
+    m_scanBtn->setFixedSize(130, 76);
+    m_scanBtn->setToolTip("Liệt kê MỌI ảnh/video/âm thanh/tài liệu tìm được ở các link đã dán rồi đưa vào hàng đợi (chưa tải)");
     connect(m_scanBtn, &QPushButton::clicked, this, &DownloadTab::onScanClicked);
-    urlButtons->addWidget(m_scanBtn);
-    urlRow->addLayout(urlButtons);
+    urlRow->addWidget(m_scanBtn);
     root->addLayout(urlRow);
 
     auto* folderRow = new QHBoxLayout();
-    auto* folderCaption = new QLabel("Thư mục lưu:", this);
+    auto* folderCaption = new QLabel("Thư mục lưu (đổi ở tab Cài đặt):", this);
     folderCaption->setStyleSheet("color: #57606a; font-size: 12px;");
     folderRow->addWidget(folderCaption);
     m_folderLabel = new QLabel(QDir::toNativeSeparators(m_settings->downloadFolder()), this);
@@ -159,14 +149,6 @@ void DownloadTab::buildUi()
     m_folderLabel->setWordWrap(true);
     m_folderLabel->setToolTip(QDir::toNativeSeparators(m_settings->downloadFolder()));
     folderRow->addWidget(m_folderLabel, 1);
-    m_chooseFolderBtn = new QPushButton("Đổi...", this);
-    m_chooseFolderBtn->setStyleSheet(DownloaderUi::buttonStyle());
-    connect(m_chooseFolderBtn, &QPushButton::clicked, this, &DownloadTab::onChooseFolderClicked);
-    folderRow->addWidget(m_chooseFolderBtn);
-    m_openFolderBtn = new QPushButton("Mở thư mục", this);
-    m_openFolderBtn->setStyleSheet(DownloaderUi::buttonStyle());
-    connect(m_openFolderBtn, &QPushButton::clicked, this, &DownloadTab::onOpenFolderClicked);
-    folderRow->addWidget(m_openFolderBtn);
     root->addLayout(folderRow);
 
     auto* optionRow = new QHBoxLayout();
@@ -540,31 +522,6 @@ void DownloadTab::onSelectionChanged()
 }
 
 // ---------------------------------------------------------------------------------------------- Thao tác
-void DownloadTab::enqueueText(const QString& text)
-{
-    const QStringList urls = LinkResolverCore::extractUrls(text);
-    if (urls.isEmpty())
-    {
-        onMessage("Không thấy link http/https nào trong nội dung vừa dán.");
-        return;
-    }
-    const QList<int> ids = m_queue->addSources(urls);
-    if (ids.size() == urls.size())
-        onMessage(QString("Đã thêm %1 link vào hàng đợi (chưa tải) - đang kiểm tra...").arg(ids.size()));
-    else
-        onMessage(QString("Đã thêm %1/%2 link vào hàng đợi (còn lại trùng hoặc không hợp lệ) - đang kiểm tra...")
-                      .arg(ids.size()).arg(urls.size()));
-}
-
-void DownloadTab::onAddClicked()
-{
-    const QString text = m_urlEdit->toPlainText().trimmed();
-    if (text.isEmpty())
-        return;
-    enqueueText(text);
-    m_urlEdit->clear();
-}
-
 void DownloadTab::onSelectAll()
 {
     m_updatingTable = true;
@@ -636,18 +593,6 @@ void DownloadTab::onRemoveFinished()
 {
     const int n = m_queue->removeFinished(true);
     onMessage(n > 0 ? QString("Đã dọn %1 mục đã xong/lỗi/hủy khỏi hàng đợi.").arg(n) : QString("Không có mục nào để dọn."));
-}
-
-void DownloadTab::onChooseFolderClicked()
-{
-    const QString dir = QFileDialog::getExistingDirectory(this, "Chọn thư mục lưu", m_settings->downloadFolder());
-    if (!dir.isEmpty())
-        m_settings->setDownloadFolder(dir);
-}
-
-void DownloadTab::onOpenFolderClicked()
-{
-    QDesktopServices::openUrl(QUrl::fromLocalFile(m_settings->downloadFolder()));
 }
 
 void DownloadTab::onSettingsChanged()
@@ -824,6 +769,15 @@ void DownloadTab::startNextScan()
     m_scanDeepRunning = false;
     updateScanStatus();
 
+    // Google Drive/Docs: chỉ bộ phân giải đầy đủ xử lý (đổi sang link tải, nhận ra "chủ không cho tải"). Quét HTML tĩnh trang
+    // xem Drive chỉ ra ảnh xem trước (`drive-viewer/...`) của tệp mà chủ đã khóa tải - không được liệt kê nó thành mục tải được.
+    QString exportUrl, ext, driveId;
+    if (LinkResolverCore::googleDocsExportUrl(m_scanUrl, &exportUrl, &ext) || LinkResolverCore::parseDriveFileId(m_scanUrl, &driveId))
+    {
+        startDeepScan();
+        return;
+    }
+
     m_scanner = new PageMediaScanner(this);
     connect(m_scanner, &PageMediaScanner::result, this, &DownloadTab::onScanResult);
     connect(m_scanner, &PageMediaScanner::errorOccurred, this, &DownloadTab::onScanError);
@@ -950,6 +904,7 @@ void DownloadTab::finishScanPage()
                                 : !m_scanStaticError.isEmpty() ? m_scanStaticError
                                                                : QStringLiteral("không thấy ảnh/video/âm thanh/tài liệu nào.");
             m_scanNotes << "⚠ " + shortUrl + ": " + why;
+            m_queue->addFailed(m_scanUrl, why); // dòng ERR trong bảng: thấy lý do, bấm "Kiểm tra lại" được
         }
         else if (!m_scanDeepError.isEmpty())
         {
@@ -982,7 +937,7 @@ void DownloadTab::endScan()
     }
     m_scanBusy = false;
     m_scanDeepRunning = false;
-    m_scanBtn->setText("🔍 Quét trang");
+    m_scanBtn->setText("🔍 Quét");
 
     QStringList parts;
     if (m_scanStopped)
@@ -996,7 +951,7 @@ void DownloadTab::endScan()
     else if (!m_scanStopped && m_scanNotes.isEmpty())
         parts << "Không tìm thấy ảnh/video/âm thanh/tài liệu nào.";
     parts << m_scanNotes;
-    setMessage(parts.join("  "), m_scanAddedTotal == 0 && !m_scanNotes.isEmpty());
+    setMessage(parts.join(QLatin1Char('\n')), m_scanAddedTotal == 0 && !m_scanNotes.isEmpty()); // mỗi ghi chú một dòng
 }
 
 void DownloadTab::updateScanStatus()

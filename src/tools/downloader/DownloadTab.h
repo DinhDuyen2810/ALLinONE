@@ -22,11 +22,10 @@ class PageMediaScanner;
 class YtDlpInfoWorker;
 
 /// Tab "Tải xuống" - HÀNG ĐỢI TẢI HỢP NHẤT, gộp ba tab cũ (Tải trực tiếp, Quét trang web, Video nền tảng). Quy trình:
-///  1. Dán một hoặc nhiều link (mỗi dòng một link) rồi chọn:
-///     - "+ Thêm vào hàng đợi": link vào hàng đợi, CHƯA tải gì. Mỗi link được kiểm tra tự động và đánh dấu OK (ra được
-///       tệp/video để tải) hoặc ERR (kèm lý do). Một link có thể bung thành nhiều dòng (hồ sơ/danh sách phát/nhiều ảnh).
-///     - "🔍 Quét trang": liệt kê MỌI ảnh/video/âm thanh/tài liệu tìm được trong một trang hoặc hồ sơ (quét HTML tĩnh, rồi
-///       quét sâu bằng yt-dlp/trình duyệt ẩn khi cần) và đưa thẳng vào hàng đợi dưới dạng các dòng OK. Có nút "Dừng quét".
+///  1. Dán một hoặc nhiều link (mỗi dòng một link) rồi bấm MỘT nút "Quét": mỗi link được quét lần lượt - HTML tĩnh trước, rồi
+///     quét sâu bằng bộ phân giải đầy đủ (tệp trực tiếp, Google Drive/Docs, yt-dlp, mã nguồn, trình duyệt ẩn) khi cần - và mọi
+///     ảnh/video/âm thanh/tài liệu tìm được vào hàng đợi dưới dạng dòng OK (CHƯA tải gì). Link không ra tệp nào thành dòng ERR
+///     kèm lý do. Một link có thể bung thành nhiều dòng (hồ sơ/danh sách phát/nhiều ảnh). Nút thành "Dừng quét" khi đang chạy.
 ///  2. Chọn các dòng (ô tick hoặc bôi đen) rồi "Tải các mục đã chọn" - chỉ dòng OK được tải.
 /// Video nền tảng (yt-dlp): "Chất lượng video" áp dụng chung; bấm phải vào dòng video -> "Chọn chất lượng khác..." để chọn
 /// riêng một định dạng cụ thể của video đó. Mỗi dòng có cột ↗ mở link của nó trên trình duyệt.
@@ -44,13 +43,11 @@ public:
     void cancelBackgroundWork();
 
 public slots:
-    /// Thêm các link trong đoạn văn bản vào hàng đợi (CHƯA tải). Trả về qua thanh trạng thái số link đã thêm.
-    void enqueueText(const QString& text);
-    /// Quét các trang trong đoạn văn bản, đưa mọi ảnh/video/tài liệu tìm được vào hàng đợi. `forceDeep` = luôn quét sâu.
+    /// Quét các link trong đoạn văn bản, đưa mọi ảnh/video/tài liệu tìm được vào hàng đợi (link không ra gì -> dòng ERR).
+    /// `forceDeep` = luôn quét sâu kể cả khi quét thường đã thấy tệp.
     void scanText(const QString& text, bool forceDeep = false);
 
 private slots:
-    void onAddClicked();
     void onScanClicked();
     void onItemAdded(int id);
     void onItemUpdated(int id);
@@ -64,8 +61,6 @@ private slots:
     void onCancelSelected();
     void onRemoveSelected();
     void onRemoveFinished();
-    void onChooseFolderClicked();
-    void onOpenFolderClicked();
     void onTableContextMenu(const QPoint& pos);
     void onSelectionChanged();
     void onClipboardChanged();
@@ -110,12 +105,9 @@ private:
 
     QLabel* m_bundleBanner{nullptr};
     QPlainTextEdit* m_urlEdit{nullptr};
-    QPushButton* m_addBtn{nullptr};
     QPushButton* m_scanBtn{nullptr};
     QLabel* m_folderLabel{nullptr};
     QComboBox* m_qualityCombo{nullptr};
-    QPushButton* m_chooseFolderBtn{nullptr};
-    QPushButton* m_openFolderBtn{nullptr};
     QCheckBox* m_clipboardCheck{nullptr};
     QCheckBox* m_deepCheck{nullptr};
     QLabel* m_summaryLabel{nullptr};
