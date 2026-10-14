@@ -42,6 +42,7 @@ namespace
 {
 enum Col { kCheck = 0, kName, kType, kSize, kCheckStatus, kProgress, kSpeed, kState, kOpen, kColCount };
 constexpr int kIdRole = Qt::UserRole;
+constexpr int kInputHeight = 52; ///< Ô dán link và nút Quét cùng chiều cao (đủ 2 dòng chữ)
 
 QString elided(const QString& s, int maxChars)
 {
@@ -126,7 +127,7 @@ void DownloadTab::buildUi()
         "QPlainTextEdit { background-color: #ffffff; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 6px 8px; "
         "font-size: 12px; } QPlainTextEdit:focus { border-color: #0969da; }");
     m_urlEdit->setPlaceholderText("https://...   (nhiều link: mỗi dòng một link; Ctrl+Enter để quét)");
-    m_urlEdit->setFixedHeight(76);
+    m_urlEdit->setFixedHeight(kInputHeight);
     m_urlEdit->setTabChangesFocus(true);
     new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Return), m_urlEdit, this, [this]() { onScanClicked(); }, Qt::WidgetShortcut);
 
@@ -134,7 +135,7 @@ void DownloadTab::buildUi()
     urlRow->addWidget(m_urlEdit, 1);
     m_scanBtn = new QPushButton("🔍 Quét", this);
     m_scanBtn->setStyleSheet(DownloaderUi::primaryButtonStyle());
-    m_scanBtn->setFixedSize(130, 76);
+    m_scanBtn->setFixedSize(130, kInputHeight);
     m_scanBtn->setToolTip("Liệt kê MỌI ảnh/video/âm thanh/tài liệu tìm được ở các link đã dán rồi đưa vào hàng đợi (chưa tải)");
     connect(m_scanBtn, &QPushButton::clicked, this, &DownloadTab::onScanClicked);
     urlRow->addWidget(m_scanBtn);
