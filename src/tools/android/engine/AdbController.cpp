@@ -205,12 +205,8 @@ bool connectWireless(const QString& ipAndPort, QString* error)
     bool ok = false;
     QString err;
     const QString out = runAdb({"connect", ipAndPort}, &ok, error, 15000, &err);
-    const QString all = out + err;
-    if (ok && !all.contains("connected to", Qt::CaseInsensitive))
-    {
-        ok = false;
-        if (error) *error = all.trimmed().isEmpty() ? "Kết nối thất bại." : all.trimmed();
-    }
+    if (ok)
+        ok = internal::interpretConnectResult(true, 0, out, err, error);
     return ok;
 }
 
@@ -247,6 +243,25 @@ bool isKnownDeviceState(const QString& state)
         "sideload", "bootloader",   "host",    "rescue",      "detached",   "unknown",
     };
     return states.contains(state);
+}
+
+bool interpretConnectResult(bool normalExit, int exitCode, const QString& stdOut, const QString& stdErr, QString* error)
+{
+    const QString all = (stdOut + QChar('\n') + stdErr).trimmed();
+    if (!normalExit || exitCode != 0)
+    {
+        if (error)
+            *error = !all.isEmpty() ? all : QString("adb thoát với mã lỗi %1").arg(exitCode);
+        return false;
+    }
+    // "failed to connect to"/"cannot connect to" không chứa "connected to" - chỉ khớp đúng thành công.
+    if (!all.contains("connected to", Qt::CaseInsensitive))
+    {
+        if (error)
+            *error = all.isEmpty() ? QString("Kết nối thất bại.") : all;
+        return false;
+    }
+    return true;
 }
 
 bool interpretPairResult(bool normalExit, int exitCode, const QString& stdOut, const QString& stdErr, QString* error)

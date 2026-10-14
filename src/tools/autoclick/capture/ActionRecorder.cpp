@@ -8,6 +8,8 @@
 #include <QScreen>
 #include <QTimer>
 
+#include <algorithm>
+
 namespace
 {
 ActionRecorder* g_instance = nullptr;
@@ -105,6 +107,44 @@ void ActionRecorder::stop()
 {
     if (m_mouseHook)
         finish();
+}
+
+void ActionRecorder::stopDroppingTrailingKeys(const std::vector<int>& keyCodes)
+{
+    if (!m_mouseHook)
+        return;
+    dropTrailingKeys(m_events, keyCodes);
+
+    // Tính lại phím còn đang giữ theo bản ghi ĐÃ CẮT - finish() chèn KeyUp cho đúng các phím này (không
+    // chèn KeyUp cho phím của tổ hợp dừng vừa bị bỏ).
+    m_keysDown.clear();
+    for (const RecordedEvent& ev : m_events)
+    {
+        if (ev.type == RecordedEventType::KeyDown)
+            m_keysDown.insert(ev.keyCode);
+        else if (ev.type == RecordedEventType::KeyUp)
+            m_keysDown.erase(ev.keyCode);
+    }
+    finish();
+}
+
+void ActionRecorder::dropTrailingKeys(std::vector<RecordedEvent>& events, const std::vector<int>& keyCodes)
+{
+    const auto isDropKey = [&keyCodes](const RecordedEvent& ev) {
+        return (ev.type == RecordedEventType::KeyDown || ev.type == RecordedEventType::KeyUp) &&
+               std::find(keyCodes.begin(), keyCodes.end(), ev.keyCode) != keyCodes.end();
+    };
+    // Đoạn đuôi chỉ gồm phím của tổ hợp dừng và MouseMove (người dùng có thể lỡ rê chuột lúc bấm).
+    size_t tailStart = events.size();
+    while (tailStart > 0)
+    {
+        const RecordedEvent& ev = events[tailStart - 1];
+        if (!isDropKey(ev) && ev.type != RecordedEventType::MouseMove)
+            break;
+        --tailStart;
+    }
+    events.erase(std::remove_if(events.begin() + static_cast<std::ptrdiff_t>(tailStart), events.end(), isDropKey),
+                 events.end());
 }
 
 void ActionRecorder::finish()

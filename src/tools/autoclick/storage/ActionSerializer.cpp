@@ -15,6 +15,17 @@ QString ActionSerializer::getDefaultProfilePath()
 
 static int clampInt(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
+/// Số thực từ JSON -> int trong [lo, hi]. static_cast<int>() một double ngoài miền int (vd 1e300 - JSON hợp
+/// lệ) là hành vi KHÔNG XÁC ĐỊNH theo chuẩn C++; so sánh trên double TRƯỚC khi ép kiểu. Không phải số -> lo.
+static int clampDoubleToInt(double v, int lo, int hi)
+{
+    if (!(v >= lo)) // gồm cả NaN
+        return lo;
+    if (v >= hi)
+        return hi;
+    return static_cast<int>(v);
+}
+
 static QString modifierKeyToString(ModifierKey m)
 {
     switch (m)
@@ -274,7 +285,10 @@ bool ActionSerializer::fromJsonString(const QString& jsonStr, std::vector<Action
 
             action.text = actObj["text"].toString().toStdString();
             action.textMode = static_cast<TextTypeMode>(clampInt(actObj["textMode"].toInt(0), 0, 1));
-            action.keyCode = actObj["keyCode"].toInt(13);
+            // Mã VK hợp lệ nằm trong 1..254; giá trị ngoài miền (tệp sửa tay/hỏng) trước đây được gửi thẳng vào
+            // SendInput (WORD bị cắt bớt -> một phím bất kỳ khác).
+            const int keyCode = actObj["keyCode"].toInt(13);
+            action.keyCode = (keyCode >= 1 && keyCode <= 254) ? keyCode : 13;
             action.keyName = actObj["keyName"].toString("ENTER").toStdString();
             action.modCtrl = actObj["modCtrl"].toBool(false);
             action.modAlt = actObj["modAlt"].toBool(false);
@@ -298,7 +312,9 @@ bool ActionSerializer::fromJsonString(const QString& jsonStr, std::vector<Action
             action.hotkeyTrigger = static_cast<HotkeyTrigger>(clampInt(actObj["hotkeyTrigger"].toInt(0), 0, 2));
 
             action.scrollDirection = static_cast<ScrollDirection>(clampInt(actObj["scrollDirection"].toInt(0), 0, 3));
-            action.scrollAmount = actObj["scrollAmount"].toInt(5);
+            // Cùng miền với ô nhập trên giao diện (1-100 nấc). Không giới hạn thì một tệp hồ sơ ghi
+            // "scrollAmount": 2000000000 sinh ra hai tỉ lần SendInput liên tiếp.
+            action.scrollAmount = clampInt(actObj["scrollAmount"].toInt(5), 1, 100);
 
             // Thiếu key (hồ sơ cũ trước khi có "Ghi nhớ chuỗi") -> rỗng, không lỗi. Mỗi phần tử trong mảng
             // validate RIÊNG - type lạ/field thiếu thì bỏ qua đúng phần tử đó, không làm hỏng cả hồ sơ.
@@ -313,13 +329,18 @@ bool ActionSerializer::fromJsonString(const QString& jsonStr, std::vector<Action
                     if (!stringToRecordedEventType(evObj["type"].toString(), ev.type))
                         continue;
                     // Một giá trị delayMs hỏng/ác ý không được tạo ra một bước chờ cả ngày lúc phát lại.
-                    ev.delayMs = clampInt(static_cast<int>(evObj["delayMs"].toDouble(0)), 0, 60000);
+                    ev.delayMs = clampDoubleToInt(evObj["delayMs"].toDouble(0), 0, 60000);
                     ev.x = clampInt(evObj["x"].toInt(0), kMinScreenCoord, kMaxScreenCoord);
                     ev.y = clampInt(evObj["y"].toInt(0), kMinScreenCoord, kMaxScreenCoord);
                     ev.button = static_cast<MouseButtonType>(clampInt(evObj["button"].toInt(0), 0, 2));
-                    ev.wheelDelta = evObj["wheelDelta"].toInt(0);
+                    // Một lần cuộn thật là bội nhỏ của WHEEL_DELTA (120); mouseData của SendInput là DWORD nhưng
+                    // Windows hiểu theo short có dấu - giới hạn trong miền short.
+                    ev.wheelDelta = clampInt(evObj["wheelDelta"].toInt(0), -32768, 32767);
                     ev.wheelHorizontal = evObj["wheelHorizontal"].toBool(false);
                     ev.keyCode = evObj["keyCode"].toInt(0);
+                    if ((ev.type == RecordedEventType::KeyDown || ev.type == RecordedEventType::KeyUp) &&
+                        (ev.keyCode < 1 || ev.keyCode > 254))
+                        continue; // sự kiện phím không có mã phím hợp lệ - bỏ đúng sự kiện này
                     action.recordedEvents.push_back(ev);
                 }
             }

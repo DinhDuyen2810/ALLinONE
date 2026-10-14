@@ -6,11 +6,13 @@
 #include "FileDownloader.h"
 #include "LinkResolver.h"
 #include "LinkResolverCore.h"
+#include "YtDlpController.h"
 #include "YtDlpDownloadWorker.h"
 
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QRegularExpression>
 #include <algorithm>
 
 namespace
@@ -18,6 +20,9 @@ namespace
 constexpr int kMaxResolvers = 2; ///< Mỗi bộ phân giải có thể bật yt-dlp/Edge ẩn - không chạy quá nhiều cùng lúc
 constexpr int kMaxYtConcurrent = 2;
 constexpr int kMaxDriveConcurrent = 1; ///< Mỗi lượt chụp Drive là một trình duyệt ẩn chạy vài phút - làm lần lượt
+/// Kiểm tra "bài ảnh hay video" (hồ sơ TikTok) - mỗi lượt là một bộ phân giải đầy đủ (yt-dlp + Edge ẩn). Trước đây
+/// không giới hạn: chọn 100 mục rồi bấm Tải là bật 100 bộ phân giải cùng lúc.
+constexpr int kMaxPhotoChecks = 2;
 
 QueueItem::State stateFromHttp(DownloadItem::Status s)
 {
@@ -58,6 +63,31 @@ QString findYtOutput(const QString& dir, const QString& base, const QDateTime& s
     return {};
 }
 } // namespace
+
+void DownloadQueue::removeYtLeftovers(const QString& dir, const QString& base)
+{
+    // Tệp tạm yt-dlp để lại khi bị hủy/lỗi giữa chừng: "<base>.f137.mp4.part", "<base>.mp4.ytdl",
+    // "<base>.f251.webm.part-Frag12", "<base>.temp.mp4"... Trước đây nằm lại mãi trong thư mục người dùng và còn
+    // khiến lần tải lại sau phải đổi tên thành "<base> (1)". `base` do uniqueYtBase() chọn sao cho CHƯA có tệp nào
+    // mang tiền tố đó lúc bắt đầu, nên mọi tệp tạm khớp tiền tố là của chính lượt tải này.
+    if (base.isEmpty() || dir.isEmpty())
+        return;
+    const QFileInfoList files = QDir(dir).entryInfoList(QDir::Files);
+    for (const QFileInfo& fi : files)
+    {
+        const QString name = fi.fileName();
+        if (!name.startsWith(base + QChar('.'), Qt::CaseInsensitive))
+            continue;
+        const QString lower = name.toLower();
+        // Ngoài tệp tạm: tệp từng định dạng riêng chờ ghép ("<base>.f137.mp4", "<base>.f251.webm") - bị hủy đúng
+        // lúc ghép thì chúng nằm lại và chặn tên gốc, lần tải lại bị đổi thành "<base> (1)".
+        static const QRegularExpression formatPart(QStringLiteral("^\\.f[0-9a-z_-]+\\.[a-z0-9]+$"));
+        const QString rest = lower.mid(base.size());
+        if (lower.endsWith(".part") || lower.endsWith(".ytdl") || lower.contains(".part-frag") ||
+            lower.contains(".temp.") || lower.endsWith(".temp") || formatPart.match(rest).hasMatch())
+            QFile::remove(fi.absoluteFilePath());
+    }
+}
 
 // ---------------------------------------------------------------------------------------------- QueueItem
 QString QueueItem::displayName() const
@@ -354,6 +384,15 @@ void DownloadQueue::recheck(int id)
         return;
     if (found->state == QueueItem::State::Downloading || found->state == QueueItem::State::Queued)
         return;
+    // Mục HTTP cũ (tạm dừng/lỗi/hủy) gắn với link + đích CŨ: trước đây vẫn giữ httpId nên lần Tải sau khi kiểm tra
+    // lại "tiếp tục" đúng mục cũ đó - tải lại link cũ vào tên tệp cũ, bỏ qua kết quả kiểm tra mới.
+    if (found->httpId >= 0)
+    {
+        m_httpToItem.remove(found->httpId);
+        m_downloader->forget(found->httpId);
+        found->httpId = -1;
+        found->destPath.clear();
+    }
     found->check = QueueItem::Check::Waiting;
     found->checkNote = "Chờ kiểm tra...";
     found->media.url = found->sourceUrl;
@@ -444,12 +483,31 @@ bool DownloadQueue::startItem(int id)
 bool DownloadQueue::startPhotoCheck(int id)
 {
     auto found = m_items.find(id);
-    if (found == m_items.end() || m_photoChecks.contains(id))
+    if (found == m_items.end() || m_photoChecks.contains(id) || m_photoQueue.contains(id))
         return false;
     found->state = QueueItem::State::Queued;
     found->received = 0;
     emit itemUpdated(id);
+    m_photoQueue << id;
+    pumpPhotoChecks();
+    return true;
+}
 
+void DownloadQueue::pumpPhotoChecks()
+{
+    while (m_photoChecks.size() < kMaxPhotoChecks && !m_photoQueue.isEmpty())
+    {
+        const int id = m_photoQueue.takeFirst();
+        if (m_items.contains(id))
+            launchPhotoCheck(id);
+    }
+}
+
+void DownloadQueue::launchPhotoCheck(int id)
+{
+    auto found = m_items.find(id);
+    if (found == m_items.end())
+        return;
     auto* r = new LinkResolver(this);
     LinkResolver::Options o;
     o.maxItems = 60;
@@ -462,9 +520,9 @@ bool DownloadQueue::startPhotoCheck(int id)
         m_photoChecks.remove(id);
         r->deleteLater();
         onPhotoChecked(id, res);
+        pumpPhotoChecks();
     });
     r->resolve(found->media.url);
-    return true;
 }
 
 void DownloadQueue::onPhotoChecked(int id, const ResolveResult& res)
@@ -579,6 +637,9 @@ void DownloadQueue::stopProcesses()
     const QList<int> waitingDrive = m_driveQueue;
     for (int id : waitingDrive)
         cancel(id);
+    const QList<int> waitingPhoto = m_photoQueue;
+    for (int id : waitingPhoto)
+        cancel(id);
     for (int id : m_resolvers.keys())
         cancel(id);
     for (int id : m_photoChecks.keys())
@@ -603,6 +664,13 @@ void DownloadQueue::cancel(int id)
     if (m_photoChecks.contains(id))
     {
         m_photoChecks.value(id)->cancel(); // phát finished("Đã hủy.") -> onPhotoChecked
+        return;
+    }
+    if (m_photoQueue.removeAll(id) > 0)
+    {
+        found->state = QueueItem::State::Canceled;
+        emit itemUpdated(id);
+        finalize(id, false);
         return;
     }
     if (m_resolveQueue.removeAll(id) > 0)
@@ -664,6 +732,7 @@ void DownloadQueue::remove(const QList<int>& ids)
         m_resolveQueue.removeAll(id);
         m_ytQueue.removeAll(id);
         m_driveQueue.removeAll(id);
+        m_photoQueue.removeAll(id);
         if (YtDlpDownloadWorker* w = m_ytActive.take(id))
         {
             w->disconnect(this);
@@ -682,6 +751,7 @@ void DownloadQueue::remove(const QList<int>& ids)
                       d->status == DownloadItem::Status::Paused))
                 m_downloader->cancel(found->httpId);
             m_httpToItem.remove(found->httpId);
+            m_downloader->forget(found->httpId); // không giữ chỗ tên tệp/bộ nhớ cho dòng đã xóa
         }
         m_items.erase(found);
         m_order.removeAll(id);
@@ -690,6 +760,7 @@ void DownloadQueue::remove(const QList<int>& ids)
     pumpResolve();
     pumpYt();
     pumpDrive();
+    pumpPhotoChecks();
 }
 
 int DownloadQueue::removeFinished(bool includeFailed)
@@ -742,13 +813,25 @@ QString DownloadQueue::uniqueYtBase(const QueueItem& item) const
     if (base.isEmpty())
         base = QStringLiteral("video");
     const QString folder = m_settings->downloadFolder();
+    // So tiền tố tên THẬT, không dùng bộ lọc tên của QDir: "[" "]" "?" "*" trong tiêu đề video là ký tự đại diện của
+    // bộ lọc - tiêu đề "Tập [1]" không bao giờ khớp tệp "Tập [1].mp4" đã có, yt-dlp thấy tệp sẵn ("has already been
+    // downloaded") và mục bị báo Hoàn tất với tệp CŨ.
+    const QStringList existingNames = QDir(folder).entryList(QDir::Files);
     auto taken = [&](const QString& b) {
-        const QFileInfoList existing = QDir(folder).entryInfoList({b + ".*"}, QDir::Files);
-        if (!existing.isEmpty())
-            return true;
-        for (auto it = m_items.constBegin(); it != m_items.constEnd(); ++it)
-            if (it->id != item.id && it->ytBase == b && !isTerminal(it->state))
+        for (const QString& name : existingNames)
+            if (name.startsWith(b + QChar('.'), Qt::CaseInsensitive))
                 return true;
+        // Mục yt-dlp khác đang chạy có tên gốc TRÙNG hoặc là TIỀN TỐ của nhau ("Clip" và "Clip.v2"): tệp tạm của
+        // mục này khớp tiền tố "<tên>." của mục kia, nên việc dọn tệp tạm khi một mục bị hủy (removeYtLeftovers)
+        // sẽ xóa nhầm tệp đang ghi của mục còn lại.
+        for (auto it = m_items.constBegin(); it != m_items.constEnd(); ++it)
+        {
+            if (it->id == item.id || isTerminal(it->state) || it->ytBase.isEmpty())
+                continue;
+            if (it->ytBase.compare(b, Qt::CaseInsensitive) == 0 || it->ytBase.startsWith(b + QChar('.'), Qt::CaseInsensitive) ||
+                b.startsWith(it->ytBase + QChar('.'), Qt::CaseInsensitive))
+                return true;
+        }
         return false;
     };
     QString candidate = base;
@@ -789,6 +872,10 @@ void DownloadQueue::startYtWorker(int id)
     o.outputBaseName = it.ytBase;
     o.formatSelector = it.formatSelector.isEmpty() ? DownloaderSettings::formatSelectorForQuality(m_settings->videoQuality())
                                                    : it.formatSelector;
+    // Phân tích link chỉ cần yt-dlp.exe nên mục video vẫn OK khi thiếu ffmpeg.exe - nhưng bộ chọn "hình+tiếng"
+    // (bv*+ba, "<id>+bestaudio") cần ffmpeg để ghép: thiếu thì ra hai tệp rời/lỗi. Dùng định dạng MỘT tệp sẵn có.
+    if (!YtDlpController::hasFfmpeg())
+        o.formatSelector = QStringLiteral("b/best");
     o.extraArgs = m_settings->ytDlpExtraArguments();
     if (!it.media.referer.isEmpty())
         o.extraArgs << "--referer" << it.media.referer;
@@ -825,6 +912,8 @@ void DownloadQueue::onYtFinished(int id, YtDlpDownloadWorker* worker, bool ok, c
             it.state = QueueItem::State::Failed;
             it.error = LinkResolverCore::translateYtDlpError(error);
         }
+        if (!ok)
+            removeYtLeftovers(m_settings->downloadFolder(), it.ytBase);
         emit itemUpdated(id);
         finalize(id, ok);
     }
@@ -991,6 +1080,10 @@ void DownloadQueue::finalize(int id, bool success)
     auto found = m_items.find(id);
     if (found == m_items.end() || found->historyDone)
         return;
+    if (success && !found->destPath.isEmpty() && QFileInfo::exists(found->destPath))
+        FileDownloaderInternal::markFromInternet(found->destPath, found->media.url, found->media.referer.isEmpty()
+                                                                                       ? found->sourceUrl
+                                                                                       : found->media.referer);
     recordHistory(*found, success);
     emit itemFinished(id, success);
 }

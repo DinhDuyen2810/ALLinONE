@@ -10,7 +10,7 @@
 
 /// Phần THUẦN (không mạng, không tiến trình) của bộ phân giải link - tách riêng để test được bằng chuỗi/JSON
 /// mẫu lấy từ dữ liệu THẬT (xem tests/downloader_tests.cpp). LinkResolver (bất đồng bộ) ghép các hàm này lại
-/// thành quy trình: tệp trực tiếp -> Google Drive/Docs -> yt-dlp -> quét HTML sâu -> trình duyệt ẩn.
+/// thành quy trình: Google Drive/Docs -> tệp trực tiếp -> yt-dlp -> quét HTML sâu -> trình duyệt ẩn.
 namespace LinkResolverCore
 {
 enum class Site { Generic, Facebook, Instagram, TikTok, YouTube, GoogleDrive, GoogleDocs };

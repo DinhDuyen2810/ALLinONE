@@ -68,8 +68,7 @@ void PageMediaScanner::scan(const QString& pageUrl)
             const int status = thisReply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
             const QString contentType = thisReply->header(QNetworkRequest::ContentTypeHeader).toString();
             if (status >= 200 && status < 300 && !PageMediaScannerInternal::isHtmlContentType(contentType))
-                state->failure = QString("Địa chỉ này trả về một tệp (%1) chứ không phải trang web - hãy dán "
-                                         "nó vào ô nhập của tab Tải xuống rồi bấm \"+ Thêm vào hàng đợi\".").arg(contentType);
+                state->failure = QString("Địa chỉ này trả về một tệp (%1) chứ không phải trang web.").arg(contentType);
         }
         if (!state->failure.isEmpty() || state->truncated)
         {

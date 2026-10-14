@@ -43,7 +43,8 @@ struct VpnProfileMeta
     QString username; // chỉ để điền sẵn ô "Tên đăng nhập" lúc kết nối - mật khẩu KHÔNG BAO GIỜ được lưu
 };
 
-/// Liệt kê MỌI kết nối VPN Windows đang biết (không chỉ của riêng ứng dụng này) - đã ghép nhãn quốc
+/// Liệt kê các kết nối VPN Windows của NGƯỜI DÙNG hiện tại (Get-VpnConnection không kèm -AllUserConnection
+/// - kết nối tạo "cho mọi người dùng" không có ở đây), không chỉ của riêng ứng dụng này - đã ghép nhãn quốc
 /// gia + tên đăng nhập tự đặt (nếu có) từ vpn_profiles.json.
 QList<VpnConnectionStatus> listConnections(QString* error = nullptr);
 
@@ -52,7 +53,8 @@ QList<VpnConnectionStatus> listConnections(QString* error = nullptr);
 /// BÁO rằng không lưu được thông tin phụ.
 bool addConnection(const VpnProfile& profile, QString* error = nullptr);
 
-/// Xóa một kết nối VPN khỏi Windows + xóa thông tin phụ đã lưu.
+/// Xóa một kết nối VPN khỏi Windows + xóa thông tin phụ đã lưu. Trả về true nếu Windows đã xóa; khi đó
+/// *error (nếu khác rỗng) chỉ là CẢNH BÁO không cập nhật được tệp thông tin phụ.
 bool removeConnection(const QString& name, QString* error = nullptr);
 
 /// Đọc/ghi thông tin phụ đã lưu (không đụng gì tới kết nối VPN thật trong Windows). Ghi nguyên tử;
@@ -66,6 +68,8 @@ void setCountryLabel(const QString& name, const QString& countryLabel);
 // ---- Lõi thuần (không gọi PowerShell thật) - tách riêng để kiểm thử được bằng dữ liệu mẫu ----
 namespace internal
 {
+/// Tên biến môi trường mang khóa L2TP PSK vào powershell.exe (không đặt khóa trong script/dòng lệnh).
+inline constexpr const char kL2tpPskEnvVar[] = "ONEFORALL_L2TP_PSK";
 QList<VpnConnectionStatus> parseConnectionsJson(const QByteArray& json, QString* error);
 /// Thoát chuỗi để chèn vào giữa '...' trong script PowerShell - lớp bọc của
 /// PowerShellRunner::quoteLiteral (nhân đôi cả ' lẫn các dấu nháy cong U+2018/2019/201A/201B).

@@ -614,6 +614,18 @@ int main(int argc, char** argv)
         CHECK(!QRPayload::isAllowedMapsRedirectUrl(QUrl()));
     }
 
+    // ---- Hồi quy v1.19.23: mã WiFi THIẾU trường T: - suy theo mật khẩu, không mặc định WPA ----
+    {
+        const WifiInfo open = QRPayload::parseWifi("WIFI:S:Cafe;;");
+        CHECK(open.ssid == "Cafe" && open.security == "nopass" && open.password.isEmpty());
+        const WifiInfo withPass = QRPayload::parseWifi("WIFI:S:Nha;P:12345678;;");
+        CHECK(withPass.security == "WPA" && withPass.password == "12345678");
+        const WifiInfo emptyT = QRPayload::parseWifi("WIFI:T:;S:X;P:abc;;");
+        CHECK(emptyT.security == "nopass");
+        const WifiInfo wep = QRPayload::parseWifi("WIFI:T:WEP;S:X;P:abcde;;");
+        CHECK(wep.security == "WEP");
+    }
+
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

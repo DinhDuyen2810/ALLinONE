@@ -48,8 +48,8 @@ private:
 
 namespace CommandLauncherInternal
 {
-/// Văn bản thật sự được đặt lên Clipboard: thống nhất ký tự xuống dòng về '\n' và BỎ mọi dòng trắng/
-/// khoảng trắng ở đầu và cuối. Một ký tự xuống dòng ở cuối đủ để console chạy ngay cả lệnh MỘT dòng khi
+/// Văn bản thật sự được đặt lên Clipboard: thống nhất ký tự xuống dòng về '\n', BỎ các dòng trắng ở đầu
+/// và mọi khoảng trắng/dòng trắng ở CUỐI (thụt lề của dòng đầu tiên được giữ nguyên). Một ký tự xuống dòng ở cuối đủ để console chạy ngay cả lệnh MỘT dòng khi
 /// dán (tương đương bấm Enter hộ người dùng). Thuần chuỗi, test được.
 QString prepareForPaste(const QString& command);
 

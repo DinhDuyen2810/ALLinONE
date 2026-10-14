@@ -154,8 +154,8 @@ QWidget* QRGenerateTab::makeWifiPage()
     connect(m_wifiHidden, &QCheckBox::toggled, this, &QRGenerateTab::scheduleRefresh);
 
     // "Chọn từ WiFi đã lưu" - tự điền SSID/bảo mật/mật khẩu từ hồ sơ Windows đã lưu sẵn, đỡ phải tự gõ lại
-    // (yêu cầu người dùng). Danh sách được nạp LẠI mỗi lần chọn loại WiFi (xem onTypeChanged()), không phải
-    // một lần duy nhất ở đây - lúc constructor chạy, trang này còn chưa chắc được xem tới.
+    // (yêu cầu người dùng). Danh sách được nạp ở LẦN ĐẦU chọn loại WiFi (xem onTypeChanged()), không phải
+    // ở đây - lúc constructor chạy, trang này còn chưa chắc được xem tới.
     m_wifiSavedCombo = new QComboBox(w);
     m_wifiSavedCombo->setStyleSheet(QRUi::inputStyle());
     connect(m_wifiSavedCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &QRGenerateTab::onWifiProfileSelected);
@@ -573,11 +573,10 @@ void QRGenerateTab::onTypeChanged(int index)
     m_pages->adjustSize();
     // CHỈ nạp danh sách "WiFi đã lưu" một lần (lần đầu chuyển sang loại WiFi), không phải mỗi lần - đọc
     // mật khẩu dạng chữ cho MỌI hồ sơ không rẻ trên máy có nhiều hồ sơ đã lưu (xem comment m_wifiProfilesLoaded).
+    // Chỉ coi là "đã nạp" khi mở được dịch vụ WLAN - lần đầu thất bại (dịch vụ WLAN AutoConfig chưa chạy,
+    // adapter đang tắt) thì lần chọn WiFi sau thử lại, thay vì để trống danh sách tới khi đóng cửa sổ.
     if (currentType() == QRContentType::Wifi && !m_wifiProfilesLoaded)
-    {
-        refreshWifiSavedProfiles();
-        m_wifiProfilesLoaded = true;
-    }
+        m_wifiProfilesLoaded = refreshWifiSavedProfiles();
     refresh();
 }
 
@@ -828,7 +827,7 @@ void QRGenerateTab::onCopy()
 
 // ---------------------------------------------------------------- WiFi đã lưu / Vị trí
 
-void QRGenerateTab::refreshWifiSavedProfiles()
+bool QRGenerateTab::refreshWifiSavedProfiles()
 {
     m_wifiSavedCombo->blockSignals(true);
     m_wifiSavedCombo->clear();
@@ -840,7 +839,7 @@ void QRGenerateTab::refreshWifiSavedProfiles()
     if (!m_wlan->isOpen() && !m_wlan->open())
     {
         m_wifiSavedCombo->blockSignals(false);
-        return; // không có dịch vụ WLAN trên máy - để trống, vẫn nhập tay bình thường
+        return false; // không có dịch vụ WLAN trên máy - để trống, vẫn nhập tay bình thường
     }
 
     const QList<WifiAdapterInfo> adapters = m_wlan->adapters();
@@ -856,6 +855,7 @@ void QRGenerateTab::refreshWifiSavedProfiles()
         }
     }
     m_wifiSavedCombo->blockSignals(false);
+    return !adapters.isEmpty();
 }
 
 void QRGenerateTab::onWifiProfileSelected(int index)
@@ -893,7 +893,10 @@ void QRGenerateTab::onWifiProfileSelected(int index)
         // xác nhận; hộp thoại chặn còn có nguy cơ treo kiểm thử tự động nếu chạy trên máy thật có hồ sơ
         // thiếu quyền đọc mật khẩu. Hiện ngay dưới combo, tự ẩn khi chọn mục khác không bị thiếu quyền.
         m_wifiSavedStatus->setText(
-            p.passwordAccessDenied
+            p.security == WifiSecurity::Enterprise
+                ? "ℹ Hồ sơ doanh nghiệp (802.1X) không dùng một mật khẩu chung - mã QR WiFi không chứa được thông tin "
+                  "đăng nhập loại này."
+            : p.passwordAccessDenied
                 ? "⚠ Windows từ chối cấp mật khẩu dạng chữ cho hồ sơ này (cần quyền Administrator để đọc) - "
                   "đã điền SSID/bảo mật, hãy tự nhập mật khẩu."
                 : "ℹ Hồ sơ này không có mật khẩu lưu sẵn - hãy tự nhập nếu cần.");

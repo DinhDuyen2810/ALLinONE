@@ -24,4 +24,5 @@ private:
     QLineEdit* m_serverEdit{nullptr};
     QComboBox* m_tunnelTypeCombo{nullptr};
     QLineEdit* m_usernameEdit{nullptr};
+    QLineEdit* m_pskEdit{nullptr};
 };

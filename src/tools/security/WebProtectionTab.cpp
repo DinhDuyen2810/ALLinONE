@@ -12,7 +12,10 @@
 #include <QListWidget>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QThread>
 #include <QVBoxLayout>
+
+#include <memory>
 
 WebProtectionTab::WebProtectionTab(QWidget* parent)
     : QWidget(parent)
@@ -21,6 +24,36 @@ WebProtectionTab::WebProtectionTab(QWidget* parent)
     updateElevationBanner();
     refreshStatus();
     refreshBlocklist();
+}
+
+WebProtectionTab::~WebProtectionTab()
+{
+    if (m_bgThread)
+    {
+        m_bgThread->wait(); // lệnh PowerShell có giới hạn thời gian riêng - không hủy QThread đang chạy
+        delete m_bgThread;
+        m_bgThread = nullptr;
+    }
+}
+
+void WebProtectionTab::runInBackground(std::function<void()> work, std::function<void()> done)
+{
+    m_refreshBtn->setEnabled(false);
+    m_toggleBtn->setEnabled(false);
+    m_bgThread = QThread::create(std::move(work));
+    connect(m_bgThread, &QThread::finished, this, [this, done]() {
+        m_bgThread->deleteLater();
+        m_bgThread = nullptr;
+        m_refreshBtn->setEnabled(true);
+        m_toggleBtn->setEnabled(true);
+        done();
+        if (m_refreshQueued && !m_bgThread)
+        {
+            m_refreshQueued = false;
+            refreshStatus();
+        }
+    });
+    m_bgThread->start();
 }
 
 void WebProtectionTab::buildUi()
@@ -128,6 +161,12 @@ void WebProtectionTab::updateElevationBanner()
 
 void WebProtectionTab::onRelaunchElevatedClicked()
 {
+    if (m_bgThread)
+    {
+        QMessageBox::information(this, "Chạy lại với quyền Quản trị",
+                                 "Đang đọc/đổi trạng thái Windows Defender - đợi xong (vài giây) rồi thử lại.");
+        return;
+    }
     // qApp->quit() ở cuối hàm này KHÔNG tự gọi closeEvent() của các cửa sổ tool KHÁC đang mở (xem
     // MainWindow.cpp) - nếu một cửa sổ khác (vd Disk Cleanup) đang đổi kích thước phân vùng thật, buộc
     // thoát ngay bây giờ sẽ TerminateProcess giữa chừng một thao tác không an toàn để hủy - CHẶN trước.
@@ -163,8 +202,21 @@ void WebProtectionTab::onRefreshClicked()
 
 void WebProtectionTab::refreshStatus()
 {
-    QString error;
-    m_lastStatus = DefenderController::getStatus(&error);
+    if (m_bgThread)
+    {
+        m_refreshQueued = true;
+        return;
+    }
+    m_statusLabel->setText("⏳ Đang đọc trạng thái Windows Defender...");
+    auto status = std::make_shared<DefenderController::DefenderStatus>();
+    auto error = std::make_shared<QString>();
+    runInBackground([status, error]() { *status = DefenderController::getStatus(error.get()); },
+                    [this, status, error]() { applyStatus(*status, *error); });
+}
+
+void WebProtectionTab::applyStatus(const DefenderController::DefenderStatus& status, const QString& error)
+{
+    m_lastStatus = status;
 
     if (!error.isEmpty())
     {
@@ -204,29 +256,36 @@ void WebProtectionTab::refreshStatus()
 
 void WebProtectionTab::onToggleNetworkProtectionClicked()
 {
+    if (m_bgThread)
+        return; // nút đã bị khóa - lưới an toàn
     const bool wantEnable = !m_lastStatus.networkProtectionEnabled();
-    m_toggleBtn->setEnabled(false);
-    QString error;
-    bool verified = false;
-    DefenderController::setNetworkProtectionEnabled(wantEnable, &verified, &error);
-    m_toggleBtn->setEnabled(true);
-
-    refreshStatus();
-
-    if (verified == wantEnable)
-    {
-        m_statusLabel->setText(m_statusLabel->text() + (wantEnable ? "  ✓ Đã bật." : "  ✓ Đã tắt."));
-    }
-    else
-    {
-        QMessageBox::warning(this, "Network Protection",
-            "Thay đổi KHÔNG áp dụng được - trạng thái thật hiện tại vẫn là \"" +
-                (m_lastStatus.networkProtectionEnabled() ? QString("Đang bật") : QString("Đang tắt")) + "\"." +
-                (error.isEmpty() ? "" : ("\n\nChi tiết: " + error)) +
-                (m_lastStatus.isTamperProtected ? "\n\nNhiều khả năng do Tamper Protection đang chặn - xem "
-                                                  "cảnh báo phía trên."
-                                                : ""));
-    }
+    auto verified = std::make_shared<bool>(false);
+    auto error = std::make_shared<QString>();
+    auto status = std::make_shared<DefenderController::DefenderStatus>();
+    auto statusError = std::make_shared<QString>();
+    m_statusLabel->setText(wantEnable ? "⏳ Đang bật Network Protection..." : "⏳ Đang tắt Network Protection...");
+    runInBackground(
+        [wantEnable, verified, error, status, statusError]() {
+            DefenderController::setNetworkProtectionEnabled(wantEnable, verified.get(), error.get(), status.get(),
+                                                            statusError.get());
+        },
+        [this, wantEnable, verified, error, status, statusError]() {
+            applyStatus(*status, *statusError);
+            if (*verified == wantEnable)
+            {
+                m_statusLabel->setText(m_statusLabel->text() + (wantEnable ? "  ✓ Đã bật." : "  ✓ Đã tắt."));
+            }
+            else
+            {
+                QMessageBox::warning(this, "Network Protection",
+                    "Thay đổi KHÔNG áp dụng được - trạng thái thật hiện tại vẫn là \"" +
+                        (m_lastStatus.networkProtectionEnabled() ? QString("Đang bật") : QString("Đang tắt")) + "\"." +
+                        (error->isEmpty() ? "" : ("\n\nChi tiết: " + *error)) +
+                        (m_lastStatus.isTamperProtected ? "\n\nNhiều khả năng do Tamper Protection đang chặn - xem "
+                                                          "cảnh báo phía trên."
+                                                        : ""));
+            }
+        });
 }
 
 void WebProtectionTab::refreshBlocklist()

@@ -87,10 +87,10 @@ private:
     void updateColorButtons();
     void setPreviewMessage(const QString& msg);
     void updatePreviewPixmap();
-    /// Nạp lại danh sách "WiFi đã lưu" từ adapter WLAN đầu tiên của máy (gọi mỗi lần đổi sang loại WiFi -
-    /// hồ sơ có thể đổi trong lúc cửa sổ QR vẫn mở). Không báo lỗi gì nếu không có dịch vụ WLAN/adapter -
-    /// combo chỉ còn mỗi mục mặc định, người dùng vẫn nhập tay bình thường.
-    void refreshWifiSavedProfiles();
+    /// Nạp danh sách "WiFi đã lưu" từ adapter WLAN đầu tiên của máy (lần đầu chọn loại WiFi). Không báo lỗi
+    /// gì nếu không có dịch vụ WLAN/adapter - combo chỉ còn mỗi mục mặc định, người dùng vẫn nhập tay bình
+    /// thường. Trả về false khi không mở được WLAN/không có adapter (lần chọn WiFi sau sẽ thử lại).
+    bool refreshWifiSavedProfiles();
 
     QTimer* m_timer{nullptr};
     QComboBox* m_typeCombo{nullptr};

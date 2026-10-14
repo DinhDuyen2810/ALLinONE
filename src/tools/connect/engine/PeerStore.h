@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QJsonObject>
 #include <QList>
 #include <QObject>
 #include <QString>
@@ -53,5 +54,10 @@ private:
 
     QString m_path;
     QList<PairedPeer> m_peers;
+    /// Mục trong tệp mà khóa DPAPI KHÔNG mở được lúc nạp (hồ sơ Windows tạm lỗi, tệp chép từ tài khoản khác...).
+    /// Trước đây bị bỏ qua lúc nạp rồi MẤT HẲN ở lần lưu kế tiếp - một lỗi DPAPI thoáng qua xóa vĩnh viễn máy đã
+    /// ghép đôi. Nay được ghi lại NGUYÊN VẸN (trừ khi máy đó đã được ghép đôi lại - có mục mới cùng id).
+    QList<QJsonObject> m_unreadableEntries;
+    void dropUnreadable(const QString& id);
     mutable QString m_lastSaveError;
 };

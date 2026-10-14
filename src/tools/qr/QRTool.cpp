@@ -5,7 +5,7 @@
 
 QString QRTool::description() const
 {
-    return "Tạo mã QR (văn bản, URL, WiFi, Email, SMS, Điện thoại, Vị trí, vCard) với màu sắc, logo, xuất PNG/JPG/SVG; "
+    return "Tạo mã QR (văn bản, URL, WiFi, Điện thoại, Vị trí) với màu sắc, logo, xuất PNG/JPG/SVG; "
            "quét mã QR từ ảnh, clipboard, màn hình hoặc camera; lưu lịch sử.";
 }
 

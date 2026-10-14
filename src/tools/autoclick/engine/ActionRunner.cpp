@@ -13,7 +13,14 @@ ActionRunner::ActionRunner(QObject* parent)
 ActionRunner::~ActionRunner()
 {
     requestStop();
-    wait(3000);
+    // Hủy một QThread còn đang chạy là hành vi không xác định (Qt in "Destroyed while thread is still
+    // running" rồi abort) - trước đây kết quả wait(3000) bị bỏ qua. Luồng kiểm tra cờ dừng mỗi ≤50ms nên
+    // thực tế dừng gần như ngay; nếu quá hạn thì ghi log và CHỜ HẲN thay vì để tiến trình sập.
+    if (!wait(5000))
+    {
+        Logger::instance().warning("AutoClick", "ActionRunner chưa dừng sau 5 giây - tiếp tục chờ luồng kết thúc.");
+        wait();
+    }
 }
 
 void ActionRunner::setChain(const ActionChain& chain)
@@ -234,7 +241,7 @@ void ActionRunner::run()
             const auto& act = m_chain.actions[static_cast<size_t>(sourceIndex)];
             QString nextDesc = (i + 1 < enabledIndices.size())
                                    ? m_chain.actions[static_cast<size_t>(enabledIndices[i + 1])].description()
-                                   : (currentRound < totalRounds || totalRounds == -1 ? "Next Round" : "End");
+                                   : (currentRound < totalRounds || totalRounds == -1 ? "Vòng kế tiếp" : "Kết thúc");
 
             int targetX = act.x;
             int targetY = act.y;

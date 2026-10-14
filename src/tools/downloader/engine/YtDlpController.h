@@ -18,6 +18,8 @@ namespace YtDlpController
 {
 QString ytDlpExecutablePath();
 QString ffmpegDirectoryPath(); // thư mục chứa ffmpeg.exe/ffprobe.exe - truyền cho --ffmpeg-location
+/// Có ffmpeg.exe đóng gói kèm không - thiếu thì yt-dlp không ghép được hình+tiếng tách rời.
+bool hasFfmpeg();
 bool isBundleAvailable(QString* missingWhat = nullptr);
 
 /// Chỉ nhận địa chỉ http(s):// hợp lệ, không chứa khoảng trắng/ký tự điều khiển. Ô nhập URL là chuỗi tự

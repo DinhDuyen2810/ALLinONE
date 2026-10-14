@@ -466,7 +466,22 @@ bool WlanController::connectWithPassword(const QString& adapterGuid, const WifiN
     }
 
     const HANDLE handle = static_cast<HANDLE>(m_handle);
-    const QString profileName = network.ssid;
+    // Mạng đã có hồ sơ mang tên KHÁC SSID (vd "Nha 2" do Windows tự đặt khi trùng tên, hoặc hồ sơ nhập từ
+    // XML): dùng lại ĐÚNG hồ sơ đó. Trước đây luôn lấy SSID làm tên nên "Mật khẩu khác..." tạo thêm một hồ
+    // sơ thứ hai cho cùng mạng, hồ sơ cũ (mật khẩu sai) vẫn nằm lại và Windows có thể tiếp tục chọn nó.
+    // describesSsid() bên dưới vẫn chặn trường hợp tên đó hóa ra thuộc mạng khác.
+    QString profileName = (network.hasProfile && !network.profileName.isEmpty() &&
+                           WlanProfileXml::isSafeProfileName(network.profileName))
+                              ? network.profileName
+                              : network.ssid;
+    if (profileName != network.ssid)
+    {
+        // Hồ sơ đó do Group Policy quản lý thì không sửa được - giữ hành vi cũ (tạo hồ sơ riêng mang tên SSID)
+        // thay vì từ chối kết nối.
+        DWORD flags = 0;
+        if (readProfileXml(handle, guid, profileName, 0, nullptr, &flags) == ERROR_SUCCESS && (flags & WLAN_PROFILE_GROUP_POLICY))
+            profileName = network.ssid;
+    }
 
     // ---- Sao lưu hồ sơ cùng tên (nếu có) TRƯỚC khi ghi đè ----
     // WlanSetProfile(bOverwrite=TRUE) bên dưới thay hẳn hồ sơ cũ bằng hồ sơ mang mật khẩu vừa nhập, TRƯỚC
@@ -513,7 +528,7 @@ bool WlanController::connectWithPassword(const QString& adapterGuid, const WifiN
     const DWORD profileFlags = saved.perUser ? WLAN_PROFILE_USER : 0;
 
     const QString xml = WlanProfileXml::build(network.ssidBytes, network.ssid, securityOverride, password, autoConnect,
-                                              network.hidden);
+                                              network.hidden, profileName);
 
     DWORD reason = 0;
     const DWORD setRes = WlanSetProfile(handle, &guid, profileFlags,

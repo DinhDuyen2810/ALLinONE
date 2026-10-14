@@ -54,7 +54,8 @@ DefenderStatus getStatus(QString* error)
     return status;
 }
 
-bool setRealtimeProtectionEnabled(bool enabled, bool* verifiedState, QString* error)
+bool setRealtimeProtectionEnabled(bool enabled, bool* verifiedState, QString* error, DefenderStatus* readBack,
+                                  QString* readBackError)
 {
     bool ok = false;
     PowerShellRunner::run(internal::buildSetRealtimeMonitoringScript(enabled), &ok, error);
@@ -64,12 +65,19 @@ bool setRealtimeProtectionEnabled(bool enabled, bool* verifiedState, QString* er
     const auto status = getStatus(&readErr);
     if (verifiedState)
         *verifiedState = status.realTimeProtectionEnabled;
+    if (readBack)
+        *readBack = status;
+    if (readBackError)
+        *readBackError = readErr;
     if (!readErr.isEmpty() && error && error->isEmpty())
         *error = readErr;
-    return ok && verifiedState && *verifiedState == enabled;
+    // Kết quả dựa trên trạng thái ĐỌC LẠI, không phụ thuộc nơi gọi có truyền verifiedState hay không -
+    // trước đây truyền nullptr thì hàm luôn trả false kể cả khi đã đổi thành công.
+    return ok && readErr.isEmpty() && status.realTimeProtectionEnabled == enabled;
 }
 
-bool setNetworkProtectionEnabled(bool enabled, bool* verifiedEnabled, QString* error)
+bool setNetworkProtectionEnabled(bool enabled, bool* verifiedEnabled, QString* error, DefenderStatus* readBack,
+                                 QString* readBackError)
 {
     bool ok = false;
     PowerShellRunner::run(internal::buildSetNetworkProtectionScript(enabled), &ok, error);
@@ -77,9 +85,14 @@ bool setNetworkProtectionEnabled(bool enabled, bool* verifiedEnabled, QString* e
     const auto status = getStatus(&readErr);
     if (verifiedEnabled)
         *verifiedEnabled = status.networkProtectionEnabled();
+    if (readBack)
+        *readBack = status;
+    if (readBackError)
+        *readBackError = readErr;
     if (!readErr.isEmpty() && error && error->isEmpty())
         *error = readErr;
-    return ok && verifiedEnabled && *verifiedEnabled == enabled;
+    // Như setRealtimeProtectionEnabled(): không phụ thuộc nơi gọi có truyền verifiedEnabled hay không.
+    return ok && readErr.isEmpty() && status.networkProtectionEnabled() == enabled;
 }
 
 QList<ThreatRecord> listThreats(QString* error)

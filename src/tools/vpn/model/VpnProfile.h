@@ -16,7 +16,7 @@ enum class VpnTunnelType
 
 /// Một hồ sơ kết nối VPN do NGƯỜI DÙNG tự khai báo - địa chỉ máy chủ, tài khoản từ chính nhà cung cấp
 /// VPN họ đã đăng ký (hoặc VPN cơ quan/tự dựng). KHÔNG có máy chủ nào được ứng dụng này tự cung cấp sẵn
-/// - xem AndroidControlWindow... (tương tự) - đây chỉ là lớp quản lý/kết nối, không phải dịch vụ VPN.
+/// - đây chỉ là lớp quản lý/kết nối, không phải dịch vụ VPN.
 struct VpnProfile
 {
     QString name;          // tên hiển thị, vd "Hà Lan - Mullvad" - cũng là tên kết nối VPN trong Windows
@@ -24,4 +24,7 @@ struct VpnProfile
     QString serverAddress; // địa chỉ máy chủ VPN, vd "nl123.mullvad.net" hoặc IP
     VpnTunnelType tunnelType{VpnTunnelType::Ikev2};
     QString username;      // tên đăng nhập - mật khẩu KHÔNG lưu ở đây, xem VpnController.h
+    /// Khóa chia sẻ trước (PSK) của L2TP/IPsec - chỉ chuyển cho Windows lúc tạo kết nối (Add-VpnConnection
+    /// -L2tpPsk, Windows tự lưu), KHÔNG ghi vào vpn_profiles.json. Rỗng = không dùng (vd xác thực bằng chứng chỉ).
+    QString l2tpPsk;
 };

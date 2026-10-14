@@ -52,7 +52,8 @@ struct QueueItem
 };
 
 /// HÀNG ĐỢI TẢI HỢP NHẤT của công cụ Downloader:
-///  - addSource(): người dùng dán link -> thêm vào hàng đợi, CHƯA TẢI; bộ phân giải (LinkResolver) kiểm tra link và
+///  - addSource(): thêm một link (dùng trong kiểm thử; giao diện đưa kết quả nút "Quét" vào bằng addResolved()/addFailed())
+///    -> CHƯA TẢI; bộ phân giải (LinkResolver) kiểm tra link và
 ///    đánh dấu OK (ra được tệp/video để tải) hoặc ERR (kèm lý do). Một link có thể bung thành NHIỀU mục (hồ sơ, danh sách
 ///    phát, nhiều ảnh trong bài đăng).
 ///  - startItems(): chỉ các mục OK mới được tải; tệp HTTP đi qua FileDownloader, video/luồng đi qua yt-dlp, tài liệu Google
@@ -120,6 +121,8 @@ private:
     void pumpResolve();
     void onResolved(int id, const ResolveResult& result, QList<int>* createdIds = nullptr);
     bool startPhotoCheck(int id);
+    void pumpPhotoChecks();
+    void launchPhotoCheck(int id);
     void onPhotoChecked(int id, const ResolveResult& result);
     void insertItem(const QueueItem& item, int afterId);
     bool startHttp(int id);
@@ -137,6 +140,11 @@ private:
     QString chooseHttpDestPath(const QueueItem& item) const;
     QString uniqueYtBase(const QueueItem& item) const;
     int findItemByMediaUrl(const QString& url) const;
+public:
+    /// Xóa tệp tạm (.part/.ytdl/.part-FragN/.temp) mà yt-dlp để lại cho tiền tố `base` trong `dir` - gọi khi tải
+    /// yt-dlp bị hủy/thất bại. Công khai để kiểm thử.
+    static void removeYtLeftovers(const QString& dir, const QString& base);
+private:
 
     DownloaderSettings* m_settings{nullptr};
     DownloadHistoryStore* m_history{nullptr};
@@ -148,6 +156,7 @@ private:
 
     QHash<int, LinkResolver*> m_resolvers; ///< id -> bộ phân giải đang chạy
     QHash<int, LinkResolver*> m_photoChecks; ///< id -> kiểm tra "bài ảnh hay video" ngay trước khi tải (hồ sơ TikTok)
+    QList<int> m_photoQueue;                 ///< mục chờ tới lượt kiểm tra (tối đa kMaxPhotoChecks chạy cùng lúc)
     QList<int> m_resolveQueue;
     QHash<int, int> m_httpToItem;
     bool m_enqueueingOwn{false};

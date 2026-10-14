@@ -31,7 +31,7 @@ void YtDlpInfoWorker::run()
 
     QProcess proc;
     proc.setProgram(exe);
-    proc.setArguments(YtDlpInfoWorkerInternal::buildArguments(m_url));
+    proc.setArguments(YtDlpInfoWorkerInternal::buildArguments(m_url, m_extraArgs));
     proc.start();
     if (!proc.waitForStarted(5000))
     {
@@ -92,13 +92,16 @@ void YtDlpInfoWorker::run()
 namespace YtDlpInfoWorkerInternal
 {
 
-QStringList buildArguments(const QString& url)
+QStringList buildArguments(const QString& url, const QStringList& extraArgs)
 {
     // --ignore-config: không nạp tệp cấu hình yt-dlp của người dùng/cạnh exe (có thể chứa --exec...).
     // --no-playlist: nếu URL vừa là video vừa thuộc playlist (vd link watch?v=...&list=...), chỉ lấy
     // thông tin VIDEO ĐÓ - tránh vô tình kéo theo metadata cả playlist khi người dùng chỉ muốn 1 video.
     // "--": mọi thứ sau đó là địa chỉ, không bao giờ là tùy chọn.
-    return {"--ignore-config", "--no-playlist", "--simulate", "-j", "--", url};
+    QStringList a = {"--ignore-config", "--no-playlist", "--simulate", "-j"};
+    a << extraArgs;
+    a << "--" << url;
+    return a;
 }
 
 VideoInfo parseInfoJson(const QByteArray& json, QString* error)

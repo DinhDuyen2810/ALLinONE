@@ -4,6 +4,7 @@
 
 #include <QByteArray>
 #include <QHash>
+#include <QSet>
 #include <QObject>
 #include <QSet>
 #include <functional>
@@ -54,6 +55,10 @@ public:
     void start(int id);
     void pause(int id);
     void cancel(int id);
+    /// Bỏ hẳn một mục khỏi bộ tải (hủy trước nếu đang tải/chờ/tạm dừng; tệp ĐÃ tải xong được giữ nguyên trên
+    /// đĩa). Trước đây không có cách nào gỡ mục: xóa dòng ở hàng đợi vẫn để mục nằm lại mãi - bộ nhớ tăng dần,
+    /// và isDestPathInUse() tiếp tục "giữ chỗ" tên tệp của dòng đã xóa nên lần tải sau bị đổi tên thành " (1)".
+    void forget(int id);
 
     /// Số lượng tải đồng thời tối đa (mặc định 3) - các mục còn lại trong hàng đợi tự động bắt đầu khi
     /// có "chỗ trống" (một tải khác hoàn tất/thất bại/bị hủy).
@@ -88,6 +93,7 @@ private:
     QHash<int, QByteArray> m_validators; ///< ETag mạnh/Last-Modified của phần đang nằm trong tệp .part
     QSet<int> m_compressedOnly;          ///< Mục mà máy chủ trả bản nén dù được xin bản không nén (xem .cpp)
     QList<int> m_order;
+    QSet<int> m_forgotten; ///< forget() gọi lúc phản hồi còn chạy - gỡ hẳn khỏi m_items khi slot finished chạy
     int m_nextId{1};
     int m_maxConcurrent{3};
     bool m_shuttingDown{false};
@@ -126,4 +132,13 @@ bool parseContentRange(const QByteArray& header, qint64* start, qint64* total);
 /// Giá trị dùng cho If-Range ở lần tiếp tục sau: ETag MẠNH nếu có (ETag yếu "W/..." không được phép
 /// dùng với If-Range), không thì Last-Modified, không có cả hai thì rỗng (= không tiếp tục được).
 QByteArray pickResumeValidator(const QByteArray& etag, const QByteArray& lastModified);
+/// Gắn "Mark of the Web" (luồng dữ liệu NTFS `<tệp>:Zone.Identifier`, ZoneId=3 = Internet) cho tệp vừa tải - như
+/// trình duyệt làm, để Windows SmartScreen/Office Protected View vẫn cảnh báo khi mở tệp tải từ mạng. Trước đây
+/// Downloader không gắn: một tệp .exe tải về chạy thẳng không có cảnh báo nào. Địa chỉ ghi kèm đã bỏ phần truy vấn/
+/// thông tin đăng nhập. Trả false khi ổ không hỗ trợ (FAT32/exFAT) - không phải lỗi tải.
+bool markFromInternet(const QString& path, const QString& hostUrl, const QString& referrerUrl = QString());
+/// Nội dung `<tệp>:Zone.Identifier` (rỗng nếu không có) - dùng cho kiểm thử.
+QByteArray readZoneIdentifier(const QString& path);
+/// Tệp có phần mở rộng chạy được/kịch bản (exe, msi, bat, ps1, js, lnk...) - mở loại này từ ứng dụng phải hỏi trước.
+bool isRiskyToOpen(const QString& path);
 } // namespace FileDownloaderInternal

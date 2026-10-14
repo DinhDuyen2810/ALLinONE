@@ -7,6 +7,7 @@
 #include <raserror.h>
 
 #include <atomic>
+#include <mutex>
 #include <cstring>
 #include <vector>
 
@@ -24,25 +25,36 @@ void wipe(QString& secret)
 }
 
 // Trạng thái do hàm gọi lại của RasDial báo về (chạy trên luồng của RAS). Hàm gọi lại kiểu 1 không có
-// tham số ngữ cảnh nên phải dùng biến toàn cục; mỗi giá trị được gắn với HRASCONN của nó và CHỈ được
-// dùng khi trùng với phiên đang chờ - một lần gọi lại muộn của phiên trước không làm hỏng phiên sau.
-std::atomic<quintptr> g_callbackConn{0};
-std::atomic<quint32> g_callbackError{0};
-std::atomic<bool> g_callbackConnected{false};
-std::atomic<bool> g_callbackDisconnected{false};
+// tham số ngữ cảnh nên phải dùng biến toàn cục. Trước đây là 4 biến atomic RỜI nhau và chỉ HRASCONN được
+// gắn với phiên: một lần gọi lại muộn của phiên TRƯỚC (đến sau khi phiên mới đã đặt lại cờ) ghi mã lỗi của
+// nó vào g_callbackError, rồi lần gọi lại kế tiếp của phiên MỚI đổi g_callbackConn sang phiên mới - phiên
+// mới đọc được mã lỗi của phiên cũ và báo thất bại sai. Nay cả bộ giá trị đổi cùng lúc dưới một khóa, và
+// đổi sang HRASCONN khác thì xóa sạch giá trị của HRASCONN cũ.
+struct CallbackState
+{
+    quintptr conn{0};
+    quint32 error{0};
+    bool connected{false};
+    bool disconnected{false};
+};
+std::mutex g_callbackMutex;
+CallbackState g_callback;
 
 static_assert(VpnConnector::kRasStateConnected == static_cast<quint32>(RASCS_Connected), "RASCS_Connected");
 static_assert(VpnConnector::kRasStateDisconnected == static_cast<quint32>(RASCS_Disconnected), "RASCS_Disconnected");
 
 VOID WINAPI dialCallback(HRASCONN conn, UINT, RASCONNSTATE state, DWORD error, DWORD)
 {
-    g_callbackConn = reinterpret_cast<quintptr>(conn);
+    std::lock_guard<std::mutex> lock(g_callbackMutex);
+    const quintptr handle = reinterpret_cast<quintptr>(conn);
+    if (g_callback.conn != handle)
+        g_callback = CallbackState{handle, 0, false, false};
     if (error != 0)
-        g_callbackError = error;
+        g_callback.error = error;
     if (state == RASCS_Connected)
-        g_callbackConnected = true;
+        g_callback.connected = true;
     else if (state == RASCS_Disconnected)
-        g_callbackDisconnected = true;
+        g_callback.disconnected = true;
 }
 
 /// Gác máy rồi CHỜ tới khi Windows thật sự giải phóng phiên (RasGetConnectStatus trả ERROR_INVALID_HANDLE)
@@ -237,10 +249,10 @@ bool VpnConnector::doConnect(QString& password, QString* message)
     }
     wipe(password); // đã chép sang params - bản QString không còn cần nữa
 
-    g_callbackConn = 0;
-    g_callbackError = 0;
-    g_callbackConnected = false;
-    g_callbackDisconnected = false;
+    {
+        std::lock_guard<std::mutex> lock(g_callbackMutex);
+        g_callback = CallbackState{};
+    }
 
     // Kiểu thông báo 1 (RasDialFunc1) = KHÔNG ĐỒNG BỘ: RasDial trả về ngay, tiến độ/lỗi báo qua hàm gọi
     // lại. Sổ danh bạ nullptr = sổ mặc định của người dùng (nơi Add-VpnConnection tạo kết nối per-user).
@@ -258,11 +270,16 @@ bool VpnConnector::doConnect(QString& password, QString* message)
         timer.start();
         while (true)
         {
-            const bool callbackIsOurs = g_callbackConn.load() == reinterpret_cast<quintptr>(conn);
             DialPoll poll;
-            poll.callbackError = callbackIsOurs ? g_callbackError.load() : 0;
-            poll.callbackConnected = callbackIsOurs && g_callbackConnected.load();
-            poll.callbackDisconnected = callbackIsOurs && g_callbackDisconnected.load();
+            {
+                std::lock_guard<std::mutex> lock(g_callbackMutex);
+                if (g_callback.conn == reinterpret_cast<quintptr>(conn))
+                {
+                    poll.callbackError = g_callback.error;
+                    poll.callbackConnected = g_callback.connected;
+                    poll.callbackDisconnected = g_callback.disconnected;
+                }
+            }
 
             RASCONNSTATUSW status;
             std::memset(&status, 0, sizeof(status));

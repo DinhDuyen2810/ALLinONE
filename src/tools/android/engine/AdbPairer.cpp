@@ -53,6 +53,25 @@ bool AdbPairer::pair(const QString& ipAndPairPort, const QString& pairingCode)
         return true;
     }
 
+    m_connectMode = false;
+    return startAdb({"pair", ipAndPairPort, pairingCode});
+}
+
+bool AdbPairer::connectDevice(const QString& ipAndPort)
+{
+    if (isBusy())
+        return false;
+    if (!AdbController::isValidIpAndPort(ipAndPort))
+    {
+        emit finished(false, "Địa chỉ kết nối không hợp lệ - cần dạng IP:Cổng, vd 192.168.1.23:37155.");
+        return true;
+    }
+    m_connectMode = true;
+    return startAdb({"connect", ipAndPort});
+}
+
+bool AdbPairer::startAdb(const QStringList& arguments)
+{
     const QString adbPath = AdbController::adbExecutablePath();
     if (adbPath.isEmpty())
     {
@@ -77,8 +96,12 @@ bool AdbPairer::pair(const QString& ipAndPairPort, const QString& pairingCode)
                         return;
                     }
                     QString error;
-                    const bool ok = AdbController::internal::interpretPairResult(status == QProcess::NormalExit, exitCode,
-                                                                                 out, err, &error);
+                    const bool ok =
+                        m_connectMode
+                            ? AdbController::internal::interpretConnectResult(status == QProcess::NormalExit, exitCode,
+                                                                              out, err, &error)
+                            : AdbController::internal::interpretPairResult(status == QProcess::NormalExit, exitCode,
+                                                                           out, err, &error);
                     emit finished(ok, error);
                 });
         connect(m_process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError processError) {
@@ -95,7 +118,7 @@ bool AdbPairer::pair(const QString& ipAndPairPort, const QString& pairingCode)
     m_timedOut = false;
     m_cancelled = false;
     m_process->setProgram(adbPath);
-    m_process->setArguments({"pair", ipAndPairPort, pairingCode});
+    m_process->setArguments(arguments);
     m_process->start();
     m_timeoutTimer->start();
     return true;

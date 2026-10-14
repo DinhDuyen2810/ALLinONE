@@ -47,19 +47,23 @@ DefenderStatus getStatus(QString* error = nullptr);
 /// phải trạng thái mong muốn) - nếu khác giá trị `enabled` yêu cầu, rất có thể do Tamper Protection chặn
 /// âm thầm, KHÔNG phải lỗi của ứng dụng. UI phải hiển thị đúng `*verifiedState`, không hiển thị theo ý
 /// định người dùng vừa bấm.
-bool setRealtimeProtectionEnabled(bool enabled, bool* verifiedState, QString* error = nullptr);
+/// `readBack`/`readBackError` (tùy chọn): toàn bộ trạng thái đọc lại - nơi gọi không cần gọi getStatus() thêm lần nữa.
+bool setRealtimeProtectionEnabled(bool enabled, bool* verifiedState, QString* error = nullptr,
+                                  DefenderStatus* readBack = nullptr, QString* readBackError = nullptr);
 
 /// Bật/tắt Network Protection (chặn kết nối tới trang/máy chủ độc hại theo danh tiếng thời gian thực
 /// của Microsoft - đây là cơ chế THẬT đứng sau yêu cầu "chặn link độc hại ngay lúc truy vấn"). Cùng lưu
 /// ý về Tamper Protection như trên - luôn đọc lại `*verifiedEnabled` sau khi gọi.
-bool setNetworkProtectionEnabled(bool enabled, bool* verifiedEnabled, QString* error = nullptr);
+bool setNetworkProtectionEnabled(bool enabled, bool* verifiedEnabled, QString* error = nullptr,
+                                 DefenderStatus* readBack = nullptr, QString* readBackError = nullptr);
 
 /// Danh sách mối đe dọa Defender biết tới (Get-MpThreat - "danh mục" mối đe dọa duy nhất, khác
 /// Get-MpThreatDetection là lịch sử TỪNG LẦN phát hiện).
 QList<ThreatRecord> listThreats(QString* error = nullptr);
 
 /// Xóa TẤT CẢ mối đe dọa đang hoạt động (Remove-MpThreat - đã xác nhận cmdlet này KHÔNG nhận tham số
-/// chọn từng mục, luôn xóa toàn bộ). Cần quyền Administrator.
+/// chọn từng mục, luôn xóa toàn bộ). Windows có thể từ chối khi không chạy quyền Administrator (tùy mối
+/// đe dọa/chính sách) - lỗi khi đó được trả về qua *error.
 bool removeAllActiveThreats(QString* error = nullptr);
 
 namespace internal

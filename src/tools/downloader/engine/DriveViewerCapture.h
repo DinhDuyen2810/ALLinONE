@@ -64,6 +64,9 @@ private:
 
 namespace DriveViewerCaptureInternal
 {
+/// Số cổng DevTools trình duyệt đã ghi vào `<profileDir>/DevToolsActivePort` (dòng đầu) khi chạy với
+/// --remote-debugging-port=0; 0 nếu chưa có/không đọc được.
+quint16 readDevToolsPort(const QString& profileDir);
 /// Chỉ nhận https://drive.google.com/file/d/<ID>/view (hoặc mọi http/https nếu allowAny). Trả ID tệp (rỗng nếu allowAny và
 /// URL không phải Drive) qua `fileId`.
 bool isAllowedUrl(const QString& url, bool allowAny, QString* fileId = nullptr);

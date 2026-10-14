@@ -4,7 +4,7 @@
 
 QString AutoClickTool::description() const
 {
-    return "Tự động hóa chuỗi thao tác chuột và bàn phím chuyên nghiệp (Click, Drag, Hold, Type, Hotkey, Scroll) kèm HUD Overlay thông minh.";
+    return "Tự động hóa chuỗi thao tác chuột và bàn phím: click, kéo, giữ, gõ chữ, tổ hợp phím, nhấn phím, cuộn và ghi nhớ chuỗi thao tác thật, kèm HUD theo dõi khi chạy.";
 }
 
 QIcon AutoClickTool::icon() const

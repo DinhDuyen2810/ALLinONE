@@ -31,6 +31,7 @@ private:
     ConnectSessionController* m_controller{nullptr};
 
     QLabel* m_identityLabel{nullptr};
+    class QCheckBox* m_clipboardCheck{nullptr};
     QLabel* m_roleBanner{nullptr};
     QTabWidget* m_tabs{nullptr};
     PairingTab* m_pairingTab{nullptr};

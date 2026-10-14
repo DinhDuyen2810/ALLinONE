@@ -15,6 +15,7 @@ class QPlainTextEdit;
 class QPoint;
 class QPushButton;
 class QTableWidget;
+class QTimer;
 class DownloadQueue;
 class DownloaderSettings;
 class LinkResolver;
@@ -102,6 +103,7 @@ private:
 
     DownloadQueue* m_queue{nullptr};
     DownloaderSettings* m_settings{nullptr};
+    QTimer* m_summaryTimer{nullptr}; ///< gộp các lần làm mới dòng tóm tắt (xem onItemUpdated())
 
     QLabel* m_bundleBanner{nullptr};
     QPlainTextEdit* m_urlEdit{nullptr};

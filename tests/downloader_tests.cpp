@@ -917,7 +917,7 @@ int main(int argc, char** argv)
         const QStringList an = ytDlpAnalyzeArguments("https://www.facebook.com/x/videos/1", 50, {"--cookies-from-browser", "firefox"});
         CHECK(an.contains("--dump-single-json") && an.contains("--flat-playlist") && an.contains("--no-playlist"));
         CHECK(an.indexOf("--") > an.indexOf("--cookies-from-browser") && an.last() == "https://www.facebook.com/x/videos/1" && an[an.size() - 2] == "--");
-        CHECK(an.contains("--ignore-config") && an[an.indexOf("--playlist-end") + 1] == "50");
+        CHECK(an.contains("--ignore-config") && an[an.indexOf("--playlist-end") + 1] == "51"); // N+1 để phát hiện bị cắt
         const QStringList an2 = ytDlpAnalyzeArguments("https://www.tiktok.com/@kiue.oahn", 20, {});
         CHECK(!an2.contains("--no-playlist")); // hồ sơ: cần liệt kê nhiều mục
         CHECK(ytDlpAnalyzeArguments("https://x.com/-evil", 5, {}).last() == "https://x.com/-evil");
@@ -1909,6 +1909,80 @@ int main(int argc, char** argv)
             waitUntil([] { return false; }, 1500);
             CHECK(countTempDirs() <= tempBefore);
         }
+    }
+
+    // ---- Hồi quy v1.19.23: các sửa lỗi Downloader ----
+    {
+        QTemporaryDir tmp;
+        CHECK(tmp.isValid());
+
+        // Mark of the Web: tệp tải về mang Zone.Identifier ZoneId=3, địa chỉ đã bỏ truy vấn/thông tin đăng nhập.
+        const QString f = tmp.path() + "/tai-ve.exe";
+        { QFile w(f); CHECK(w.open(QIODevice::WriteOnly)); w.write("MZ"); }
+        const bool marked = FileDownloaderInternal::markFromInternet(f, "https://user:pw@cdn.example.com/a.exe?token=BIMAT#x",
+                                                                     "https://example.com/trang?ref=1");
+        if (marked) // ổ không phải NTFS (FAT32/exFAT) không có luồng dữ liệu phụ - bỏ qua phần kiểm nội dung
+        {
+            const QByteArray zone = FileDownloaderInternal::readZoneIdentifier(f);
+            CHECK(zone.contains("ZoneId=3"));
+            CHECK(zone.contains("HostUrl=https://cdn.example.com/a.exe"));
+            CHECK(zone.contains("ReferrerUrl=https://example.com/trang"));
+            CHECK(!zone.contains("BIMAT") && !zone.contains("pw@") && !zone.contains("ref=1"));
+        }
+        else
+            std::printf("  (o dia thu muc tam khong ho tro Zone.Identifier - bo qua kiem tra noi dung)\n");
+        CHECK(FileDownloaderInternal::isRiskyToOpen("C:/x/setup.EXE") && FileDownloaderInternal::isRiskyToOpen("a.ps1") &&
+              FileDownloaderInternal::isRiskyToOpen("b.lnk"));
+        CHECK(!FileDownloaderInternal::isRiskyToOpen("anh.jpg") && !FileDownloaderInternal::isRiskyToOpen("phim.mp4") &&
+              !FileDownloaderInternal::isRiskyToOpen("tai-lieu.pdf"));
+
+        // Tệp tạm yt-dlp của lượt bị hủy được dọn, tệp khác (kể cả tên gần giống) giữ nguyên.
+        const QString d = tmp.path() + "/yt";
+        QDir().mkpath(d);
+        const QStringList junk = {"Video [1].f137.mp4.part", "Video [1].mp4.ytdl", "Video [1].f251.webm.part-Frag3",
+                                  "Video [1].temp.mp4", "Video [1].f137.mp4", "Video [1].f251.webm"};
+        const QStringList keep = {"Video [1] (1).mp4", "Video [1]x.part", "Khac.mp4.part", "Video [1].mp4"};
+        for (const QString& n : junk + keep)
+        {
+            QFile w(d + "/" + n);
+            CHECK(w.open(QIODevice::WriteOnly));
+        }
+        DownloadQueue::removeYtLeftovers(d, "Video [1]");
+        for (const QString& n : junk)
+            CHECK(!QFileInfo::exists(d + "/" + n));
+        for (const QString& n : keep)
+            CHECK(QFileInfo::exists(d + "/" + n));
+
+        // DevTools: không mở cho mọi origin; số cổng thật đọc từ DevToolsActivePort.
+        const QStringList dv = DriveViewerCaptureInternal::buildArguments(0, tmp.path(), "https://drive.google.com/file/d/x/view", false, 2.0);
+        CHECK(dv.contains("--remote-debugging-port=0"));
+        for (const QString& a : dv)
+            CHECK(!a.startsWith("--remote-allow-origins"));
+        CHECK(DriveViewerCaptureInternal::readDevToolsPort(tmp.path()) == 0); // chưa có tệp
+        { QFile w(tmp.path() + "/DevToolsActivePort"); CHECK(w.open(QIODevice::WriteOnly)); w.write("51234\n/devtools/browser/abc\n"); }
+        CHECK(DriveViewerCaptureInternal::readDevToolsPort(tmp.path()) == 51234);
+        { QFile w(tmp.path() + "/DevToolsActivePort"); CHECK(w.open(QIODevice::WriteOnly)); w.write("99999\n"); }
+        CHECK(DriveViewerCaptureInternal::readDevToolsPort(tmp.path()) == 0); // ngoài miền cổng
+
+        // "Chọn chất lượng khác...": cookie/Referer đi kèm giống lúc tải, vẫn đứng TRƯỚC "--".
+        const QStringList ia = YtDlpInfoWorkerInternal::buildArguments("https://x.com/v", {"--cookies", "C:/c.txt", "--referer", "https://x.com/"});
+        CHECK(ia.indexOf("--cookies") >= 0 && ia.indexOf("--cookies") < ia.indexOf("--") && ia.last() == "https://x.com/v");
+
+        // yt-dlp xin N+1 mục để biết danh sách bị cắt.
+        const QByteArray many = R"({"_type":"playlist","entries":[{"url":"https://x.com/1"},{"url":"https://x.com/2"},{"url":"https://x.com/3"}]})";
+        const ResolveResult cut = LinkResolverCore::parseYtDlpJson(many, "https://x.com/kenh", 2);
+        CHECK(cut.items.size() == 2 && cut.truncated);
+        const ResolveResult notCut = LinkResolverCore::parseYtDlpJson(many, "https://x.com/kenh", 3);
+        CHECK(notCut.items.size() == 3 && !notCut.truncated);
+
+        // FileDownloader::forget(): mục bị gỡ không còn "giữ chỗ" tên tệp đích.
+        FileDownloader fd;
+        const QString dest = tmp.path() + "/giu-cho.bin";
+        const int fid = fd.enqueue("http://127.0.0.1:9/khong-ton-tai.bin", dest);
+        CHECK(fd.isDestPathInUse(dest));
+        fd.forget(fid);
+        CHECK(!fd.isDestPathInUse(dest) && fd.item(fid) == nullptr && !fd.allIds().contains(fid));
+        fd.forget(fid); // gỡ lần hai: không làm gì, không crash
     }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);

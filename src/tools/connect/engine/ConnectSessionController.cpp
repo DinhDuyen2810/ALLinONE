@@ -371,6 +371,13 @@ void ConnectSessionController::emitPairingFailedLater(const QString& reason)
 
 QString ConnectSessionController::beginPairingSession()
 {
+    // Chưa chạy (cửa sổ đã đóng/không mở được cổng lắng nghe): không có gì nhận kết nối ghép đôi - trước đây vẫn
+    // hiện một mã 9 số mà không máy nào dùng được.
+    if (!m_running)
+    {
+        emit logMessage("⚠ Connect Together chưa chạy (không mở được cổng lắng nghe) - không tạo được mã ghép đôi.");
+        return {};
+    }
     // Kết nối ghép đôi còn dở của mã TRƯỚC (nếu có) không được phép dùng tiếp với mã mới.
     cancelPairingSession();
 
@@ -1376,7 +1383,9 @@ void ConnectSessionController::handleSessionConfirm(NetworkSession* session, con
 
     // Chỉ BÂY GIỜ mới ghi địa chỉ/cổng/tên vào PeerStore - sau khi máy kia chứng minh được danh tính. Gói
     // quảng bá UDP (không xác thực) không bao giờ được ghi đè các giá trị này.
-    store().updateEndpoint(peerId, address, listenPortOfPeer, remoteName);
+    if (!store().updateEndpoint(peerId, address, listenPortOfPeer, remoteName))
+        emit logMessage("⚠ Không lưu được địa chỉ mới của " + peerDisplayName(peerId) +
+                        " - lần mở sau có thể phải chờ khám phá LAN để kết nối lại.");
 
     emit peerConnectionChanged(peerId, true);
     emit logMessage("✓ Đã kết nối với " + peerDisplayName(peerId));
@@ -1548,7 +1557,7 @@ void ConnectSessionController::handleEstablishedMessage(NetworkSession* session,
             break;
 
         case MessageType::ClipboardText:
-            if (!m_enableClipboard)
+            if (!m_enableClipboard || !m_clipboardSharing)
                 break;
             if (msg.textA.size() * qsizetype(sizeof(QChar)) > ConnectProtocol::kMaxClipboardBytes)
                 break; // vượt trần đồng bộ - bỏ qua
@@ -1749,6 +1758,30 @@ bool ConnectSessionController::activateControlling(const QString& peerId, Screen
     m_activeSide = crossedSide;
     m_activeCrossPoint = cursor;
     m_hook->setActive(true);
+    // Lùi con trỏ (đang bị hook giữ đứng yên) vào trong màn hình, cách biên vừa chạm. Hook tính độ dịch là "điểm
+    // chuột muốn tới - vị trí con trỏ thật"; con trỏ nằm ĐÚNG mép thì điểm muốn tới theo hướng ra ngoài bị Windows
+    // kẹp lại ở chính mép đó -> độ dịch theo hướng đó luôn bằng 0, trên máy kia không đi tiếp được về phía đó.
+    // (Cùng lý do Mouse without Borders/Synergy đưa con trỏ về giữa màn hình khi chuyển máy.)
+    {
+        const QRect bounds = localVirtualBounds();
+        constexpr int kInset = 200;
+        QPoint parked = cursor;
+        switch (crossedSide)
+        {
+            case ScreenSide::Left: parked.rx() += kInset; break;
+            case ScreenSide::Right: parked.rx() -= kInset; break;
+            case ScreenSide::Top: parked.ry() += kInset; break;
+            case ScreenSide::Bottom: parked.ry() -= kInset; break;
+            case ScreenSide::None: break;
+        }
+        if (bounds.isValid())
+        {
+            parked.setX(qBound(bounds.left(), parked.x(), bounds.right()));
+            parked.setY(qBound(bounds.top(), parked.y(), bounds.bottom()));
+        }
+        if (m_injector)
+            m_injector->moveAbsolute(parked.x(), parked.y());
+    }
     setRole(ControlRole::Controlling, peerId);
     emit logMessage("🖱 Đang điều khiển " + activePeerName() + " (nhấn Ctrl+Alt+Home để quay lại)");
     return true;
@@ -2016,7 +2049,7 @@ void ConnectSessionController::onHousekeepingTick()
 
 void ConnectSessionController::onClipboardChanged()
 {
-    if (m_applyingRemoteClipboard || !m_running)
+    if (m_applyingRemoteClipboard || !m_running || !m_clipboardSharing)
         return;
 
     const QString text = QGuiApplication::clipboard()->text();
@@ -2136,7 +2169,21 @@ void ConnectSessionController::setPeerSide(const QString& peerId, ScreenSide sid
     {
         PairedPeer updated = *p;
         updated.side = side;
-        const bool saved = store().addOrUpdate(updated);
+        bool saved = store().addOrUpdate(updated);
+        // Mỗi cạnh màn hình chỉ có MỘT máy láng giềng: trước đây hai máy cùng đặt "Phải" thì con trỏ chạm biên
+        // phải lặng lẽ sang máy được duyệt sau cùng. Gán cạnh cho máy này thì gỡ cạnh đó khỏi máy khác.
+        if (side != ScreenSide::None)
+        {
+            for (const PairedPeer& other : store().peers())
+            {
+                if (other.id == peerId || other.side != side)
+                    continue;
+                PairedPeer cleared = other;
+                cleared.side = ScreenSide::None;
+                saved = store().addOrUpdate(cleared) && saved;
+                emit logMessage("ℹ " + peerDisplayName(other.id) + " không còn ở cạnh này (mỗi cạnh chỉ một máy).");
+            }
+        }
         emit pairedPeersChanged();
         reportStoreSaveResult(saved, "đổi vị trí của " + peerDisplayName(peerId));
     }

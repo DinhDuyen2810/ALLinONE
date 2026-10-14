@@ -28,14 +28,23 @@ này - muốn xóa sạch dữ liệu, tự xóa thư mục đó.
   header, không tải trang; chỉ đi theo các địa chỉ thuộc Google, tối đa 5 bước).
 - **Connect Together**: danh sách thiết bị đã ghép đôi + khóa dài hạn của từng cặp máy
   (`profiles\connect_peers.json`, khóa được bảo vệ bằng Windows DPAPI theo tài khoản của bạn), định danh máy
-  bạn tự sinh ngẫu nhiên (`profiles\connect_identity.json`, không gắn với danh tính thật).
+  bạn tự sinh ngẫu nhiên (`profiles\connect_identity.json`, không gắn với danh tính thật). Khi đang kết nối,
+  văn bản bạn sao chép được gửi (mã hóa) sang các máy đã kết nối trong LAN; từ bản 1.19.23 có ô "Đồng bộ clipboard"
+  trong cửa sổ Connect Together để TẮT việc này (ví dụ trước khi sao chép mật khẩu) - ô này bật lại mỗi lần mở cửa sổ.
 - **WiFi Connection**: hồ sơ/mật khẩu WiFi đọc trực tiếp từ Windows (API WLAN chính thức) - không sao
   chép ra nơi khác ngoài những gì bạn chủ động xuất (export).
-- **VPN & Location**: nhãn quốc gia/tên đăng nhập bạn tự khai báo (`profilespn_profiles.json`); mật khẩu
+- **VPN & Location**: khóa L2TP/IPsec (PSK) nhập khi thêm hồ sơ (từ 1.19.23) chỉ được chuyển cho Windows lúc tạo kết nối
+  (Windows tự lưu như khi bạn thêm VPN trong Cài đặt), ứng dụng không ghi nó ra tệp nào. Nhãn quốc gia/tên đăng nhập bạn
+  tự khai báo (`profiles\vpn_profiles.json`); mật khẩu
   VPN KHÔNG được ghi ra đĩa dưới bất kỳ hình thức nào.
 - **Downloader**: cài đặt (`profiles\downloader_settings.json`: thư mục tải xuống, số tệp đồng thời, giới hạn mục, bật/tắt trình duyệt ẩn, chế độ cookie cùng TÊN trình duyệt hoặc ĐƯỜNG DẪN tệp `cookies.txt` - ứng dụng KHÔNG đọc hay lưu nội dung cookie) và lịch sử tải (`profiles\downloader_history.json`, tối đa 2000 mục: tên, đường dẫn tệp, link nguồn, link tệp, thời gian, kích thước, kết quả). Link nguồn có thể chứa mã/token của trang bạn đã tải - xóa từng mục hoặc toàn bộ trong tab "Lịch sử". Các tệp đã tải nằm ở thư mục bạn chọn, không bị xóa khi xóa lịch sử.
 - **Log ứng dụng**: `logs\*.log` - nhật ký hoạt động/chẩn đoán lỗi, ở lại trên máy bạn, không gửi đi đâu
   (trừ khi chính bạn chủ động gửi để báo lỗi). Log không ghi nội dung văn bản Auto Click gõ hộ bạn.
+
+**Downloader - đánh dấu tệp tải từ Internet (từ 1.19.23)**: giống trình duyệt, mỗi tệp tải xong được gắn "Mark of the
+Web" - luồng dữ liệu NTFS `<tệp>:Zone.Identifier` ghi `ZoneId=3` cùng địa chỉ tệp và trang nguồn (ĐÃ BỎ phần truy vấn
+`?...` và thông tin đăng nhập). Dữ liệu này nằm ngay trên tệp trong máy bạn, để Windows SmartScreen/Office Protected View
+cảnh báo khi mở; không gửi đi đâu.
 
 ## Kết nối mạng ra bên ngoài ứng dụng CÓ thực hiện (và vì sao)
 Các tính năng sau cần kết nối Internet để hoạt động - đây là các dịch vụ **bên thứ ba độc lập**, không

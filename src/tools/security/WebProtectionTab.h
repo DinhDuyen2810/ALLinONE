@@ -4,6 +4,10 @@
 
 #include "engine/DefenderController.h"
 
+#include <functional>
+
+class QThread;
+
 class QLabel;
 class QLineEdit;
 class QListWidget;
@@ -20,6 +24,7 @@ class WebProtectionTab : public QWidget
 
 public:
     explicit WebProtectionTab(QWidget* parent = nullptr);
+    ~WebProtectionTab() override;
 
 public slots:
     /// Khóa/mở nút "Chạy lại với quyền Quản trị" (nút đó gọi qApp->quit()) - SecurityGatewayWindow khóa
@@ -35,7 +40,14 @@ private slots:
 
 private:
     void buildUi();
+    /// Đọc lại trạng thái Defender TRÊN LUỒNG NỀN (xem runInBackground()).
     void refreshStatus();
+    void applyStatus(const DefenderController::DefenderStatus& status, const QString& error);
+    /// Chạy `work` (lời gọi PowerShell/Defender - mỗi lệnh 1-3 giây, tới 20 giây khi Defender bận) trên một
+    /// luồng nền rồi gọi `done` trên luồng giao diện. Trước đây mọi lệnh Defender chạy ĐỒNG BỘ ngay trên luồng
+    /// giao diện: mở cửa sổ (3 lệnh liên tiếp), bấm Làm mới, bật/tắt bảo vệ đều làm cả ứng dụng đứng hình.
+    /// Mỗi lúc chỉ một việc; trong lúc chạy, các nút gọi Defender bị khóa (setDefenderBusy).
+    void runInBackground(std::function<void()> work, std::function<void()> done);
     void refreshBlocklist();
     void updateElevationBanner();
 
@@ -54,4 +66,6 @@ private:
     QPushButton* m_removeDomainBtn{nullptr};
 
     DefenderController::DefenderStatus m_lastStatus;
+    QThread* m_bgThread{nullptr};
+    bool m_refreshQueued{false};
 };

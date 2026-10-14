@@ -24,6 +24,7 @@
 
 #include "core/AppPaths.h"
 #include "tools/autoclick/AutoClickWindow.h"
+#include "tools/autoclick/capture/ActionRecorder.h"
 #include "tools/autoclick/engine/InputController.h"
 #include "tools/autoclick/engine/StopHotkey.h"
 #include "tools/autoclick/model/ActionChain.h"
@@ -994,6 +995,128 @@ int main(int argc, char** argv)
         QApplication::sendEvent(vp, &leave);
         CHECK(vp->cursor().shape() == Qt::ArrowCursor); // rời khỏi danh sách: trả lại mũi tên
         ItemHoverCursor::install(nullptr);               // null an toàn
+    }
+
+    // ---- Hồi quy v1.19.23: bỏ tổ hợp phím dừng khỏi cuối macro (dừng ghi bằng Ctrl+Alt+F8) ----
+    {
+        auto key = [](RecordedEventType t, int vk) { RecordedEvent e; e.type = t; e.keyCode = vk; return e; };
+        auto move = [](int x) { RecordedEvent e; e.type = RecordedEventType::MouseMove; e.x = x; return e; };
+        const std::vector<int> stopKeys{0x11, 0xA2, 0xA3, 0x12, 0xA4, 0xA5, 0x77}; // Ctrl, Alt (trái/phải), F8
+        std::vector<RecordedEvent> ev{key(RecordedEventType::KeyDown, 'A'), key(RecordedEventType::KeyUp, 'A'),
+                                      key(RecordedEventType::KeyDown, 0xA2), move(5), key(RecordedEventType::KeyDown, 0xA4),
+                                      key(RecordedEventType::KeyDown, 0x77)};
+        ActionRecorder::dropTrailingKeys(ev, stopKeys);
+        CHECK(ev.size() == 3); // A down/up + MouseMove còn lại
+        if (ev.size() == 3)
+        {
+            CHECK(ev[0].keyCode == 'A' && ev[1].keyCode == 'A');
+            CHECK(ev[2].type == RecordedEventType::MouseMove);
+        }
+        // Ctrl bấm TRƯỚC một phím khác (Ctrl+C thật của người dùng) không thuộc đoạn đuôi - giữ nguyên.
+        std::vector<RecordedEvent> ev2{key(RecordedEventType::KeyDown, 0xA2), key(RecordedEventType::KeyDown, 'C'),
+                                       key(RecordedEventType::KeyUp, 'C'), key(RecordedEventType::KeyUp, 0xA2)};
+        ActionRecorder::dropTrailingKeys(ev2, stopKeys);
+        CHECK(ev2.size() == 3 && ev2[0].keyCode == 0xA2 && ev2[2].keyCode == 'C');
+        std::vector<RecordedEvent> emptyEv;
+        ActionRecorder::dropTrailingKeys(emptyEv, stopKeys);
+        CHECK(emptyEv.empty());
+    }
+
+    // ---- Hồi quy v1.19.23: giới hạn giá trị đọc từ hồ sơ JSON (tệp sửa tay/hỏng) ----
+    {
+        const QString json = R"({"version":"1.0","chains":[{"name":"x","repeatCount":1,"actions":[
+            {"type":"Scroll","scrollAmount":2000000000,"keyCode":99999},
+            {"type":"RecordedMacro","recordedEvents":[
+                {"type":"KeyDown","delayMs":1e300,"keyCode":0},
+                {"type":"KeyDown","delayMs":-5,"keyCode":65},
+                {"type":"MouseWheel","delayMs":1e300,"wheelDelta":99999999}]}]}]})";
+        std::vector<ActionChain> out;
+        QString err;
+        CHECK(ActionSerializer::fromJsonString(json, out, &err));
+        CHECK(out.size() == 1 && out[0].actions.size() == 2);
+        if (out.size() == 1 && out[0].actions.size() == 2)
+        {
+            CHECK(out[0].actions[0].scrollAmount == 100);
+            CHECK(out[0].actions[0].keyCode == 13);
+            const auto& evs = out[0].actions[1].recordedEvents;
+            CHECK(evs.size() == 2); // sự kiện phím mã 0 bị bỏ
+            if (evs.size() == 2)
+            {
+                CHECK(evs[0].keyCode == 65 && evs[0].delayMs == 0);
+                CHECK(evs[1].delayMs == 60000 && evs[1].wheelDelta == 32767);
+            }
+        }
+    }
+
+    // ---- Hồi quy v1.19.23: kéo-thả/ghim/đổi tên chuỗi giữ ĐÚNG chuỗi đang xem ----
+    {
+        AutoClickWindow w3;
+        w3.setAttribute(Qt::WA_DontShowOnScreen, true);
+        w3.resize(1300, 760);
+        w3.show();
+        app.processEvents();
+        auto* chainList3 = w3.findChild<ChainListWidget*>();
+        auto* actionList3 = w3.findChild<ActionListWidget*>();
+        auto* editor3 = w3.findChild<ActionEditorWidget*>();
+        auto* clist3 = chainList3 ? chainList3->findChild<QListWidget*>() : nullptr;
+        auto* table3 = actionList3 ? actionList3->findChild<QTableWidget*>() : nullptr;
+        CHECK(chainList3 && clist3 && table3 && editor3);
+        if (chainList3 && clist3 && table3 && editor3 && clist3->count() >= 1)
+        {
+            const int demoRows = table3->rowCount();
+            const QString demoName = clist3->item(0)->data(Qt::UserRole).toString();
+            emit chainList3->addChainClicked();
+            emit chainList3->addChainClicked();
+            app.processEvents();
+            CHECK(clist3->count() == 3);
+            chainList3->setSelectedChainIndex(0);
+            app.processEvents();
+            CHECK(table3->rowCount() == demoRows);
+
+            emit chainList3->chainMoved(0, 2); // kéo chuỗi đang xem xuống cuối
+            app.processEvents();
+            CHECK(chainList3->selectedChainIndex() == 2);
+            CHECK(clist3->item(2)->data(Qt::UserRole).toString() == demoName);
+            CHECK(table3->rowCount() == demoRows); // vẫn hiện hành động của ĐÚNG chuỗi vừa kéo
+
+            emit chainList3->togglePinClicked(2); // ghim -> lên đầu, vẫn đang xem chính nó
+            app.processEvents();
+            CHECK(chainList3->selectedChainIndex() == 0);
+            CHECK(clist3->item(0)->data(Qt::UserRole).toString() == demoName);
+            CHECK(table3->rowCount() == demoRows);
+
+            // Đổi tên không làm mất hàng hành động đang chọn.
+            if (demoRows >= 3)
+            {
+                actionList3->setSelectedActionIndex(2);
+                app.processEvents();
+                emit chainList3->renameChainClicked(0, "Tên mới");
+                app.processEvents();
+                CHECK(clist3->item(0)->data(Qt::UserRole).toString() == "Tên mới");
+                CHECK(actionList3->selectedActionIndex() == 2);
+                CHECK(editor3->currentActionIndex() == 2);
+            }
+
+            // Đổi một macro sang loại khác rồi lấy dữ liệu: không mang theo sự kiện đã ghi.
+            Action macroAct;
+            macroAct.type = ActionType::RecordedMacro;
+            RecordedEvent e1; e1.type = RecordedEventType::MouseMove; e1.x = 9;
+            macroAct.recordedEvents = {e1};
+            editor3->setAction(macroAct, 0);
+            CHECK(editor3->getAction().recordedEvents.size() == 1);
+            QComboBox* typeCombo = nullptr;
+            for (auto* c : editor3->findChildren<QComboBox*>())
+                if (c->findText("Ghi nhớ chuỗi") >= 0)
+                    typeCombo = c;
+            CHECK(typeCombo != nullptr);
+            if (typeCombo)
+            {
+                typeCombo->setCurrentIndex(0);
+                app.processEvents();
+                CHECK(editor3->getAction().type != ActionType::RecordedMacro);
+                CHECK(editor3->getAction().recordedEvents.empty());
+            }
+        }
     }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);

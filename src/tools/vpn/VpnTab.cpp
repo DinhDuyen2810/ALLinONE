@@ -338,6 +338,8 @@ void VpnTab::onRemoveClicked()
             m_statusLabel->clear();
             if (!*ok)
                 QMessageBox::critical(this, "Không xóa được", *error);
+            else if (!error->isEmpty())
+                m_statusLabel->setText("⚠ " + *error);
             reloadConnections();
         });
 }

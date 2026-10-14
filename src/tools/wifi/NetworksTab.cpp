@@ -17,12 +17,14 @@
 
 namespace
 {
+// Thanh tín hiệu dạng chữ (4 vạch) - trước đây 75/50 cùng ra một biểu tượng, còn tín hiệu yếu dùng 📵
+// ("cấm điện thoại di động") dễ hiểu nhầm là mạng bị chặn.
 QString signalIcon(int quality)
 {
-    if (quality >= 75) return "📶";
-    if (quality >= 50) return "📶";
-    if (quality >= 25) return "📵";
-    return "📵";
+    if (quality >= 75) return QStringLiteral("▂▄▆█");
+    if (quality >= 50) return QStringLiteral("▂▄▆");
+    if (quality >= 25) return QStringLiteral("▂▄");
+    return QStringLiteral("▂");
 }
 
 QTableWidgetItem* makeItem(const QString& text)

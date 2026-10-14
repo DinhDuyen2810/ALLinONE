@@ -6,6 +6,8 @@
 // trong test tự động - những thao tác đó đổi trạng thái hệ thống thật và/hoặc cần quyền Administrator,
 // phải được tự kiểm tra tay.
 #include <QApplication>
+#include <QElapsedTimer>
+#include <QThread>
 #include <QLabel>
 #include <QPushButton>
 #include <QTabWidget>
@@ -34,11 +36,36 @@ int main(int argc, char** argv)
     TestDataDir dataDir;
     AppPaths::setDataDirOverride(dataDir.path());
 
+    QElapsedTimer buildTimer;
+    buildTimer.start();
     SecurityGatewayWindow win;
+    const qint64 buildMs = buildTimer.elapsed();
     win.setAttribute(Qt::WA_DontShowOnScreen, true);
     win.show();
     app.processEvents();
     CHECK(true); // tới được đây tức là dựng cửa sổ không crash
+
+    // Hồi quy v1.19.23: lệnh Defender chạy NỀN - dựng cửa sổ không còn chờ 3 lệnh PowerShell (trước đây
+    // 3-10 giây đứng hình). Ngay sau khi dựng, nhãn trạng thái phải đang ở "⏳ Đang đọc..." (kết quả chưa về)
+    // - nếu lệnh còn chạy đồng bộ thì lúc này nhãn đã là kết quả. Thời gian dựng chỉ in ra để tham khảo
+    // (lần dựng cửa sổ đầu tiên của tiến trình còn gồm chi phí khởi tạo font/style của Qt).
+    std::printf("Dung cua so Security Gateway: %lld ms\n", static_cast<long long>(buildMs));
+    auto loadingLabels = [&win]() {
+        int n = 0;
+        for (auto* l : win.findChildren<QLabel*>())
+            if (l->text().startsWith(QString::fromUtf8("⏳ Đang đọc trạng thái")))
+                ++n;
+        return n;
+    };
+    CHECK(loadingLabels() >= 1); // đang hiện "đang đọc" thay vì đứng hình
+    QElapsedTimer waitTimer;
+    waitTimer.start();
+    while (loadingLabels() > 0 && waitTimer.elapsed() < 90000)
+    {
+        app.processEvents(QEventLoop::AllEvents, 50);
+        QThread::msleep(20);
+    }
+    CHECK(loadingLabels() == 0); // kết quả nền đã về và được hiển thị
 
     auto* tabs = win.findChild<QTabWidget*>();
     CHECK(tabs != nullptr && tabs->count() == 3);

@@ -34,6 +34,7 @@
 #include <QSignalBlocker>
 #include <QTableWidget>
 #include <QTableWidgetItem>
+#include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
 #include <algorithm>
@@ -339,7 +340,17 @@ void DownloadTab::onItemUpdated(int id)
     if (row < 0)
         return;
     fillRow(row, id);
-    refreshSummary();
+    // Dòng tóm tắt duyệt CẢ hàng đợi; itemUpdated phát ở MỖI khối dữ liệu mạng của mọi mục đang tải - tính lại
+    // ngay mỗi lần làm chi phí tăng theo bình phương số mục khi hàng đợi dài. Gộp lại tối đa ~6 lần/giây.
+    if (!m_summaryTimer)
+    {
+        m_summaryTimer = new QTimer(this);
+        m_summaryTimer->setSingleShot(true);
+        m_summaryTimer->setInterval(150);
+        connect(m_summaryTimer, &QTimer::timeout, this, &DownloadTab::refreshSummary);
+    }
+    if (!m_summaryTimer->isActive())
+        m_summaryTimer->start();
 }
 
 void DownloadTab::onItemRemoved(int id)
@@ -686,7 +697,7 @@ void DownloadTab::onTableContextMenu(const QPoint& pos)
     recheckAct->setEnabled(first->check == QueueItem::Check::Err || first->check == QueueItem::Check::Ok);
     formatAct->setEnabled(!multi && first->check == QueueItem::Check::Ok && first->media.kind == ResolvedMedia::Kind::YtDlp &&
                           first->state != QueueItem::State::Downloading && first->state != QueueItem::State::Queued &&
-                          first->state != QueueItem::State::Completed && YtDlpController::isBundleAvailable());
+                          first->state != QueueItem::State::Completed && !YtDlpController::ytDlpExecutablePath().isEmpty());
     openSourceAct->setEnabled(first->sourceUrl != first->linkToOpen());
     openFileAct->setEnabled(done);
     openDirAct->setEnabled(done);
@@ -707,7 +718,12 @@ void DownloadTab::onTableContextMenu(const QPoint& pos)
             QDesktopServices::openUrl(u);
     }
     else if (chosen == copyAct) qApp->clipboard()->setText(first->linkToOpen());
-    else if (chosen == openFileAct) QDesktopServices::openUrl(QUrl::fromLocalFile(first->destPath));
+    else if (chosen == openFileAct)
+    {
+        const QString path = first->destPath; // hộp thoại xác nhận chạy vòng lặp sự kiện - mục có thể bị xóa trong lúc đó
+        if (DownloaderUi::confirmOpenDownloadedFile(this, path))
+            QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+    }
     else if (chosen == openDirAct) QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(first->destPath).absolutePath()));
     else if (chosen == removeAct) m_queue->remove(ids);
 }
@@ -1002,7 +1018,10 @@ void DownloadTab::pickFormatFor(int id)
     }
     m_formatItemId = id;
     setMessage("⏳ Đang lấy danh sách chất lượng của video (có thể mất vài giây)...");
-    m_infoWorker->setUrl(it->media.url);
+    QStringList extra = m_settings->ytDlpExtraArguments();
+    if (!it->media.referer.isEmpty())
+        extra << "--referer" << it->media.referer;
+    m_infoWorker->setUrl(it->media.url, extra);
     m_infoWorker->start();
 }
 

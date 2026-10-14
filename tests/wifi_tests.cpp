@@ -312,6 +312,20 @@ int main(int argc, char** argv)
         CHECK(WlanProfileXml::describesSsid(QString(foo2).remove("<hex>466F6F</hex>"), "Bar"));
     }
 
+    // ---- Hồi quy v1.19.23: tên HỒ SƠ khác SSID (dùng lại hồ sơ cũ "Nha 2" thay vì tạo hồ sơ trùng) ----
+    {
+        const QString xml = WlanProfileXml::build(QByteArray("Nha"), "Nha", WifiSecurity::Wpa2Psk, "pw123456", true,
+                                                  false, "Nha 2");
+        WifiProfile p;
+        CHECK(WlanProfileXml::parse(xml, &p));
+        CHECK(p.name == "Nha 2");
+        CHECK(p.ssid == "Nha");
+        CHECK(WlanProfileXml::describesSsid(xml, QByteArray("Nha")));
+        const QString xmlDefault = WlanProfileXml::build(QByteArray("Nha"), "Nha", WifiSecurity::Wpa2Psk, "pw123456", true);
+        WifiProfile p2;
+        CHECK(WlanProfileXml::parse(xmlDefault, &p2) && p2.name == "Nha");
+    }
+
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

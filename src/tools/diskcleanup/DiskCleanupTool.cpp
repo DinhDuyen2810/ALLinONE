@@ -5,8 +5,8 @@
 
 QString DiskCleanupTool::description() const
 {
-    return "Dọn dẹp rác hệ thống theo hạng mục (tệp tạm, cache, thùng rác...), tìm và xóa tệp lớn, "
-           "xem tổng quan dung lượng từng ổ đĩa.";
+    return "Dọn dẹp rác hệ thống theo hạng mục (tệp tạm, cache trình duyệt, Windows Update...), tìm tệp lớn, "
+           "tìm tệp trùng lặp, xem dung lượng từng ổ đĩa và đổi kích thước phân vùng.";
 }
 
 QIcon DiskCleanupTool::icon() const

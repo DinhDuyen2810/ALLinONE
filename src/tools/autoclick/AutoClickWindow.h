@@ -93,6 +93,9 @@ private:
     void setupUi();
     void loadDefaultProfile();
     void syncUiWithCurrentChain();
+    /// Dựng lại danh sách chuỗi rồi chọn hàng `currentIndex` (chỉ số MỚI của đúng chuỗi đang xem) mà
+    /// không coi đó là "đổi sang chuỗi khác" - không áp dụng chỉnh sửa dở, không nạp lại danh sách hành động.
+    void refreshChainListKeeping(int currentIndex);
     void updateRepeatFromUi();
     void startChain(int index);
     ActionChain* currentChain();
@@ -152,6 +155,10 @@ private:
     /// THỨ HAI mới hết; (b) sau Nhân bản/Xóa/Dời, nội dung editor bị ghi nhầm vào chỉ số vừa remap xong.
     /// Đặt qua ScopedFlag (AutoClickWindow.cpp) để luôn được trả về giá trị cũ, kể cả khi return sớm.
     bool m_suppressPendingCapture{false};
+    /// true trong lúc dựng lại danh sách chuỗi mà chuỗi đang xem KHÔNG đổi (đổi tên, ghim, kéo-thả đổi vị
+    /// trí) - chặn onChainSelected() phản ứng với tín hiệu chọn lại hàng do setChains() tự phát. Xem
+    /// refreshChainListKeeping().
+    bool m_refreshingChainList{false};
 
     // UI Widgets
     QSplitter* m_splitter;

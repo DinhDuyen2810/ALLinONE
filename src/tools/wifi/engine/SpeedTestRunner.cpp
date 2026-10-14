@@ -219,6 +219,7 @@ void SpeedTestRunner::runDownloadPhase()
     emit phaseChanged("Đang đo tốc độ tải xuống...");
     m_transferStarted = false;
     m_bytesTransferred = 0;
+    m_bytesAtStart = 0;
 
     QNetworkRequest req(kDownloadUrl);
     req.setAttribute(QNetworkRequest::CacheLoadControlAttribute, QNetworkRequest::AlwaysNetwork);
@@ -235,12 +236,13 @@ void SpeedTestRunner::runDownloadPhase()
         {
             m_transferStarted = true;
             m_firstByteTimer->stop();
+            m_bytesAtStart = m_bytesTransferred;
             m_transferTimer.start();
             m_abortTimer->start(kTransferMaxDurationMs);
         }
         else if (m_transferTimer.elapsed() > 50)
         {
-            emit downloadProgress(mbps(m_bytesTransferred, m_transferTimer.elapsed()), m_bytesTransferred);
+            emit downloadProgress(mbps(m_bytesTransferred - m_bytesAtStart, m_transferTimer.elapsed()), m_bytesTransferred);
         }
     });
 
@@ -262,7 +264,7 @@ void SpeedTestRunner::runDownloadPhase()
             return;
         }
 
-        const double finalMbps = m_transferStarted ? mbps(m_bytesTransferred, m_transferTimer.elapsed()) : 0.0;
+        const double finalMbps = m_transferStarted ? mbps(m_bytesTransferred - m_bytesAtStart, m_transferTimer.elapsed()) : 0.0;
         emit downloadFinished(finalMbps);
 
         if (m_stopRequested)
@@ -279,6 +281,7 @@ void SpeedTestRunner::runUploadPhase()
     emit phaseChanged("Đang đo tốc độ tải lên...");
     m_transferStarted = false;
     m_bytesTransferred = 0;
+    m_bytesAtStart = 0;
 
     QNetworkRequest req(kUploadUrl);
     req.setHeader(QNetworkRequest::ContentTypeHeader, "application/octet-stream");
@@ -295,12 +298,13 @@ void SpeedTestRunner::runUploadPhase()
         {
             m_transferStarted = true;
             m_firstByteTimer->stop();
+            m_bytesAtStart = m_bytesTransferred;
             m_transferTimer.start();
             m_abortTimer->start(kTransferMaxDurationMs);
         }
         else if (m_transferTimer.elapsed() > 50)
         {
-            emit uploadProgress(mbps(m_bytesTransferred, m_transferTimer.elapsed()), m_bytesTransferred);
+            emit uploadProgress(mbps(m_bytesTransferred - m_bytesAtStart, m_transferTimer.elapsed()), m_bytesTransferred);
         }
     });
 
@@ -322,7 +326,7 @@ void SpeedTestRunner::runUploadPhase()
             return;
         }
 
-        const double finalMbps = m_transferStarted ? mbps(m_bytesTransferred, m_transferTimer.elapsed()) : 0.0;
+        const double finalMbps = m_transferStarted ? mbps(m_bytesTransferred - m_bytesAtStart, m_transferTimer.elapsed()) : 0.0;
         emit uploadFinished(finalMbps);
         finishAll();
     });

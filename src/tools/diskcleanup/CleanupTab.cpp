@@ -253,6 +253,14 @@ void CleanupTab::onScanClicked()
         return;
     }
 
+    // Lượt quét trước đã báo xong nhưng luồng có thể CHƯA thoát hẳn: startScan() lúc đó bị bỏ qua (đúng hợp đồng
+    // "không chồng lượt" - xem disk_vpn_stress_tests) nên tab sẽ kẹt ở trạng thái "Đang quét..." vì không còn tín
+    // hiệu kết thúc nào tới. Chờ ngắn cho luồng đó thoát hẳn TRƯỚC khi chuyển giao diện sang trạng thái bận.
+    if (m_scanner->isRunning() && !m_scanner->wait(3000))
+    {
+        m_statusLabel->setText("⚠ Lượt quét trước chưa kết thúc - vui lòng thử lại sau giây lát.");
+        return;
+    }
     m_scanning = true;
     m_scanBtn->setEnabled(false);
     m_cleanBtn->setEnabled(false);

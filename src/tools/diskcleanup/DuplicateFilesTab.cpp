@@ -177,6 +177,14 @@ void DuplicateFilesTab::onScanClicked()
         }
     }
 
+    // Lượt quét trước đã báo xong nhưng luồng có thể CHƯA thoát hẳn: startScan() lúc đó bị bỏ qua (đúng hợp đồng
+    // "không chồng lượt" - xem disk_vpn_stress_tests) nên tab sẽ kẹt ở trạng thái "Đang quét..." vì không còn tín
+    // hiệu kết thúc nào tới. Chờ ngắn cho luồng đó thoát hẳn TRƯỚC khi chuyển giao diện sang trạng thái bận.
+    if (m_finder->isRunning() && !m_finder->wait(3000))
+    {
+        m_statusLabel->setText("⚠ Lượt quét trước chưa kết thúc - vui lòng thử lại sau giây lát.");
+        return;
+    }
     m_updatingTree = true;
     m_tree->clear();
     m_updatingTree = false;
@@ -303,6 +311,19 @@ void DuplicateFilesTab::onItemChanged(QTreeWidgetItem* item, int column)
             m_updatingTree = false;
             m_statusLabel->setText("⚠ Mỗi nhóm phải giữ lại ít nhất 1 bản - không thể chọn xóa toàn bộ các bản của cùng một tệp.");
         }
+    }
+    // Nhãn "(sẽ giữ lại)" theo ĐÚNG trạng thái tích hiện tại - trước đây chỉ gắn cố định vào bản đầu tiên
+    // lúc dựng cây, nên sau khi người dùng đổi bản giữ lại thì nhãn chỉ sai bản.
+    {
+        QTreeWidgetItem* group = item->parent();
+        m_updatingTree = true;
+        for (int j = 0; j < group->childCount(); ++j)
+        {
+            QTreeWidgetItem* child = group->child(j);
+            const QString path = child->data(0, Qt::UserRole).toString();
+            child->setText(0, child->checkState(0) == Qt::Checked ? path : path + "   (sẽ giữ lại)");
+        }
+        m_updatingTree = false;
     }
     updateSelectedSummary();
 }
@@ -462,11 +483,17 @@ void DuplicateFilesTab::onDeleteSelectedClicked()
         if (!FsSafety::existsNoFollow(path))
             ++deleted;
 
-    if (!ok || deleted < confirmedCount)
+    // So với số tệp THỰC SỰ gửi đi xóa (sau bước kiểm lại), không phải số đã xác nhận: tệp bị bước kiểm lại
+    // cố ý giữ nguyên trước đây cũng bị tính là "xóa thất bại" và bật hộp thoại Lỗi dù không có lỗi nào.
+    const int droppedByRecheck = confirmedCount - static_cast<int>(paths.size());
+    if (!ok || deleted < paths.size())
         QMessageBox::critical(this, "Lỗi",
-            QString("Chỉ chuyển được %1/%2 tệp vào Thùng rác.\n%3").arg(deleted).arg(confirmedCount).arg(error));
+            QString("Chỉ chuyển được %1/%2 tệp vào Thùng rác.\n%3").arg(deleted).arg(paths.size()).arg(error));
 
-    m_statusLabel->setText(QString("✓ Đã chuyển %1 tệp vào Thùng rác.").arg(deleted));
+    QString status = QString("✓ Đã chuyển %1 tệp vào Thùng rác.").arg(deleted);
+    if (droppedByRecheck > 0)
+        status += QString(" %1 tệp được giữ nguyên vì đã thay đổi trong lúc chờ xác nhận.").arg(droppedByRecheck);
+    m_statusLabel->setText(status);
     // Quét lại để làm mới danh sách (các mục đã xóa không còn nữa) - kể cả khi lỗi một phần, để bảng
     // không còn hiện các tệp đã bị xóa.
     onScanClicked();

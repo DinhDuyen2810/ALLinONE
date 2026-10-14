@@ -18,6 +18,7 @@
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
@@ -61,6 +62,9 @@ DevicesTab::DevicesTab(QWidget* parent)
     m_pairer = new AdbPairer(this);
     m_pairer->setObjectName("adbPairer");
     connect(m_pairer, &AdbPairer::finished, this, &DevicesTab::onPairFinished);
+    m_connector = new AdbPairer(this);
+    m_connector->setObjectName("adbConnector");
+    connect(m_connector, &AdbPairer::finished, this, &DevicesTab::onConnectFinished);
 
     updateBundleBanner();
 
@@ -120,8 +124,13 @@ void DevicesTab::stopBackgroundWork()
         // Đóng cửa sổ/thoát ứng dụng giữa lúc đang ghép đôi: hủy lệnh `adb pair` (cancel() không phát
         // finished()) và tự mở khóa nút để lần mở cửa sổ sau còn bấm được.
         m_pairer->cancel();
-        m_pairBtn->setEnabled(AdbController::isBundleAvailable());
+        m_pairBtn->setEnabled(adbAvailable());
         m_statusLabel->setText("Đã hủy ghép đôi (cửa sổ đã đóng).");
+    }
+    if (m_connector && m_connector->isBusy())
+    {
+        m_connector->cancel();
+        m_connectBtn->setEnabled(adbAvailable());
     }
     AdbController::stopBundledAdbServer();
 }
@@ -163,6 +172,15 @@ void DevicesTab::buildUi()
     m_pairBtn->setCursor(Qt::PointingHandCursor);
     connect(m_pairBtn, &QPushButton::clicked, this, &DevicesTab::onPairClicked);
     topRow->addWidget(m_pairBtn);
+
+    // Sau khi ghép đôi (Android 11+) vẫn phải `adb connect` tới cổng KẾT NỐI thì thiết bị mới hiện trong
+    // danh sách - trước đây ứng dụng chỉ nhắc người dùng tự chạy lệnh đó, không có nút nào làm được.
+    m_connectBtn = new QPushButton("🔌 Kết nối không dây...", this);
+    m_connectBtn->setObjectName("connectWirelessButton");
+    m_connectBtn->setStyleSheet(AndroidUi::buttonStyle());
+    m_connectBtn->setCursor(Qt::PointingHandCursor);
+    connect(m_connectBtn, &QPushButton::clicked, this, &DevicesTab::onConnectClicked);
+    topRow->addWidget(m_connectBtn);
 
     m_switchWirelessBtn = new QPushButton("📶 Chuyển thiết bị đã chọn sang không dây", this);
     m_switchWirelessBtn->setStyleSheet(AndroidUi::buttonStyle());
@@ -298,9 +316,48 @@ void DevicesTab::updateBundleBanner()
                    "chưa dùng được. Chạy lại build_app.bat để đóng gói đầy đủ.")
                 .arg(missing));
         m_bundleBanner->setStyleSheet(AndroidUi::bannerStyle("danger"));
-        m_refreshBtn->setEnabled(false);
-        m_pairBtn->setEnabled(false);
+        // Chỉ thiếu scrcpy.exe thì vẫn liệt kê/ghép đôi/kết nối được (chỉ cần adb.exe) - trước đây khóa cả.
+        m_refreshBtn->setEnabled(adbAvailable());
+        m_pairBtn->setEnabled(adbAvailable());
+        m_connectBtn->setEnabled(adbAvailable());
     }
+}
+
+bool DevicesTab::adbAvailable()
+{
+    return !AdbController::adbExecutablePath().isEmpty();
+}
+
+void DevicesTab::onConnectClicked()
+{
+    bool accepted = false;
+    const QString suggested = m_lastPairHost.isEmpty() ? QString() : m_lastPairHost + ":";
+    const QString ipPort =
+        QInputDialog::getText(this, "Kết nối không dây",
+                              "Nhập IP:Cổng KẾT NỐI hiển thị trên điện thoại (Tùy chọn nhà phát triển > Gỡ lỗi không dây\n"
+                              "> \"Địa chỉ IP và cổng\" - khác cổng ghép đôi), hoặc IP:5555 nếu đã bật adb tcpip:",
+                              QLineEdit::Normal, suggested, &accepted)
+            .trimmed();
+    if (!accepted || ipPort.isEmpty())
+        return;
+    if (m_connector->isBusy())
+        return;
+    m_connectBtn->setEnabled(false);
+    m_statusLabel->setText("⏳ Đang kết nối tới " + ipPort + "...");
+    m_connector->connectDevice(ipPort);
+}
+
+void DevicesTab::onConnectFinished(bool ok, const QString& error)
+{
+    m_connectBtn->setEnabled(adbAvailable());
+    if (!ok)
+    {
+        m_statusLabel->setText("⚠ Kết nối thất bại: " + error);
+        showPlainMessage(this, QMessageBox::Critical, "Kết nối thất bại", error);
+        return;
+    }
+    m_statusLabel->setText("✓ Đã kết nối không dây - thiết bị sẽ hiện trong danh sách.");
+    reloadDevices();
 }
 
 void DevicesTab::onRefreshClicked()
@@ -317,7 +374,7 @@ void DevicesTab::onAutoRefreshTick()
 void DevicesTab::reloadDevices()
 {
     // m_backgroundAllowed: không gọi adb khi tab đã ẩn/đang dọn để thoát (xem stopBackgroundWork()).
-    if (!m_backgroundAllowed || !AdbController::isBundleAvailable())
+    if (!m_backgroundAllowed || !adbAvailable())
         return;
 
     // Bất đồng bộ; nếu lần liệt kê trước chưa xong thì refresh() không làm gì (không chồng lệnh) - kết
@@ -393,10 +450,12 @@ void DevicesTab::onRowSelectionChanged()
 {
     const auto* dev = selectedDevice();
     const bool hasReadyDevice = dev && dev->isReady();
-    m_controlBtn->setEnabled(hasReadyDevice && !m_launcher->isRunning());
+    // Danh sách giờ hiện được chỉ với adb.exe - nút điều khiển còn cần scrcpy.exe.
+    const bool hasScrcpy = !AdbController::scrcpyExecutablePath().isEmpty();
+    m_controlBtn->setEnabled(hasReadyDevice && hasScrcpy && !m_launcher->isRunning());
     // !isRunning(): hàm này chạy lại sau MỖI lần làm mới danh sách - trước đây nó bật lại nút "Chuyển
     // sang không dây" (đã bị onScrcpyStarted() tắt) ngay giữa lúc phiên điều khiển đang chạy.
-    m_switchWirelessBtn->setEnabled(dev && dev->isReady() && !dev->isWireless() && !m_launcher->isRunning());
+    m_switchWirelessBtn->setEnabled(dev && dev->isReady() && !dev->isWireless() && hasScrcpy && !m_launcher->isRunning());
 }
 
 void DevicesTab::onPairClicked()
@@ -407,6 +466,8 @@ void DevicesTab::onPairClicked()
 
     const QString ipPort = dlg.ipAndPort();
     const QString code = dlg.pairingCode();
+    // Máy (không kèm cổng) - điền sẵn cho bước "Kết nối không dây..." ngay sau đó (cổng kết nối khác cổng ghép đôi).
+    m_lastPairHost = ipPort.left(ipPort.lastIndexOf(QChar(':')));
     if (ipPort.isEmpty() || code.isEmpty())
     {
         QMessageBox::warning(this, "Thiếu thông tin", "Vui lòng nhập đầy đủ IP:Cổng và mã ghép đôi.");
@@ -425,7 +486,7 @@ void DevicesTab::onPairClicked()
 
 void DevicesTab::onPairFinished(bool ok, const QString& error)
 {
-    m_pairBtn->setEnabled(AdbController::isBundleAvailable());
+    m_pairBtn->setEnabled(adbAvailable());
     if (!ok)
     {
         m_statusLabel->setText("⚠ Ghép đôi thất bại: " + error);
@@ -433,7 +494,8 @@ void DevicesTab::onPairFinished(bool ok, const QString& error)
         return;
     }
 
-    m_statusLabel->setText("✓ Ghép đôi thành công. Dùng \"Làm mới\" hoặc chờ tự động để thấy thiết bị (có thể cần adb connect tới cổng kết nối thường, không phải cổng ghép đôi).");
+    m_statusLabel->setText("✓ Ghép đôi thành công. Bấm \"Kết nối không dây...\" và nhập IP:Cổng KẾT NỐI (khác cổng ghép đôi) "
+                           "hiển thị trên điện thoại để thiết bị hiện trong danh sách.");
     reloadDevices();
 }
 

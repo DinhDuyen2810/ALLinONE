@@ -64,6 +64,11 @@ bool isKnownDeviceState(const QString& state);
 /// paired" trong stdout+stderr. Thất bại thì *error là lý do để hiện cho người dùng.
 bool interpretPairResult(bool normalExit, int exitCode, const QString& stdOut, const QString& stdErr, QString* error);
 
+/// Diễn giải kết quả một lần `adb connect` đã chạy xong. Giống `adb pair`, adb trả mã thoát 0 cả khi kết
+/// nối thất bại ("failed to connect to ...", "cannot connect to ...") - thành công khi có "connected to"
+/// (gồm cả "already connected to").
+bool interpretConnectResult(bool normalExit, int exitCode, const QString& stdOut, const QString& stdErr, QString* error);
+
 /// Hai đường dẫn có trỏ tới CÙNG một tệp thực thi không (không phân biệt hoa/thường, kiểu dấu gạch,
 /// tiền tố "\\?\"; khi cả hai tệp tồn tại thì so thêm danh tính tệp vật lý - tên ngắn 8.3, liên kết,
 /// junction đều ra đúng).

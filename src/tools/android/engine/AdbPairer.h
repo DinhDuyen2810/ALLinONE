@@ -28,6 +28,10 @@ public:
     /// AdbController::pairWireless), "không tìm thấy adb.exe", "không khởi chạy được" - luôn tới qua tín
     /// hiệu finished(); ba lỗi đầu được phát NGAY trong lời gọi này.
     bool pair(const QString& ipAndPairPort, const QString& pairingCode);
+    /// `adb connect <IP:cổng>` - cùng cơ chế bất đồng bộ/không chồng lệnh/kết quả qua finished() như pair().
+    /// Dùng SAU khi ghép đôi (Android 11+: cổng KẾT NỐI hiển thị trên màn hình "Gỡ lỗi không dây", khác cổng
+    /// ghép đôi) hoặc với thiết bị đã bật `adb tcpip`.
+    bool connectDevice(const QString& ipAndPort);
     bool isBusy() const;
 
     /// Hủy lần ghép đôi đang chạy (nếu có) - KHÔNG phát finished() cho lần bị hủy.
@@ -42,4 +46,7 @@ private:
     QTimer* m_timeoutTimer{nullptr};
     bool m_timedOut{false};
     bool m_cancelled{false};
+    bool m_connectMode{false}; // lần đang chạy là `adb connect` (true) hay `adb pair` (false)
+
+    bool startAdb(const QStringList& arguments);
 };

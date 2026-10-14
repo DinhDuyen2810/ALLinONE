@@ -66,6 +66,10 @@ private:
     void buildUi();
     void reloadDevices();
     void updateBundleBanner();
+    /// Liệt kê/ghép đôi/kết nối chỉ cần adb.exe; nút Điều khiển mới cần thêm scrcpy.exe.
+    static bool adbAvailable();
+    void onConnectClicked();
+    void onConnectFinished(bool ok, const QString& error);
     ScrcpyOptions collectOptions() const;
     /// Chốt đường dẫn tệp ghi hình cho phiên sắp chạy (tên mặc định kèm dấu thời gian MỚI cho mỗi phiên;
     /// tệp người dùng tự chọn mà đã tồn tại thì hỏi trước khi ghi đè). Trả về false = người dùng hủy.
@@ -77,6 +81,7 @@ private:
     QTableWidget* m_table{nullptr}; // [Serial][Trạng thái][Model][Kiểu kết nối]
     QPushButton* m_refreshBtn{nullptr};
     QPushButton* m_pairBtn{nullptr};
+    QPushButton* m_connectBtn{nullptr};
     QPushButton* m_switchWirelessBtn{nullptr};
     QLabel* m_statusLabel{nullptr};
 
@@ -99,6 +104,8 @@ private:
     ScrcpyLauncher* m_launcher{nullptr};
     AdbDeviceLister* m_lister{nullptr};
     AdbPairer* m_pairer{nullptr};
+    AdbPairer* m_connector{nullptr}; // `adb connect` - riêng với m_pairer để hai nút không khóa lẫn nhau
+    QString m_lastPairHost;          // IP của lần ghép đôi thành công gần nhất - điền sẵn ô Kết nối
     QTimer* m_autoRefreshTimer{nullptr};
     QList<AndroidDeviceInfo> m_devices;
 

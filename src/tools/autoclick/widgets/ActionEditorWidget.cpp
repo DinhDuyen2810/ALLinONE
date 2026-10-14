@@ -74,20 +74,19 @@ ActionEditorWidget::ActionEditorWidget(QWidget* parent)
         m_hotkeyModOrder = order; // nguồn thật = đúng thứ tự hook ghi được, thắng mọi thứ tự cũ
         refreshModifierCheckboxLabels();
 
-        const int idx = m_hotkeyKeyCombo->findData(vkCode);
-        if (idx >= 0)
-        {
-            m_hotkeyKeyCombo->setCurrentIndex(idx);
-            m_hotkeyCaptureStatus->setText("✓ Đã bắt được tổ hợp phím.");
-        }
-        else
-        {
-            m_hotkeyCaptureStatus->setText(
-                QString("⚠ Đã bắt phím bổ trợ (Ctrl/Alt/Shift/Win) nhưng phím chính (mã %1) chưa có "
-                        "trong danh sách hỗ trợ - chọn phím thủ công ở dưới.").arg(vkCode));
-        }
+        const bool inList = m_hotkeyKeyCombo->findData(vkCode) >= 0;
+        // Phím ngoài danh sách sẵn (phím số, numpad, dấu câu...) vẫn được dùng - cùng cơ chế mục tạm
+        // "(phím khác: ...)" như khi nạp hồ sơ JSON, thay vì bỏ phím đã bắt và giữ phím chính cũ.
+        selectKeyInCombo(m_hotkeyKeyCombo, vkCode, fallbackKeyName(vkCode));
+        m_hotkeyCaptureStatus->setText(inList ? QString("✓ Đã bắt được tổ hợp phím.")
+                                              : QString("✓ Đã bắt được tổ hợp phím (phím chính mã %1 - ngoài danh "
+                                                        "sách sẵn).").arg(vkCode));
         m_captureHotkeyBtn->setText("🎯 Bắt tổ hợp phím");
         m_captureHotkeyBtn->setEnabled(true);
+        // Bắt lại CÙNG bộ phím bổ trợ + phím chính nhưng THỨ TỰ khác không đổi giá trị control nào (checkbox
+        // /combo giữ nguyên) nên không có tín hiệu nào gọi markDirty() - thay đổi thứ tự bị mất ngầm khi
+        // chuyển sang hành động khác. Đánh dấu tường minh.
+        markDirty();
     });
     connect(m_hotkeyCapture, &HotkeyCapture::captureCancelled, this, [this]() {
         m_hotkeyCaptureStatus->setText("Đã hủy bắt tổ hợp phím.");
@@ -724,6 +723,17 @@ namespace
 constexpr int kCustomKeyNameRole = Qt::UserRole + 1;
 }
 
+QString ActionEditorWidget::fallbackKeyName(int vkCode)
+{
+    // Tên đọc được cho phím ngoài danh sách sẵn (không gọi Win32 ở tầng giao diện - Rule 3): chữ/số theo đúng ký
+    // tự, bàn phím số "NUM0".."NUM9", còn lại "VK <mã>". Trước đây tên rỗng nên mô tả hành động chỉ còn "Phím".
+    if ((vkCode >= '0' && vkCode <= '9') || (vkCode >= 'A' && vkCode <= 'Z'))
+        return QString(QChar(vkCode));
+    if (vkCode >= 0x60 && vkCode <= 0x69)
+        return QString("NUM%1").arg(vkCode - 0x60);
+    return QString("VK %1").arg(vkCode);
+}
+
 void ActionEditorWidget::selectKeyInCombo(QComboBox* combo, int vkCode, const QString& keyName)
 {
     // Bỏ mục tạm của hành động nạp trước đó (nếu có) - mỗi lúc chỉ có tối đa một mục tạm.
@@ -867,7 +877,12 @@ Action ActionEditorWidget::getAction() const
     act.scrollDirection = static_cast<ScrollDirection>(m_scrollDirectionCombo->currentIndex());
     act.scrollAmount = m_scrollAmountSpin->value();
 
-    act.recordedEvents = m_recordedEvents;
+    // Chỉ hành động "Ghi nhớ chuỗi" mang dữ liệu đã ghi - đổi một macro sang loại khác rồi Lưu trước đây
+    // vẫn giữ nguyên hàng nghìn sự kiện ẩn trong hồ sơ JSON.
+    if (act.type == ActionType::RecordedMacro)
+        act.recordedEvents = m_recordedEvents;
+    else
+        act.recordedEvents.clear();
 
     act.hotkeyTrigger = static_cast<HotkeyTrigger>(m_hotkeyTriggerCombo->currentIndex());
     if (act.type == ActionType::Hotkey && act.hotkeyTrigger == HotkeyTrigger::Scroll)

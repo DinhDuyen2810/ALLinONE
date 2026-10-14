@@ -492,6 +492,24 @@ int main(int argc, char** argv)
         CHECK(VpnController::internal::buildRemoveConnectionScript("%1%2").contains("-Name '%1%2' -Force"));
     }
 
+    // ---- Hồi quy v1.19.23: khóa chia sẻ trước L2TP/IPsec (-L2tpPsk) ----
+    {
+        VpnProfile p;
+        p.name = "L2TP thử";
+        p.serverAddress = "vpn.example.com";
+        p.tunnelType = VpnTunnelType::L2tp;
+        p.l2tpPsk = "kh'oa%1bi’mat";
+        const QString script = VpnController::internal::buildAddConnectionScript(p);
+        CHECK(script.contains("-L2tpPsk $env:ONEFORALL_L2TP_PSK")); // khóa đi qua biến môi trường riêng
+        CHECK(!script.contains("bi’mat") && !script.contains("kh'oa")); // không bao giờ nằm trong script/dòng lệnh
+        CHECK(script.contains("-TunnelType L2tp"));
+        p.l2tpPsk.clear();
+        CHECK(!VpnController::internal::buildAddConnectionScript(p).contains("L2tpPsk"));
+        p.tunnelType = VpnTunnelType::Ikev2;
+        p.l2tpPsk = "khong-dung";
+        CHECK(!VpnController::internal::buildAddConnectionScript(p).contains("L2tpPsk")); // chỉ L2TP mới có
+    }
+
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);
     std::printf("\nLUU Y: khong co VPN that trong moi truong nay - cac ham goi PowerShell/RAS API that\n");
     std::printf("(listConnections/addConnection/removeConnection/VpnConnector::run thuc su chay) can\n");

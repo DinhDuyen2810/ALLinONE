@@ -152,7 +152,10 @@ void DownloadHistoryTab::onOpenFile()
         return;
     const QString path = m_store->entries()[i].path;
     if (!path.isEmpty() && QFileInfo::exists(path))
-        QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+    {
+        if (DownloaderUi::confirmOpenDownloadedFile(this, path))
+            QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+    }
     else
         m_countLabel->setText("Tệp không còn tồn tại (đã bị di chuyển/xóa) hoặc lần tải đó không tạo ra tệp.");
 }

@@ -1573,14 +1573,17 @@ RecordedEvent randomRecordedEvent(std::mt19937& rng)
         case RecordedEventType::MouseWheel:
             ev.x = coord();
             ev.y = coord();
-            ev.wheelDelta = anyInt();
+            // Miền mà ActionSerializer giữ nguyên (từ v1.19.23 kẹp vào miền short) - giá trị ngoài miền có test
+            // riêng (autoclick_tests.cpp, khối JSON "rac" bên dưới).
+            ev.wheelDelta = rndIn(rng, 0, 4) == 0 ? (rndIn(rng, 0, 1) ? -32768 : 32767) : rndIn(rng, -32768, 32767);
             ev.wheelHorizontal = rndIn(rng, 0, 1);
             break;
         case RecordedEventType::KeyDown:
         case RecordedEventType::KeyUp:
-            ev.keyCode = anyInt();
+            ev.keyCode = rndIn(rng, 1, 254); // mã VK hợp lệ - mã ngoài miền làm sự kiện bị bỏ khi nạp (v1.19.23)
             break;
     }
+    Q_UNUSED(anyInt)
     return ev;
 }
 
@@ -1621,14 +1624,15 @@ Action randomAction(std::mt19937& rng)
     if (rndIn(rng, 0, 9) == 0)
         a.text += "\n\r\t\\\"\x01";
     a.textMode = static_cast<TextTypeMode>(rndIn(rng, 0, 1));
-    a.keyCode = anyInt();
+    a.keyCode = rndIn(rng, 1, 254); // mã VK hợp lệ - ngoài miền được đổi về Enter khi nạp (v1.19.23)
     a.keyName = randomText(rng, 3).toStdString();
     a.modCtrl = rndIn(rng, 0, 1);
     a.modAlt = rndIn(rng, 0, 1);
     a.modShift = rndIn(rng, 0, 1);
     a.modWin = rndIn(rng, 0, 1);
     a.scrollDirection = static_cast<ScrollDirection>(rndIn(rng, 0, 3));
-    a.scrollAmount = anyInt();
+    a.scrollAmount = rndIn(rng, 1, 100); // cùng miền ô nhập giao diện - ngoài miền bị kẹp khi nạp (v1.19.23)
+    Q_UNUSED(anyInt)
     // Ghi phẳng bất kể type (giống mọi field khác ở trên) - ActionSerializer ghi/đọc recordedEvents cho
     // MỌI Action, không chỉ RecordedMacro, xem randomRecordedEvent() ở trên.
     const int eventCount = rndIn(rng, 0, 4);
@@ -1769,6 +1773,14 @@ void fuzzActionSerializer()
                     // Tọa độ ngoài màn hình ảo làm tràn phép nội suy (end - start) lúc kéo chuột.
                     for (const int c : {a.x, a.y, a.startX, a.startY, a.endX, a.endY})
                         if (c < -32768 || c > 32767) ++outOfDomain;
+                    // v1.19.23: số nấc cuộn khổng lồ = hàng tỉ lần SendInput; mã phím ngoài 1..254 bị cắt thành phím khác.
+                    if (a.scrollAmount < 1 || a.scrollAmount > 100 || a.keyCode < 1 || a.keyCode > 254) ++outOfDomain;
+                    for (const RecordedEvent& ev : a.recordedEvents)
+                    {
+                        if (ev.delayMs < 0 || ev.delayMs > 60000 || ev.wheelDelta < -32768 || ev.wheelDelta > 32767) ++outOfDomain;
+                        if ((ev.type == RecordedEventType::KeyDown || ev.type == RecordedEventType::KeyUp) &&
+                            (ev.keyCode < 1 || ev.keyCode > 254)) ++outOfDomain;
+                    }
                 }
             }
         };

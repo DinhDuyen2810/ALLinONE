@@ -138,7 +138,11 @@ QList<VpnConnectionStatus> listConnections(QString* error)
 bool addConnection(const VpnProfile& profile, QString* error)
 {
     bool ok = false;
-    PowerShellRunner::run(internal::buildAddConnectionScript(profile), &ok, error);
+    if (profile.tunnelType == VpnTunnelType::L2tp && !profile.l2tpPsk.isEmpty())
+        PowerShellRunner::runWithSecretEnv(internal::buildAddConnectionScript(profile), QLatin1String(internal::kL2tpPskEnvVar),
+                                           profile.l2tpPsk, &ok, error);
+    else
+        PowerShellRunner::run(internal::buildAddConnectionScript(profile), &ok, error);
     if (ok && (!profile.countryLabel.isEmpty() || !profile.username.isEmpty()))
     {
         // Kết nối đã được tạo thật trong Windows - lưu thông tin phụ thất bại KHÔNG biến việc thêm thành
@@ -157,8 +161,11 @@ bool removeConnection(const QString& name, QString* error)
     if (ok)
     {
         auto metas = loadProfileMetas();
-        if (metas.remove(name) > 0)
-            saveProfileMetas(metas, nullptr);
+        QString saveError;
+        // Kết nối đã bị xóa khỏi Windows - không ghi được tệp thông tin phụ chỉ là CẢNH BÁO (giống
+        // addConnection), không được bỏ qua im lặng như trước: nhãn cũ sẽ tự gắn lại vào một hồ sơ mới trùng tên.
+        if (metas.remove(name) > 0 && !saveProfileMetas(metas, &saveError) && error)
+            *error = "Đã xóa kết nối nhưng không cập nhật được tệp thông tin phụ: " + saveError;
     }
     return ok;
 }
@@ -222,14 +229,21 @@ QString buildAddConnectionScript(const VpnProfile& profile)
                "$ProgressPreference = 'SilentlyContinue'\n"
                "try {\n"
                "  Add-VpnConnection -Name '%1' -ServerAddress '%2' -TunnelType %3 "
-               "-AuthenticationMethod %4 -EncryptionLevel Required -Force -ErrorAction Stop | Out-Null\n"
+               "-AuthenticationMethod %4 -EncryptionLevel Required%5 -Force -ErrorAction Stop | Out-Null\n"
                "  Write-Output 'OK'\n"
                "} catch {\n"
                "  [Console]::Error.WriteLine($_.Exception.Message)\n"
                "  exit 1\n"
                "}\n")
         .arg(escapePsString(profile.name), escapePsString(profile.serverAddress), tunnelTypeToPs(profile.tunnelType),
-             authMethodForTunnelType(profile.tunnelType));
+             authMethodForTunnelType(profile.tunnelType),
+             // L2TP/IPsec với khóa chia sẻ trước: thiếu -L2tpPsk thì Windows tạo kết nối dùng chứng chỉ và mọi
+             // lần kết nối tới máy chủ dùng PSK đều thất bại (lỗi 789). Chỉ thêm cho L2TP - tham số này không
+             // hợp lệ với giao thức khác. Khóa KHÔNG nằm trong script (dòng lệnh -EncodedCommand đọc được từ tiến
+             // trình khác) mà đi qua biến môi trường riêng của powershell.exe - xem addConnection().
+             (profile.tunnelType == VpnTunnelType::L2tp && !profile.l2tpPsk.isEmpty())
+                 ? QStringLiteral(" -L2tpPsk $env:%1").arg(QLatin1String(kL2tpPskEnvVar))
+                 : QString());
 }
 
 QString buildRemoveConnectionScript(const QString& name)

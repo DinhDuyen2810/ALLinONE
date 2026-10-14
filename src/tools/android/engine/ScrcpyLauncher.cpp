@@ -52,7 +52,14 @@ bool ScrcpyLauncher::start(const ScrcpyOptions& options, QString* error)
                         WinProcessTree::terminateDescendants(m_lastPid);
                     emit finished(exitCode);
                 });
-        connect(m_process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError) {
+        connect(m_process, &QProcess::errorOccurred, this, [this](QProcess::ProcessError processError) {
+            // FailedToStart: start() đã trả false kèm thông báo (nơi gọi hiện hộp thoại) - phát thêm ở đây
+            // là báo lỗi HAI lần. Crashed do chính stop() buộc dừng: không phải lỗi, trước đây vẫn nháy
+            // "⚠ Process crashed" ở dòng trạng thái mỗi lần bấm Dừng điều khiển.
+            if (processError == QProcess::FailedToStart)
+                return;
+            if (processError == QProcess::Crashed && m_stoppedByUs)
+                return;
             emit errorOccurred(m_process->errorString());
         });
     }

@@ -133,10 +133,36 @@ QByteArray run(const QString& script, bool* ok, QString* error, int timeoutMs)
     return runCancelable(script, nullptr, ok, error, timeoutMs);
 }
 
+namespace
+{
+QByteArray runImpl(const QString& script, const std::atomic_bool* cancelFlag, bool* ok, QString* error, int timeoutMs,
+                   const QString& envName, const QString& envValue);
+}
+
 QByteArray runCancelable(const QString& script, const std::atomic_bool* cancelFlag, bool* ok, QString* error, int timeoutMs)
+{
+    return runImpl(script, cancelFlag, ok, error, timeoutMs, QString(), QString());
+}
+
+QByteArray runWithSecretEnv(const QString& script, const QString& envName, const QString& envValue, bool* ok,
+                            QString* error, int timeoutMs)
+{
+    return runImpl(script, nullptr, ok, error, timeoutMs, envName, envValue);
+}
+
+namespace
+{
+QByteArray runImpl(const QString& script, const std::atomic_bool* cancelFlag, bool* ok, QString* error, int timeoutMs,
+                   const QString& envName, const QString& envValue)
 {
     *ok = false;
     QProcess proc;
+    if (!envName.isEmpty())
+    {
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        env.insert(envName, envValue);
+        proc.setProcessEnvironment(env);
+    }
     // Đường dẫn tuyệt đối trong System32 - không để Windows tự tìm "powershell.exe" theo thư mục ứng
     // dụng/CWD/PATH (xem AppPaths::systemExecutable).
     proc.setProgram(AppPaths::powershellExecutable());
@@ -192,6 +218,7 @@ QByteArray runCancelable(const QString& script, const std::atomic_bool* cancelFl
     *ok = true;
     return out;
 }
+} // namespace
 
 QString encodedCommand(const QString& script)
 {

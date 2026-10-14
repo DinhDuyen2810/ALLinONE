@@ -67,6 +67,7 @@ private:
     /// mục tạm "(phím khác: ...)" giữ nguyên mã + tên gốc, xem setAction().
     static void selectKeyInCombo(QComboBox* combo, int vkCode, const QString& keyName);
     static QString keyNameFromCombo(const QComboBox* combo);
+    static QString fallbackKeyName(int vkCode);
     QWidget* createClickPage();
     QWidget* createDragPage();
     QWidget* createHoldPage();

@@ -131,7 +131,7 @@ void RuntimeOverlay::setMode(Mode mode)
         m_progressBar->setVisible(false);
         m_stopButton->setText("⏹ Kết thúc ghi");
         m_actionLabel->setText("Đã ghi: 0 bước");
-        m_nextActionLabel->setText("Thời gian: 0,0 giây");
+        m_nextActionLabel->setText("Thời gian: 0.0 giây");
         // Lúc ghi HUD phải ĐỨNG YÊN (yêu cầu người dùng) - luôn về đúng vị trí "home" cố định, không né
         // theo chuột nữa (người dùng đang chủ động điều khiển chuột để ghi macro, né sẽ khiến nút "Kết
         // thúc ghi" thành mục tiêu di động không bao giờ bấm trúng được).

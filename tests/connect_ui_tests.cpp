@@ -11,6 +11,7 @@
 
 #include "core/AppPaths.h"
 #include "tools/connect/ConnectWindow.h"
+#include <QCheckBox>
 #include "tools/connect/engine/ConnectSessionController.h"
 
 static int g_fail = 0, g_pass = 0;
@@ -89,6 +90,21 @@ int main(int argc, char** argv)
 
     win.close();
     app.processEvents();
+
+    // v1.19.23: công tắc đồng bộ clipboard điều khiển đúng controller của cửa sổ.
+    {
+        auto* clipCheck = win.findChild<QCheckBox*>("clipboardSharingCheck");
+        auto* ctl = win.findChild<ConnectSessionController*>();
+        CHECK(clipCheck && ctl);
+        if (clipCheck && ctl)
+        {
+            CHECK(clipCheck->isChecked() && ctl->isClipboardSharingEnabled());
+            clipCheck->setChecked(false);
+            CHECK(!ctl->isClipboardSharingEnabled());
+            clipCheck->setChecked(true);
+            CHECK(ctl->isClipboardSharingEnabled());
+        }
+    }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;

@@ -77,6 +77,15 @@ QByteArray NetworkSession::handshakeAad(Side sender) const
 void NetworkSession::wireSocket()
 {
     connect(m_socket, &QTcpSocket::connected, this, &NetworkSession::connected);
+    // TCP_NODELAY: mỗi cử động chuột là một khung NHỎ gửi ngay - với Nagle (mặc định) khung nhỏ bị giữ lại chờ ACK
+    // của khung trước (kết hợp delayed-ACK phía nhận có thể tới ~200 ms), con trỏ trên máy kia giật/trễ rõ rệt.
+    // Socket nhận về (adoptSocket) đã kết nối - đặt ngay; socket TỰ MỞ chưa có engine trước connectToHost() nên
+    // Qt bỏ qua tùy chọn - đặt lại lúc connected.
+    m_socket->setSocketOption(QAbstractSocket::LowDelayOption, 1);
+    connect(m_socket, &QTcpSocket::connected, this, [this]() {
+        if (m_socket)
+            m_socket->setSocketOption(QAbstractSocket::LowDelayOption, 1);
+    });
     connect(m_socket, &QTcpSocket::disconnected, this, &NetworkSession::disconnected);
     connect(m_socket, &QTcpSocket::readyRead, this, &NetworkSession::processBuffer);
     connect(m_socket, &QTcpSocket::errorOccurred, this, [this](QAbstractSocket::SocketError) {

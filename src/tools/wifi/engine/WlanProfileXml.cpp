@@ -120,7 +120,7 @@ bool WlanProfileXml::describesSsid(const QString& xml, const QByteArray& ssidByt
 }
 
 QString WlanProfileXml::build(const QByteArray& ssidBytes, const QString& ssidDisplayName, WifiSecurity security,
-                              const QString& password, bool autoConnect, bool nonBroadcast)
+                              const QString& password, bool autoConnect, bool nonBroadcast, const QString& profileName)
 {
     const AuthEnc ae = authEncFor(security);
     // Phần tử gốc WLANProfile LUÔN ở namespace v1, kể cả hồ sơ WPA3: theo tài liệu "WLAN_profile schema"
@@ -136,7 +136,7 @@ QString WlanProfileXml::build(const QByteArray& ssidBytes, const QString& ssidDi
     w.writeStartElement("WLANProfile");
     w.writeDefaultNamespace(ns);
 
-    w.writeTextElement("name", ssidDisplayName);
+    w.writeTextElement("name", profileName.isEmpty() ? ssidDisplayName : profileName);
 
     w.writeStartElement("SSIDConfig");
     w.writeStartElement("SSID");

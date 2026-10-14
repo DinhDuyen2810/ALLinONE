@@ -56,6 +56,20 @@ AddVpnProfileDialog::AddVpnProfileDialog(QWidget* parent)
     m_tunnelTypeCombo->setCurrentIndex(1); // IKEv2 mặc định - tương thích rộng, an toàn
     form->addRow("Giao thức:", m_tunnelTypeCombo);
 
+    // Chỉ có nghĩa với L2TP/IPsec - trước đây không có ô này nên máy chủ L2TP dùng khóa chia sẻ trước (loại
+    // phổ biến nhất) không bao giờ kết nối được.
+    m_pskEdit = new QLineEdit(this);
+    m_pskEdit->setObjectName("l2tpPskEdit");
+    m_pskEdit->setEchoMode(QLineEdit::Password);
+    m_pskEdit->setPlaceholderText("Khóa chia sẻ trước (PSK) - chỉ cho L2TP/IPsec");
+    form->addRow("Khóa L2TP (PSK):", m_pskEdit);
+    const auto updatePsk = [this]() {
+        const bool l2tp = static_cast<VpnTunnelType>(m_tunnelTypeCombo->currentData().toInt()) == VpnTunnelType::L2tp;
+        m_pskEdit->setEnabled(l2tp);
+    };
+    connect(m_tunnelTypeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, updatePsk);
+    updatePsk();
+
     m_usernameEdit = new QLineEdit(this);
     m_usernameEdit->setPlaceholderText("Tên đăng nhập VPN (không bắt buộc)");
     form->addRow("Tên đăng nhập:", m_usernameEdit);
@@ -91,5 +105,7 @@ VpnProfile AddVpnProfileDialog::profile() const
     p.serverAddress = m_serverEdit->text().trimmed();
     p.tunnelType = static_cast<VpnTunnelType>(m_tunnelTypeCombo->currentData().toInt());
     p.username = m_usernameEdit->text().trimmed();
+    if (p.tunnelType == VpnTunnelType::L2tp)
+        p.l2tpPsk = m_pskEdit->text();
     return p;
 }

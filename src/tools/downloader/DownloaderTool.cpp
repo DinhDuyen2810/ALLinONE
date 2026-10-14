@@ -5,8 +5,8 @@
 
 QString DownloaderTool::description() const
 {
-    return "Dán link (tệp, video Facebook/TikTok/YouTube, Google Drive, trang phim, ảnh bài đăng, cả hồ sơ/kênh) vào "
-           "hàng đợi hoặc quét trang để liệt kê ảnh/video, xem OK/ERR rồi chọn tải; xem lịch sử; cài thư mục tải.";
+    return "Dán link (tệp, video Facebook/TikTok/YouTube, Google Drive, trang phim, ảnh bài đăng, cả hồ sơ/kênh) rồi "
+           "bấm Quét để liệt kê mọi tệp/video tìm được, xem OK/ERR rồi chọn tải; xem lịch sử; cài thư mục tải.";
 }
 
 QIcon DownloaderTool::icon() const

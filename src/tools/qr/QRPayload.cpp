@@ -509,6 +509,7 @@ WifiInfo QRPayload::parseWifi(const QString& content)
         return info;
 
     const QStringList parts = splitUnescaped(text.mid(5), ';');
+    bool sawType = false;
     for (const QString& part : parts)
     {
         if (part.size() < 2 || part[1] != ':')
@@ -519,11 +520,16 @@ WifiInfo QRPayload::parseWifi(const QString& content)
             case 'S': info.ssid = value; break;
             // Trường P lặp lại (mã tự dựng/lỗi): giữ giá trị KHÁC RỖNG - cùng lý do đã áp dụng ở parse().
             case 'P': if (!value.isEmpty()) info.password = value; break;
-            case 'T': info.security = value; break;
+            case 'T': info.security = value; sawType = true; break;
             case 'H': info.hidden = value.compare("true", Qt::CaseInsensitive) == 0; break;
         }
     }
-    if (info.security.isEmpty())
+    // Thiếu hẳn trường T: (nhiều ứng dụng tạo mã bỏ qua): trước đây giữ mặc định "WPA" của WifiInfo kể cả
+    // khi không có mật khẩu - mã "WIFI:S:Cafe;;" của mạng MỞ bị hiểu là WPA2 với mật khẩu rỗng và kết nối
+    // luôn thất bại. Suy theo mật khẩu: có mật khẩu -> WPA, không có -> mạng mở.
+    if (!sawType)
+        info.security = info.password.isEmpty() ? QStringLiteral("nopass") : QStringLiteral("WPA");
+    else if (info.security.isEmpty())
         info.security = "nopass";
     return info;
 }

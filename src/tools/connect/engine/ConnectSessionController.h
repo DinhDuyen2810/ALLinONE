@@ -113,6 +113,12 @@ public:
     void stop();
     bool isRunning() const { return m_running; }
 
+    /// Bật/tắt chia sẻ clipboard văn bản lúc đang chạy (mặc định BẬT, như trước). Trước đây không có cách tắt:
+    /// mọi thứ sao chép - kể cả mật khẩu - tự gửi sang MỌI máy đã kết nối, và máy nào cũng ghi đè được clipboard
+    /// của máy này bất cứ lúc nào. Tắt thì không gửi đi và bỏ qua clipboard nhận về.
+    void setClipboardSharingEnabled(bool enabled) { m_clipboardSharing = enabled; }
+    bool isClipboardSharingEnabled() const { return m_clipboardSharing; }
+
     LocalIdentity localIdentity() const { return m_identity; }
     quint16 listenPort() const;
 
@@ -292,6 +298,7 @@ private:
     bool m_installHook{true};
     bool m_enableDiscovery{true};
     bool m_enableClipboard{true};
+    bool m_clipboardSharing{true}; ///< công tắc của người dùng (xem setClipboardSharingEnabled())
     bool m_usePreferredPort{true};
     int m_handshakeTimeoutMs{0};
     int m_housekeepingIntervalMs{0};

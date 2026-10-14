@@ -23,9 +23,12 @@ public:
 
     /// Gọi TRƯỚC start() cho mỗi lần lấy thông tin - đồng thời xóa cờ hủy của lần trước (đối tượng được
     /// tái dùng; xóa ở đây chứ không phải đầu run() để không nuốt một requestCancel() gọi ngay sau start()).
-    void setUrl(const QString& url)
+    /// `extraArgs`: cookie (--cookies/--cookies-from-browser) + --referer giống hệt lúc tải - thiếu chúng thì "Chọn
+    /// chất lượng khác..." thất bại với video cần đăng nhập/Referer dù tải bình thường vẫn được.
+    void setUrl(const QString& url, const QStringList& extraArgs = {})
     {
         m_url = url;
+        m_extraArgs = extraArgs;
         m_cancelRequested = false;
     }
 
@@ -42,6 +45,7 @@ protected:
 
 private:
     QString m_url;
+    QStringList m_extraArgs;
     std::atomic_bool m_cancelRequested{false};
 };
 
@@ -52,5 +56,5 @@ VideoInfo parseInfoJson(const QByteArray& json, QString* error);
 
 /// Đối số dòng lệnh cho lượt lấy thông tin - thuần, test được (xem ghi chú về "--"/--ignore-config ở
 /// YtDlpDownloadWorkerInternal::buildArguments).
-QStringList buildArguments(const QString& url);
+QStringList buildArguments(const QString& url, const QStringList& extraArgs = {});
 } // namespace YtDlpInfoWorkerInternal

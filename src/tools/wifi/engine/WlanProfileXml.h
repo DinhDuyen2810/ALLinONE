@@ -19,8 +19,10 @@ namespace WlanProfileXml
 /// nonBroadcast=true cho mạng ẩn (không quảng bá SSID): ghi <nonBroadcast>true</nonBroadcast> để Windows
 /// chủ động dò (probe) đúng SSID đó - thiếu phần tử này Windows chỉ nối khi THẤY SSID trong kết quả quét,
 /// tức không bao giờ nối được mạng ẩn.
+/// profileName: tên HỒ SƠ (phần tử <name> gốc) nếu khác SSID - rỗng = dùng ssidDisplayName.
 QString build(const QByteArray& ssidBytes, const QString& ssidDisplayName, WifiSecurity security,
-             const QString& password, bool autoConnect, bool nonBroadcast = false);
+             const QString& password, bool autoConnect, bool nonBroadcast = false,
+             const QString& profileName = QString());
 
 /// Phân tích XML hồ sơ đã lưu thành WifiProfile: name/ssid/security/autoConnect/rawXml; password chỉ được
 /// điền khi khóa ở dạng chữ (<protected>false</protected>), ngược lại keyProtected=true.

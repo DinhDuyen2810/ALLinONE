@@ -765,8 +765,10 @@ QList<PostRef> postLinksFromDom(const QString& dom, const QString& pageUrl, int 
 // ---------------------------------------------------------------------------------------------- yt-dlp
 QStringList ytDlpAnalyzeArguments(const QString& url, int maxItems, const QStringList& extra)
 {
+    // Xin THÊM MỘT mục so với giới hạn: parseYtDlpJson() chỉ biết danh sách bị cắt (truncated -> cảnh báo "chỉ lấy
+    // N mục đầu") khi thấy mục thứ N+1. Xin đúng N như trước thì cờ đó không bao giờ bật.
     QStringList a = {"--ignore-config", "--dump-single-json", "--no-warnings", "--flat-playlist",
-                     "--socket-timeout", "20", "--playlist-end", QString::number(qMax(1, maxItems))};
+                     "--socket-timeout", "20", "--playlist-end", QString::number(qMax(1, maxItems) + 1)};
     if (!isLikelyProfileOrCollectionUrl(url))
         a << "--no-playlist"; // link một video nằm trong danh sách phát: chỉ lấy video đó
     a << extra;

@@ -84,11 +84,6 @@ private:
     qint64 m_pid{0};
 };
 
-quint16 freeLocalPort()
-{
-    QTcpServer s;
-    return s.listen(QHostAddress::LocalHost, 0) ? s.serverPort() : 0;
-}
 } // namespace
 
 // ------------------------------------------------------------------------------------------------ Thuần
@@ -109,11 +104,25 @@ bool isAllowedUrl(const QString& url, bool allowAny, QString* fileId)
     return isDrive || allowAny;
 }
 
+quint16 readDevToolsPort(const QString& profileDir)
+{
+    QFile f(profileDir + QStringLiteral("/DevToolsActivePort"));
+    if (!f.open(QIODevice::ReadOnly))
+        return 0;
+    const QByteArray firstLine = f.readLine(32).trimmed();
+    bool ok = false;
+    const int port = firstLine.toInt(&ok);
+    return (ok && port > 0 && port <= 65535) ? static_cast<quint16>(port) : 0;
+}
+
 QStringList buildArguments(quint16 port, const QString& profileDir, const QString& url, bool showWindow, double scale)
 {
     QStringList a = {
+        // Cổng 0 = trình duyệt tự xin một cổng trống rồi ghi vào <user-data-dir>/DevToolsActivePort (xem
+        // readDevToolsPort()). KHÔNG có "--remote-allow-origins=*": CdpClient không gửi tiêu đề Origin nên luôn được
+        // nhận; còn cờ đó cho phép MỌI trang web đang mở trên máy (trình duyệt thật của người dùng) nối vào cổng
+        // DevTools này và điều khiển trình duyệt ẩn trong lúc chụp.
         QString("--remote-debugging-port=%1").arg(port),
-        "--remote-allow-origins=*",
         "--user-data-dir=" + QDir::toNativeSeparators(profileDir),
         "--no-first-run",
         "--no-default-browser-check",
@@ -228,9 +237,10 @@ bool DriveViewerCapture::runCapture(QString* outPath, QString* warning, QString*
     const QString exe = HeadlessBrowser::findBrowserExecutable();
     if (exe.isEmpty())
         return failWith("Không tìm thấy Microsoft Edge hoặc Google Chrome trên máy.");
-    const quint16 port = freeLocalPort();
-    if (port == 0)
-        return failWith("Không xin được cổng cục bộ cho trình duyệt.");
+    // Trước đây: tự xin một cổng trống (QTcpServer) rồi ĐÓNG nó và đưa số cổng cho trình duyệt - giữa hai bước đó
+    // một chương trình khác có thể chiếm đúng cổng (trình duyệt không nghe được, hoặc ta nối nhầm vào tiến trình
+    // khác). Nay để trình duyệt tự xin cổng (0) và đọc lại số cổng nó THẬT SỰ đang nghe.
+    quint16 port = 0;
 
     BrowserSession session;
     if (!session.profileValid())
@@ -242,7 +252,7 @@ bool DriveViewerCapture::runCapture(QString* outPath, QString* warning, QString*
     } cleanup{session};
 
     QString startError;
-    if (!session.start(exe, DriveViewerCaptureInternal::buildArguments(port, session.profilePath(), m_params.url,
+    if (!session.start(exe, DriveViewerCaptureInternal::buildArguments(0, session.profilePath(), m_params.url,
                                                                        m_params.showWindow, m_params.scale), &startError))
         return failWith(startError);
 
@@ -262,6 +272,16 @@ bool DriveViewerCapture::runCapture(QString* outPath, QString* warning, QString*
         if (timedOut() || !session.alive())
             return failWith((session.alive() ? QString("Trình duyệt không khởi động kịp") : QString("Trình duyệt bị dừng đột ngột khi khởi động")) +
                             " (" + lastProblem + ").");
+        if (port == 0)
+        {
+            port = DriveViewerCaptureInternal::readDevToolsPort(session.profilePath());
+            if (port == 0)
+            {
+                lastProblem = "chưa có cổng DevTools";
+                QThread::msleep(200);
+                continue;
+            }
+        }
         QByteArray body;
         const Status listStatus = cdp.httpGetLocal(port, "/json/list", 2000, &body);
         if (listStatus != Status::Ok)

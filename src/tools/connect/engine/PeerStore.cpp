@@ -41,8 +41,16 @@ PairedPeer* PeerStore::find(const QString& id)
     return nullptr;
 }
 
+void PeerStore::dropUnreadable(const QString& id)
+{
+    m_unreadableEntries.erase(std::remove_if(m_unreadableEntries.begin(), m_unreadableEntries.end(),
+                                             [&id](const QJsonObject& o) { return o.value("id").toString() == id; }),
+                              m_unreadableEntries.end());
+}
+
 bool PeerStore::addOrUpdate(const PairedPeer& peer)
 {
+    dropUnreadable(peer.id); // ghép đôi lại: bản khóa hỏng cũ của đúng máy này thôi không giữ nữa
     if (PairedPeer* existing = find(peer.id))
         *existing = peer;
     else
@@ -55,9 +63,11 @@ bool PeerStore::addOrUpdate(const PairedPeer& peer)
 bool PeerStore::remove(const QString& id)
 {
     const int before = m_peers.size();
+    const int unreadableBefore = m_unreadableEntries.size();
     m_peers.erase(std::remove_if(m_peers.begin(), m_peers.end(), [&](const PairedPeer& p) { return p.id == id; }),
                  m_peers.end());
-    if (m_peers.size() == before)
+    dropUnreadable(id); // quên máy = quên cả bản khóa hỏng của nó, không để nó "sống lại" khi DPAPI mở được
+    if (m_peers.size() == before && m_unreadableEntries.size() == unreadableBefore)
         return true;
     const bool saved = save();
     emit changed();
@@ -66,9 +76,10 @@ bool PeerStore::remove(const QString& id)
 
 bool PeerStore::clear()
 {
-    if (m_peers.isEmpty())
+    if (m_peers.isEmpty() && m_unreadableEntries.isEmpty())
         return true;
     m_peers.clear();
+    m_unreadableEntries.clear();
     const bool saved = save();
     emit changed();
     return saved;
@@ -106,6 +117,7 @@ bool PeerStore::updateEndpoint(const QString& id, const QString& address, quint1
 bool PeerStore::load()
 {
     m_peers.clear();
+    m_unreadableEntries.clear();
     QFile f(m_path);
     if (!f.open(QIODevice::ReadOnly))
         return false;
@@ -136,6 +148,8 @@ bool PeerStore::load()
                 // không dùng được, phải ghép đôi lại với máy này.
                 qWarning("PeerStore: không mở được khóa đã bảo vệ của máy \"%s\" - cần ghép đôi lại.",
                          qUtf8Printable(p.machineName));
+                if (!p.id.isEmpty())
+                    m_unreadableEntries << o;
                 continue;
             }
         }
@@ -206,6 +220,8 @@ bool PeerStore::save() const
         o["pairedAt"] = p.pairedAt.toString(Qt::ISODate);
         arr.append(o);
     }
+    for (const QJsonObject& raw : m_unreadableEntries)
+        arr.append(raw); // addOrUpdate()/remove()/clear() đã gỡ bản của máy được ghép đôi lại/bị quên
 
     QJsonObject root;
     root["version"] = "2.0";

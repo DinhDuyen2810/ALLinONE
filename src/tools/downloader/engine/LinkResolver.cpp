@@ -527,10 +527,11 @@ void LinkResolver::stagePage()
 
 void LinkResolver::stageYtDlp()
 {
-    QString missing;
-    if (!YtDlpController::isBundleAvailable(&missing))
+    // Chỉ PHÂN TÍCH link (--dump-single-json) - không cần ffmpeg.exe (chỉ dùng khi tải/ghép). Trước đây thiếu riêng
+    // ffmpeg.exe cũng bỏ qua cả bước yt-dlp, mọi link video nền tảng rơi xuống quét HTML/trình duyệt ẩn.
+    if (YtDlpController::ytDlpExecutablePath().isEmpty())
     {
-        m_ytError = "Thiếu yt-dlp (" + missing + ").";
+        m_ytError = "Thiếu yt-dlp (yt-dlp.exe).";
         m_ytUnsupported = true; // không phải lỗi của trang - cứ tiếp tục bậc sau
         stageStatic();
         return;

@@ -264,7 +264,11 @@ bool AutoClickWindow::nativeEvent(const QByteArray& eventType, void* message, qi
     // WM_HOTKEY của phím dừng toàn cục (chỉ đăng ký trong lúc chuỗi đang chạy - xem registerStopHotkey()).
     if (m_stopHotkeyRegistered && StopHotkey::isStopMessage(message))
     {
-        onStopClicked();
+        // Dừng GHI bằng phím dừng: bỏ chính tổ hợp đó khỏi cuối macro (xem stopDroppingTrailingKeys()).
+        if (m_recordActive)
+            m_actionRecorder->stopDroppingTrailingKeys(StopHotkey::activeKeyCodes());
+        else
+            onStopClicked();
         if (result) *result = 0;
         return true;
     }
@@ -678,8 +682,24 @@ void AutoClickWindow::updateRepeatFromUi()
         chain->repeatCount = m_infiniteCheck->isChecked() ? -1 : m_repeatSpin->value();
 }
 
+void AutoClickWindow::refreshChainListKeeping(int currentIndex)
+{
+    {
+        ScopedFlag refreshing(m_refreshingChainList);
+        m_chainListWidget->setChains(m_chains);
+        m_chainListWidget->setSelectedChainIndex(currentIndex);
+    }
+    m_currentChainIndex = currentIndex;
+}
+
 void AutoClickWindow::onChainSelected(int index)
 {
+    // setChains() xóa rồi chọn lại hàng CŨ theo vị trí, phát tín hiệu chọn. Sau khi kéo-thả/ghim, hàng cũ
+    // đó là một chuỗi KHÁC - trước đây onChainSelected() ghi đè m_currentChainIndex sang chuỗi đó (danh sách
+    // nhảy sang chuỗi khác chuỗi người dùng vừa kéo); đổi tên thì tự áp dụng chỉnh sửa dở và bỏ chọn hành
+    // động đang sửa.
+    if (m_refreshingChainList)
+        return;
     if (index >= 0 && index < static_cast<int>(m_chains.size()))
     {
         // Đổi sang XEM chain khác - tự áp dụng (không hỏi, giống bấm Apply) mọi chỉnh sửa dở của chain CŨ
@@ -698,7 +718,15 @@ void AutoClickWindow::onAddChain()
     applyPendingEdits();
 
     ActionChain chain;
-    chain.id = "chain_" + std::to_string(m_chains.size() + 1);
+    // id phải DUY NHẤT: "chain_" + số lượng hiện có trùng lại ngay sau khi xóa một chuỗi (3 chuỗi, xóa
+    // chuỗi 2, thêm mới -> lại "chain_3").
+    int nextId = static_cast<int>(m_chains.size()) + 1;
+    const auto idTaken = [this](const std::string& id) {
+        return std::any_of(m_chains.begin(), m_chains.end(), [&id](const ActionChain& c) { return c.id == id; });
+    };
+    while (idTaken("chain_" + std::to_string(nextId)))
+        ++nextId;
+    chain.id = "chain_" + std::to_string(nextId);
     chain.name = "Chain Mới " + std::to_string(m_chains.size() + 1);
     chain.description = "Mô tả chuỗi hành động";
     chain.repeatCount = 1;
@@ -839,7 +867,7 @@ void AutoClickWindow::onRenameChain(int index, const QString& newName)
     if (index >= 0 && index < static_cast<int>(m_chains.size()))
     {
         m_chains[index].name = newName.toStdString();
-        m_chainListWidget->setChains(m_chains);
+        refreshChainListKeeping(m_currentChainIndex);
     }
 }
 
@@ -860,7 +888,7 @@ void AutoClickWindow::onTogglePinChain(int index)
     }
 
     // Bỏ ghim, hoặc ghim chuỗi đã sẵn ở đầu danh sách: chỉ đổi cờ, không cần dời vị trí.
-    m_chainListWidget->setChains(m_chains);
+    refreshChainListKeeping(m_currentChainIndex);
 }
 
 void AutoClickWindow::onChainMoved(int from, int to)
@@ -890,9 +918,7 @@ void AutoClickWindow::onChainMoved(int from, int to)
         std::rotate(m_chains.begin() + to, m_chains.begin() + from, m_chains.begin() + from + 1);
 
     m_runningChainIndex = newRunning;
-    m_currentChainIndex = newSelected;
-    m_chainListWidget->setChains(m_chains);
-    m_chainListWidget->setSelectedChainIndex(m_currentChainIndex);
+    refreshChainListKeeping(newSelected);
 }
 
 void AutoClickWindow::onActionSelected(int index)
@@ -1072,7 +1098,9 @@ void AutoClickWindow::onDeleteActions(const QList<int>& indicesIn)
 
 void AutoClickWindow::onEditorDirtyChanged(bool dirty)
 {
-    m_actionListWidget->setRowDirty(m_actionListWidget->selectedActionIndex(), dirty);
+    // Hàng mà nội dung editor THỰC SỰ thuộc về (xem ActionEditorWidget::currentActionIndex()) - không phải
+    // hàng đang chọn trong bảng, vốn đã đổi sang hàng MỚI khi tín hiệu này phát ra lúc chuyển hàng.
+    m_actionListWidget->setRowDirty(m_actionEditorWidget->currentActionIndex(), dirty);
 }
 
 void AutoClickWindow::onActionMoved(int from, int to)

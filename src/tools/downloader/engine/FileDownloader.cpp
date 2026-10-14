@@ -12,6 +12,12 @@
 #include <QTimer>
 #include <QUrl>
 #include <memory>
+#include <string>
+
+#ifdef Q_OS_WIN
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 
 namespace
 {
@@ -425,6 +431,14 @@ void FileDownloader::startNetworkRequest(int id)
             QFile::remove(st->partPath);
             return;
         }
+        if (m_forgotten.remove(id))
+        {
+            QFile::remove(st->partPath); // mục đã bị gỡ (forget) - không còn ai tiếp tục từ tệp tạm này
+            m_items.remove(id);
+            m_validators.remove(id);
+            tryStartNextQueued();
+            return;
+        }
         auto itemIt = m_items.find(id);
         if (itemIt == m_items.end())
             return;
@@ -561,6 +575,26 @@ void FileDownloader::cancel(int id)
     emit itemUpdated(id);
 }
 
+void FileDownloader::forget(int id)
+{
+    if (!m_items.contains(id))
+        return;
+    const DownloadItem::Status status = m_items.value(id).status;
+    if (status == DownloadItem::Status::Downloading || status == DownloadItem::Status::Queued ||
+        status == DownloadItem::Status::Paused || (status == DownloadItem::Status::Failed && m_validators.contains(id)))
+        cancel(id); // dọn tệp .part; mục đang tải: abort() -> slot finished chạy ngay trong lời gọi này
+    if (m_activeReplies.contains(id))
+    {
+        // Hiếm: phản hồi chưa kết thúc hẳn sau abort() - slot finished gỡ hẳn mục khi nó chạy (m_forgotten).
+        m_order.removeAll(id);
+        m_forgotten.insert(id);
+        return;
+    }
+    m_items.remove(id);
+    m_order.removeAll(id);
+    m_validators.remove(id);
+}
+
 const DownloadItem* FileDownloader::item(int id) const
 {
     auto it = m_items.find(id);
@@ -569,6 +603,73 @@ const DownloadItem* FileDownloader::item(int id) const
 
 namespace FileDownloaderInternal
 {
+namespace
+{
+QString zoneUrl(const QString& raw)
+{
+    const QUrl u(raw);
+    if (!u.isValid() || (u.scheme() != QLatin1String("http") && u.scheme() != QLatin1String("https")))
+        return {};
+    QString s = u.toString(QUrl::RemoveQuery | QUrl::RemoveFragment | QUrl::RemoveUserInfo);
+    s.remove(QChar('\r'));
+    s.remove(QChar('\n'));
+    return s;
+}
+} // namespace
+
+bool markFromInternet(const QString& path, const QString& hostUrl, const QString& referrerUrl)
+{
+#ifdef Q_OS_WIN
+    QByteArray data = "[ZoneTransfer]\r\nZoneId=3\r\n";
+    const QString referrer = zoneUrl(referrerUrl);
+    const QString host = zoneUrl(hostUrl);
+    if (!referrer.isEmpty())
+        data += "ReferrerUrl=" + referrer.toUtf8() + "\r\n";
+    if (!host.isEmpty())
+        data += "HostUrl=" + host.toUtf8() + "\r\n";
+    const std::wstring stream = QDir::toNativeSeparators(path).toStdWString() + L":Zone.Identifier";
+    HANDLE h = CreateFileW(stream.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE)
+        return false;
+    DWORD written = 0;
+    const bool ok = WriteFile(h, data.constData(), static_cast<DWORD>(data.size()), &written, nullptr) &&
+                    written == static_cast<DWORD>(data.size());
+    CloseHandle(h);
+    return ok;
+#else
+    Q_UNUSED(path) Q_UNUSED(hostUrl) Q_UNUSED(referrerUrl)
+    return false;
+#endif
+}
+
+QByteArray readZoneIdentifier(const QString& path)
+{
+#ifdef Q_OS_WIN
+    const std::wstring stream = QDir::toNativeSeparators(path).toStdWString() + L":Zone.Identifier";
+    HANDLE h = CreateFileW(stream.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE)
+        return {};
+    QByteArray out(4096, '\0');
+    DWORD read = 0;
+    ReadFile(h, out.data(), static_cast<DWORD>(out.size()), &read, nullptr);
+    CloseHandle(h);
+    out.truncate(static_cast<int>(read));
+    return out;
+#else
+    Q_UNUSED(path)
+    return {};
+#endif
+}
+
+bool isRiskyToOpen(const QString& path)
+{
+    static const QStringList kRisky = {"exe", "msi", "msix", "msixbundle", "appx", "appxbundle", "bat", "cmd", "com",
+                                       "scr", "pif", "cpl", "ps1", "psm1", "vbs", "vbe", "js", "jse", "wsf", "wsh",
+                                       "hta", "jar", "lnk", "url", "reg", "inf", "msp", "application", "chm", "iso",
+                                       "img", "vhd", "vhdx"};
+    return kRisky.contains(QFileInfo(path).suffix().toLower());
+}
+
 
 bool isHttpUrl(const QString& url)
 {

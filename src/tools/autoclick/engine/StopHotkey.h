@@ -2,6 +2,7 @@
 
 #include <QString>
 #include <QtGui/qwindowdefs.h> // WId
+#include <vector>
 
 /**
  * @brief Phím tắt TOÀN CỤC để dừng khẩn cấp chuỗi Auto Click đang chạy (mục 65 tài liệu thiết kế -
@@ -34,4 +35,9 @@ void unregisterFor(WId windowId);
 /// `message` là con trỏ MSG* nhận được trong QWidget::nativeEvent() - true nếu đó là WM_HOTKEY của
 /// đúng phím dừng đã đăng ký ở trên.
 bool isStopMessage(const void* message);
+
+/// Mọi mã VK (gồm cả biến thể trái/phải của phím bổ trợ, đúng như hook WH_KEYBOARD_LL nhìn thấy) thuộc tổ
+/// hợp dừng ĐANG đăng ký - rỗng nếu chưa đăng ký. Dùng để bỏ chính các phím người dùng vừa bấm để dừng ghi
+/// macro ra khỏi bản ghi (xem ActionRecorder::stopDroppingTrailingKeys()).
+std::vector<int> activeKeyCodes();
 } // namespace StopHotkey

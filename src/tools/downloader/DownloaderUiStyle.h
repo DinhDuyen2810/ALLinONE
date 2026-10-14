@@ -1,6 +1,10 @@
 #pragma once
 
+#include <QFileInfo>
+#include <QMessageBox>
 #include <QString>
+
+#include "engine/FileDownloader.h"
 
 #include "ui/widgets/ComboBoxStyle.h"
 
@@ -8,6 +12,19 @@
 /// Cùng mẫu src/tools/android/AndroidUiStyle.h, src/tools/diskcleanup/DiskUiStyle.h, src/tools/vpn/VpnUiStyle.h, src/tools/security/SecurityUiStyle.h.
 namespace DownloaderUi
 {
+/// Hỏi trước khi mở một tệp tải về thuộc loại chạy được/kịch bản (xem FileDownloaderInternal::isRiskyToOpen) -
+/// trước đây "Mở tệp" (và nhấp đúp ở Lịch sử) chạy thẳng tệp .exe/.bat vừa tải từ mạng. true = được mở.
+inline bool confirmOpenDownloadedFile(QWidget* parent, const QString& path)
+{
+    if (!FileDownloaderInternal::isRiskyToOpen(path))
+        return true;
+    return QMessageBox::warning(parent, "Mở tệp tải về",
+                                QString("\"%1\" là tệp CHẠY ĐƯỢC (chương trình/kịch bản) tải từ Internet. Chỉ mở nếu bạn tin "
+                                        "nguồn của nó - tệp loại này có thể chứa mã độc.\n\nVẫn mở?")
+                                    .arg(QFileInfo(path).fileName()),
+                                QMessageBox::Yes | QMessageBox::No, QMessageBox::No) == QMessageBox::Yes;
+}
+
 inline QString buttonStyle()
 {
     return "QPushButton { background-color: #ffffff; color: #1f2328; border: 1px solid #d0d7de; border-radius: 8px; padding: 7px 14px; font-size: 12px; font-weight: 500; }"

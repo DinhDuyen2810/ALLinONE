@@ -382,6 +382,40 @@ int main(int argc, char** argv)
         }
     }
 
+    // ---- Hồi quy v1.19.23: `adb connect` (nút "Kết nối không dây...") ----
+    {
+        using AdbController::internal::interpretConnectResult;
+        QString e;
+        CHECK(interpretConnectResult(true, 0, "connected to 192.168.1.23:37155\r\n", "", &e));
+        CHECK(interpretConnectResult(true, 0, "already connected to 192.168.1.23:37155\r\n", "", &e));
+        CHECK(!interpretConnectResult(true, 0, "failed to connect to '192.168.1.23:37155': Connection refused\r\n", "", &e));
+        CHECK(e.contains("Connection refused"));
+        CHECK(!interpretConnectResult(true, 0, "cannot connect to 192.168.1.23:37155: No route\r\n", "", &e));
+        CHECK(!interpretConnectResult(true, 0, "", "", &e) && !e.isEmpty());
+        CHECK(!interpretConnectResult(false, 0, "connected to x", "", &e)); // adb crash/bị kill
+        CHECK(!interpretConnectResult(true, 1, "connected to x", "", nullptr));
+
+        AdbPairer connector;
+        int calls = 0;
+        bool lastOk = true;
+        QString lastError;
+        QObject::connect(&connector, &AdbPairer::finished, &connector, [&](bool ok, const QString& error) {
+            ++calls;
+            lastOk = ok;
+            lastError = error;
+        });
+        CHECK(connector.connectDevice("--help")); // không bao giờ tới được adb
+        CHECK(calls == 1 && !lastOk && lastError.contains(QString::fromUtf8("IP:Cổng")));
+        CHECK(connector.connectDevice("1.2.3.4:5555 extra"));
+        CHECK(calls == 2 && !lastOk);
+        CHECK(!connector.isBusy());
+        if (AdbController::adbExecutablePath().isEmpty())
+        {
+            CHECK(connector.connectDevice("192.168.1.23:5555"));
+            CHECK(calls == 3 && !lastOk && lastError.contains("adb.exe"));
+        }
+    }
+
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);
     std::printf("\nLUU Y: khong co thiet bi Android that trong moi truong nay - cac ham goi adb/scrcpy\n");
     std::printf("that (listDevices/pairWireless/connectWireless/ScrcpyLauncher::start thuc su chay) can\n");

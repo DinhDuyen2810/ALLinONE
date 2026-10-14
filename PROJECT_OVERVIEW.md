@@ -2382,6 +2382,95 @@ bộ phân giải với máy chủ giả Drive (`driveBaseOverride`: OK, tắt t
 
 **CHƯA kiểm chứng:** Google Chrome (chỉ thử Edge), tài liệu hàng trăm trang (RAM/thời gian), Windows khác Windows 10, và việc Drive đổi cấu trúc viewer sau này (khi đó chuyển về ERR kèm lý do chứ không treo - timeout 15 phút/90 s chờ viewer). **Giới hạn:** PDF là ảnh trang (không chọn/tìm kiếm được chữ - lớp chữ `<p>` trong DOM chưa được dùng), độ nét theo ảnh Drive gửi về, chỉ link công khai, cần Edge/Chrome và bật "Dùng trình duyệt ẩn".
 
+## 4zk. Rà soát toàn bộ lần ba: sửa lỗi ở cả 9 công cụ + stress test (2026-10-15, v1.19.23)
+
+Yêu cầu người dùng: đọc toàn bộ mã nguồn, sửa mọi lỗi liên quan, stress test cả chương trình tìm lỗi ẩn rồi sửa; lần
+này chỉ push code, KHÔNG tạo release. Năm người đọc độc lập rà 9 công cụ, hai người rà lại chính bản sửa (tìm thêm
+3 lỗi chắc chắn + 2 lỗi có khả năng trong bản sửa đầu - đều đã sửa trước khi commit), rồi chạy lại 18 bộ test thường +
+5 bộ stress.
+
+**Auto Click**
+- Phát lại "Ghi nhớ chuỗi": dừng giữa chừng (nút Dừng/phím dừng/Windows từ chối) trước đây `return` thẳng - phím/nút
+  đang giữ (Ctrl, chuột trái...) bị KẸT trên máy. Nay mọi đường thoát nhả hết (ngược thứ tự). Nhấn/nhả/cuộn đưa con trỏ
+  về đúng tọa độ đã ghi (MouseMove chỉ ghi thưa mỗi 20 ms nên click lệch); nhịp phát lại theo mốc thời gian tuyệt đối
+  (không trôi dần).
+- Dừng GHI bằng phím dừng toàn cục: hook bàn phím thấy Ctrl/Alt/F8 trước khi Windows đổi thành WM_HOTKEY nên tổ hợp
+  này bị ghi vào cuối macro - phát lại thì tự kích hoạt phím dừng và tự dừng. Nay bỏ đúng đoạn đuôi đó
+  (`ActionRecorder::dropTrailingKeys`, `StopHotkey::activeKeyCodes`).
+- Kéo-thả/ghim chuỗi làm danh sách nhảy sang chuỗi khác; đổi tên tự áp dụng chỉnh sửa dở và bỏ chọn hành động -
+  `refreshChainListKeeping()`. id chuỗi mới không còn trùng sau khi xóa.
+- Nạp hồ sơ: `scrollAmount` kẹp 1-100 (trước: tệp ghi 2 tỉ = 2 tỉ lần SendInput), `keyCode` ngoài 1..254 về Enter,
+  sự kiện phím mã 0 bị bỏ, `wheelDelta` kẹp miền short, `delayMs` 1e300 không còn là hành vi không xác định.
+- Phím bên phải (Ctrl/Alt phải, "/" bàn số, Menu, PrintScreen, NumLock) phát lại đúng (thiếu cờ EXTENDEDKEY).
+- Dấu `*` chưa lưu gắn đúng hàng đang sửa; đổi macro sang loại khác không còn giữ hàng nghìn sự kiện ẩn trong JSON;
+  bắt tổ hợp phím ngoài danh sách vẫn dùng được (mục "(phím khác: ...)", tên NUMx/VK x) và đánh dấu chưa lưu khi chỉ
+  đổi THỨ TỰ phím bổ trợ; `~ActionRunner` không bao giờ hủy luồng đang chạy; chữ HUD "Next Round/End" -> tiếng Việt.
+
+**QR Tools / WiFi**
+- Mã WiFi thiếu trường `T:` bị hiểu là WPA kể cả khi không có mật khẩu (mạng mở không kết nối được) - nay suy theo mật
+  khẩu.
+- "Mật khẩu khác..." luôn tạo hồ sơ mang tên SSID nên mạng đã có hồ sơ tên khác ("Nha 2") bị nhân đôi hồ sơ - nay dùng
+  lại đúng hồ sơ đó (trừ hồ sơ do Group Policy quản lý: giữ cách cũ). `WlanProfileXml::build` thêm tham số tên hồ sơ.
+- Danh sách "WiFi đã lưu" ở trang tạo mã thử lại nếu lần đầu không mở được dịch vụ WLAN; hồ sơ 802.1X có gợi ý đúng.
+- Đo tốc độ: khối dữ liệu đầu tiên không còn bị tính vào tốc độ (kết quả cao hơn thật trên mạng nhanh).
+- Biểu tượng tín hiệu: 4 mức thật (trước 75%/50% giống nhau, tín hiệu yếu dùng 📵 "cấm điện thoại").
+
+**Connect Together** (CHƯA kiểm chứng trên hai máy thật)
+- TCP_NODELAY cho mọi phiên (kể cả kết nối tự mở - đặt lại lúc `connected`): khung chuột nhỏ không còn bị Nagle giữ.
+- Nhận quyền điều khiển thì con trỏ (bị hook giữ đứng yên) được lùi 200 px vào trong: nằm đúng mép thì Windows kẹp
+  điểm chuột muốn tới, độ dịch về phía mép luôn bằng 0.
+- Khóa DPAPI không mở được lúc nạp (lỗi hồ sơ Windows tạm thời) trước đây làm máy đã ghép đôi BỊ XÓA VĨNH VIỄN ở lần
+  lưu kế tiếp - nay giữ nguyên mục đó; quên máy/quên tất cả/ghép đôi lại thì gỡ bản cũ.
+- Mỗi cạnh màn hình chỉ một máy; không tạo mã ghép đôi khi chưa chạy; lỗi lưu địa chỉ được báo.
+- Công tắc mới "Đồng bộ clipboard" (mặc định bật như trước) - tắt khi sao chép thông tin nhạy cảm.
+
+**Disk Cleanup**: bấm Quét đúng lúc lượt trước đã báo xong nhưng luồng chưa thoát hẳn khiến tab kẹt ở "Đang quét..."
+(`startScan` bỏ qua lời gọi chồng - đúng hợp đồng) - nay ba tab chờ ngắn (tối đa 3 giây) cho luồng cũ thoát TRƯỚC khi
+chuyển giao diện sang trạng thái bận. (Bản sửa đầu đặt việc chờ trong chính `startScan()` - `disk_vpn_stress_tests` bắt
+được ngay vì phá hợp đồng "gọi chồng bị bỏ qua", đã chuyển lên tầng giao diện.) Xóa tệp trùng không còn báo "Lỗi" cho tệp cố ý giữ lại do đã đổi; nhãn "(sẽ giữ
+lại)" theo đúng ô đang bỏ tích.
+
+**Android**: nút mới "🔌 Kết nối không dây..." (`adb connect` bất đồng bộ, `AdbPairer::connectDevice`,
+`interpretConnectResult`) - trước đây ghép đôi xong không có cách nào đưa máy vào danh sách; chỉ thiếu `scrcpy.exe`
+vẫn liệt kê/ghép đôi được (nút Điều khiển cần scrcpy); lỗi khởi chạy scrcpy không còn báo hai lần, bấm Dừng không
+còn nháy "Process crashed". (CHƯA kiểm chứng với điện thoại thật.)
+
+**VPN**: trạng thái callback RAS gom dưới một khóa và gắn với HRASCONN (lỗi muộn của phiên trước không còn làm phiên
+sau báo thất bại); ô khóa L2TP/IPsec PSK (`-L2tpPsk`, truyền qua biến môi trường riêng của powershell.exe bằng
+`PowerShellRunner::runWithSecretEnv`, KHÔNG nằm trong dòng lệnh); xóa hồ sơ báo lỗi lưu tệp phụ. (CHƯA kiểm chứng với
+máy chủ VPN thật.)
+
+**Security Gateway**: mọi lệnh Defender (đọc trạng thái, danh sách mối đe dọa, bật/tắt bảo vệ, xóa mối đe dọa) chạy
+NỀN - trước đây mở cửa sổ đứng 3 lệnh PowerShell liền. Nút gọi Defender khóa theo cả "đang chạy nền" lẫn "đang quét";
+nút chạy lại quyền Quản trị bị chặn khi luồng nền còn chạy; hàm bật/tắt trả kết quả đúng kể cả khi không truyền con
+trỏ kết quả và trả luôn trạng thái đọc lại (2 lệnh PowerShell thay vì 3).
+
+**Downloader**
+- Kiểm tra "bài ảnh hay video" TikTok giới hạn 2 lượt cùng lúc (trước: chọn 100 mục = 100 bộ phân giải + Edge ẩn).
+- "Kiểm tra lại" bỏ mục HTTP cũ (trước: lần tải sau tiếp tục link/tên tệp CŨ); xóa dòng gỡ luôn mục trong
+  `FileDownloader` (`forget()` - trước: tên tệp bị giữ chỗ mãi, lần sau thành " (1)", bộ nhớ tăng dần).
+- Tiêu đề có `[ ]` làm sai kiểm tra tên trùng (bộ lọc QDir coi là ký tự đại diện) -> mục báo Hoàn tất với tệp cũ; hai
+  tên gốc là tiền tố của nhau không chạy cùng lúc; hủy/lỗi yt-dlp dọn tệp tạm (.part/.ytdl/.part-FragN/.temp và tệp
+  định dạng chờ ghép .fNNN.ext).
+- Tệp tải về được gắn **Mark of the Web** (`Zone.Identifier`, ZoneId=3, địa chỉ đã bỏ truy vấn/đăng nhập) như trình
+  duyệt - SmartScreen/Office vẫn cảnh báo; "Mở tệp"/nhấp đúp ở Lịch sử HỎI trước với tệp chạy được (.exe/.ps1/.lnk...).
+- Trình duyệt ẩn chụp Drive: bỏ `--remote-allow-origins=*` (trang web bất kỳ trên máy nối được vào cổng DevTools),
+  cổng do trình duyệt tự xin (`--remote-debugging-port=0` + đọc `DevToolsActivePort`) - hết tranh chấp cổng.
+- yt-dlp xin N+1 mục nên cảnh báo "danh sách bị cắt" hoạt động; "Chọn chất lượng khác..." dùng cookie/Referer như lúc
+  tải; phân tích link chỉ cần yt-dlp.exe, thiếu ffmpeg.exe thì tải định dạng một tệp (`b/best`).
+- Dòng tóm tắt hàng đợi gộp làm mới (~6 lần/giây) thay vì mỗi khối dữ liệu mạng.
+
+**Stress test**: bộ fuzz hồ sơ Auto Click trong `core_stress_tests` sinh giá trị ngoài miền (mã phím âm, 2 tỉ nấc
+cuộn) mà giao diện không bao giờ tạo - sau khi thêm lớp kẹp, khứ hồi lệch đúng như thiết kế (3 kiểm tra fail). Đã đưa
+bộ sinh về miền hợp lệ và thêm kiểm tra miền cho các trường mới trong khối JSON "rác".
+
+**Kiểm thử** (build sạch, máy dev Windows 10): 18 bộ test thường **4.105 kiểm tra, 0 lỗi** (trước đợt này 3.971 - thêm
+134 kiểm tra hồi quy: `autoclick` 279, `qr` 245 + 197, `wifi` 124 + 74, `connect` 1.101 + 17, `diskcleanup` 457 + 53,
+`android` 153 + 30, `vpn` 132 + 7, `security` 333 + 8, `downloader` 700 + 100, `update` 95). Năm bộ stress: xem dòng
+v1.19.23 ở mục 8 (`core` 551/0, `qrwifi` 759.618/0, `connect` 386/0, `disk_vpn` 7.320/0, `secdl` 1.876.549/0). **CHƯA kiểm chứng** (cần phần cứng/môi trường thật): phát
+lại macro và bắt phím trên desktop thật, chuột qua biên giữa hai máy LAN, `adb connect` với điện thoại, kết nối L2TP PSK
+thật, bật/tắt Defender thật, `Zone.Identifier` trên ổ FAT32/exFAT (bỏ qua êm), Chrome thay Edge cho chụp Drive.
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
@@ -2452,10 +2541,10 @@ Các bước **thủ công trên GitHub** người phát hành (chủ dự án) 
    git tag v1.16.0
    git push origin v1.16.0
    ```
-5. Tạo GitHub Release cho tag vừa đẩy (trang GitHub của repo → Releases → "Draft a new release" → chọn
-   tag `v1.16.0` → đính kèm CẢ 4 FILE trong `dist\` làm asset → Publish). Có thể làm qua
-   `gh release create v1.16.0 dist/OneForAll_Setup.exe dist/OneForAll_Setup.msi dist/OneForAll_Setup_exe.zip dist/OneForAll_Setup_msi.zip --notes "..."`
-   nếu đã cài GitHub CLI, nhưng web UI không cần cài gì thêm.
+5. Đẩy tag xong thì CI (`.github/workflows/build-installer.yml`) TỰ build lại 4 file và tạo GitHub Release
+   kèm đủ 4 asset (cập nhật 2026-10-15: trước đây ghi là phải tạo Release bằng tay - không còn đúng từ khi có
+   CI). Kiểm tra Release qua `https://api.github.com/repos/DinhDuyen2810/ALLinONE/releases/tags/v1.16.0`.
+   Chỉ khi CI không chạy được mới tạo tay (web UI hoặc `gh release create ... dist/*`).
 6. Xong - lần mở ứng dụng tiếp theo trên MỌI máy đã cài bản có bộ tự cập nhật (v1.15.0 trở đi), app sẽ tự
    hỏi thấy v1.16.0 mới hơn, hiện hộp thoại mời cập nhật.
 
@@ -2471,8 +2560,8 @@ vd checksum `.sha256` hay bản cho kiến trúc khác). Một Release không đ
 như "không có gì để tự cập nhật" (an toàn, không báo lỗi gây hoang mang, chỉ im lặng bỏ qua).
 
 **Giới hạn thật:** `AppId` cố định (GUID) để các bản cập nhật sau nhận diện đúng là CÙNG một ứng dụng
-(cho phép cài đè/gỡ đúng phiên bản cũ) - `AppVersion` trong `installer/OneForAll.iss` cần tự cập nhật
-bằng tay mỗi khi đổi phiên bản (hiện khớp `README.md`), không tự động đồng bộ từ CMake.
+(cho phép cài đè/gỡ đúng phiên bản cũ). `AppVersion` của bộ cài KHÔNG cần sửa tay: `build_installer.bat` và CI
+đọc `VERSION` rồi truyền `/DMyAppVersion=...` cho Inno Setup (cập nhật 2026-10-15 - ghi chú cũ "sửa tay" đã lỗi thời).
 
 ## 6. Vấn đề đã biết (chưa sửa)
 - **Connect Together - ghép đôi**: mã 9 số được dùng thẳng làm khóa (PBKDF2, salt cố định, không PAKE). Ai bắt
@@ -2483,14 +2572,16 @@ bằng tay mỗi khi đổi phiên bản (hiện khớp `README.md`), không t�
 - Các mục còn dang dở sau hai đợt rà soát: xem cuối mục 4q (4q đã xử lý phần lớn danh sách ở cuối mục 4p).
 - Auto Click: Pause/Resume có ở tầng runner nhưng chưa có nút trên UI; chưa có checkbox bật/tắt từng hành
   động (trường `enabled` chỉ đọc từ JSON, nay được giữ nguyên khi lưu); nội dung "Gõ văn bản" lưu dạng chữ
-  thường trong hồ sơ; HUD né sai trên nhiều màn hình khác DPI.
-- Android: sau khi ghép đôi
-  không dây chưa có bước `adb connect`; hai bản ứng dụng chạy cùng lúc dùng chung một daemon adb.
-- Security Gateway: các lệnh Defender ngắn vẫn chạy đồng bộ trên luồng giao diện (đứng 1-3 giây khi mở cửa sổ
-  hoặc bật/tắt); hủy quét chỉ dừng `powershell.exe`, chưa chắc dừng lần quét bên trong dịch vụ Defender;
-  clipboard không được khôi phục sau khi dán lệnh.
-- VPN: chưa có tùy chọn `-L2tpPsk`/`-SplitTunneling`; không xóa được hồ sơ đang kết nối.
-- WiFi: hồ sơ mới luôn đặt tên theo SSID kể cả khi hồ sơ cũ có tên khác.
+  thường trong hồ sơ và hiện trên HUD lúc chạy; HUD/overlay/bộ ghi macro quy đổi tọa độ theo DPI màn hình CHÍNH (sai
+  trên nhiều màn hình khác DPI).
+- Android: hai bản ứng dụng chạy cùng lúc dùng chung một daemon adb (đóng một bản dừng adb của bản kia).
+- Security Gateway: hủy quét chỉ dừng `powershell.exe`, chưa chắc dừng lần quét bên trong dịch vụ Defender;
+  clipboard không được khôi phục sau khi dán lệnh; danh sách chặn hosts chỉ chặn đúng tên miền (không gồm tên miền con)
+  và không xóa bộ đệm DNS.
+- VPN: chưa có tùy chọn `-SplitTunneling`; không xóa được hồ sơ đang kết nối; không sửa được nhãn quốc gia sau khi thêm.
+- QR Tools: mật khẩu WiFi trong lịch sử (`qr_history.json`) lưu dạng chữ (chỉ che trên giao diện).
+- Connect Together: công tắc đồng bộ clipboard không được nhớ giữa các lần mở cửa sổ (luôn bật lại).
+- Downloader: yt-dlp tự ghi lại cookie vào chính tệp `cookies.txt` bạn chọn (hành vi gốc của yt-dlp `--cookies`).
 - Tự cập nhật: nếu người dùng mở hai cửa sổ ứng dụng cùng lúc, trình cài đặt `.exe` im lặng có thể tự hủy
   (thấy bản còn lại đang chạy) - ứng dụng vẫn mở lại và hỏi cập nhật lần sau.
 - File cài đặt chưa ký số - SignPath Foundation đã từ chối (mục 4m); hướng tiếp theo ở mục 4r (Microsoft
@@ -2552,6 +2643,7 @@ Quy tắc đứng nằm ở `CLAUDE.md` (gốc dự án). Tóm tắt - mỗi l�
 | 2026-10-14 | Downloader: thu hẹp ô dán link + nút Quét 76 -> 52 px (v1.19.21) | Chi tiết ở cuối mục 4zi. Chỉ đổi chiều cao (`kInputHeight`), ảnh chụp offscreen xác nhận vẫn đủ 2 dòng chữ. `downloader_ui_tests` 94/94. |
 | 2026-10-14 | Dọn dẹp tệp thừa (không đổi phiên bản, không đổi mã) | Xóa `YEU_CAU_SAU_1.19.10.md` khỏi repo theo yêu cầu người dùng (nội dung còn trong git: `git show d9a0601:YEU_CAU_SAU_1.19.10.md`; các mục 4z-4zf nhắc tới tệp này là lịch sử). Dọn tệp sinh ra/mồ côi KHÔNG commit: `obj/` (bước trung gian WiX, `build_installer.bat` tự xóa và dựng lại mỗi lần chạy), 30 `.exe` dò/kiểm thử một lần trong `build/` không còn target CMake nào, 4 thư mục ảnh chụp cũ trong `build/` - khoảng 460 MB. Giữ nguyên: `dist/` (4 tệp phát hành hiện tại), `OneForAll_Release/`, `vendor/`, `build/profiles` và `build/logs` (có thể là dữ liệu cũ của người dùng). |
 | 2026-10-14 | Downloader: hỗ trợ tải tài liệu Google Drive CHỈ XEM (chủ tệp tắt "tải xuống") - đảo quyết định ở mục 4zg/4zi theo yêu cầu người dùng (v1.19.22) | Chi tiết ở mục 4zj. Chụp từng trang ở chế độ xem bằng Edge/Chrome ẩn qua DevTools rồi ghép PDF; nghiệm thu thật 130/130 trang trên link mẫu; không khuyến khích dùng cho mục đích vi phạm pháp luật/bản quyền. `downloader_tests` 652/652, `downloader_ui_tests` 100/100, `secdl_stress_tests` 1.874.476/1.874.476. |
+| 2026-10-15 | Rà soát toàn bộ lần ba: sửa lỗi ở cả 9 công cụ + stress test (v1.19.23) | Chi tiết ở mục 4zk. Năm người đọc độc lập rà 9 công cụ, hai người rà lại bản sửa (tìm thêm 3 lỗi chắc chắn + 2 lỗi có khả năng trong chính bản sửa - đã sửa). Nặng nhất: phát lại macro Auto Click để KẸT phím/nút khi dừng; Connect Together xóa vĩnh viễn máy đã ghép đôi khi DPAPI lỗi tạm thời; Downloader "Kiểm tra lại" tải link CŨ, tệp tải về không có Mark of the Web, trình duyệt ẩn mở DevTools cho mọi origin; Security đứng hình khi mở. 18 bộ test 4.105/0 (trước 3.971); stress `core` 551/0, `qrwifi` 759.618/0, `connect` 386/0, `disk_vpn` 7.320/0, `secdl` 1.876.549/0. Lần này KHÔNG tạo tag/Release (theo yêu cầu). |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `

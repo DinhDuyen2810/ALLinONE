@@ -15,6 +15,7 @@
 #include <QShowEvent>
 #include <QTabWidget>
 #include <QTime>
+#include <QCheckBox>
 #include <QVBoxLayout>
 
 ConnectWindow::ConnectWindow(QWidget* parent)
@@ -91,6 +92,18 @@ void ConnectWindow::buildUi()
     m_identityLabel = new QLabel(this);
     m_identityLabel->setStyleSheet("color: #1f2328; font-weight: bold; font-size: 12px;");
     root->addWidget(m_identityLabel);
+
+    m_clipboardCheck = new QCheckBox("Đồng bộ clipboard (văn bản) với các máy đã kết nối", this);
+    m_clipboardCheck->setObjectName("clipboardSharingCheck");
+    m_clipboardCheck->setToolTip("Tắt khi sao chép thông tin nhạy cảm (mật khẩu...) - khi bật, mọi văn bản bạn sao chép được "
+                                 "gửi sang mọi máy đang kết nối và các máy đó cũng ghi được vào clipboard của máy này.");
+    m_clipboardCheck->setCursor(Qt::PointingHandCursor);
+    m_clipboardCheck->setChecked(m_controller->isClipboardSharingEnabled());
+    connect(m_clipboardCheck, &QCheckBox::toggled, this, [this](bool on) {
+        m_controller->setClipboardSharingEnabled(on);
+        appendLog(on ? "📋 Đã BẬT đồng bộ clipboard." : "📋 Đã TẮT đồng bộ clipboard - không gửi/nhận clipboard nữa.");
+    });
+    root->addWidget(m_clipboardCheck);
 
     m_roleBanner = new QLabel(this);
     m_roleBanner->setWordWrap(true);

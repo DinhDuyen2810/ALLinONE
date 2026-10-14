@@ -26,6 +26,13 @@ QByteArray run(const QString& script, bool* ok, QString* error = nullptr, int ti
 QByteArray runCancelable(const QString& script, const std::atomic_bool* cancelFlag, bool* ok,
                          QString* error = nullptr, int timeoutMs = 20000);
 
+/// Như run(), nhưng đưa thêm MỘT biến môi trường cho riêng tiến trình powershell.exe này - dùng để chuyển
+/// một BÍ MẬT (vd khóa L2TP PSK) vào script mà không đặt nó trong dòng lệnh: -EncodedCommand chỉ là Base64,
+/// mọi tiến trình cùng người dùng đọc được dòng lệnh (WMI Win32_Process.CommandLine, Process Explorer) và
+/// giải mã ngay. Script đọc bằng $env:<envName>.
+QByteArray runWithSecretEnv(const QString& script, const QString& envName, const QString& envValue, bool* ok,
+                            QString* error = nullptr, int timeoutMs = 20000);
+
 /// Thoát một chuỗi để đặt AN TOÀN giữa hai dấu nháy đơn trong script PowerShell ('...'). PowerShell coi
 /// CẢ BỐN ký tự U+2018/U+2019/U+201A/U+201B là dấu nháy đơn y như U+0027 (xem tokenizer của PowerShell,
 /// IsSingleQuote) - chỉ nhân đôi dấu ' ASCII như các bản escapePsString riêng lẻ trước đây để lọt một

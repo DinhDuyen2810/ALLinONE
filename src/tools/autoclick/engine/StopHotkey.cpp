@@ -81,4 +81,20 @@ bool isStopMessage(const void* message)
     return msg && msg->message == WM_HOTKEY && static_cast<int>(msg->wParam) == kHotkeyId;
 }
 
+std::vector<int> activeKeyCodes()
+{
+    std::vector<int> codes;
+    if (g_activeCombo < 0)
+        return codes;
+    const Combo& combo = kCombos[g_activeCombo];
+    if (combo.modifiers & MOD_CONTROL)
+        codes.insert(codes.end(), {VK_CONTROL, VK_LCONTROL, VK_RCONTROL});
+    if (combo.modifiers & MOD_ALT)
+        codes.insert(codes.end(), {VK_MENU, VK_LMENU, VK_RMENU});
+    if (combo.modifiers & MOD_SHIFT)
+        codes.insert(codes.end(), {VK_SHIFT, VK_LSHIFT, VK_RSHIFT});
+    codes.push_back(static_cast<int>(combo.key));
+    return codes;
+}
+
 } // namespace StopHotkey

@@ -1845,6 +1845,8 @@ int main(int argc, char** argv)
             const int absBefore = injector.absoluteMoves.size();
             CHECK(controller.requestControlForTesting("fake-session-peer", ScreenSide::Right));
             CHECK(controller.currentRole() == ControlRole::Controlling);
+            // v1.19.23: nhận quyền thì con trỏ (bị hook giữ) được lùi vào trong, không nằm ngay trên mép vừa chạm.
+            CHECK(injector.absoluteMoves.size() == absBefore + 1);
             CHECK(controller.isHookActive());
             CHECK(waitUntil([&] { return !victim.received.isEmpty(); }));
             CHECK(!victim.received.isEmpty() && victim.received.first().type == MessageType::ControlHandoff &&
@@ -1854,7 +1856,7 @@ int main(int argc, char** argv)
             CHECK(waitUntil([&] { return controller.currentRole() == ControlRole::Idle; }));
             CHECK(!controller.isHookActive());
             CHECK(!controller.isPeerConnected("fake-session-peer"));
-            CHECK(injector.absoluteMoves.size() == absBefore + 1); // con trỏ được lùi khỏi biên (qua injector giả)
+            CHECK(injector.absoluteMoves.size() == absBefore + 2); // con trỏ được lùi khỏi biên lúc trả quyền (qua injector giả)
             if (InputHook* hook = controller.hookForTesting())
             {
                 CHECK(hook->onRawMouseMove(60, 60, 50, 50) == false); // chuột/phím đã thật sự về lại máy này
@@ -1932,6 +1934,23 @@ int main(int argc, char** argv)
             const auto it = std::find_if(peers.begin(), peers.end(),
                                          [](const PairedPeer& p) { return p.id == "fake-peer-id-bbb"; });
             CHECK(it != peers.end() && it->autoConnect == false);
+        }
+
+        // v1.19.23: mỗi cạnh chỉ một máy - đặt bbb sang Phải thì aaa (đang ở Phải) bị gỡ cạnh.
+        controller.setPeerSide("fake-peer-id-bbb", ScreenSide::Right);
+        {
+            const auto peers = controller.pairedPeers();
+            int onRight = 0;
+            for (const PairedPeer& p : peers)
+            {
+                if (p.side == ScreenSide::Right)
+                    ++onRight;
+                if (p.id == "fake-peer-id-aaa")
+                    CHECK(p.side == ScreenSide::None);
+                if (p.id == "fake-peer-id-bbb")
+                    CHECK(p.side == ScreenSide::Right);
+            }
+            CHECK(onRight == 1);
         }
 
         const int beforeForget = controller.pairedPeers().size();
@@ -2620,6 +2639,63 @@ int main(int argc, char** argv)
             LocalIdentityStore::instance().setFilePath(path); // "lần chạy sau": đọc lại ra đúng id đó
             CHECK(LocalIdentityStore::instance().identity().id == regenerated);
         }
+    }
+
+    // ---- Hồi quy v1.19.23: mục có khóa DPAPI không mở được KHÔNG bị xóa ở lần lưu kế tiếp ----
+    {
+        QTemporaryDir tmp;
+        const QString path = tmp.filePath("peers_dpapi.json");
+        {
+            QFile f(path);
+            CHECK(f.open(QIODevice::WriteOnly));
+            f.write(R"({"version":"2.0","peers":[{"id":"may-khoa-hong","machineName":"May Cu","lastAddress":"10.0.0.9",
+                        "lastPort":47632,"longTermKeyProtected":"AAAAbm90LWRwYXBp","side":1,"autoConnect":true}]})");
+        }
+        PeerStore store(path);
+        CHECK(store.peers().isEmpty()); // không dùng được khóa -> không hiện để kết nối
+        PairedPeer fresh;
+        fresh.id = "may-moi";
+        fresh.machineName = "May Moi";
+        fresh.longTermKey = QByteArray(32, '\x07');
+        CHECK(store.addOrUpdate(fresh)); // lưu tệp
+        QFile f(path);
+        CHECK(f.open(QIODevice::ReadOnly));
+        const QByteArray saved = f.readAll();
+        CHECK(saved.contains("may-khoa-hong") && saved.contains("AAAAbm90LWRwYXBp")); // vẫn còn nguyên
+        CHECK(saved.contains("may-moi"));
+        f.close(); // tệp đang mở thì Windows không cho QSaveFile đổi tên đè lên
+
+        // Ghép đôi LẠI đúng máy đó (mục mới cùng id) thì bản hỏng cũ không còn được ghi.
+        PairedPeer repaired;
+        repaired.id = "may-khoa-hong";
+        repaired.machineName = "May Cu";
+        repaired.longTermKey = QByteArray(32, '\x09');
+        CHECK(store.addOrUpdate(repaired));
+        CHECK(f.open(QIODevice::ReadOnly));
+        const QByteArray saved2 = f.readAll();
+        CHECK(!saved2.contains("AAAAbm90LWRwYXBp") && saved2.count("may-khoa-hong") == 1);
+        f.close();
+
+        // Quên máy / quên tất cả cũng xóa luôn bản khóa hỏng - không "sống lại" khi DPAPI mở được.
+        {
+            QFile w(path);
+            CHECK(w.open(QIODevice::WriteOnly));
+            w.write(R"({"version":"2.0","peers":[{"id":"hong-1","longTermKeyProtected":"AAAAbm90LWRwYXBp"},
+                        {"id":"hong-2","longTermKeyProtected":"AAAAbm90LWRwYXBp"}]})");
+        }
+        PeerStore store2(path);
+        CHECK(store2.peers().isEmpty());
+        CHECK(store2.remove("hong-1"));
+        QFile r(path);
+        CHECK(r.open(QIODevice::ReadOnly));
+        const QByteArray afterRemove = r.readAll();
+        r.close();
+        CHECK(!afterRemove.contains("hong-1") && afterRemove.contains("hong-2"));
+        CHECK(store2.clear());
+        CHECK(r.open(QIODevice::ReadOnly));
+        const QByteArray afterClear = r.readAll();
+        r.close();
+        CHECK(!afterClear.contains("hong-2"));
     }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);

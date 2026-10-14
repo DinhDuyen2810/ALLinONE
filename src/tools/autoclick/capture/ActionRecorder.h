@@ -37,6 +37,14 @@ public:
     /// Dừng ngay: tự chèn sự kiện nhả cho mọi phím/nút còn đang giữ dở (không để kẹt), rồi phát
     /// recordingFinished() QUA HÀNG ĐỢI sự kiện.
     void stop();
+    /// Dừng ghi, nhưng trước đó BỎ các sự kiện phím ở CUỐI bản ghi thuộc `keyCodes` (MouseMove xen giữa
+    /// được bỏ qua khi dò). Dùng khi người dùng dừng bằng PHÍM DỪNG toàn cục: hook bàn phím thấy Ctrl/Alt/F8
+    /// TRƯỚC khi Windows biến chúng thành WM_HOTKEY, nên trước đây chính tổ hợp dừng bị ghi vào cuối macro
+    /// - và khi phát lại, tổ hợp đó (SendInput) kích hoạt RegisterHotKey làm chuỗi TỰ DỪNG chính nó.
+    void stopDroppingTrailingKeys(const std::vector<int>& keyCodes);
+    /// Phần THUẦN của stopDroppingTrailingKeys() (không cần hook - test gọi trực tiếp): bỏ khỏi đoạn ĐUÔI
+    /// của `events` (chỉ gồm phím thuộc `keyCodes` và MouseMove) mọi sự kiện phím thuộc `keyCodes`.
+    static void dropTrailingKeys(std::vector<RecordedEvent>& events, const std::vector<int>& keyCodes);
     bool isRecording() const { return m_mouseHook != nullptr; }
 
 signals:

@@ -19,6 +19,11 @@ bool isExtendedKey(int vk)
         case VK_UP: case VK_DOWN: case VK_LEFT: case VK_RIGHT:
         case VK_HOME: case VK_END: case VK_PRIOR: case VK_NEXT:
         case VK_INSERT: case VK_DELETE: case VK_LWIN: case VK_RWIN:
+        // Phím bên PHẢI và các phím khác cũng dùng tiền tố E0 - thiếu cờ này thì Ctrl/Alt phải (AltGr) ghi
+        // được trong macro (vkCode VK_RCONTROL/VK_RMENU) bị phát lại thành phím bên TRÁI, phím "/" của bàn
+        // số thành "/" thường, Menu/PrintScreen/NumLock ra mã quét sai.
+        case VK_RCONTROL: case VK_RMENU: case VK_DIVIDE: case VK_NUMLOCK:
+        case VK_SNAPSHOT: case VK_APPS: case VK_CANCEL:
             return true;
         default:
             return false;
@@ -424,16 +429,30 @@ void InputController::mouseWheelTick(int delta, bool horizontal)
 
 void InputController::replayRecordedEvents(const std::vector<RecordedEvent>& events, const std::atomic_bool* stopFlag)
 {
+    // Phím/nút đang bị GIỮ do chính lần phát lại này nhấn xuống. Dừng giữa chừng (nút Dừng, phím dừng,
+    // Windows từ chối một bước) trước đây "return" thẳng ra ngoài - một macro dừng đúng lúc đang giữ Ctrl
+    // hay chuột trái để lại phím/nút KẸT trên máy người dùng (mọi cú click sau đó thành Ctrl+click/kéo thả).
+    // Nay mọi đường thoát đều đi qua bước nhả bên dưới.
+    std::vector<int> keysHeld;
+    std::vector<MouseButtonType> buttonsHeld;
+
+    // Mốc thời gian TUYỆT ĐỐI (bắt đầu + tổng delayMs đã qua) thay vì ngủ tương đối từng khoảng: cộng dồn
+    // hàng nghìn lần sleepFor() (mỗi lần Windows ngủ dư tới ~15ms, cộng thời gian SendInput) làm macro dài
+    // phát lại chậm dần so với lúc ghi - cùng lý do sleepUntil() ở trên.
+    Clock::time_point deadline = Clock::now();
     for (const auto& ev : events)
     {
         if (stopRequested(stopFlag))
-            return;
-        // delayMs tính từ sự kiện NGAY TRƯỚC nó (xem RecordedEvent) - chờ đúng khoảng này rồi mới thực
-        // hiện, dùng sleepFor() có kiểm tra stopFlag mỗi ≤50ms để Dừng vẫn ngắt được giữa chừng.
-        if (ev.delayMs > 0 && !sleepFor(std::chrono::milliseconds(ev.delayMs), stopFlag))
-            return;
+            break;
+        // delayMs tính từ sự kiện NGAY TRƯỚC nó (xem RecordedEvent).
+        if (ev.delayMs > 0)
+        {
+            deadline += std::chrono::milliseconds(ev.delayMs);
+            if (!sleepUntil(deadline, stopFlag))
+                break;
+        }
         if (stopRequested(stopFlag))
-            return;
+            break;
 
         switch (ev.type)
         {
@@ -441,25 +460,42 @@ void InputController::replayRecordedEvents(const std::vector<RecordedEvent>& eve
                 moveMouse(ev.x, ev.y);
                 break;
             case RecordedEventType::MouseDown:
+                // Đưa con trỏ về ĐÚNG điểm đã ghi trước khi nhấn: MouseMove chỉ được ghi thưa (mỗi ≥20ms, xem
+                // ActionRecorder), nên điểm của MouseMove cuối cùng có thể cách điểm nhấn thật vài chục pixel.
+                moveMouse(ev.x, ev.y);
                 mouseDown(ev.button);
+                if (std::find(buttonsHeld.begin(), buttonsHeld.end(), ev.button) == buttonsHeld.end())
+                    buttonsHeld.push_back(ev.button);
                 break;
             case RecordedEventType::MouseUp:
+                moveMouse(ev.x, ev.y);
                 mouseUp(ev.button);
+                buttonsHeld.erase(std::remove(buttonsHeld.begin(), buttonsHeld.end(), ev.button), buttonsHeld.end());
                 break;
             case RecordedEventType::MouseWheel:
+                moveMouse(ev.x, ev.y); // cuộn tác động lên cửa sổ dưới con trỏ - phải đúng chỗ đã ghi
                 mouseWheelTick(ev.wheelDelta, ev.wheelHorizontal);
                 break;
             case RecordedEventType::KeyDown:
                 keyDown(ev.keyCode);
+                if (std::find(keysHeld.begin(), keysHeld.end(), ev.keyCode) == keysHeld.end())
+                    keysHeld.push_back(ev.keyCode);
                 break;
             case RecordedEventType::KeyUp:
                 keyUp(ev.keyCode);
+                keysHeld.erase(std::remove(keysHeld.begin(), keysHeld.end(), ev.keyCode), keysHeld.end());
                 break;
         }
 
         // Windows đã từ chối một bước thì các bước sau nhiều khả năng cũng vậy (cùng lý do UIPI/màn hình
         // khóa) - dừng sớm thay vì phát lại tiếp vào hư không, giống typeText()/scroll() ở trên.
         if (hasError())
-            return;
+            break;
     }
+
+    // Nhả theo thứ tự NGƯỢC lúc nhấn (giống releaseModifiersOrdered()).
+    for (auto it = keysHeld.rbegin(); it != keysHeld.rend(); ++it)
+        keyUp(*it);
+    for (auto it = buttonsHeld.rbegin(); it != buttonsHeld.rend(); ++it)
+        mouseUp(*it);
 }

@@ -80,5 +80,9 @@ private:
     // Download / Upload
     QElapsedTimer m_transferTimer;
     qint64 m_bytesTransferred{0};
+    /// Số byte ĐÃ có lúc bắt đầu bấm giờ (khối dữ liệu/tiến độ đầu tiên) - tốc độ chỉ tính phần truyền SAU
+    /// mốc đó. Trước đây khối đầu tiên được cộng vào tử số nhưng thời gian của nó không nằm trong mẫu số,
+    /// làm kết quả cao hơn thực tế (rõ nhất trên mạng nhanh, khi cả phép đo chỉ gồm vài khối).
+    qint64 m_bytesAtStart{0};
     bool m_transferStarted{false};
 };

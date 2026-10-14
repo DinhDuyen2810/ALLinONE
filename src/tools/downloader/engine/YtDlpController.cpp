@@ -39,6 +39,11 @@ bool isSupportedVideoUrl(const QString& url)
     return parsed.isValid() && !parsed.host().isEmpty();
 }
 
+bool hasFfmpeg()
+{
+    return QFileInfo::exists(bundleDir() + "/ffmpeg.exe");
+}
+
 bool isBundleAvailable(QString* missingWhat)
 {
     const bool hasYtDlp = !ytDlpExecutablePath().isEmpty();
