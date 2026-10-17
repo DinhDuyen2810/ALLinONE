@@ -51,6 +51,7 @@ private slots:
     void onAutoRefreshTick();
     void onDevicesListed(const QList<AndroidDeviceInfo>& devices, const QString& error);
     void onPairClicked();
+    void onQrPairClicked();
     void onPairFinished(bool ok, const QString& error);
     void onSwitchToWirelessClicked();
     void onControlClicked();
@@ -81,6 +82,7 @@ private:
     QTableWidget* m_table{nullptr}; // [Serial][Trạng thái][Model][Kiểu kết nối]
     QPushButton* m_refreshBtn{nullptr};
     QPushButton* m_pairBtn{nullptr};
+    QPushButton* m_qrPairBtn{nullptr};
     QPushButton* m_connectBtn{nullptr};
     QPushButton* m_switchWirelessBtn{nullptr};
     QLabel* m_statusLabel{nullptr};

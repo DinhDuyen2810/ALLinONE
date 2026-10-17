@@ -1,6 +1,7 @@
 #include "NetworksTab.h"
 
 #include "ConnectDialog.h"
+#include "WifiSettings.h"
 #include "WifiUiStyle.h"
 #include "engine/ConnectionWatcher.h"
 #include "ui/widgets/FlowLayout.h"
@@ -93,8 +94,8 @@ void NetworksTab::buildUi()
     m_disconnectBtn = new QPushButton("⛔ Ngắt kết nối", this);
     m_forgetBtn = new QPushButton("🗑 Quên mạng này", this);
     m_hiddenBtn = new QPushButton("➕ Kết nối mạng ẩn...", this);
-    m_loveBtn = new QPushButton("💜 Love WiFi", this);
-    for (QPushButton* b : {m_scanBtn, m_connectBtn, m_newPasswordBtn, m_disconnectBtn, m_forgetBtn, m_hiddenBtn, m_loveBtn})
+    m_labConnectBtn = new QPushButton("🔗 Kết nối lab", this);
+    for (QPushButton* b : {m_scanBtn, m_connectBtn, m_newPasswordBtn, m_disconnectBtn, m_forgetBtn, m_hiddenBtn, m_labConnectBtn})
     {
         b->setStyleSheet(WifiUi::buttonStyle());
         b->setCursor(Qt::PointingHandCursor);
@@ -105,8 +106,8 @@ void NetworksTab::buildUi()
     m_newPasswordBtn->setEnabled(false);
     m_disconnectBtn->setEnabled(false);
     m_forgetBtn->setEnabled(false);
-    m_loveBtn->setEnabled(false);
-    m_loveBtn->setToolTip("Chọn một mạng để bày tỏ tình cảm 💜");
+    m_labConnectBtn->setEnabled(false);
+    m_labConnectBtn->setToolTip("Kết nối mạng đã chọn bằng mật khẩu mặc định (đặt ở tab \"Cài đặt\") - thử đúng một lần.");
     root->addLayout(bar);
 
     connect(m_scanBtn, &QPushButton::clicked, this, &NetworksTab::onScanClicked);
@@ -115,7 +116,7 @@ void NetworksTab::buildUi()
     connect(m_disconnectBtn, &QPushButton::clicked, this, &NetworksTab::onDisconnectClicked);
     connect(m_forgetBtn, &QPushButton::clicked, this, &NetworksTab::onForgetClicked);
     connect(m_hiddenBtn, &QPushButton::clicked, this, &NetworksTab::onHiddenClicked);
-    connect(m_loveBtn, &QPushButton::clicked, this, &NetworksTab::onLoveClicked);
+    connect(m_labConnectBtn, &QPushButton::clicked, this, &NetworksTab::onLabConnectClicked);
 
     m_table = new QTableWidget(0, 5, this);
     m_table->setHorizontalHeaderLabels({"", "Tên mạng (SSID)", "Bảo mật", "Tín hiệu", "Trạng thái"});
@@ -293,17 +294,23 @@ void NetworksTab::onSelectionChanged()
                                  !m_networks[row].ssid.isEmpty());
     m_disconnectBtn->setEnabled(has && m_networks[row].connected);
     m_forgetBtn->setEnabled(has && m_networks[row].hasProfile);
-    m_loveBtn->setEnabled(has);
+    // Kết nối lab: chỉ khi có mạng đang chọn, chưa kết nối sẵn, và biết SSID (mạng ẩn trong danh sách quét
+    // không lộ SSID nên không điền sẵn mật khẩu kết nối thẳng được).
+    m_labConnectBtn->setEnabled(has && !m_networks[row].connected && !m_networks[row].ssid.isEmpty());
 }
 
-void NetworksTab::onLoveClicked()
+void NetworksTab::onLabConnectClicked()
 {
-    if (!hasSelection())
+    if (!hasSelection() || m_adapterGuid.isEmpty())
         return;
     const WifiNetwork net = selectedNetwork();
+    if (net.connected || net.ssid.isEmpty())
+        return;
 
-    WifiUi::plainMessage(this, QMessageBox::Information, "💜 Love WiFi",
-                         QString("Yes, \"%1\" love you too! 💜").arg(net.displayName()));
+    // Mở đúng luồng kết nối chuẩn nhưng điền sẵn mật khẩu mặc định (tab Cài đặt) và kết nối ngay (một lần
+    // thử, tự hoàn tác nếu sai). Người dùng vẫn thấy mật khẩu trong hộp thoại và sửa được nếu mạng dùng khác.
+    m_statusLabel->setText(QString("⏳ Đang kết nối tới \"%1\" bằng mật khẩu mặc định...").arg(net.displayName()));
+    openConnectDialog(net, WifiSettings::defaultConnectPassword(), /*autoConnect=*/true);
 }
 
 void NetworksTab::onConnectClicked()
@@ -348,13 +355,21 @@ void NetworksTab::onNewPasswordClicked()
     openConnectDialog(net);
 }
 
-void NetworksTab::openConnectDialog(const WifiNetwork& net)
+void NetworksTab::openConnectDialog(const WifiNetwork& net, const QString& prefillPassword, bool autoConnect)
 {
     m_watcher->cancel(); // người dùng chuyển sang nhập mật khẩu: kết quả lần "kết nối bằng hồ sơ" trước không còn ý nghĩa
     auto* dlg = new ConnectDialog(m_controller, m_adapterGuid, net, this);
+    if (!prefillPassword.isEmpty())
+        dlg->setPassword(prefillPassword);
     connect(dlg, &ConnectDialog::connected, this, [this](const QString& ssid) {
         m_statusLabel->setText("✓ Đã kết nối: " + ssid);
     });
+    if (autoConnect)
+    {
+        // Bấm "Kết nối" hộ ngay khi hộp thoại vào vòng lặp sự kiện (singleShot(0) chạy sau khi exec() bắt đầu),
+        // để lần thử dùng đúng cơ chế polling/hoàn tác của hộp thoại thay vì tự dựng lại ở đây.
+        QTimer::singleShot(0, dlg, [dlg] { dlg->startAutoConnect(); });
+    }
     dlg->exec();
     dlg->deleteLater();
     // Dù thành công hay không, hồ sơ có thể đã đổi (tạo mới / khôi phục / xóa bản tạm) - đọc lại cả hai tab.

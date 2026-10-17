@@ -2,6 +2,7 @@
 
 #include "AndroidUiStyle.h"
 #include "WirelessPairDialog.h"
+#include "WirelessQrPairDialog.h"
 #include "engine/AdbController.h"
 #include "engine/AdbDeviceLister.h"
 #include "engine/AdbPairer.h"
@@ -173,6 +174,13 @@ void DevicesTab::buildUi()
     connect(m_pairBtn, &QPushButton::clicked, this, &DevicesTab::onPairClicked);
     topRow->addWidget(m_pairBtn);
 
+    m_qrPairBtn = new QPushButton("📷 Ghép bằng QR...", this);
+    m_qrPairBtn->setStyleSheet(AndroidUi::buttonStyle());
+    m_qrPairBtn->setCursor(Qt::PointingHandCursor);
+    m_qrPairBtn->setToolTip("Hiện mã QR để điện thoại quét (Gỡ lỗi không dây > Ghép thiết bị bằng mã QR) - ghép đôi tự động.");
+    connect(m_qrPairBtn, &QPushButton::clicked, this, &DevicesTab::onQrPairClicked);
+    topRow->addWidget(m_qrPairBtn);
+
     // Sau khi ghép đôi (Android 11+) vẫn phải `adb connect` tới cổng KẾT NỐI thì thiết bị mới hiện trong
     // danh sách - trước đây ứng dụng chỉ nhắc người dùng tự chạy lệnh đó, không có nút nào làm được.
     m_connectBtn = new QPushButton("🔌 Kết nối không dây...", this);
@@ -319,6 +327,7 @@ void DevicesTab::updateBundleBanner()
         // Chỉ thiếu scrcpy.exe thì vẫn liệt kê/ghép đôi/kết nối được (chỉ cần adb.exe) - trước đây khóa cả.
         m_refreshBtn->setEnabled(adbAvailable());
         m_pairBtn->setEnabled(adbAvailable());
+        m_qrPairBtn->setEnabled(adbAvailable());
         m_connectBtn->setEnabled(adbAvailable());
     }
 }
@@ -482,6 +491,27 @@ void DevicesTab::onPairClicked()
     m_pairBtn->setEnabled(false);
     m_statusLabel->setText("⏳ Đang ghép đôi (tối đa khoảng 20 giây)...");
     m_pairer->pair(ipPort, code);
+}
+
+void DevicesTab::onQrPairClicked()
+{
+    if (!adbAvailable())
+    {
+        showPlainMessage(this, QMessageBox::Warning, "Thiếu adb",
+                         "Không tìm thấy adb.exe đóng gói. Chạy lại build_app.bat để đóng gói đầy đủ.");
+        return;
+    }
+
+    WirelessQrPairDialog dlg(AdbController::adbExecutablePath(), this);
+    connect(&dlg, &WirelessQrPairDialog::pairedSuccessfully, this, [this](const QString& host) {
+        // Lưu IP để điền sẵn cho "Kết nối không dây..." (cổng KẾT NỐI khác cổng ghép đôi) và làm mới danh sách.
+        if (!host.isEmpty())
+            m_lastPairHost = host;
+        m_statusLabel->setText("✓ Ghép đôi QR thành công. Thiết bị sẽ sớm hiện trong danh sách; nếu không, bấm "
+                               "\"Kết nối không dây...\".");
+        reloadDevices();
+    });
+    dlg.exec();
 }
 
 void DevicesTab::onPairFinished(bool ok, const QString& error)

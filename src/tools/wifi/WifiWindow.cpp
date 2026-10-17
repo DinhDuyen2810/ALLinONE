@@ -2,6 +2,7 @@
 
 #include "NetworksTab.h"
 #include "ProfilesTab.h"
+#include "SettingsTab.h"
 #include "SpeedTestTab.h"
 #include "WifiUiStyle.h"
 #include "core/IconHelper.h"
@@ -146,9 +147,11 @@ void WifiWindow::buildUi()
     m_networksTab = new NetworksTab(m_controller, this);
     m_profilesTab = new ProfilesTab(m_controller, this);
     m_speedTestTab = new SpeedTestTab(m_controller, this);
+    m_settingsTab = new SettingsTab(this);
     m_tabs->addTab(m_networksTab, "📶  Mạng xung quanh");
     m_tabs->addTab(m_profilesTab, "🔑  Hồ sơ đã lưu");
     m_tabs->addTab(m_speedTestTab, "🚀  Đo tốc độ mạng");
+    m_tabs->addTab(m_settingsTab, "⚙  Cài đặt");
     connect(m_tabs, &QTabWidget::currentChanged, this, &WifiWindow::onTabChanged);
     connect(m_networksTab, &NetworksTab::profilesMayHaveChanged, m_profilesTab, &ProfilesTab::reload);
     root->addWidget(m_tabs, 1);

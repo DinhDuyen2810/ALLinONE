@@ -28,6 +28,7 @@ private slots:
     void onImportClicked();
     void onDeleteClicked();
     void onCopyPasswordClicked();
+    void onShareQrClicked();
     void onSelectionChanged();
 
 private:
@@ -41,6 +42,7 @@ private:
     QTableWidget* m_table{nullptr};
     QPushButton* m_connectBtn{nullptr};
     QPushButton* m_copyPasswordBtn{nullptr};
+    QPushButton* m_shareQrBtn{nullptr};
     QPushButton* m_exportBtn{nullptr};
     QPushButton* m_importBtn{nullptr};
     QPushButton* m_deleteBtn{nullptr};

@@ -3,9 +3,13 @@
 #include "WifiUiStyle.h"
 #include "engine/ConnectionWatcher.h"
 #include "engine/WlanProfileXml.h"
+#include "tools/qr/QRCodec.h"
+#include "tools/qr/QRPayload.h"
 
 #include <QCheckBox>
 #include <QClipboard>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QFile>
 #include <QFileDialog>
 #include <QGuiApplication>
@@ -13,10 +17,25 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QMessageBox>
+#include <QPixmap>
 #include <QPushButton>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QVBoxLayout>
+
+namespace
+{
+// Mã bảo mật cho định dạng WIFI: của mã QR (chuẩn chung: WPA cho mọi WPA/WPA2/WPA3, WEP, nopass).
+QString qrSecurityToken(WifiSecurity s)
+{
+    switch (s)
+    {
+        case WifiSecurity::Open: return "nopass";
+        case WifiSecurity::Wep:  return "WEP";
+        default:                 return "WPA";
+    }
+}
+} // namespace
 
 namespace
 {
@@ -69,15 +88,18 @@ void ProfilesTab::buildUi()
     m_connectBtn = new QPushButton("🔗 Kết nối", this);
     m_connectBtn->setStyleSheet(WifiUi::primaryButtonStyle());
     m_copyPasswordBtn = new QPushButton("📋 Sao chép mật khẩu", this);
+    m_shareQrBtn = new QPushButton("📱 Chia sẻ QR", this);
     m_exportBtn = new QPushButton("📤 Xuất XML...", this);
     m_importBtn = new QPushButton("📥 Nhập XML...", this);
     m_deleteBtn = new QPushButton("🗑 Xóa hồ sơ", this);
-    for (QPushButton* b : {m_connectBtn, m_copyPasswordBtn, m_exportBtn, m_importBtn, m_deleteBtn})
+    for (QPushButton* b : {m_connectBtn, m_copyPasswordBtn, m_shareQrBtn, m_exportBtn, m_importBtn, m_deleteBtn})
     {
         b->setCursor(Qt::PointingHandCursor);
         bar->addWidget(b);
     }
     m_copyPasswordBtn->setStyleSheet(WifiUi::buttonStyle());
+    m_shareQrBtn->setStyleSheet(WifiUi::buttonStyle());
+    m_shareQrBtn->setToolTip("Hiện mã QR để điện thoại quét và tự vào mạng này (mã QR CHỨA mật khẩu WiFi dạng chữ).");
     m_exportBtn->setStyleSheet(WifiUi::buttonStyle());
     m_importBtn->setStyleSheet(WifiUi::buttonStyle());
     m_deleteBtn->setStyleSheet(WifiUi::dangerButtonStyle());
@@ -85,6 +107,7 @@ void ProfilesTab::buildUi()
 
     connect(m_connectBtn, &QPushButton::clicked, this, &ProfilesTab::onConnectClicked);
     connect(m_copyPasswordBtn, &QPushButton::clicked, this, &ProfilesTab::onCopyPasswordClicked);
+    connect(m_shareQrBtn, &QPushButton::clicked, this, &ProfilesTab::onShareQrClicked);
     connect(m_exportBtn, &QPushButton::clicked, this, &ProfilesTab::onExportClicked);
     connect(m_importBtn, &QPushButton::clicked, this, &ProfilesTab::onImportClicked);
     connect(m_deleteBtn, &QPushButton::clicked, this, &ProfilesTab::onDeleteClicked);
@@ -183,6 +206,109 @@ void ProfilesTab::onSelectionChanged()
     m_exportBtn->setEnabled(has);
     m_deleteBtn->setEnabled(has);
     m_copyPasswordBtn->setEnabled(has && m_passwordsVisible && m_profiles[qMax(row, 0)].hasPassword);
+    // Chia sẻ QR: mọi mạng kết nối được bằng SSID+mật khẩu (kể cả mạng mở). Mạng Enterprise/không xác định
+    // không chia sẻ kiểu này được.
+    m_shareQrBtn->setEnabled(has && WifiSecurityUtil::isSupportedForQuickConnect(m_profiles[qMax(row, 0)].security));
+}
+
+void ProfilesTab::onShareQrClicked()
+{
+    const int row = selectedRow();
+    if (row < 0 || row >= m_profiles.size())
+        return;
+    const WifiProfile profile = m_profiles[row];
+    const QString ssid = profile.ssid.isEmpty() ? profile.name : profile.ssid;
+
+    if (!WifiSecurityUtil::isSupportedForQuickConnect(profile.security))
+    {
+        WifiUi::plainMessage(this, QMessageBox::Information, "Chia sẻ QR",
+                             "Mạng Enterprise/không xác định không chia sẻ được bằng mã QR SSID+mật khẩu.");
+        return;
+    }
+
+    // Lấy mật khẩu dạng chữ để nhét vào mã QR. Mạng mở thì không cần. Nếu hồ sơ hiện chưa có mật khẩu dạng
+    // chữ (chưa bật "Hiện mật khẩu"), xin lại ĐÚNG hồ sơ này - cần quyền Administrator mới đọc được.
+    QString password;
+    if (WifiSecurityUtil::requiresPassword(profile.security))
+    {
+        if (profile.hasPassword)
+        {
+            password = profile.password;
+        }
+        else
+        {
+            QString error;
+            const QList<WifiProfile> fresh = m_controller->profiles(m_adapterGuid, true, &error);
+            for (const WifiProfile& f : fresh)
+                if (f.name == profile.name && f.hasPassword)
+                {
+                    password = f.password;
+                    break;
+                }
+            if (password.isEmpty())
+            {
+                WifiUi::plainMessage(this, QMessageBox::Warning, "Chia sẻ QR",
+                                     "Không đọc được mật khẩu dạng chữ của mạng này. Hãy chạy One for ALL với quyền "
+                                     "Administrator (hoặc bật \"Hiện mật khẩu đã lưu\") rồi thử lại.");
+                return;
+            }
+        }
+    }
+
+    WifiInfo info;
+    info.ssid = ssid;
+    info.password = password;
+    info.security = qrSecurityToken(profile.security);
+    const QString payload = QRPayload::makeWifi(info);
+
+    QString error;
+    const QRMatrix matrix = QRCodec::encode(payload, QREcc::Medium, &error);
+    if (!matrix.isValid())
+    {
+        WifiUi::plainMessage(this, QMessageBox::Critical, "Chia sẻ QR",
+                             error.isEmpty() ? "Không tạo được mã QR." : error);
+        return;
+    }
+
+    QRStyle style;
+    style.targetSize = 360;
+    const QImage image = QRCodec::render(matrix, style);
+
+    // Hộp thoại hiển thị đơn giản, dựng tại chỗ (không thêm file mới). Mã QR chứa mật khẩu dạng chữ nên có
+    // dòng nhắc rõ ràng.
+    QDialog dlg(this);
+    dlg.setWindowTitle("Chia sẻ WiFi qua QR");
+    dlg.setStyleSheet("QDialog { background-color: #f6f8fa; } QLabel { color: #1f2328; background: transparent; }");
+    auto* layout = new QVBoxLayout(&dlg);
+    layout->setContentsMargins(20, 18, 20, 16);
+    layout->setSpacing(12);
+
+    auto* ssidLabel = new QLabel(QString("Mạng: %1").arg(ssid), &dlg);
+    ssidLabel->setTextFormat(Qt::PlainText);
+    ssidLabel->setStyleSheet("font-weight: 700; font-size: 14px;");
+    ssidLabel->setAlignment(Qt::AlignCenter);
+    layout->addWidget(ssidLabel);
+
+    auto* qrLabel = new QLabel(&dlg);
+    qrLabel->setPixmap(QPixmap::fromImage(image));
+    qrLabel->setAlignment(Qt::AlignCenter);
+    layout->addWidget(qrLabel);
+
+    auto* hint = new QLabel("Mở camera điện thoại quét mã này để tự vào mạng.\n"
+                            "⚠ Mã QR chứa mật khẩu WiFi dạng chữ - đừng để người lạ chụp lại.",
+                            &dlg);
+    hint->setTextFormat(Qt::PlainText);
+    hint->setWordWrap(true);
+    hint->setAlignment(Qt::AlignCenter);
+    hint->setStyleSheet("color: #57606a; font-size: 12px;");
+    layout->addWidget(hint);
+
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dlg);
+    connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    layout->addWidget(buttons);
+
+    dlg.exec();
 }
 
 void ProfilesTab::onConnectClicked()

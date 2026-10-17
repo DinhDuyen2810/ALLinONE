@@ -33,7 +33,7 @@ private slots:
     void onDisconnectClicked();
     void onForgetClicked();
     void onHiddenClicked();
-    void onLoveClicked();
+    void onLabConnectClicked();
     void onSelectionChanged();
     void onPollTick();
 
@@ -45,7 +45,8 @@ private:
     bool hasSelection() const;
     WifiNetwork selectedNetwork() const;
     /// Mở ConnectDialog (nhập ĐÚNG MỘT mật khẩu) cho mạng đã chọn / cho mạng ẩn tự nhập SSID.
-    void openConnectDialog(const WifiNetwork& net);
+    /// prefillPassword: điền sẵn mật khẩu (rỗng = để trống). autoConnect=true: kết nối ngay không chờ bấm.
+    void openConnectDialog(const WifiNetwork& net, const QString& prefillPassword = QString(), bool autoConnect = false);
     void openHiddenDialog(WifiSecurity security);
 
     WlanController* m_controller;
@@ -59,7 +60,7 @@ private:
     QPushButton* m_disconnectBtn{nullptr};
     QPushButton* m_forgetBtn{nullptr};
     QPushButton* m_hiddenBtn{nullptr};
-    QPushButton* m_loveBtn{nullptr};
+    QPushButton* m_labConnectBtn{nullptr}; // kết nối nhanh bằng mật khẩu lab cố định (một lần thử)
     QLabel* m_statusLabel{nullptr};
 
     QList<WifiNetwork> m_networks;

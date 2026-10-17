@@ -165,11 +165,16 @@ add_library(wifi_ui STATIC
     src/tools/wifi/ProfilesTab.cpp
     src/tools/wifi/SpeedTestTab.h
     src/tools/wifi/SpeedTestTab.cpp
+    src/tools/wifi/SettingsTab.h
+    src/tools/wifi/SettingsTab.cpp
+    src/tools/wifi/WifiSettings.h
     src/tools/wifi/WifiWindow.h
     src/tools/wifi/WifiWindow.cpp
 )
 target_include_directories(wifi_ui PUBLIC src)
-target_link_libraries(wifi_ui PUBLIC wifi_core Qt6::Widgets Qt6::Network wlanapi core_shared ui_widgets)
+# qr_core (QRCodec/QRPayload) cho nút "Chia sẻ QR" ở ProfilesTab - CHỈ phần lõi QR (không UI) để tránh phụ
+# thuộc vòng: qr_ui đã PUBLIC-link wifi_ui, nên wifi_ui KHÔNG được link qr_ui.
+target_link_libraries(wifi_ui PUBLIC wifi_core Qt6::Widgets Qt6::Network wlanapi core_shared ui_widgets qr_core)
 
 # qr_ui dùng lại ConnectDialog/WlanController của wifi_ui cho nút "Kết nối WiFi" khi quét được mã QR WiFi
 # (yêu cầu người dùng) - PUBLIC để mọi target link qr_ui (vd qr_ui_tests) tự có luôn wifi_ui, không cần
@@ -320,13 +325,16 @@ add_library(android_ui STATIC
     src/tools/android/AndroidUiStyle.h
     src/tools/android/WirelessPairDialog.h
     src/tools/android/WirelessPairDialog.cpp
+    src/tools/android/WirelessQrPairDialog.h
+    src/tools/android/WirelessQrPairDialog.cpp
     src/tools/android/DevicesTab.h
     src/tools/android/DevicesTab.cpp
     src/tools/android/AndroidControlWindow.h
     src/tools/android/AndroidControlWindow.cpp
 )
 target_include_directories(android_ui PUBLIC src)
-target_link_libraries(android_ui PUBLIC android_core Qt6::Widgets)
+# qr_core (QRCodec) cho nút "Ghép bằng QR..." - chỉ lõi QR, không phụ thuộc UI nào khác.
+target_link_libraries(android_ui PUBLIC android_core Qt6::Widgets qr_core)
 
 # ---- Kiểm thử "khói" UI Android: cmake --build build --target android_ui_tests ----
 add_executable(android_ui_tests EXCLUDE_FROM_ALL tests/android_ui_tests.cpp)

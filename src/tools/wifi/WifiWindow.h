@@ -10,6 +10,7 @@ class QTabWidget;
 class NetworksTab;
 class ProfilesTab;
 class SpeedTestTab;
+class SettingsTab;
 class WlanController;
 
 /// Cửa sổ WiFi Connection: quét/kết nối mạng, quản lý hồ sơ & mật khẩu đã lưu trên máy.
@@ -43,4 +44,5 @@ private:
     NetworksTab* m_networksTab{nullptr};
     ProfilesTab* m_profilesTab{nullptr};
     SpeedTestTab* m_speedTestTab{nullptr};
+    SettingsTab* m_settingsTab{nullptr};
 };

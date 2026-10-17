@@ -397,5 +397,31 @@ int terminateProcessesByImagePath(const QString& exePath)
     return terminated;
 }
 
+QString parseMdnsPairingService(const QString& mdnsOutput, const QString& serviceName)
+{
+    const QString target = serviceName.trimmed();
+    if (target.isEmpty())
+        return QString();
+
+    static const QRegularExpression whitespace("\\s+");
+    const QStringList lines = mdnsOutput.split('\n', Qt::SkipEmptyParts);
+    for (const QString& rawLine : lines)
+    {
+        const QString line = rawLine.trimmed();
+        if (!line.contains("_adb-tls-pairing._tcp"))
+            continue; // bỏ dòng tiêu đề "List of discovered mdns services" và các dịch vụ khác
+
+        const QStringList fields = line.split(whitespace, Qt::SkipEmptyParts);
+        if (fields.size() < 3)
+            continue;
+
+        const QString instance = fields.first();
+        const QString ipPort = fields.last();
+        if (instance == target && ipPort.contains(QLatin1Char(':')))
+            return ipPort;
+    }
+    return QString();
+}
+
 } // namespace internal
 } // namespace AdbController

@@ -77,5 +77,11 @@ bool isSameExecutablePath(const QString& a, const QString& b);
 /// TerminateProcess mọi tiến trình có đường dẫn tệp ảnh khớp `exePath` (trừ chính tiến trình đang gọi),
 /// chờ mỗi tiến trình thoát tối đa 2 giây để khóa tệp được nhả. Trả về số tiến trình đã dừng.
 int terminateProcessesByImagePath(const QString& exePath);
+
+/// Tìm trong stdout của `adb mdns services` dịch vụ ghép đôi (_adb-tls-pairing._tcp) mà điện thoại quảng
+/// bá SAU KHI quét mã QR, có TÊN THỂ HIỆN (instance) đúng bằng `serviceName` (giá trị S: trong mã QR).
+/// Trả về "ip:cổng" của dịch vụ đó, hoặc rỗng nếu chưa thấy. Thuần (không gọi adb) -> kiểm thử được.
+/// Mỗi dòng dạng: "<tên-instance>\t_adb-tls-pairing._tcp.\t<ip>:<cổng>".
+QString parseMdnsPairingService(const QString& mdnsOutput, const QString& serviceName);
 } // namespace internal
 } // namespace AdbController

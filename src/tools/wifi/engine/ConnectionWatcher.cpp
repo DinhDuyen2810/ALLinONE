@@ -19,6 +19,7 @@ void ConnectionWatcher::watch(const QString& adapterGuid, const QString& ssid, c
     m_ssid = ssid;
     m_profileName = profileName;
     m_elapsedMs = 0;
+    m_sawActivity = false;
     m_timer->start();
 }
 
@@ -39,16 +40,23 @@ void ConnectionWatcher::onTick()
 
     const bool ssidMatches = !m_ssid.isEmpty() && cur.ssid == m_ssid;
     const bool profileMatches = !m_profileName.isEmpty() && cur.profileName == m_profileName;
-    if (cur.isConnected && (ssidMatches || profileMatches))
+    const bool connectedToTarget = cur.isConnected && (ssidMatches || profileMatches);
+
+    // "Hoạt động" = đang liên kết/xác thực, HOẶC đã nối đúng mạng - KHÔNG tính việc đang còn nối mạng CŨ khác.
+    if (cur.connecting || connectedToTarget)
+        m_sawActivity = true;
+
+    switch (evaluateAttempt(connectedToTarget, cur.connecting, m_sawActivity, m_elapsedMs))
     {
+    case Outcome::Succeeded:
         m_timer->stop();
         emit succeeded(cur.ssid);
         return;
-    }
-
-    if (shouldGiveUp(m_elapsedMs, cur.connecting))
-    {
+    case Outcome::Failed:
         m_timer->stop();
         emit failed(m_ssid.isEmpty() ? m_profileName : m_ssid);
+        return;
+    case Outcome::Pending:
+        break;
     }
 }

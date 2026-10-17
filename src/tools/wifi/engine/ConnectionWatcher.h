@@ -37,6 +37,32 @@ public:
         return elapsedMs >= softLimitMs && !stillConnecting;
     }
 
+    enum class Outcome
+    {
+        Pending,   // chưa có kết luận, tiếp tục theo dõi
+        Succeeded, // adapter báo ĐÃ kết nối đúng mạng
+        Failed     // adapter báo thất bại (đã thử rồi rớt), hoặc hết lưới thời gian an toàn
+    };
+
+    /// Kết luận kết quả MỘT lần kết nối theo PHẢN HỒI trạng thái của adapter, không chỉ chờ đồng hồ:
+    ///  - connectedToTarget == true                      -> Succeeded ngay.
+    ///  - đã từng thấy adapter hoạt động (đang liên kết / đã nối đúng mạng) rồi QUAY VỀ không-nối-không-liên-kết
+    ///    -> Failed NGAY: đây là tín hiệu thật "sai mật khẩu / 4-way handshake hỏng / không liên kết được",
+    ///    không cần chờ hết giờ.
+    ///  - còn lại: dùng shouldGiveUp() làm lưới an toàn (driver không báo gì thì vẫn có điểm dừng).
+    /// Thuần, không phụ thuộc phần cứng -> kiểm thử bằng unit test được.
+    static Outcome evaluateAttempt(bool connectedToTarget, bool connecting, bool sawActivity, int elapsedMs,
+                                   int softLimitMs = kSoftLimitMs, int hardLimitMs = kHardLimitMs)
+    {
+        if (connectedToTarget)
+            return Outcome::Succeeded;
+        if (sawActivity && !connecting)
+            return Outcome::Failed;
+        if (shouldGiveUp(elapsedMs, connecting, softLimitMs, hardLimitMs))
+            return Outcome::Failed;
+        return Outcome::Pending;
+    }
+
     static constexpr int kPollIntervalMs = 500;
     static constexpr int kSoftLimitMs = 15000;
     static constexpr int kHardLimitMs = 30000;
@@ -54,4 +80,5 @@ private:
     QString m_ssid;
     QString m_profileName;
     int m_elapsedMs{0};
+    bool m_sawActivity{false}; // đã quan sát được adapter liên kết/nối đúng mạng ít nhất một lần trong lần này
 };

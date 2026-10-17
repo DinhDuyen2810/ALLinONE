@@ -145,6 +145,12 @@ void ConnectDialog::setPassword(const QString& password)
     m_passwordEdit->setText(password);
 }
 
+void ConnectDialog::startAutoConnect()
+{
+    // Tái dùng nguyên luồng bấm "Kết nối": một lần thử duy nhất với mật khẩu đang điền sẵn, có hoàn tác.
+    onConnectClicked();
+}
+
 void ConnectDialog::onTogglePasswordVisibility()
 {
     const bool hidden = m_passwordEdit->echoMode() == QLineEdit::Password;
@@ -242,6 +248,7 @@ void ConnectDialog::startConnect()
     m_backup = backup;
     m_phase = Phase::WaitingConnect;
     m_elapsedMs = 0;
+    m_sawActivity = false;
     setBusy(true, "⏳ Đang kết nối tới \"" + m_attemptSsid + "\"...");
     m_pollTimer->start();
 }
@@ -302,8 +309,14 @@ void ConnectDialog::pollConnectionStatus()
         return;
     }
 
-    if (cur.isConnected && cur.ssid == m_attemptSsid)
+    const bool connectedToTarget = cur.isConnected && cur.ssid == m_attemptSsid;
+    // "Hoạt động" = đang liên kết/xác thực hoặc đã nối đúng mạng (không tính mạng cũ khác còn sót).
+    if (cur.connecting || connectedToTarget)
+        m_sawActivity = true;
+
+    switch (ConnectionWatcher::evaluateAttempt(connectedToTarget, cur.connecting, m_sawActivity, m_elapsedMs))
     {
+    case ConnectionWatcher::Outcome::Succeeded:
         m_pollTimer->stop();
         m_phase = Phase::Idle;
         m_backup = WifiProfileBackup(); // thành công: hồ sơ mới là hồ sơ đúng, không còn gì để hoàn tác
@@ -311,16 +324,22 @@ void ConnectDialog::pollConnectionStatus()
         emit connected(cur.ssid);
         accept();
         return;
-    }
-
-    if (ConnectionWatcher::shouldGiveUp(m_elapsedMs, cur.connecting))
+    case ConnectionWatcher::Outcome::Failed:
     {
         m_pollTimer->stop();
         m_phase = Phase::Idle;
-        const int seconds = m_elapsedMs / 1000;
         const QString undo = rollbackPending();
-        setBusy(false, QString("⚠ Không kết nối được sau %1 giây. Có thể sai mật khẩu, mạng ngoài tầm phủ sóng, "
-                               "hoặc chọn sai loại bảo mật. %2").arg(seconds).arg(undo));
+        // Phân biệt: adapter đã THỬ rồi rớt (kết luận theo phản hồi, thường vài giây) với hết lưới thời gian.
+        const QString why = m_sawActivity
+                                ? "⚠ Kết nối thất bại: adapter đã liên kết/xác thực nhưng bị từ chối "
+                                  "(thường do SAI MẬT KHẨU hoặc sai loại bảo mật)."
+                                : QString("⚠ Không nhận được phản hồi kết nối sau %1 giây (mạng có thể ngoài tầm "
+                                          "phủ sóng).").arg(m_elapsedMs / 1000);
+        setBusy(false, undo.isEmpty() ? why : why + " " + undo);
+        return;
+    }
+    case ConnectionWatcher::Outcome::Pending:
+        break;
     }
 }
 

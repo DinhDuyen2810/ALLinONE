@@ -38,6 +38,12 @@ public:
     /// nối thay, chỉ đỡ phải gõ lại đúng mật khẩu đã có sẵn.
     void setPassword(const QString& password);
 
+    /// Kết nối NGAY bằng mật khẩu đang điền sẵn, không chờ người dùng bấm "Kết nối" - dùng cho nút kết nối
+    /// nhanh bằng một mật khẩu CỐ ĐỊNH đã biết trước (vd mật khẩu chung của mạng lab). Vẫn đi qua đúng luồng
+    /// onConnectClicked(): ĐÚNG MỘT lần thử, và tự HOÀN TÁC hồ sơ nếu thất bại/hủy. Gọi sau setPassword(),
+    /// ngay khi exec() bắt đầu (vd qua QTimer::singleShot(0, ...)) để vòng lặp sự kiện đã sẵn sàng.
+    void startAutoConnect();
+
     /// Mọi đường đóng hộp thoại (Hủy, Esc, nút X, accept) đều qua đây - nơi hoàn tác lần kết nối còn dở.
     void done(int result) override;
 
@@ -81,6 +87,7 @@ private:
     int m_elapsedMs{0};
     Phase m_phase{Phase::Idle};
     QString m_attemptSsid;             // SSID của lần kết nối đang chờ kết quả
+    bool m_sawActivity{false};         // đã thấy adapter liên kết/nối đúng mạng ít nhất một lần trong lần này
     WifiProfileBackup m_backup;        // hồ sơ cũ để khôi phục nếu lần này thất bại
     QString m_previousProfileName;     // hồ sơ đang dùng mà hộp thoại đã chủ động ngắt (để nối lại nếu thất bại)
 };
