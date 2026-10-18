@@ -1,12 +1,14 @@
 #include "VpnControlWindow.h"
 
 #include "VpnTab.h"
+#include "WireGuardTab.h"
 #include "core/IconHelper.h"
 #include "core/Logger.h"
 #include "ui/widgets/ComboBoxStyle.h"
 
 #include <QCloseEvent>
 #include <QMessageBox>
+#include <QTabWidget>
 #include <QVBoxLayout>
 
 VpnControlWindow::VpnControlWindow(QWidget* parent)
@@ -60,6 +62,16 @@ void VpnControlWindow::closeEvent(QCloseEvent* event)
         }
         m_vpnTab->cancelAndWait();
     }
+    // Tab WireGuard chỉ chạy tiến trình NGẮN (wireguard.exe/sc.exe, timeout 15s) không có đường hủy an
+    // toàn giữa chừng (QProcess::kill() lúc này có thể bỏ lại dịch vụ ở trạng thái dở dang) - CHẶN đóng
+    // cho tới khi xong thay vì hỏi hủy, khác VPN hệ thống ở trên.
+    if (m_wireGuardTab && m_wireGuardTab->isBusy())
+    {
+        QMessageBox::information(this, "Đang xử lý WireGuard",
+                                 "Đang có thao tác WireGuard đang chạy (thường vài giây). Vui lòng đợi xong rồi đóng cửa sổ.");
+        event->ignore();
+        return;
+    }
     event->accept();
 }
 
@@ -69,6 +81,10 @@ void VpnControlWindow::buildUi()
     root->setContentsMargins(14, 12, 14, 14);
     root->setSpacing(10);
 
+    m_tabs = new QTabWidget(this);
     m_vpnTab = new VpnTab(this);
-    root->addWidget(m_vpnTab, 1);
+    m_wireGuardTab = new WireGuardTab(this);
+    m_tabs->addTab(m_vpnTab, "🔌  VPN hệ thống");
+    m_tabs->addTab(m_wireGuardTab, "🔒  WireGuard");
+    root->addWidget(m_tabs, 1);
 }

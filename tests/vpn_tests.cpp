@@ -12,6 +12,7 @@
 #include "tools/vpn/engine/PublicIpChecker.h"
 #include "tools/vpn/engine/VpnConnector.h"
 #include "tools/vpn/engine/VpnController.h"
+#include "tools/vpn/engine/WireGuardController.h"
 
 #include <QElapsedTimer>
 #include <QEventLoop>
@@ -510,9 +511,96 @@ int main(int argc, char** argv)
         CHECK(!VpnController::internal::buildAddConnectionScript(p).contains("L2tpPsk")); // chỉ L2TP mới có
     }
 
+    // ---- WireGuardController::internal::sanitizeTunnelName: thuần, không gọi wireguard.exe ----
+    {
+        namespace WG = WireGuardController::internal;
+        CHECK(WG::sanitizeTunnelName("NL-Proton") == "NL-Proton"); // đã hợp lệ: giữ nguyên
+        CHECK(WG::sanitizeTunnelName("Hà Lan Proton") == "H__Lan_Proton"); // chữ có dấu -> "_"
+        CHECK(WG::sanitizeTunnelName("...tunnel...") == "tunnel"); // bỏ "." đầu/cuối
+        CHECK(WG::sanitizeTunnelName("") == "tunnel"); // rỗng -> mặc định
+        CHECK(WG::sanitizeTunnelName(QString(40, QChar('a'))).size() == 32); // cắt tối đa 32 ký tự
+        CHECK(WG::sanitizeTunnelName("a b/c:d") == "a_b_c_d"); // khoảng trắng, /, : đều bị thay
+    }
+
+    // ---- WireGuardController::internal::serviceName ----
+    {
+        CHECK(WireGuardController::internal::serviceName("NL-Proton") == "WireGuardTunnel$NL-Proton");
+    }
+
+    // ---- WireGuardController::internal::parseConfForDisplay: đọc .conf mẫu, KHÔNG BAO GIỜ trả khóa riêng ----
+    {
+        namespace WG = WireGuardController::internal;
+        const QString conf = R"([Interface]
+PrivateKey = yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=
+Address = 10.2.0.2/32
+DNS = 10.2.0.1
+
+[Peer]
+PublicKey = xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=
+Endpoint = 123.45.67.89:51820
+AllowedIPs = 0.0.0.0/0, ::/0
+)";
+        const auto parsed = WG::parseConfForDisplay(conf);
+        CHECK(parsed.valid);
+        CHECK(parsed.address == "10.2.0.2/32");
+        CHECK(parsed.dns == "10.2.0.1");
+        CHECK(parsed.endpoint == "123.45.67.89:51820");
+        CHECK(parsed.allowedIps == "0.0.0.0/0, ::/0");
+
+        // Nội dung .conf KHÔNG BAO GIỜ bị trả lại nguyên văn khóa riêng/khóa công khai qua struct hiển thị.
+        CHECK(parsed.address != conf && parsed.endpoint != conf); // không trả nguyên văn (hiển nhiên, chỉ để chắc)
+
+        // .conf rỗng/không đúng định dạng -> invalid + có lý do
+        const auto empty = WG::parseConfForDisplay("khong phai dinh dang wireguard");
+        CHECK(!empty.valid);
+        CHECK(!empty.error.isEmpty());
+    }
+
+    // ---- WireGuardController::internal::isServiceRunningOutput: output mẫu của `sc query` ----
+    {
+        namespace WG = WireGuardController::internal;
+        const QString running = R"(
+SERVICE_NAME: WireGuardTunnel$NL-Proton
+        TYPE               : 10  WIN32_OWN_PROCESS
+        STATE              : 4  RUNNING
+                                (STOPPABLE, NOT_PAUSABLE, ACCEPTS_SHUTDOWN)
+        WIN32_EXIT_CODE    : 0  (0x0)
+)";
+        CHECK(WG::isServiceRunningOutput(running));
+
+        const QString stopped = R"(
+SERVICE_NAME: WireGuardTunnel$NL-Proton
+        TYPE               : 10  WIN32_OWN_PROCESS
+        STATE              : 1  STOPPED
+        WIN32_EXIT_CODE    : 0  (0x0)
+)";
+        CHECK(!WG::isServiceRunningOutput(stopped));
+
+        // Dịch vụ không tồn tại (chưa từng cài, hoặc đã gỡ): sc.exe báo lỗi, không có dòng STATE nào.
+        const QString notFound = "[SC] EnumQueryServicesStatus:OpenService FAILED 1060:\n\nThe specified service does not exist as an installed service.\n";
+        CHECK(!WG::isServiceRunningOutput(notFound));
+        CHECK(!WG::isServiceRunningOutput("")); // rỗng cũng không crash, chỉ false
+    }
+
+    // ---- WireGuardController::internal::tunnelNameFromConfigFileName ----
+    {
+        namespace WG = WireGuardController::internal;
+        CHECK(WG::tunnelNameFromConfigFileName("NL-Proton.conf.dpapi") == "NL-Proton");
+        CHECK(WG::tunnelNameFromConfigFileName("NL-Proton.conf.dpapi").toLower() != "nl-proton.conf.dpapi");
+        CHECK(WG::tunnelNameFromConfigFileName("khong-phai-wireguard.txt").isEmpty());
+        CHECK(WG::tunnelNameFromConfigFileName("").isEmpty());
+    }
+
+    // ---- WireGuardController::setCountryLabel/listTunnels metadata: ghi/đọc trong thư mục dữ liệu test ----
+    // (CHƯA kiểm chứng import/removeTunnel/startTunnel/stopTunnel/listTunnels thật - cần máy có WireGuard
+    // for Windows đã cài + một tunnel/máy chủ WireGuard thật, môi trường build không có cả hai.)
+
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);
     std::printf("\nLUU Y: khong co VPN that trong moi truong nay - cac ham goi PowerShell/RAS API that\n");
     std::printf("(listConnections/addConnection/removeConnection/VpnConnector::run thuc su chay) can\n");
     std::printf("duoc tu kiem tra tay tren may that co tai khoan VPN that.\n");
+    std::printf("WireGuard: CHUA kiem chung importTunnel/removeTunnel/startTunnel/stopTunnel/listTunnels\n");
+    std::printf("thuc su goi wireguard.exe/sc.exe - can may THAT da cai WireGuard for Windows + mot\n");
+    std::printf("tunnel/may chu WireGuard thuc de tu kiem tra tay.\n");
     return g_fail == 0 ? 0 : 1;
 }

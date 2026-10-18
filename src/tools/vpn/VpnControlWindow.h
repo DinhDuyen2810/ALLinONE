@@ -2,10 +2,13 @@
 
 #include <QWidget>
 
+class QTabWidget;
 class VpnTab;
+class WireGuardTab;
 
-/// Cửa sổ VPN & Location: quản lý kết nối VPN hệ thống Windows theo nhiều máy chủ/quốc gia, hiển thị
-/// vị trí IP hiện tại (xem VpnTab.h để biết vì sao không giả lập GPS thiết bị).
+/// Cửa sổ VPN & Location: tab "VPN hệ thống" (IKEv2/L2TP/SSTP/PPTP tích hợp sẵn Windows, nhiều máy chủ/
+/// quốc gia), tab "WireGuard" (tunnel nhập từ .conf, dùng WireGuard for Windows đã cài trên máy - xem
+/// WireGuardTab.h), và hiển thị vị trí IP hiện tại (xem VpnTab.h để biết vì sao không giả lập GPS thiết bị).
 class VpnControlWindow : public QWidget
 {
     Q_OBJECT
@@ -22,11 +25,15 @@ public:
 
 protected:
     /// Chặn đóng cửa sổ (hỏi xác nhận) nếu đang kết nối/ngắt kết nối VPN - tránh hủy QThread đang thực
-    /// sự chạy (hành vi KHÔNG XÁC ĐỊNH theo tài liệu Qt), vì bắt tay VPN có thể mất tới 45 giây.
+    /// sự chạy (hành vi KHÔNG XÁC ĐỊNH theo tài liệu Qt), vì bắt tay VPN có thể mất tới 45 giây. Tab
+    /// WireGuard chỉ có thao tác NGẮN (wireguard.exe/sc.exe, timeout 15s, không hủy giữa chừng được) nên
+    /// ở đó chỉ CHẶN đóng cho tới khi xong, không hỏi hủy.
     void closeEvent(QCloseEvent* event) override;
 
 private:
     void buildUi();
 
+    QTabWidget* m_tabs{nullptr};
     VpnTab* m_vpnTab{nullptr};
+    WireGuardTab* m_wireGuardTab{nullptr};
 };

@@ -349,6 +349,9 @@ add_library(vpn_core STATIC
     src/tools/vpn/engine/VpnConnector.cpp
     src/tools/vpn/engine/PublicIpChecker.h
     src/tools/vpn/engine/PublicIpChecker.cpp
+    src/tools/vpn/model/WireGuardTunnel.h
+    src/tools/vpn/engine/WireGuardController.h
+    src/tools/vpn/engine/WireGuardController.cpp
 )
 target_include_directories(vpn_core PUBLIC src)
 target_link_libraries(vpn_core PUBLIC Qt6::Core Qt6::Network advapi32 shell32 rasapi32 core_shared)
@@ -368,6 +371,8 @@ add_library(vpn_ui STATIC
     src/tools/vpn/AddVpnProfileDialog.cpp
     src/tools/vpn/VpnTab.h
     src/tools/vpn/VpnTab.cpp
+    src/tools/vpn/WireGuardTab.h
+    src/tools/vpn/WireGuardTab.cpp
     src/tools/vpn/VpnControlWindow.h
     src/tools/vpn/VpnControlWindow.cpp
 )
@@ -375,7 +380,9 @@ target_include_directories(vpn_ui PUBLIC src)
 target_link_libraries(vpn_ui PUBLIC vpn_core Qt6::Widgets)
 
 # ---- Kiểm thử "khói" UI VPN: cmake --build build --target vpn_ui_tests ----
-add_executable(vpn_ui_tests EXCLUDE_FROM_ALL tests/vpn_ui_tests.cpp)
+# WireGuardTab.cpp gọi ToolManager::instance() (chặn "chạy lại với quyền Admin" nếu tool khác đang bận
+# không an toàn để hủy, cùng mẫu WebProtectionTab/MalwareScanTab) - thêm ToolManager.cpp làm nguồn phụ.
+add_executable(vpn_ui_tests EXCLUDE_FROM_ALL tests/vpn_ui_tests.cpp src/core/ToolManager.cpp)
 target_link_libraries(vpn_ui_tests PRIVATE vpn_ui)
 
 # ---- Stress test lõi Disk Cleanup + VPN (cây thư mục tạm hàng chục nghìn tệp, bật/dừng quét ngẫu nhiên, xóa
