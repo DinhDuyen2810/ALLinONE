@@ -1,6 +1,7 @@
 #include "VpnControlWindow.h"
 
 #include "ConnectivityTab.h"
+#include "ThirdPartyVpnTab.h"
 #include "VpnGateTab.h"
 #include "VpnTab.h"
 #include "WireGuardTab.h"
@@ -95,6 +96,7 @@ void VpnControlWindow::buildUi()
     m_connectivityTab = new ConnectivityTab(this);
     m_vpnTab = new VpnTab(this);
     m_wireGuardTab = new WireGuardTab(this);
+    m_thirdPartyTab = new ThirdPartyVpnTab(this);
     // Tab đầu: "Đổi IP theo quốc gia" (máy chủ công cộng VPN Gate) - đúng trải nghiệm người dùng mong muốn
     // (chọn quốc gia rồi kết nối). Tab "Kiểm tra kết nối" lọc nhanh máy chủ còn sống. Hai tab sau dành cho
     // máy chủ người dùng tự khai báo/nhập cấu hình.
@@ -102,6 +104,8 @@ void VpnControlWindow::buildUi()
     m_tabs->addTab(m_connectivityTab, "🔎  Kiểm tra kết nối");
     m_tabs->addTab(m_vpnTab, "🔌  VPN hệ thống");
     m_tabs->addTab(m_wireGuardTab, "🔒  WireGuard");
+    // VPN doanh nghiệp đã cài sẵn (FortiClient/GlobalProtect/OpenVPN/Cisco): phát hiện + mở client để kết nối.
+    m_tabs->addTab(m_thirdPartyTab, "🏢  VPN đã cài sẵn");
     root->addWidget(m_tabs, 1);
 
     // Bấm "Kiểm tra kết nối" ở tab VPN Gate -> chuyển sang tab Kiểm tra kết nối với địa chỉ điền sẵn.

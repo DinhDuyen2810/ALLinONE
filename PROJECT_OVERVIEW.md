@@ -2570,6 +2570,42 @@ và khởi động lại có làm L2TP tới VPN Gate thành công hay không - 
 khi bật NAT-T + khởi động lại vẫn lỗi với nhiều máy chủ, nhiều khả năng mạng/ISP chặn hẳn L2TP - khi đó cần
 OpenVPN/SSTP (giai đoạn sau), không khắc phục được bằng L2TP.
 
+## 4zn. VPN: tab "VPN đã cài sẵn" - đọc hồ sơ FortiClient/GlobalProtect/OpenVPN/Cisco rồi mở client (2026-10-22, v1.19.28)
+
+Yêu cầu 2 của người dùng (đã hoãn ở các đợt trước): "VPN của tôi phải tích hợp, có thể lấy và đọc các profile
+được lưu trên các VPN khác như FortiNet, GlobalProtect...". Làm theo đúng ranh giới an toàn đã thống nhất:
+**đọc các kết nối ĐÃ CẤU HÌNH trên máy (tên + địa chỉ máy chủ) từ registry/tệp cấu hình của CHÍNH các phần
+mềm đó, rồi MỞ chính phần mềm đó để kết nối - KHÔNG giải mã/đọc mật khẩu đã lưu, KHÔNG tự kết nối thẳng** (các
+VPN doanh nghiệp này dùng giao thức SSL-VPN độc quyền của nhà cung cấp). Giống cách WiFi Connection đọc hồ sơ
+WiFi đã lưu của Windows.
+
+**`ThirdPartyVpnScanner` (vpn_core):** quét 4 phần mềm phổ biến (chỉ đọc, an toàn):
+- **FortiClient**: tunnel SSL-VPN trong registry `HKCU\Software\Fortinet\SslvpnClient\Tunnels\<tên>` và các
+  biến thể `HKLM\...\Fortinet\FortiClient\Sslvpn\Tunnels` / `WOW6432Node` - đọc giá trị `Server`.
+- **GlobalProtect**: portal ở `HKLM\SOFTWARE\Palo Alto Networks\GlobalProtect\PanSetup` (giá trị `Portal`) và
+  `HKCU\...\GlobalProtect\Settings` (giá trị `LastUrl`).
+- **OpenVPN**: tệp `*.ovpn` trong `config_dir` (đọc từ `HKLM\SOFTWARE\OpenVPN`, mặc định `Program Files\OpenVPN\
+  config`) và `%USERPROFILE%\OpenVPN\config`; đọc dòng `remote <host> <port>` đầu tiên (`parseOvpnRemote`).
+- **Cisco Secure Client/AnyConnect**: tệp hồ sơ XML trong `ProgramData\Cisco\...\Profile\*.xml`; đọc
+  `<ServerList><HostEntry>` (HostName/HostAddress) qua `parseCiscoProfileXml`.
+Đường dẫn chương trình client (để MỞ) dò theo các vị trí cài đặt chuẩn (`firstExistingPath`).
+
+**`launch()`**: mở phần mềm client bằng `ShellExecuteW` (OpenVPN: `openvpn-gui.exe --connect "<tên>.ovpn"`; các
+client khác mở cửa sổ chính để người dùng tự đăng nhập/kết nối). Không bao giờ truyền/ghi mật khẩu.
+
+**Tab "🏢 VPN đã cài sẵn" (`ThirdPartyVpnTab`, tab cuối):** bảng [Phần mềm, Tên hồ sơ, Máy chủ/Portal], nút
+"Quét lại" và "Mở phần mềm để kết nối" (chỉ bật khi tìm thấy chương trình). Rỗng thì báo rõ không tìm thấy hồ sơ
+nào. Quét chạy trên luồng giao diện vì chỉ đọc registry/tệp cục bộ (nhanh, khác PowerShell).
+
+**Kiểm thử:** `vpn_tests` 200/0 (+12: `parseOvpnRemote` bỏ comment/kèm cổng, `parseCiscoProfileXml` nhiều
+HostEntry/XML rác, `normalizeServer`, `firstExistingPath`, và `scan()` thật chỉ-đọc không crash - máy build không
+cài client nào nên trả về rỗng), `vpn_ui_tests` 7/0 (dựng thật cửa sổ 5 tab).
+
+**CHƯA kiểm chứng (cần máy có cài sẵn các phần mềm đó + hồ sơ thật):** đọc đúng registry/tệp của từng phiên bản
+FortiClient/GlobalProtect/OpenVPN/Cisco (bố cục có thể đổi theo phiên bản - mã viết phòng thủ, thiếu thì bỏ qua,
+không lỗi), và việc MỞ client + tham số `--connect` của OpenVPN hoạt động thật. Cần người dùng tự kiểm trên máy
+có cài các phần mềm đó.
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
@@ -2747,6 +2783,7 @@ Quy tắc đứng nằm ở `CLAUDE.md` (gốc dự án). Tóm tắt - mỗi l�
 | 2026-10-19 | VPN: thêm tab WireGuard - giai đoạn 1/3 đa giao thức VPN (v1.19.25) | `VpnControlWindow` nay là `QTabWidget` [VPN hệ thống, WireGuard]. `WireGuardController` (vpn_core) dùng CHÍNH WireGuard for Windows đã cài trên máy (không đóng gói driver): `importTunnel()` → `wireguard.exe /installtunnelservice`; `startTunnel()`/`stopTunnel()` → `sc.exe start/stop "WireGuardTunnel$<tên>"`; `removeTunnel()` → `/uninstalltunnelservice`; `listTunnels()` đọc thư mục cấu hình WireGuard + metadata hiển thị riêng (KHÔNG bao giờ lưu PrivateKey). Mọi thao tác cần Administrator, banner relaunch cùng mẫu MalwareScanTab/WebProtectionTab. `vpn_tests` 155/0 (+ test thuần cho sanitizeTunnelName/serviceName/parseConfForDisplay/isServiceRunningOutput/tunnelNameFromConfigFileName), `vpn_ui_tests` 7/0 (dựng thật WireGuardTab, không crash). CHƯA kiểm chứng gọi wireguard.exe/sc.exe thật (môi trường build không có WireGuard cài sẵn + máy chủ thật). Còn lại kế hoạch: OpenVPN (giai đoạn 2), FortiClient/GlobalProtect detect-and-launch + OpenConnect (giai đoạn 3) - CHƯA làm. Lần này chỉ push code, KHÔNG tạo tag/Release. |
 | 2026-10-22 | VPN: tab "Đổi IP theo quốc gia" (VPN Gate) + gộp tối đa máy chủ + tab "Kiểm tra kết nối" (v1.19.26) | Yêu cầu (ảnh Hotspot Shield): chọn quốc gia rồi connect đổi IP; lấy nhiều máy chủ free nhất có thể; có tab riêng kiểm tra kết nối. App KHÔNG có máy chủ riêng nên dùng danh sách relay tình nguyện CÔNG KHAI của VPN Gate (ĐH Tsukuba) qua API `vpngate.net/api/iphone/`, kết nối L2TP/IPsec qua RAS có sẵn (tài khoản công khai "vpn"). Tab "🌍 Đổi IP theo quốc gia": tải danh sách, lọc theo quốc gia, bảng ping/tốc độ, kết nối qua hồ sơ tạm `OneForAll-VPNGate` (tự xóa khi ngắt). `VpnGateCache` GỘP + lưu đĩa (dedup IP, loại cũ 3 ngày) vì API chỉ trả ~100 máy chủ/lần (đo thật). Tab "🔎 Kiểm tra kết nối" (`ConnectivityTester`, QTcpSocket) lọc máy chủ còn sống. `vpn_tests` 182/0 (+27), `vpn_ui_tests` 7/0; parser kiểm CSV thật 98/98. CHƯA kiểm chứng kết nối L2TP thật đầu-cuối. Yêu cầu 2 (FortiClient/GlobalProtect) để sau. Chỉ push code, KHÔNG tag/Release. |
 | 2026-10-22 | VPN: sửa lỗi kết nối L2TP "Lỗi 6: The handle is invalid" + helper NAT-T (v1.19.27) | Người dùng báo mọi lần kết nối VPN Gate đều "Lỗi 6: The handle is invalid". Bug thật: `dialCallback` là RASDIALFUNC1 nhưng RasDialW truyền `dwNotifierType=1` (phải là 2) -> hàm gọi lại lệch tham số, mất mã lỗi RAS thật, chỉ còn RasGetConnectStatus trả handle đã thu hồi (6). Sửa 1->2; evaluateDialPoll cho thông báo hữu ích (L2TP/NAT) thay vì "handle is invalid". Thêm nút "Sửa lỗi L2TP sau NAT" đặt khóa registry AssumeUDPEncapsulationContextOnSendRule=2 (Microsoft tài liệu hóa, qua UAC, cần khởi động lại). `vpn_tests` 188/0 (+6), `vpn_ui_tests` 7/0. CHƯA kiểm chứng kết nối L2TP thật đầu-cuối. Chỉ push code, KHÔNG tag/Release. |
+| 2026-10-22 | VPN: tab "VPN đã cài sẵn" - đọc hồ sơ FortiClient/GlobalProtect/OpenVPN/Cisco rồi mở client (v1.19.28) | Yêu cầu 2: đọc profile các VPN client khác. `ThirdPartyVpnScanner` (vpn_core) CHỈ ĐỌC tên + địa chỉ máy chủ từ registry/tệp cấu hình của FortiClient (SslvpnClient\Tunnels), GlobalProtect (PanSetup\Portal), OpenVPN (*.ovpn remote), Cisco (profile XML HostEntry) - KHÔNG giải mã mật khẩu, KHÔNG kết nối thẳng. Nút "Mở phần mềm để kết nối" ShellExecute client (OpenVPN: --connect). Tab "🏢 VPN đã cài sẵn". `vpn_tests` 200/0 (+12 parser thuần + scan() thật không crash), `vpn_ui_tests` 7/0. CHƯA kiểm chứng trên máy có cài sẵn các phần mềm đó. Chỉ push code, KHÔNG tag/Release. |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `

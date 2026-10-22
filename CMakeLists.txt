@@ -359,6 +359,9 @@ add_library(vpn_core STATIC
     src/tools/vpn/engine/VpnGateCache.cpp
     src/tools/vpn/engine/ConnectivityTester.h
     src/tools/vpn/engine/ConnectivityTester.cpp
+    src/tools/vpn/model/ThirdPartyVpnProfile.h
+    src/tools/vpn/engine/ThirdPartyVpnScanner.h
+    src/tools/vpn/engine/ThirdPartyVpnScanner.cpp
 )
 target_include_directories(vpn_core PUBLIC src)
 target_link_libraries(vpn_core PUBLIC Qt6::Core Qt6::Network advapi32 shell32 rasapi32 core_shared)
@@ -384,6 +387,8 @@ add_library(vpn_ui STATIC
     src/tools/vpn/VpnGateTab.cpp
     src/tools/vpn/ConnectivityTab.h
     src/tools/vpn/ConnectivityTab.cpp
+    src/tools/vpn/ThirdPartyVpnTab.h
+    src/tools/vpn/ThirdPartyVpnTab.cpp
     src/tools/vpn/VpnControlWindow.h
     src/tools/vpn/VpnControlWindow.cpp
 )

@@ -15,6 +15,7 @@
 #include "tools/vpn/engine/VpnGateCache.h"
 #include "tools/vpn/engine/VpnGateClient.h"
 #include "tools/vpn/engine/ConnectivityTester.h"
+#include "tools/vpn/engine/ThirdPartyVpnScanner.h"
 #include "tools/vpn/engine/WireGuardController.h"
 
 #include <QElapsedTimer>
@@ -715,6 +716,42 @@ SERVICE_NAME: WireGuardTunnel$NL-Proton
         const QString setCmd = VpnController::internal::assumeUdpSetCommand();
         CHECK(setCmd.contains("AssumeUDPEncapsulationContextOnSendRule"));
         CHECK(setCmd.contains("PolicyAgent") && setCmd.contains("-Value 2") && setCmd.contains("DWord"));
+    }
+
+    // ---- ThirdPartyVpnScanner: các parser THUẦN (yêu cầu 2 - đọc hồ sơ VPN bên thứ ba) ----
+    {
+        using namespace ThirdPartyVpnScanner::internal;
+        // .ovpn: lấy dòng remote đầu tiên, bỏ comment, kèm cổng nếu có.
+        CHECK(parseOvpnRemote("client\n# comment\nremote vpn.example.com 1194 udp\nremote backup 2000\n") == "vpn.example.com:1194");
+        CHECK(parseOvpnRemote("remote host-only\n") == "host-only");
+        CHECK(parseOvpnRemote(";remote commented 1\nremote real 443\n") == "real:443");
+        CHECK(parseOvpnRemote("khong co remote\n").isEmpty());
+
+        // Cisco profile XML: HostEntry -> (HostName, HostAddress).
+        const QByteArray cisco =
+            "<?xml version=\"1.0\"?><AnyConnectProfile><ServerList>"
+            "<HostEntry><HostName>Cong ty A</HostName><HostAddress>vpn.a.com</HostAddress></HostEntry>"
+            "<HostEntry><HostName>Chi nhanh B</HostName><HostAddress>vpn.b.com</HostAddress></HostEntry>"
+            "</ServerList></AnyConnectProfile>";
+        const auto hosts = parseCiscoProfileXml(cisco);
+        CHECK(hosts.size() == 2);
+        if (hosts.size() == 2)
+        {
+            CHECK(hosts[0].first == "Cong ty A" && hosts[0].second == "vpn.a.com");
+            CHECK(hosts[1].first == "Chi nhanh B" && hosts[1].second == "vpn.b.com");
+        }
+        CHECK(parseCiscoProfileXml("<x/>").isEmpty());
+        CHECK(parseCiscoProfileXml("rac rac khong phai xml").isEmpty());
+
+        CHECK(normalizeServer("  vpn.x.com:10443  ") == "vpn.x.com:10443");
+        CHECK(firstExistingPath({"Z:/khong/ton/tai.exe", ""}).isEmpty());
+
+        // scan() thật (chỉ đọc registry/tệp - an toàn; máy build thường không cài client nào -> rỗng).
+        const auto found = ThirdPartyVpnScanner::scan();
+        std::printf("ThirdPartyVpnScanner::scan() that: %d ho so VPN ben thu ba\n", static_cast<int>(found.size()));
+        for (const auto& p : found)
+            std::printf("  - [%s] %s (%s)\n", qPrintable(p.clientName), qPrintable(p.name), qPrintable(p.server));
+        CHECK(true); // tới đây không crash là đạt
     }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);

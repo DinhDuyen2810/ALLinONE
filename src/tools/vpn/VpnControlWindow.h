@@ -4,6 +4,7 @@
 
 class QTabWidget;
 class ConnectivityTab;
+class ThirdPartyVpnTab;
 class VpnGateTab;
 class VpnTab;
 class WireGuardTab;
@@ -40,4 +41,5 @@ private:
     ConnectivityTab* m_connectivityTab{nullptr};
     VpnTab* m_vpnTab{nullptr};
     WireGuardTab* m_wireGuardTab{nullptr};
+    ThirdPartyVpnTab* m_thirdPartyTab{nullptr};
 };

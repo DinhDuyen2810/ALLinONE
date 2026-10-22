@@ -26,6 +26,7 @@ này - muốn xóa sạch dữ liệu, tự xóa thư mục đó.
   dán link Google Maps ĐẦY ĐỦ chỉ đọc tọa độ từ chuỗi bạn dán, không gọi mạng; dán link RÚT GỌN
   (`maps.app.goo.gl/...`) thì ứng dụng gửi MỘT yêu cầu HTTPS tới Google để đọc địa chỉ chuyển hướng (chỉ đọc
   header, không tải trang; chỉ đi theo các địa chỉ thuộc Google, tối đa 5 bước).
+- **VPN đã cài sẵn (từ 1.19.28)**: ứng dụng ĐỌC (chỉ đọc) tên hồ sơ + địa chỉ máy chủ của các kết nối VPN đã cấu hình bởi FortiClient/GlobalProtect/OpenVPN/Cisco trên máy bạn (từ registry/tệp cấu hình của CHÍNH các phần mềm đó) để hiển thị và mở phần mềm đó khi bạn bấm - KHÔNG đọc/giải mã mật khẩu, KHÔNG gửi gì ra mạng, không ghi ra đâu.
 - **Connect Together**: danh sách thiết bị đã ghép đôi + khóa dài hạn của từng cặp máy
   (`profiles\connect_peers.json`, khóa được bảo vệ bằng Windows DPAPI theo tài khoản của bạn), định danh máy
   bạn tự sinh ngẫu nhiên (`profiles\connect_identity.json`, không gắn với danh tính thật). Khi đang kết nối,
