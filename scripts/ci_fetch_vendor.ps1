@@ -94,35 +94,27 @@ if ($ffmpegLicense) {
 Write-Host "  Da cai dat vendor/yt-dlp/ffmpeg.exe + ffprobe.exe"
 
 # ---- 4) OpenVPN community (openvpn.exe + wintun.dll, GPLv2) - dùng cho tab "Doi IP theo quoc gia" (VPN
-# Gate qua OpenVPN, loi thoat khi L2TP native hong). Nguon CHINH THUC build.openvpn.net CHI ky GPG (.asc),
-# KHONG co SHA256SUMS - nen xac minh bang CHU KY GPG cua OpenVPN (van dung voi THIRD_PARTY.md: xac minh
-# tinh xac thuc truoc khi dung). Khoa ky cua OpenVPN (primary fingerprint, xem THIRD_PARTY.md):
-#   F554 A368 7412 CFFE BDEF  E0A3 12F5 F7B4 2F2B 01E7
-# Lay tu keys.openpgp.org. .msi duoc ky bang SUBKEY nam duoi primary nay. ----
-Write-Host "==> OpenVPN community (latest stable, GPG-verified)"
-$ovpnPrimaryFpr = "F554A3687412CFFEBDEFE0A312F5F7B42F2B01E7"
-$ovpnMsi = Join-Path $tmp "openvpn-latest-stable-amd64.msi"
-$ovpnAsc = Join-Path $tmp "openvpn-latest-stable-amd64.msi.asc"
-Invoke-WebRequest -Uri "https://build.openvpn.net/downloads/releases/latest/openvpn-latest-stable-amd64.msi" -OutFile $ovpnMsi
-Invoke-WebRequest -Uri "https://build.openvpn.net/downloads/releases/latest/openvpn-latest-stable-amd64.msi.asc" -OutFile $ovpnAsc
-
-# Xac minh chu ky GPG: lay khoa cong khai OpenVPN theo fingerprint tu keys.openpgp.org QUA HTTPS (import tu
-# tep - tranh giao thuc keyserver/dirmngr hay hong tren CI) roi gpg --verify. Ket qua phai "Good signature"
-# VA phai co primary fingerprint o tren (chu ky qua subkey van quy ve primary nay).
-$env:GNUPGHOME = Join-Path $tmp "gnupg"
-New-Item -ItemType Directory -Force -Path $env:GNUPGHOME | Out-Null
-$ovpnKey = Join-Path $tmp "openvpn-security.asc"
-Invoke-WebRequest -Uri "https://keys.openpgp.org/vks/v1/by-fingerprint/$ovpnPrimaryFpr" -OutFile $ovpnKey
-& gpg --batch --import $ovpnKey
-if ($LASTEXITCODE -ne 0) { throw "Khong import duoc khoa GPG OpenVPN ($ovpnPrimaryFpr) tu keys.openpgp.org" }
-$gpgOut = & gpg --batch --status-fd 1 --verify $ovpnAsc $ovpnMsi 2>&1 | Out-String
-Write-Host $gpgOut
-# status-fd in dong "VALIDSIG <subkey> ... <primaryfpr>" khi chu ky hop le - bat buoc primary fingerprint khop.
-if ($gpgOut -notmatch [regex]::Escape($ovpnPrimaryFpr)) {
-    throw "Chu ky GPG cua openvpn .msi KHONG quy ve primary fingerprint $ovpnPrimaryFpr - tu choi dung."
+# Gate qua OpenVPN, loi thoat khi L2TP native hong). Nguon CHINH THUC build.openvpn.net KHONG co
+# SHA256SUMS, nhung MOI nhi phan (.msi, openvpn.exe, cac DLL) deu duoc ky AUTHENTICODE boi OpenVPN Inc. ->
+# xac minh bang CHU KY AUTHENTICODE (Get-AuthenticodeSignature) - kiem tra Windows-native, chac chan tren
+# CI va KHONG phu thuoc gpg/keyring (gpg cua Git tren runner hieu sai duong dan GNUPGHOME kieu Windows nen
+# khong dung duoc). Nguon van cung cap chu ky GPG .asc neu muon kiem tay - xem THIRD_PARTY.md. ----
+function Assert-Authenticode($path, $subjectMatch) {
+    $sig = Get-AuthenticodeSignature $path
+    $subj = if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { "(khong co chu ky)" }
+    if ($sig.Status -ne "Valid") {
+        throw "Chu ky Authenticode cua $([System.IO.Path]::GetFileName($path)) KHONG hop le (Status=$($sig.Status))"
+    }
+    if ($subj -notmatch $subjectMatch) {
+        throw "$([System.IO.Path]::GetFileName($path)) duoc ky boi '$subj' - khong khop yeu cau '$subjectMatch'"
+    }
+    Write-Host "  OK Authenticode $([System.IO.Path]::GetFileName($path)) <= $(($subj -split ',')[0])"
 }
-if ($gpgOut -notmatch "GOODSIG|VALIDSIG") { throw "gpg --verify khong xac nhan chu ky hop le cho openvpn .msi" }
-Write-Host "  OK chu ky GPG OpenVPN hop le (primary $ovpnPrimaryFpr)"
+
+Write-Host "==> OpenVPN community (latest stable, Authenticode-verified)"
+$ovpnMsi = Join-Path $tmp "openvpn-latest-stable-amd64.msi"
+Invoke-WebRequest -Uri "https://build.openvpn.net/downloads/releases/latest/openvpn-latest-stable-amd64.msi" -OutFile $ovpnMsi
+Assert-Authenticode $ovpnMsi "OpenVPN"   # chinh goi .msi phai do OpenVPN Inc. ky
 Write-Host "  sha256 (tham khao) = $(Get-Sha256 $ovpnMsi)"
 
 # Admin install (/a) chi GIAI NEN tep tu .msi vao thu muc dich - KHONG cai driver/dich vu, khong can quyen
@@ -135,18 +127,17 @@ $p = Start-Process msiexec.exe -ArgumentList @("/a", "`"$ovpnMsi`"", "/qn", "TAR
 if ($p.ExitCode -ne 0) { throw "msiexec /a (admin install extract) that bai, ExitCode=$($p.ExitCode)" }
 $ovpnExe = Get-ChildItem -Path $ovpnExtract -Filter "openvpn.exe" -Recurse | Select-Object -First 1
 if (-not $ovpnExe) { throw "Khong tim thay openvpn.exe trong ban OpenVPN giai nen" }
-# Xac minh them chu ky Authenticode cua openvpn.exe (GPG da xac minh .msi; day la kiem tra chong lot nhi).
-$ovpnSig = Get-AuthenticodeSignature $ovpnExe.FullName
-if ($ovpnSig.Status -ne "Valid" -or $ovpnSig.SignerCertificate.Subject -notmatch "OpenVPN") {
-    throw "openvpn.exe chu ky Authenticode khong hop le / khong phai OpenVPN Inc. (Status=$($ovpnSig.Status))"
-}
+Assert-Authenticode $ovpnExe.FullName "OpenVPN"
 $ovpnBin = $ovpnExe.DirectoryName
-# openvpn.exe phu thuc (objdump -p): libssl-3-x64 + libcrypto-3-x64 + libpkcs11-helper-1 + vcruntime140.
+# openvpn.exe phu thuc (objdump -p): libssl-3-x64 + libcrypto-3-x64 + libpkcs11-helper-1 (ky OpenVPN Inc.)
+# + vcruntime140 (ky Microsoft). Xac minh Authenticode tung cai truoc khi dong goi.
 $ovpnDlls = @("libssl-3-x64.dll", "libcrypto-3-x64.dll", "libpkcs11-helper-1.dll", "vcruntime140.dll")
 Copy-Item $ovpnExe.FullName (Join-Path $vendorOpenVpn "openvpn.exe") -Force
 foreach ($d in $ovpnDlls) {
     $src = Join-Path $ovpnBin $d
     if (-not (Test-Path $src)) { throw "Thieu DLL bat buoc cua openvpn.exe: $d" }
+    $who = if ($d -eq "vcruntime140.dll") { "Microsoft" } else { "OpenVPN" }
+    Assert-Authenticode $src $who
     Copy-Item $src (Join-Path $vendorOpenVpn $d) -Force
 }
 $ovpnLicense = Get-ChildItem -Path $ovpnExtract -Filter "license.txt" -Recurse | Select-Object -First 1
@@ -165,10 +156,7 @@ $wintunExtract = Join-Path $tmp "wintun-extract"
 Expand-Archive -Path $wintunZip -DestinationPath $wintunExtract -Force
 $wintunDll = Get-ChildItem -Path (Join-Path $wintunExtract "wintun\bin\amd64") -Filter "wintun.dll" | Select-Object -First 1
 if (-not $wintunDll) { throw "Khong tim thay wintun/bin/amd64/wintun.dll trong ban wintun giai nen" }
-$wintunSig = Get-AuthenticodeSignature $wintunDll.FullName
-if ($wintunSig.Status -ne "Valid" -or $wintunSig.SignerCertificate.Subject -notmatch "WireGuard") {
-    throw "wintun.dll chu ky Authenticode khong hop le / khong phai WireGuard LLC (Status=$($wintunSig.Status))"
-}
+Assert-Authenticode $wintunDll.FullName "WireGuard"
 Copy-Item $wintunDll.FullName (Join-Path $vendorOpenVpn "wintun.dll") -Force
 Write-Host "  Da cai dat vendor/openvpn/wintun.dll"
 
