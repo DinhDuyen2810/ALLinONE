@@ -102,6 +102,8 @@ jobs:
           Copy-Item "vendor\scrcpy\*" "OneForAll_Release\scrcpy\" -Recurse -Force
           New-Item -ItemType Directory -Force -Path "OneForAll_Release\yt-dlp" | Out-Null
           Copy-Item "vendor\yt-dlp\*" "OneForAll_Release\yt-dlp\" -Recurse -Force
+          New-Item -ItemType Directory -Force -Path "OneForAll_Release\openvpn" | Out-Null
+          Copy-Item "vendor\openvpn\*" "OneForAll_Release\openvpn\" -Recurse -Force
           foreach ($d in @("generic","iconengines","imageformats","multimedia","networkinformation","platforms","styles","tls")) {
               if (Test-Path "build\$d") {
                   New-Item -ItemType Directory -Force -Path "OneForAll_Release\$d" | Out-Null

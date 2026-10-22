@@ -55,11 +55,23 @@ Ghi chú tích hợp:
 - Đã xác nhận thật (không chỉ tin theo tài liệu): chạy `yt-dlp --dump-json`/tải thật một video ngắn công khai ("Me at the zoo", video YouTube đầu tiên) qua chính các lớp C++ của ứng dụng (`YtDlpInfoWorker`/`YtDlpDownloadWorker`) - lấy đúng thông tin định dạng, tải và ghép video+âm thanh thành công bằng ffmpeg bundled, tiến độ `--progress-template` đọc được chính xác.
 - **Trình duyệt ẩn (từ v1.19.16)**: tính năng quét sâu của Downloader chạy Microsoft Edge hoặc Google Chrome ĐÃ CÓ sẵn trên máy người dùng (`--headless=new`, hồ sơ tạm riêng) - ứng dụng KHÔNG đóng gói/phân phối trình duyệt nào, không thêm thư viện mới; không có Edge/Chrome thì bước này tự bỏ qua.
 
+## Công cụ nhị phân được đóng gói (vendored) trong `vendor/openvpn/` (KHÔNG commit vào Git - xem dưới)
+
+| Thành phần | Dùng để làm gì | Giấy phép | Nguồn |
+|---|---|---|---|
+| **OpenVPN** (`openvpn.exe` + các DLL phụ thuộc `libssl-3-x64.dll`/`libcrypto-3-x64.dll`/`libpkcs11-helper-1.dll`/`vcruntime140.dll`) | Kết nối máy chủ công cộng VPN Gate bằng OpenVPN qua IP:443 (tab "Đổi IP theo quốc gia") - lối thoát khi L2TP/IPsec native của Windows bị hỏng/chặn trên máy người dùng | GPLv2 | https://openvpn.net/ - bản community, tải từ https://build.openvpn.net/downloads/releases/latest/ |
+| **wintun.dll** (WireGuard LLC) | Driver adapter mạng ảo ở không gian người dùng mà `openvpn.exe` nạp để tạo tunnel (OpenVPN 2.5+ dùng wintun thay cho TAP) - bản `.msi` 2.6 KHÔNG còn bundle wintun dạng tệp nên phải lấy riêng từ nguồn chính thức | GPLv2 hoặc "Prebuilt binaries" theo điều khoản WireGuard | https://www.wintun.net/ |
+
+- Tải bản **community CHÍNH THỨC** của OpenVPN (`openvpn-latest-stable-amd64.msi`) từ `build.openvpn.net`. Nguồn này CHỈ ký **GPG** (`.asc` đi kèm), KHÔNG có `SHA256SUMS` - nên xác minh **chữ ký GPG** của OpenVPN: khóa ký (primary fingerprint) `F554 A368 7412 CFFE BDEF  E0A3 12F5 F7B4 2F2B 01E7` (lấy qua HTTPS từ keys.openpgp.org; `.msi` được ký bằng subkey nằm dưới primary này). Sau đó admin-install (`msiexec /a`, chỉ GIẢI NÉN - không cài driver/dịch vụ, không cần quyền admin) rồi lấy `openvpn.exe` + các DLL phụ thuộc. `wintun.dll` lấy từ `wintun.net` (bản 0.14.1, thư mục `wintun/bin/amd64/`). **Xác minh thêm chữ ký Authenticode**: `openvpn.exe` phải do "OpenVPN Inc." ký, `wintun.dll` phải do "WireGuard LLC" ký (đã xác nhận THẬT: cả hai `Get-AuthenticodeSignature` = Valid). Đặt tất cả vào `vendor/openvpn/` ở gốc dự án (`OpenVpnRunner::exePath()` tìm `<thư mục chạy exe>/openvpn/openvpn.exe`, `wintunPath()` tìm `.../openvpn/wintun.dll`).
+- **Không commit** `vendor/` vào Git (xem `.gitignore`) - cùng lý do như `vendor/scrcpy/`, `vendor/yt-dlp/`. `build_app.bat` (bước [6/8]) tự chép `vendor/openvpn/*` vào `OneForAll_Release/openvpn/`; `scripts/ci_fetch_vendor.ps1` tự tải + xác minh + cài trong CI.
+- Vì sao dùng OpenVPN có sẵn thay vì tự viết: OpenVPN là một ngăn giao thức VPN (TLS + kênh dữ liệu mã hóa + driver adapter ảo kernel/userspace) trưởng thành, được kiểm toán rộng rãi - tự cài đặt lại client sẽ tốn công khổng lồ và rủi ro bảo mật cao. Chỉ gọi nhị phân chính thức qua management interface là an toàn và đúng thực tế.
+- **CHƯA kiểm chứng đầu-cuối**: kết nối OpenVPN thật và đổi IP cần MỘT lần bấm Yes ở hộp thoại UAC (openvpn.exe cần quyền tạo adapter wintun) - môi trường tự động hóa không tự bấm thay được. Đã xác minh: chữ ký GPG của `.msi`, chữ ký Authenticode của `openvpn.exe`/`wintun.dll`, dựng cấu hình `.ovpn` đúng với cấu hình THẬT của VPN Gate, và build/đóng gói đầy đủ.
+
 ## Nguồn dữ liệu trực tuyến (không đóng gói mã nguồn/nhị phân, chỉ gọi API công khai khi dùng tính năng)
 
 | Nguồn | Dùng ở đâu | Giấy phép/điều khoản | Ghi chú |
 |---|---|---|---|
-| **VPN Gate** (dự án nghiên cứu, ĐH Tsukuba, Nhật Bản) | Nguồn DỮ LIỆU: danh sách máy chủ VPN công cộng miễn phí (tab "Đổi IP theo quốc gia") | API công khai, dành cho phần mềm khách bên thứ ba | https://www.vpngate.net/ - KHÔNG đóng gói mã/nhị phân nào của VPN Gate; ứng dụng chỉ TẢI danh sách máy chủ qua API công khai `www.vpngate.net/api/iphone/` và kết nối bằng L2TP/IPsec của Windows |
+| **VPN Gate** (dự án nghiên cứu, ĐH Tsukuba, Nhật Bản) | Nguồn DỮ LIỆU: danh sách máy chủ VPN công cộng miễn phí (tab "Đổi IP theo quốc gia") | API công khai, dành cho phần mềm khách bên thứ ba | https://www.vpngate.net/ - KHÔNG đóng gói mã/nhị phân nào của VPN Gate; ứng dụng chỉ TẢI danh sách máy chủ qua API công khai `www.vpngate.net/api/iphone/` rồi kết nối bằng **L2TP/IPsec của Windows** HOẶC **OpenVPN** (từ v1.19.30, dùng `openvpn.exe` đóng gói - xem mục `vendor/openvpn/` ở trên; cấu hình `.ovpn` kèm CA + chứng chỉ client nhúng sẵn do chính VPN Gate cung cấp trong API) |
 
 ## Đã cân nhắc nhưng không dùng
 - **ZXing-cpp** (Apache-2.0, https://github.com/zxing-cpp/zxing-cpp): bộ đọc mạnh hơn, hỗ trợ nhiều loại mã vạch, nhưng lớn và cần thêm cấu hình build; có thể thay thế quirc sau nếu cần quét mã vạch 1D.

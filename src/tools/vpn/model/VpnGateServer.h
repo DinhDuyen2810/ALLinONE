@@ -25,6 +25,12 @@ struct VpnGateServer
     /// và lưu lại qua nhiều lần tải để có nhiều máy chủ hơn, rồi tự loại máy chủ quá cũ). 0 = chưa rõ.
     qint64 lastSeenEpoch{0};
 
+    /// Nội dung tệp cấu hình OpenVPN (.ovpn) do VPN Gate nhúng sẵn trong CSV (cột cuối, Base64) - gồm cả
+    /// chứng chỉ CA, nên kết nối OpenVPN bằng IP vẫn xác thực được máy chủ (khác SSTP cần đúng hostname).
+    /// CHỈ có khi vừa TẢI (không lưu vào cache để cache gọn) - rỗng với máy chủ nạp từ cache cũ. Dùng cho
+    /// kết nối OpenVPN (xem OpenVpnRunner) - lối thoát khi L2TP native bị hỏng/chặn trên máy người dùng.
+    QString ovpnConfig;
+
     /// Tốc độ quy ra Mbps để hiển thị (speedBps là bit/giây).
     double speedMbps() const { return speedBps / 1000000.0; }
 };

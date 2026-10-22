@@ -82,6 +82,11 @@ void VpnControlWindow::closeEvent(QCloseEvent* event)
         event->ignore();
         return;
     }
+    // OpenVPN (tab "Đổi IP theo quốc gia"): một tunnel ĐÃ kết nối ổn định KHÔNG tính là isBusy() nên không
+    // rơi vào nhánh hỏi ở trên - nhưng openvpn.exe là tiến trình NÂNG QUYỀN, đóng cửa sổ mà không ngắt sẽ để
+    // nó chạy tiếp (VPN vẫn bật sau khi đóng). Ngắt sạch ở đây (cancelAndWait gửi SIGTERM qua management).
+    if (m_vpnGateTab && m_vpnGateTab->hasActiveOpenVpnTunnel())
+        m_vpnGateTab->cancelAndWait();
     event->accept();
 }
 

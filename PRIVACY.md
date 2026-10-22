@@ -38,6 +38,13 @@ này - muốn xóa sạch dữ liệu, tự xóa thư mục đó.
   (Windows tự lưu như khi bạn thêm VPN trong Cài đặt), ứng dụng không ghi nó ra tệp nào. Nhãn quốc gia/tên đăng nhập bạn
   tự khai báo (`profiles\vpn_profiles.json`); mật khẩu
   VPN KHÔNG được ghi ra đĩa dưới bất kỳ hình thức nào.
+- **Đổi IP theo quốc gia (VPN Gate) qua OpenVPN (từ 1.19.30)**: khi bạn chọn cách kết nối "OpenVPN", ứng dụng chạy
+  `openvpn.exe` ĐÓNG GÓI KÈM (cần bấm Yes ở hộp thoại UAC vì tạo adapter mạng cần quyền Administrator) để kết nối tới
+  máy chủ VPN Gate bạn chọn. Cấu hình `.ovpn` (gồm chứng chỉ do chính VPN Gate cung cấp) và một tệp mật khẩu điều khiển
+  cục bộ chỉ được ghi vào MỘT thư mục TẠM tự xóa, không nằm trong dữ liệu người dùng; management interface của OpenVPN
+  chỉ mở trên `127.0.0.1` (máy cục bộ) và có mật khẩu ngẫu nhiên. Khi kết nối, TOÀN BỘ lưu lượng mạng của bạn đi qua máy
+  chủ tình nguyện của VPN Gate (bên thứ ba) - đây là bản chất của mọi VPN công cộng miễn phí; chỉ dùng khi bạn chấp nhận
+  điều đó. Đóng cửa sổ VPN sẽ tự ngắt kết nối OpenVPN.
 - **Downloader**: cài đặt (`profiles\downloader_settings.json`: thư mục tải xuống, số tệp đồng thời, giới hạn mục, bật/tắt trình duyệt ẩn, chế độ cookie cùng TÊN trình duyệt hoặc ĐƯỜNG DẪN tệp `cookies.txt` - ứng dụng KHÔNG đọc hay lưu nội dung cookie) và lịch sử tải (`profiles\downloader_history.json`, tối đa 2000 mục: tên, đường dẫn tệp, link nguồn, link tệp, thời gian, kích thước, kết quả). Link nguồn có thể chứa mã/token của trang bạn đã tải - xóa từng mục hoặc toàn bộ trong tab "Lịch sử". Các tệp đã tải nằm ở thư mục bạn chọn, không bị xóa khi xóa lịch sử.
 - **Log ứng dụng**: `logs\*.log` - nhật ký hoạt động/chẩn đoán lỗi, ở lại trên máy bạn, không gửi đi đâu
   (trừ khi chính bạn chủ động gửi để báo lỗi). Log không ghi nội dung văn bản Auto Click gõ hộ bạn.

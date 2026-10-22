@@ -362,6 +362,8 @@ add_library(vpn_core STATIC
     src/tools/vpn/model/ThirdPartyVpnProfile.h
     src/tools/vpn/engine/ThirdPartyVpnScanner.h
     src/tools/vpn/engine/ThirdPartyVpnScanner.cpp
+    src/tools/vpn/engine/OpenVpnRunner.h
+    src/tools/vpn/engine/OpenVpnRunner.cpp
 )
 target_include_directories(vpn_core PUBLIC src)
 target_link_libraries(vpn_core PUBLIC Qt6::Core Qt6::Network advapi32 shell32 rasapi32 core_shared)

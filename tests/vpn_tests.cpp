@@ -15,6 +15,7 @@
 #include "tools/vpn/engine/VpnGateCache.h"
 #include "tools/vpn/engine/VpnGateClient.h"
 #include "tools/vpn/engine/ConnectivityTester.h"
+#include "tools/vpn/engine/OpenVpnRunner.h"
 #include "tools/vpn/engine/ThirdPartyVpnScanner.h"
 #include "tools/vpn/engine/WireGuardController.h"
 
@@ -752,6 +753,65 @@ SERVICE_NAME: WireGuardTunnel$NL-Proton
         for (const auto& p : found)
             std::printf("  - [%s] %s (%s)\n", qPrintable(p.clientName), qPrintable(p.name), qPrintable(p.server));
         CHECK(true); // tới đây không crash là đạt
+    }
+
+    // ---- OpenVpnRunner::Internal: buildConfig + stateName (thuần, không chạy openvpn.exe) ----
+    {
+        using OI = OpenVpnRunner::Internal;
+
+        // Cấu hình .ovpn kiểu VPN Gate: có remote + vài chỉ thị cần loại/giữ.
+        const QString raw =
+            "dev tun\n"
+            "proto tcp\n"
+            "remote 1.2.3.4 443\n"
+            "auth-user-pass\n"                 // phải bị loại (sẽ thay bằng tệp)
+            "management 127.0.0.1 7777\n"      // phải bị loại (ta tự đặt)
+            "dev-node MyTap\n"                 // phải bị loại
+            "windows-driver tap-windows6\n"    // phải bị loại (ta ép wintun)
+            "block-outside-dns\n"              // phải bị loại
+            "<ca>\n-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----\n</ca>\n";
+        const QString cfg = OI::buildConfig(raw, 12345, "auth.txt", "mgmt.txt");
+
+        CHECK(cfg.contains("remote 1.2.3.4 443"));          // giữ remote
+        CHECK(cfg.contains("<ca>") && cfg.contains("END CERTIFICATE")); // giữ khối CA
+        CHECK(cfg.contains("auth-user-pass auth.txt"));     // thêm lại theo tệp (vì gốc có auth-user-pass)
+        CHECK(!cfg.contains("auth-user-pass\n"));           // dòng tương tác gốc đã mất
+        CHECK(cfg.contains("management 127.0.0.1 12345 mgmt.txt"));
+        CHECK(!cfg.contains("management 127.0.0.1 7777"));  // management cũ đã mất
+        CHECK(cfg.contains("management-hold"));
+        CHECK(cfg.contains("windows-driver wintun"));
+        CHECK(!cfg.contains("tap-windows6"));               // windows-driver cũ đã mất
+        CHECK(!cfg.contains("dev-node"));
+        CHECK(!cfg.contains("block-outside-dns"));
+        CHECK(cfg.contains("auth-nocache"));
+
+        // Cấu hình kiểu VPN Gate THẬT: xác thực bằng <cert>/<key> nhúng sẵn, KHÔNG có auth-user-pass ->
+        // buildConfig KHÔNG được tự thêm auth-user-pass (thêm thừa làm hỏng bắt tay).
+        const QString certOnly =
+            "client\ndev tun\nproto tcp\nremote 219.100.37.208 443\n"
+            "cipher AES-128-CBC\nauth SHA1\n"
+            "<ca>\n-----BEGIN CERTIFICATE-----\nA\n-----END CERTIFICATE-----\n</ca>\n"
+            "<cert>\n-----BEGIN CERTIFICATE-----\nB\n-----END CERTIFICATE-----\n</cert>\n"
+            "<key>\n-----BEGIN RSA PRIVATE KEY-----\nC\n-----END RSA PRIVATE KEY-----\n</key>\n";
+        const QString cfg2 = OI::buildConfig(certOnly, 23456, "auth.txt", "mgmt.txt");
+        CHECK(!cfg2.contains("auth-user-pass"));            // không tự thêm khi gốc không có
+        CHECK(cfg2.contains("<cert>") && cfg2.contains("</key>")); // giữ nguyên chứng chỉ/khóa client nhúng
+        CHECK(cfg2.contains("remote 219.100.37.208 443"));
+        CHECK(cfg2.contains("management 127.0.0.1 23456 mgmt.txt"));
+        CHECK(cfg2.contains("windows-driver wintun"));
+
+        // stateName: lấy đúng trường thứ 2 của dòng >STATE.
+        CHECK(OI::stateName(">STATE:1700000000,CONNECTED,SUCCESS,10.8.0.2,,") == "CONNECTED");
+        CHECK(OI::stateName(">STATE:1700000000,WAIT,,,") == "WAIT");
+        CHECK(OI::stateName(">STATE:1,TCP_CONNECT") == "TCP_CONNECT");
+        CHECK(OI::stateName(">INFO:xyz").isEmpty());        // không phải dòng STATE
+        CHECK(OI::stateName("linh tinh").isEmpty());
+
+        // isAvailable: môi trường build không có thư mục openvpn/ -> false + nêu thiếu gì.
+        QString missing;
+        const bool avail = OpenVpnRunner::isAvailable(&missing);
+        std::printf("OpenVpnRunner::isAvailable()=%d missing=\"%s\"\n", avail ? 1 : 0, qPrintable(missing));
+        CHECK(avail || !missing.isEmpty()); // nếu không sẵn sàng thì phải nêu thiếu gì
     }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);

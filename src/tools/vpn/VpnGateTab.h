@@ -4,6 +4,7 @@
 
 #include <functional>
 
+#include "engine/OpenVpnRunner.h"
 #include "engine/PublicIpChecker.h"
 #include "model/VpnGateServer.h"
 
@@ -37,6 +38,9 @@ public:
     void cancelAndWait(int waitMs = 3000);
     /// Yêu cầu hủy, KHÔNG CHỜ - gọi từ VpnControlWindow::forceStopNow() lúc ứng dụng thoát ở nơi khác.
     void requestCancelNoWait();
+    /// Còn tunnel OpenVPN đang chạy không (kể cả ĐÃ kết nối ổn định - không tính là isBusy()). Dùng khi
+    /// đóng cửa sổ để NGẮT sạch, nếu không openvpn.exe nâng quyền sẽ chạy tiếp và giữ VPN sau khi đóng.
+    bool hasActiveOpenVpnTunnel() const;
 
 signals:
     /// Người dùng muốn kiểm tra kết nối tới máy chủ đang chọn - VpnControlWindow chuyển sang tab "Kiểm tra
@@ -53,6 +57,10 @@ private slots:
     void onCheckConnectivityClicked();
     void onNatFixClicked();
     void onConnectorFinished(bool success, QString message);
+    void onOvpnConnected();
+    void onOvpnFailed(QString reason);
+    void onOvpnDisconnected();
+    void onOvpnState(QString human);
     void onCheckLocationClicked();
     void onIpResult(PublicIpInfo info);
     void onIpError(QString message);
@@ -72,6 +80,7 @@ private:
 
     QTableWidget* m_table{nullptr}; // [Quốc gia][Ping][Tốc độ][Phiên][IP]
     QComboBox* m_countryFilter{nullptr};
+    QComboBox* m_methodCombo{nullptr};
     QPushButton* m_fetchBtn{nullptr};
     QPushButton* m_connectBtn{nullptr};
     QPushButton* m_disconnectBtn{nullptr};
@@ -90,6 +99,8 @@ private:
 
     VpnGateClient* m_client{nullptr};
     VpnConnector* m_connector{nullptr};
+    OpenVpnRunner* m_openvpn{nullptr};
+    bool m_usingOpenVpn{false}; // true nếu phiên đang kết nối/đã kết nối bằng OpenVPN (khác L2TP qua m_connector)
     PublicIpChecker* m_ipChecker{nullptr};
     QThread* m_backgroundThread{nullptr};
 };

@@ -140,6 +140,16 @@ QList<VpnGateServer> parseCsv(const QByteArray& csv)
         s.speedBps = qMax<qint64>(0, f[4].trimmed().toLongLong());
         s.sessions = f.size() > 7 ? qMax(0, f[7].trimmed().toInt()) : 0; // NumVpnSessions (chỉ đọc nếu có)
 
+        // Cấu hình OpenVPN (.ovpn) Base64 là trường CUỐI CÙNG. Các trường Operator/Message ở giữa có thể
+        // chứa dấu phẩy (làm lệch chỉ số), nhưng Base64 không có dấu phẩy và không có trường nào sau nó -
+        // nên trường cuối LUÔN là cấu hình. Đủ 15 trường mới có cấu hình.
+        if (f.size() >= 15)
+        {
+            const QByteArray ovpn = QByteArray::fromBase64(f.last().trimmed().toUtf8());
+            if (ovpn.contains("remote ") && ovpn.size() < 200000)
+                s.ovpnConfig = QString::fromUtf8(ovpn);
+        }
+
         servers.push_back(s);
     }
     return servers;
