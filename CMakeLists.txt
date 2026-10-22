@@ -404,6 +404,11 @@ target_link_libraries(vpn_direct_tests PRIVATE vpn_core)
 add_executable(vpn_wintun_real_check EXCLUDE_FROM_ALL tests/vpn_wintun_real_check.cpp)
 target_link_libraries(vpn_wintun_real_check PRIVATE vpn_core)
 
+# ---- KIỂM TRA TAY (gọi máy chủ VPN THẬT trong hồ sơ, KHÔNG gửi thông tin đăng nhập): TLS + vân tay chứng chỉ +
+# endpoint không cần đăng nhập của FortiGate/GlobalProtect: cmake --build build --target vpn_direct_real_probe ----
+add_executable(vpn_direct_real_probe EXCLUDE_FROM_ALL tests/vpn_direct_real_probe.cpp)
+target_link_libraries(vpn_direct_real_probe PRIVATE vpn_core)
+
 # ---- KIỂM TRA TAY (không phải test tự động - KẾT NỐI VPN THẬT): VPN Gate qua SSTP bằng đúng code của tab
 # "Đổi IP theo quốc gia", đo IP trước/sau rồi ngắt + xóa hồ sơ tạm. Chỉ chạy tay khi cần xác nhận trên máy thật:
 # cmake --build build --target vpn_gate_sstp_real_check ----

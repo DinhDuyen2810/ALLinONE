@@ -88,8 +88,9 @@ build_installer.bat /nopause
 Các bộ test: `qr`, `wifi`, `connect`, `diskcleanup`, `android`, `vpn`, `security`, `downloader` (mỗi bộ có
 `_tests` và `_ui_tests`), `vpn_direct_tests`, `autoclick_tests`, `update_tests`. Chúng là target `EXCLUDE_FROM_ALL`,
 phải gọi tên. `vpn_direct_tests` cần `OneForAll.exe` đã build (thử tiến trình phụ `--vpn-helper`). Hai target
-`vpn_gate_sstp_real_check` (nối VPN thật) và `vpn_wintun_real_check` (tạo adapter thật, cần Admin) là công cụ KIỂM
-TRA TAY - không chạy như test tự động (quy tắc 5).
+`vpn_gate_sstp_real_check` (nối VPN thật), `vpn_wintun_real_check` (tạo adapter thật, cần Admin) và
+`vpn_direct_real_probe` (gọi máy chủ VPN thật, không đăng nhập) là công cụ KIỂM TRA TAY - không chạy như test tự động
+(quy tắc 5).
 
 Năm bộ stress/fuzz (mỗi bộ 2-5 phút, chạy khi máy RẢNH - chúng có ngưỡng thời gian): `core_stress_tests`,
 `qrwifi_stress_tests`, `connect_stress_tests`, `disk_vpn_stress_tests`, `secdl_stress_tests`. Chạy lại bộ của
