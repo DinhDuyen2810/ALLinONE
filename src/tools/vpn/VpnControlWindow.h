@@ -3,6 +3,8 @@
 #include <QWidget>
 
 class QTabWidget;
+class ConnectivityTab;
+class VpnGateTab;
 class VpnTab;
 class WireGuardTab;
 
@@ -34,6 +36,8 @@ private:
     void buildUi();
 
     QTabWidget* m_tabs{nullptr};
+    VpnGateTab* m_vpnGateTab{nullptr};
+    ConnectivityTab* m_connectivityTab{nullptr};
     VpnTab* m_vpnTab{nullptr};
     WireGuardTab* m_wireGuardTab{nullptr};
 };

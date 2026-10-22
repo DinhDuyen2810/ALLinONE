@@ -1,5 +1,7 @@
 #include "VpnControlWindow.h"
 
+#include "ConnectivityTab.h"
+#include "VpnGateTab.h"
 #include "VpnTab.h"
 #include "WireGuardTab.h"
 #include "core/IconHelper.h"
@@ -42,13 +44,17 @@ void VpnControlWindow::forceStopNow()
     // requestCancelNoWait() - KHÔNG dùng cancelAndWait(): ở đây không hủy đối tượng gì (chỉ báo
     // phiên RAS dừng sớm), cancelAndWait() có thể chặn tới 45 giây nếu may rủi trúng lúc phiên RAS
     // đang chờ mạng - vô nghĩa và phản tác dụng khi gọi từ một luồng thoát ứng dụng đang cố NHANH.
+    if (m_vpnGateTab)
+        m_vpnGateTab->requestCancelNoWait();
     if (m_vpnTab)
         m_vpnTab->requestCancelNoWait();
 }
 
 void VpnControlWindow::closeEvent(QCloseEvent* event)
 {
-    if (m_vpnTab && m_vpnTab->isBusy())
+    const bool vpnBusy = m_vpnTab && m_vpnTab->isBusy();
+    const bool gateBusy = m_vpnGateTab && m_vpnGateTab->isBusy();
+    if (vpnBusy || gateBusy)
     {
         const auto reply = QMessageBox::question(
             this, "Đang xử lý VPN",
@@ -60,7 +66,10 @@ void VpnControlWindow::closeEvent(QCloseEvent* event)
             event->ignore();
             return;
         }
-        m_vpnTab->cancelAndWait();
+        if (vpnBusy)
+            m_vpnTab->cancelAndWait();
+        if (gateBusy)
+            m_vpnGateTab->cancelAndWait();
     }
     // Tab WireGuard chỉ chạy tiến trình NGẮN (wireguard.exe/sc.exe, timeout 15s) không có đường hủy an
     // toàn giữa chừng (QProcess::kill() lúc này có thể bỏ lại dịch vụ ở trạng thái dở dang) - CHẶN đóng
@@ -82,9 +91,22 @@ void VpnControlWindow::buildUi()
     root->setSpacing(10);
 
     m_tabs = new QTabWidget(this);
+    m_vpnGateTab = new VpnGateTab(this);
+    m_connectivityTab = new ConnectivityTab(this);
     m_vpnTab = new VpnTab(this);
     m_wireGuardTab = new WireGuardTab(this);
+    // Tab đầu: "Đổi IP theo quốc gia" (máy chủ công cộng VPN Gate) - đúng trải nghiệm người dùng mong muốn
+    // (chọn quốc gia rồi kết nối). Tab "Kiểm tra kết nối" lọc nhanh máy chủ còn sống. Hai tab sau dành cho
+    // máy chủ người dùng tự khai báo/nhập cấu hình.
+    m_tabs->addTab(m_vpnGateTab, "🌍  Đổi IP theo quốc gia");
+    m_tabs->addTab(m_connectivityTab, "🔎  Kiểm tra kết nối");
     m_tabs->addTab(m_vpnTab, "🔌  VPN hệ thống");
     m_tabs->addTab(m_wireGuardTab, "🔒  WireGuard");
     root->addWidget(m_tabs, 1);
+
+    // Bấm "Kiểm tra kết nối" ở tab VPN Gate -> chuyển sang tab Kiểm tra kết nối với địa chỉ điền sẵn.
+    connect(m_vpnGateTab, &VpnGateTab::checkConnectivityRequested, this, [this](QString host, quint16 port) {
+        m_connectivityTab->setTarget(host, port);
+        m_tabs->setCurrentWidget(m_connectivityTab);
+    });
 }

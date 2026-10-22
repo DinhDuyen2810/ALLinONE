@@ -2471,6 +2471,67 @@ v1.19.23 ở mục 8 (`core` 551/0, `qrwifi` 759.618/0, `connect` 386/0, `disk_v
 lại macro và bắt phím trên desktop thật, chuột qua biên giữa hai máy LAN, `adb connect` với điện thoại, kết nối L2TP PSK
 thật, bật/tắt Defender thật, `Zone.Identifier` trên ổ FAT32/exFAT (bỏ qua êm), Chrome thay Edge cho chụp Drive.
 
+## 4zl. VPN: tab "Đổi IP theo quốc gia" (VPN Gate) + gộp tối đa máy chủ + tab "Kiểm tra kết nối" (2026-10-22, v1.19.26)
+
+Yêu cầu người dùng (kèm ảnh Hotspot Shield): (1) VPN phải chọn được một số quốc gia rồi bấm connect để đổi
+IP máy; (2) tích hợp đọc profile của các VPN client khác (FortiClient/GlobalProtect...). Bổ sung giữa chừng:
+"lấy nhiều nhất có thể các máy chủ VPN free" và "có hẳn 1 tab riêng để kiểm tra kết nối đến". Người dùng chọn
+**làm yêu cầu 1 trước**, nguồn **VPN Gate**, và **chỉ push code, không phát hành release**.
+
+**Quyết định kiến trúc (làm rõ với người dùng trước khi code):** Hotspot Shield đổi IP theo quốc gia được vì
+họ SỞ HỮU hạ tầng máy chủ. One for ALL là ứng dụng cục bộ, **không có/không tự dựng máy chủ VPN nào**. Cách
+HỢP PHÁP duy nhất để có đúng trải nghiệm "chọn quốc gia → đổi IP" mà không tự dựng hạ tầng: dùng lại **danh
+sách relay tình nguyện công khai của VPN Gate** (dự án nghiên cứu học thuật ĐH Tsukuba, Nhật), kết nối bằng
+**L2TP/IPsec** của Windows RAS có sẵn (tái dùng toàn bộ `VpnController`/`VpnConnector`), tài khoản công khai
+user/mật khẩu/PSK đều là "vpn" (công bố trên trang hướng dẫn của VPN Gate).
+
+**Tab "🌍 Đổi IP theo quốc gia" (`VpnGateTab`, tab ĐẦU của cửa sổ VPN):**
+- `VpnGateClient` (vpn_core): GET API công khai `https://www.vpngate.net/api/iphone/` (HTTPS, hủy được,
+  timeout 40s). `VpnGateClientInternal::parseCsv()` THUẦN, test được: bỏ dòng `*vpn_servers`/`#...`/`*`, lấy 7
+  trường đầu; **lọc an toàn** dòng IP không phải IPv4 (`isValidIpv4` qua QHostAddress) hoặc mã quốc gia không
+  đúng 2 chữ cái - quan trọng vì IP trở thành đích kết nối VPN. Giá trị âm kẹp về 0. `VpnGateServer` chỉ giữ
+  trường để hiển thị + kết nối (cố ý KHÔNG giữ cấu hình OpenVPN base64 - bản này kết nối L2TP).
+- Giao diện: banner cảnh báo (relay tình nguyện, IP động, tốc độ/ổn định không bảo đảm, không phải máy chủ
+  nào cũng bật L2TP, tự chịu trách nhiệm), nhóm "Vị trí hiện tại (theo IP)" (tái dùng `PublicIpChecker`), nút
+  "Tải thêm máy chủ", combo lọc theo quốc gia (kèm số máy chủ mỗi nước), bảng Quốc gia/Ping/Tốc độ/Số phiên/IP
+  (sắp theo điểm), nút Kết nối/Ngắt và "Kiểm tra kết nối".
+- Kết nối: tạo hồ sơ VPN **TẠM** `OneForAll-VPNGate` (ghi đè) trỏ IP đã chọn, L2TP, PSK "vpn" (qua biến môi
+  trường - không lộ dòng lệnh, cơ chế có từ v1.19.23) → quay số RAS user/pass "vpn" → khi lỗi hoặc khi ngắt
+  thì tự **xóa hồ sơ tạm** (best-effort). Lỗi báo rõ "máy chủ có thể không bật L2TP hoặc bị chặn - thử máy chủ
+  khác". IP hiển thị tự cập nhật sau kết nối/ngắt để NGƯỜI DÙNG tự xác nhận IP đã đổi thật.
+
+**"Lấy nhiều nhất có thể" - gộp tích lũy (`VpnGateCache`, vpn_core):** API `/api/iphone/` chỉ trả ~100 máy chủ
+"tốt nhất" mỗi lần (đã đo thật: gọi 4 lần liên tiếp đều ra ĐÚNG 98 máy chủ như nhau - không có endpoint công
+khai lớn hơn, các nguồn free khác đều là OpenVPN cần máy khách riêng = giai đoạn 2). Cách trung thực để tối đa
+hóa: **GỘP kết quả mỗi lần tải vào một danh sách lưu trên đĩa** (`profiles/vpngate_servers.json`), dedup theo
+IP (bản mới thắng), loại máy chủ quá cũ (không thấy lại sau 3 ngày - IP của VPN Gate là động), trần 1000. Danh
+sách top xoay vòng theo thời gian nên tải định kỳ sẽ tích lũy thêm. `merge()`/`toJson()`/`fromJson()` THUẦN,
+test được. Nạp cache lúc mở tab để thấy ngay danh sách đã tích lũy.
+
+**Tab "🔎 Kiểm tra kết nối" (`ConnectivityTab` + `ConnectivityTester`, tab thứ 2):** thử mở MỘT kết nối TCP tới
+host:port (thuần Qt `QTcpSocket`, không cần Administrator, không gửi dữ liệu gì sau bắt tay) và báo có "chạm"
+được không + độ trễ; nhật ký tối đa 50 dòng. Dùng để lọc nhanh máy chủ đã chết trước khi kết nối VPN. Lưu ý
+nêu rõ trong giao diện: L2TP chạy trên UDP nên phép thử TCP (mặc định cổng 443 - nhiều máy chủ VPN Gate có bật
+SSL-VPN/SSTP) chỉ là CHỈ BÁO máy chủ còn sống, không khẳng định chắc L2TP kết nối được. Bấm "Kiểm tra kết nối"
+ở tab VPN Gate chuyển sang tab này và điền sẵn IP máy chủ đang chọn (`checkConnectivityRequested`).
+
+`VpnControlWindow` nay có 4 tab [Đổi IP theo quốc gia, Kiểm tra kết nối, VPN hệ thống, WireGuard]; cả tab VPN
+Gate (có phiên RAS) được xử lý trong `closeEvent`/`forceStopNow` như tab VPN hệ thống.
+
+**Kiểm thử:** `vpn_tests` 182/0 (+27: `isValidIpv4`/`parseCsv` với CSV mẫu đúng định dạng thật; `VpnGateCache`
+merge/loại-cũ/trần/JSON khứ hồi/dữ liệu hỏng; `ConnectivityTester` TCP tới máy chủ cục bộ chạm được + cổng
+đóng không chạm được). `vpn_ui_tests` 7/0 (dựng thật cửa sổ 4 tab, không crash). **Kiểm chứng parser trên DỮ
+LIỆU THẬT** (2026-10-22): tải CSV thật, chạy đúng luật lọc - 98/98 máy chủ được chấp nhận, 0 bỏ oan (Nhật/Hàn/
+Mỹ/Thái/Nga/Việt Nam/Anh...).
+
+**CHƯA kiểm chứng (cần mạng + môi trường thật):** kết nối L2TP THẬT tới một máy chủ VPN Gate và xác nhận IP đổi
+đầu-cuối (môi trường build không kết nối VPN thật được - cùng giới hạn đã nêu cho VPN hệ thống); người dùng cần
+tự bấm thử. Máy chủ chọn không bật L2TP thì kết nối báo lỗi và mời chọn máy khác (đã xử lý), không treo.
+
+**Yêu cầu 2 (đọc profile FortiClient/GlobalProtect) - CHƯA làm đợt này** (người dùng chọn làm sau): sẽ là đọc
+các kết nối đã cấu hình trên máy (tên, địa chỉ cổng - từ registry của chính các client đó) rồi khởi chạy chính
+client đó để kết nối; KHÔNG giải mã mật khẩu đã lưu, KHÔNG kết nối thẳng (giao thức SSL-VPN riêng).
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
@@ -2578,7 +2639,7 @@ như "không có gì để tự cập nhật" (an toàn, không báo lỗi gây 
 - Security Gateway: hủy quét chỉ dừng `powershell.exe`, chưa chắc dừng lần quét bên trong dịch vụ Defender;
   clipboard không được khôi phục sau khi dán lệnh; danh sách chặn hosts chỉ chặn đúng tên miền (không gồm tên miền con)
   và không xóa bộ đệm DNS.
-- VPN: chưa có tùy chọn `-SplitTunneling`; không xóa được hồ sơ đang kết nối; không sửa được nhãn quốc gia sau khi thêm.
+- VPN: chưa có tùy chọn `-SplitTunneling`; không xóa được hồ sơ đang kết nối; không sửa được nhãn quốc gia sau khi thêm. Tab "Đổi IP theo quốc gia" dùng relay TÌNH NGUYỆN công cộng của VPN Gate (IP động, tốc độ/ổn định không bảo đảm, API chỉ trả ~100 máy chủ/lần - gộp tích lũy để có thêm; không phải máy chủ nào cũng bật L2TP) - CHƯA kiểm chứng kết nối L2TP thật đầu-cuối. Yêu cầu 2 (đọc profile FortiClient/GlobalProtect) chưa làm.
 - QR Tools: mật khẩu WiFi trong lịch sử (`qr_history.json`) lưu dạng chữ (chỉ che trên giao diện).
 - Connect Together: công tắc đồng bộ clipboard không được nhớ giữa các lần mở cửa sổ (luôn bật lại).
 - Downloader: yt-dlp tự ghi lại cookie vào chính tệp `cookies.txt` bạn chọn (hành vi gốc của yt-dlp `--cookies`).
@@ -2646,6 +2707,7 @@ Quy tắc đứng nằm ở `CLAUDE.md` (gốc dự án). Tóm tắt - mỗi l�
 | 2026-10-15 | Rà soát toàn bộ lần ba: sửa lỗi ở cả 9 công cụ + stress test (v1.19.23) | Chi tiết ở mục 4zk. Năm người đọc độc lập rà 9 công cụ, hai người rà lại bản sửa (tìm thêm 3 lỗi chắc chắn + 2 lỗi có khả năng trong chính bản sửa - đã sửa). Nặng nhất: phát lại macro Auto Click để KẸT phím/nút khi dừng; Connect Together xóa vĩnh viễn máy đã ghép đôi khi DPAPI lỗi tạm thời; Downloader "Kiểm tra lại" tải link CŨ, tệp tải về không có Mark of the Web, trình duyệt ẩn mở DevTools cho mọi origin; Security đứng hình khi mở. 18 bộ test 4.105/0 (trước 3.971); stress `core` 551/0, `qrwifi` 759.618/0, `connect` 386/0, `disk_vpn` 7.320/0, `secdl` 1.876.549/0. Lần này KHÔNG tạo tag/Release (theo yêu cầu). |
 | 2026-10-18 | WiFi chia sẻ QR + Android ghép đôi QR; tab Cài đặt WiFi (v1.19.24) | WiFi > Hồ sơ đã lưu: nút "Chia sẻ QR" dựng mã `WIFI:...` từ hồ sơ (qua `qr_core`; mật khẩu dạng chữ cần Admin). Android > Thiết bị: nút "Ghép bằng QR..." hiện mã `WIFI:T:ADB;...`, dò `_adb-tls-pairing._tcp` qua `adb mdns services` (`AdbController::internal::parseMdnsPairingService`) rồi tự `adb pair` với mã 6 số do app sinh. WiFi > Cài đặt: mật khẩu mặc định cho nút "Kết nối lab" (một mật khẩu, một lần thử); kết luận kết nối theo phản hồi adapter (`ConnectionWatcher::evaluateAttempt`), không chờ hết giờ; ô khoảng From/To hệ 36 chỉ LƯU trong QSettings, CHƯA nối vào hành động nào. Phụ thuộc: wifi_ui/android_ui link thêm `qr_core` (một chiều, tránh vòng với qr_ui). CHƯA kiểm chứng hai luồng QR (cần điện thoại thật). Lần này chỉ push code, KHÔNG tạo tag/Release. |
 | 2026-10-19 | VPN: thêm tab WireGuard - giai đoạn 1/3 đa giao thức VPN (v1.19.25) | `VpnControlWindow` nay là `QTabWidget` [VPN hệ thống, WireGuard]. `WireGuardController` (vpn_core) dùng CHÍNH WireGuard for Windows đã cài trên máy (không đóng gói driver): `importTunnel()` → `wireguard.exe /installtunnelservice`; `startTunnel()`/`stopTunnel()` → `sc.exe start/stop "WireGuardTunnel$<tên>"`; `removeTunnel()` → `/uninstalltunnelservice`; `listTunnels()` đọc thư mục cấu hình WireGuard + metadata hiển thị riêng (KHÔNG bao giờ lưu PrivateKey). Mọi thao tác cần Administrator, banner relaunch cùng mẫu MalwareScanTab/WebProtectionTab. `vpn_tests` 155/0 (+ test thuần cho sanitizeTunnelName/serviceName/parseConfForDisplay/isServiceRunningOutput/tunnelNameFromConfigFileName), `vpn_ui_tests` 7/0 (dựng thật WireGuardTab, không crash). CHƯA kiểm chứng gọi wireguard.exe/sc.exe thật (môi trường build không có WireGuard cài sẵn + máy chủ thật). Còn lại kế hoạch: OpenVPN (giai đoạn 2), FortiClient/GlobalProtect detect-and-launch + OpenConnect (giai đoạn 3) - CHƯA làm. Lần này chỉ push code, KHÔNG tạo tag/Release. |
+| 2026-10-22 | VPN: tab "Đổi IP theo quốc gia" (VPN Gate) + gộp tối đa máy chủ + tab "Kiểm tra kết nối" (v1.19.26) | Yêu cầu (ảnh Hotspot Shield): chọn quốc gia rồi connect đổi IP; lấy nhiều máy chủ free nhất có thể; có tab riêng kiểm tra kết nối. App KHÔNG có máy chủ riêng nên dùng danh sách relay tình nguyện CÔNG KHAI của VPN Gate (ĐH Tsukuba) qua API `vpngate.net/api/iphone/`, kết nối L2TP/IPsec qua RAS có sẵn (tài khoản công khai "vpn"). Tab "🌍 Đổi IP theo quốc gia": tải danh sách, lọc theo quốc gia, bảng ping/tốc độ, kết nối qua hồ sơ tạm `OneForAll-VPNGate` (tự xóa khi ngắt). `VpnGateCache` GỘP + lưu đĩa (dedup IP, loại cũ 3 ngày) vì API chỉ trả ~100 máy chủ/lần (đo thật). Tab "🔎 Kiểm tra kết nối" (`ConnectivityTester`, QTcpSocket) lọc máy chủ còn sống. `vpn_tests` 182/0 (+27), `vpn_ui_tests` 7/0; parser kiểm CSV thật 98/98. CHƯA kiểm chứng kết nối L2TP thật đầu-cuối. Yêu cầu 2 (FortiClient/GlobalProtect) để sau. Chỉ push code, KHÔNG tag/Release. |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `

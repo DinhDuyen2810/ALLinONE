@@ -55,6 +55,12 @@ Ghi chú tích hợp:
 - Đã xác nhận thật (không chỉ tin theo tài liệu): chạy `yt-dlp --dump-json`/tải thật một video ngắn công khai ("Me at the zoo", video YouTube đầu tiên) qua chính các lớp C++ của ứng dụng (`YtDlpInfoWorker`/`YtDlpDownloadWorker`) - lấy đúng thông tin định dạng, tải và ghép video+âm thanh thành công bằng ffmpeg bundled, tiến độ `--progress-template` đọc được chính xác.
 - **Trình duyệt ẩn (từ v1.19.16)**: tính năng quét sâu của Downloader chạy Microsoft Edge hoặc Google Chrome ĐÃ CÓ sẵn trên máy người dùng (`--headless=new`, hồ sơ tạm riêng) - ứng dụng KHÔNG đóng gói/phân phối trình duyệt nào, không thêm thư viện mới; không có Edge/Chrome thì bước này tự bỏ qua.
 
+## Nguồn dữ liệu trực tuyến (không đóng gói mã nguồn/nhị phân, chỉ gọi API công khai khi dùng tính năng)
+
+| Nguồn | Dùng ở đâu | Giấy phép/điều khoản | Ghi chú |
+|---|---|---|---|
+| **VPN Gate** (dự án nghiên cứu, ĐH Tsukuba, Nhật Bản) | Nguồn DỮ LIỆU: danh sách máy chủ VPN công cộng miễn phí (tab "Đổi IP theo quốc gia") | API công khai, dành cho phần mềm khách bên thứ ba | https://www.vpngate.net/ - KHÔNG đóng gói mã/nhị phân nào của VPN Gate; ứng dụng chỉ TẢI danh sách máy chủ qua API công khai `www.vpngate.net/api/iphone/` và kết nối bằng L2TP/IPsec của Windows |
+
 ## Đã cân nhắc nhưng không dùng
 - **ZXing-cpp** (Apache-2.0, https://github.com/zxing-cpp/zxing-cpp): bộ đọc mạnh hơn, hỗ trợ nhiều loại mã vạch, nhưng lớn và cần thêm cấu hình build; có thể thay thế quirc sau nếu cần quét mã vạch 1D.
 - **libqrencode** (LGPL): giấy phép ràng buộc hơn.

@@ -12,6 +12,9 @@
 #include "tools/vpn/engine/PublicIpChecker.h"
 #include "tools/vpn/engine/VpnConnector.h"
 #include "tools/vpn/engine/VpnController.h"
+#include "tools/vpn/engine/VpnGateCache.h"
+#include "tools/vpn/engine/VpnGateClient.h"
+#include "tools/vpn/engine/ConnectivityTester.h"
 #include "tools/vpn/engine/WireGuardController.h"
 
 #include <QElapsedTimer>
@@ -594,6 +597,106 @@ SERVICE_NAME: WireGuardTunnel$NL-Proton
     // ---- WireGuardController::setCountryLabel/listTunnels metadata: ghi/đọc trong thư mục dữ liệu test ----
     // (CHƯA kiểm chứng import/removeTunnel/startTunnel/stopTunnel/listTunnels thật - cần máy có WireGuard
     // for Windows đã cài + một tunnel/máy chủ WireGuard thật, môi trường build không có cả hai.)
+
+    // ---- VpnGateClient: phân tích CSV của API VPN Gate (thuần, không mạng) ----
+    {
+        using namespace VpnGateClientInternal;
+        CHECK(isValidIpv4("38.34.239.132"));
+        CHECK(isValidIpv4("1.2.3.4"));
+        CHECK(!isValidIpv4("2001:db8::1"));      // IPv6 - VPN Gate chỉ IPv4
+        CHECK(!isValidIpv4("vpn.example.com"));  // tên miền
+        CHECK(!isValidIpv4("") && !isValidIpv4("999.1.1.1"));
+
+        // Đúng định dạng thật: dòng *vpn_servers, dòng tiêu đề #..., các dòng dữ liệu 15 trường, dòng kết thúc *.
+        const QByteArray csv =
+            "*vpn_servers\r\n"
+            "#HostName,IP,Score,Ping,Speed,CountryLong,CountryShort,NumVpnSessions,Uptime,TotalUsers,TotalTraffic,LogType,Operator,Message,OpenVPN_ConfigData_Base64\r\n"
+            "vpn111,38.34.239.132,4316364,10,348583205,United States,US,142,3151150053,164393,25575562959680,2weeks,owner,hi,QUJD\r\n"
+            "vpn222,219.100.37.1,900000,55,12000000,Japan,JP,7,100,50,999,2weeks,op,msg,QUJD\r\n"
+            "vpnBAD,not-an-ip,100,5,100,Nowhere,NO,1,1,1,1,2weeks,,,QUJD\r\n"
+            "vpnSHIFT,8.8.8.8,100,5,100,Korea, Republic of,KR,1,1,1,1,2weeks,,,QUJD\r\n"
+            "vpnNEG,9.9.9.9,-5,-3,-100,Negland,NG,-2,1,1,1,2weeks,,,QUJD\r\n"
+            "*\r\n";
+        const QList<VpnGateServer> servers = parseCsv(csv);
+        // 3 dòng hợp lệ (US, JP, NG). Dòng IP sai bị bỏ; dòng "Korea, Republic of" lệch cột -> mã QG không
+        // phải 2 chữ cái -> bỏ.
+        CHECK(servers.size() == 3);
+        if (servers.size() == 3)
+        {
+            const VpnGateServer& us = servers[0];
+            CHECK(us.hostName == "vpn111" && us.ip == "38.34.239.132");
+            CHECK(us.countryLong == "United States" && us.countryShort == "US");
+            CHECK(us.score == 4316364 && us.ping == 10 && us.speedBps == 348583205 && us.sessions == 142);
+            CHECK(us.speedMbps() > 348.0 && us.speedMbps() < 349.0);
+            CHECK(servers[1].countryShort == "JP" && servers[1].ip == "219.100.37.1");
+            // Giá trị âm bị kẹp về 0.
+            const VpnGateServer& ng = servers[2];
+            CHECK(ng.countryShort == "NG" && ng.score == 0 && ng.ping == 0 && ng.speedBps == 0 && ng.sessions == 0);
+        }
+
+        // Rỗng/chỉ có dòng điều khiển -> danh sách rỗng, không crash.
+        CHECK(parseCsv("").isEmpty());
+        CHECK(parseCsv("*vpn_servers\n#HostName,IP\n*\n").isEmpty());
+        CHECK(parseCsv("rac rac rac\nkhong,du,cot\n").isEmpty());
+    }
+
+    // ---- VpnGateCache: gộp tích lũy + loại cũ + JSON khứ hồi (thuần) ----
+    {
+        auto mk = [](const QString& ip, const QString& cc, qint64 score, qint64 seen) {
+            VpnGateServer s; s.ip = ip; s.countryShort = cc; s.countryLong = cc; s.score = score; s.lastSeenEpoch = seen; return s;
+        };
+        const qint64 now = 1000000;
+        const qint64 day = 24 * 60 * 60;
+        QList<VpnGateServer> existing = {mk("1.1.1.1", "US", 100, now - 1*day), mk("2.2.2.2", "JP", 200, now - 10*day)};
+        QList<VpnGateServer> fresh = {mk("1.1.1.1", "US", 999, 0), mk("3.3.3.3", "KR", 50, 0)};
+        // 1.1.1.1 cập nhật (điểm mới 999, lastSeen=now); 2.2.2.2 quá cũ (10 ngày > 3) bị loại; 3.3.3.3 thêm mới.
+        const QList<VpnGateServer> merged = VpnGateCache::merge(existing, fresh, now, 3*day, 1000);
+        CHECK(merged.size() == 2);
+        if (merged.size() == 2)
+        {
+            CHECK(merged[0].ip == "1.1.1.1" && merged[0].score == 999 && merged[0].lastSeenEpoch == now); // điểm cao lên đầu
+            CHECK(merged[1].ip == "3.3.3.3" && merged[1].lastSeenEpoch == now);
+        }
+        // Trần số lượng.
+        QList<VpnGateServer> many;
+        for (int i = 0; i < 10; ++i) many << mk(QString("10.0.0.%1").arg(i), "US", i, now);
+        CHECK(VpnGateCache::merge({}, many, now, 3*day, 3).size() == 3);
+        // JSON khứ hồi.
+        const QByteArray js = VpnGateCache::internal::toJson(merged);
+        const QList<VpnGateServer> back = VpnGateCache::internal::fromJson(js);
+        CHECK(back.size() == 2 && back[0].ip == "1.1.1.1" && back[0].score == 999);
+        // JSON hỏng / IP sai bị bỏ.
+        CHECK(VpnGateCache::internal::fromJson("rac").isEmpty());
+        CHECK(VpnGateCache::internal::fromJson(R"({"servers":[{"ip":"not-ip","countryShort":"US"}]})").isEmpty());
+    }
+
+    // ---- ConnectivityTester: TCP tới máy chủ cục bộ (chạm được) và tới cổng đóng (không được) ----
+    {
+        auto runTest = [](ConnectivityTester& t, const QString& host, quint16 port, int waitMs, bool* reachable, int* ms) {
+            QEventLoop loop;
+            bool done = false;
+            const auto c = QObject::connect(&t, &ConnectivityTester::finished, &loop,
+                                            [&](bool r, int e, QString) { *reachable = r; *ms = e; done = true; loop.quit(); });
+            QTimer::singleShot(waitMs, &loop, &QEventLoop::quit);
+            t.test(host, port, waitMs - 500);
+            loop.exec();
+            QObject::disconnect(c);
+            return done;
+        };
+        QTcpServer srv;
+        CHECK(srv.listen(QHostAddress::LocalHost, 0));
+        const quint16 openPort = srv.serverPort();
+        bool reachable = false; int ms = -1;
+        ConnectivityTester t1;
+        CHECK(runTest(t1, "127.0.0.1", openPort, 4000, &reachable, &ms));
+        CHECK(reachable && ms >= 0);
+        // Đóng máy chủ -> cổng đó không còn ai nghe -> không chạm được (connection refused, nhanh).
+        srv.close();
+        ConnectivityTester t2;
+        reachable = true; ms = -1;
+        CHECK(runTest(t2, "127.0.0.1", openPort, 4000, &reachable, &ms));
+        CHECK(!reachable);
+    }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);
     std::printf("\nLUU Y: khong co VPN that trong moi truong nay - cac ham goi PowerShell/RAS API that\n");

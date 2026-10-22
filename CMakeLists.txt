@@ -352,6 +352,13 @@ add_library(vpn_core STATIC
     src/tools/vpn/model/WireGuardTunnel.h
     src/tools/vpn/engine/WireGuardController.h
     src/tools/vpn/engine/WireGuardController.cpp
+    src/tools/vpn/model/VpnGateServer.h
+    src/tools/vpn/engine/VpnGateClient.h
+    src/tools/vpn/engine/VpnGateClient.cpp
+    src/tools/vpn/engine/VpnGateCache.h
+    src/tools/vpn/engine/VpnGateCache.cpp
+    src/tools/vpn/engine/ConnectivityTester.h
+    src/tools/vpn/engine/ConnectivityTester.cpp
 )
 target_include_directories(vpn_core PUBLIC src)
 target_link_libraries(vpn_core PUBLIC Qt6::Core Qt6::Network advapi32 shell32 rasapi32 core_shared)
@@ -373,6 +380,10 @@ add_library(vpn_ui STATIC
     src/tools/vpn/VpnTab.cpp
     src/tools/vpn/WireGuardTab.h
     src/tools/vpn/WireGuardTab.cpp
+    src/tools/vpn/VpnGateTab.h
+    src/tools/vpn/VpnGateTab.cpp
+    src/tools/vpn/ConnectivityTab.h
+    src/tools/vpn/ConnectivityTab.cpp
     src/tools/vpn/VpnControlWindow.h
     src/tools/vpn/VpnControlWindow.cpp
 )
