@@ -409,6 +409,13 @@ target_link_libraries(vpn_wintun_real_check PRIVATE vpn_core)
 add_executable(vpn_direct_real_probe EXCLUDE_FROM_ALL tests/vpn_direct_real_probe.cpp)
 target_link_libraries(vpn_direct_real_probe PRIVATE vpn_core)
 
+# ---- KIỂM TRA TAY giao diện: chụp ảnh PNG mọi tab của các cửa sổ công cụ trên nền offscreen (không hiện lên
+# màn hình), dữ liệu ở thư mục tạm: cmake --build build --target ui_snapshot ----
+add_executable(ui_snapshot EXCLUDE_FROM_ALL tests/ui_snapshot.cpp src/core/ToolManager.cpp)
+target_include_directories(ui_snapshot PRIVATE src tests ${CMAKE_BINARY_DIR}/generated)
+target_link_libraries(ui_snapshot PRIVATE qr_ui wifi_ui connect_ui diskcleanup_ui android_ui security_ui downloader_ui vpn_ui
+                      update_core input_core core_shared ui_widgets Qt6::Widgets)
+
 # ---- KIỂM TRA TAY (không phải test tự động - KẾT NỐI VPN THẬT): VPN Gate qua SSTP bằng đúng code của tab
 # "Đổi IP theo quốc gia", đo IP trước/sau rồi ngắt + xóa hồ sơ tạm. Chỉ chạy tay khi cần xác nhận trên máy thật:
 # cmake --build build --target vpn_gate_sstp_real_check ----

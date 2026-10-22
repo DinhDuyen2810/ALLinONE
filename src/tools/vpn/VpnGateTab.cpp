@@ -108,32 +108,13 @@ void VpnGateTab::buildUi()
     root->setSpacing(10);
 
     auto* hint = new QLabel(
-        "Kết nối tới máy chủ CÔNG CỘNG MIỄN PHÍ của VPN Gate (dự án nghiên cứu của ĐH Tsukuba, Nhật Bản) để "
-        "đổi IP ra quốc gia bạn chọn. Đây là relay do tình nguyện viên chia sẻ: IP đổi theo thời gian, tốc độ/"
-        "ổn định KHÔNG được bảo đảm, bạn tự chịu trách nhiệm khi dùng. Kết nối bằng VPN tích hợp sẵn của "
-        "Windows (mặc định SSTP qua cổng 443 - không cần cài thêm gì, không cần quyền Administrator). Không phải "
-        "máy chủ nào cũng bật đủ giao thức - nếu lỗi hãy thử máy chủ khác.",
+        "Đổi IP ra quốc gia khác qua máy chủ CÔNG CỘNG MIỄN PHÍ của VPN Gate (dự án ĐH Tsukuba, Nhật Bản) - relay "
+        "do tình nguyện viên chia sẻ, tốc độ/độ ổn định không được bảo đảm, bạn tự chịu trách nhiệm khi dùng. Kết nối "
+        "bằng VPN có sẵn của Windows (mặc định SSTP qua cổng 443) - không cần cài thêm gì, không cần quyền Administrator.",
         this);
     hint->setWordWrap(true);
     hint->setStyleSheet(VpnUi::bannerStyle("warn"));
     root->addWidget(hint);
-
-    // Sửa lỗi L2TP sau NAT (AssumeUDPEncapsulationContextOnSendRule) - nguyên nhân phổ biến khiến L2TP tới
-    // máy chủ công cộng (thường nằm sau NAT) thất bại trên Windows. Nút này có quyền Admin đặt khóa registry
-    // Microsoft tài liệu hóa, rồi cần khởi động lại máy.
-    auto* natRow = new QHBoxLayout();
-    auto* natHint = new QLabel("Chỉ cho cách L2TP/IPsec - nếu hay báo lỗi \"handle/khởi tạo\": máy chủ công cộng thường nằm sau NAT -", this);
-    natHint->setStyleSheet("color: #57606a; font-size: 11px;");
-    natHint->setWordWrap(true);
-    natRow->addWidget(natHint, 1);
-    m_natFixBtn = new QPushButton("🔧 Sửa lỗi L2TP sau NAT (Admin)", this);
-    m_natFixBtn->setStyleSheet(VpnUi::buttonStyle());
-    m_natFixBtn->setCursor(Qt::PointingHandCursor);
-    m_natFixBtn->setToolTip("Đặt khóa registry AssumeUDPEncapsulationContextOnSendRule=2 (Microsoft tài liệu hóa) để "
-                            "L2TP/IPsec kết nối được tới máy chủ nằm sau NAT. Cần quyền Administrator và KHỞI ĐỘNG LẠI máy.");
-    connect(m_natFixBtn, &QPushButton::clicked, this, &VpnGateTab::onNatFixClicked);
-    natRow->addWidget(m_natFixBtn);
-    root->addLayout(natRow);
 
     // ---- Vị trí hiện tại (theo IP) ----
     auto* locGroup = new QGroupBox("Vị trí hiện tại (theo IP)", this);
@@ -157,60 +138,90 @@ void VpnGateTab::buildUi()
     locLayout->addWidget(m_refreshLocationBtn);
     root->addWidget(locGroup);
 
-    // ---- Hàng điều khiển: tải danh sách + lọc quốc gia + kết nối/ngắt ----
-    auto* topRow = new QHBoxLayout();
+    // ---- Hàng 1 - lọc: quốc gia (giãn) + cách kết nối (vừa chữ) + tải thêm máy chủ ----
+    // Trước đây mọi điều khiển dồn trên MỘT hàng: ở cửa sổ 820-1000px các nút/ô bị cắt chữ ("Tải thêm máy c",
+    // "Ngắt kết nố", "SSTP - cổng 443 (k") - nay tách 2 hàng, nút luôn đủ chữ.
+    auto* filterRow = new QHBoxLayout();
+    filterRow->addWidget(new QLabel("Quốc gia:", this));
+    m_countryFilter = new QComboBox(this);
+    m_countryFilter->setStyleSheet(VpnUi::inputStyle());
+    m_countryFilter->setMinimumWidth(180);
+    m_countryFilter->addItem("Tất cả quốc gia");
+    connect(m_countryFilter, &QComboBox::currentIndexChanged, this, &VpnGateTab::onCountryFilterChanged);
+    filterRow->addWidget(m_countryFilter, 1);
+    filterRow->addSpacing(8);
+    filterRow->addWidget(new QLabel("Cách kết nối:", this));
+    m_methodCombo = new QComboBox(this);
+    m_methodCombo->setStyleSheet(VpnUi::inputStyle());
+    m_methodCombo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    // SSTP (TLS/443 tới <HostName>.opengw.net) không đụng tầng IPsec nên chạy được cả khi L2TP native của
+    // Windows hỏng/bị chặn (đã xác nhận thật: L2TP lỗi 791 nhưng SSTP đổi được IP trên cùng máy) - mặc định.
+    m_methodCombo->addItem("SSTP (cổng 443, khuyến nghị)", "sstp");
+    m_methodCombo->addItem("L2TP/IPsec", "l2tp");
+    // Đệm của stylesheet không được tính hết vào AdjustToContents - chừa thêm để chữ dài nhất không sát/cắt mép.
+    m_methodCombo->setMinimumWidth(m_methodCombo->fontMetrics().horizontalAdvance(m_methodCombo->itemText(0)) + 40);
+    m_methodCombo->setToolTip("SSTP: kết nối TLS qua cổng 443 tới tên miền <máy chủ>.opengw.net - vượt được mạng chặn L2TP.\n"
+                              "L2TP/IPsec: qua UDP 500/4500/1701 tới IP máy chủ.");
+    filterRow->addWidget(m_methodCombo);
+    filterRow->addSpacing(8);
     m_fetchBtn = new QPushButton("🔄 Tải thêm máy chủ", this);
     m_fetchBtn->setStyleSheet(VpnUi::buttonStyle());
     m_fetchBtn->setCursor(Qt::PointingHandCursor);
     connect(m_fetchBtn, &QPushButton::clicked, this, &VpnGateTab::onFetchClicked);
-    topRow->addWidget(m_fetchBtn);
+    filterRow->addWidget(m_fetchBtn);
+    root->addLayout(filterRow);
 
-    auto* filterLabel = new QLabel("Quốc gia:", this);
-    topRow->addWidget(filterLabel);
-    m_countryFilter = new QComboBox(this);
-    m_countryFilter->setStyleSheet(VpnUi::inputStyle());
-    m_countryFilter->setMinimumWidth(220);
-    m_countryFilter->addItem("Tất cả quốc gia");
-    connect(m_countryFilter, &QComboBox::currentIndexChanged, this, &VpnGateTab::onCountryFilterChanged);
-    topRow->addWidget(m_countryFilter, 1);
+    // ---- Sửa lỗi L2TP sau NAT: CHỈ hiện khi chọn L2TP (SSTP không cần) ----
+    // AssumeUDPEncapsulationContextOnSendRule - nguyên nhân phổ biến khiến L2TP tới máy chủ sau NAT thất bại trên
+    // Windows. Nút đặt khóa registry Microsoft tài liệu hóa (cần quyền Admin) rồi cần khởi động lại máy.
+    m_natRow = new QWidget(this);
+    auto* natRow = new QHBoxLayout(m_natRow);
+    natRow->setContentsMargins(0, 0, 0, 0);
+    auto* natHint = new QLabel("L2TP hay báo lỗi \"handle/khởi tạo\"? Máy chủ công cộng thường nằm sau NAT:", m_natRow);
+    natHint->setStyleSheet("color: #57606a; font-size: 12px;");
+    natHint->setWordWrap(true);
+    natRow->addWidget(natHint, 1);
+    m_natFixBtn = new QPushButton("🔧 Sửa lỗi L2TP sau NAT (Admin)", m_natRow);
+    m_natFixBtn->setStyleSheet(VpnUi::buttonStyle());
+    m_natFixBtn->setCursor(Qt::PointingHandCursor);
+    m_natFixBtn->setToolTip("Đặt khóa registry AssumeUDPEncapsulationContextOnSendRule=2 (Microsoft tài liệu hóa) để "
+                            "L2TP/IPsec kết nối được tới máy chủ nằm sau NAT. Cần quyền Administrator và KHỞI ĐỘNG LẠI máy.");
+    connect(m_natFixBtn, &QPushButton::clicked, this, &VpnGateTab::onNatFixClicked);
+    natRow->addWidget(m_natFixBtn);
+    m_natRow->setVisible(false);
+    root->addWidget(m_natRow);
+    connect(m_methodCombo, &QComboBox::currentIndexChanged, this,
+            [this]() { m_natRow->setVisible(m_methodCombo->currentData().toString() == "l2tp"); });
 
-    auto* methodLabel = new QLabel("Cách kết nối:", this);
-    topRow->addWidget(methodLabel);
-    m_methodCombo = new QComboBox(this);
-    m_methodCombo->setStyleSheet(VpnUi::inputStyle());
-    // SSTP (TLS/443 tới <HostName>.opengw.net) không đụng tầng IPsec nên chạy được cả khi L2TP native của
-    // Windows hỏng/bị chặn (đã xác nhận thật: L2TP lỗi 791 nhưng SSTP đổi được IP trên cùng máy) - mặc định.
-    m_methodCombo->addItem("SSTP - cổng 443 (khuyến nghị)", "sstp");
-    m_methodCombo->addItem("L2TP/IPsec", "l2tp");
-    m_methodCombo->setToolTip("SSTP: kết nối TLS qua cổng 443 tới tên miền <máy chủ>.opengw.net - vượt được mạng chặn L2TP.\n"
-                              "L2TP/IPsec: qua UDP 500/4500/1701 tới IP máy chủ.");
-    topRow->addWidget(m_methodCombo);
+    // ---- Hàng 2 - hành động: số máy chủ (giãn) + kiểm tra máy chủ + kết nối/ngắt ----
+    auto* actionRow = new QHBoxLayout();
+    m_countLabel = new QLabel("Bấm \"Tải thêm máy chủ\" để lấy danh sách máy chủ công cộng mới nhất.", this);
+    m_countLabel->setStyleSheet("color: #57606a; font-size: 12px;");
+    m_countLabel->setWordWrap(true);
+    actionRow->addWidget(m_countLabel, 1);
+
+    m_checkBtn = new QPushButton("🔎 Kiểm tra máy chủ", this);
+    m_checkBtn->setStyleSheet(VpnUi::buttonStyle());
+    m_checkBtn->setCursor(Qt::PointingHandCursor);
+    m_checkBtn->setToolTip("Kiểm tra máy chủ đang chọn có còn \"chạm\" được không (TCP 443) trước khi kết nối VPN.");
+    connect(m_checkBtn, &QPushButton::clicked, this, &VpnGateTab::onCheckConnectivityClicked);
+    actionRow->addWidget(m_checkBtn);
 
     m_connectBtn = new QPushButton("🔌 Kết nối", this);
     m_connectBtn->setStyleSheet(VpnUi::primaryButtonStyle());
     m_connectBtn->setCursor(Qt::PointingHandCursor);
+    m_connectBtn->setMinimumWidth(130);
     connect(m_connectBtn, &QPushButton::clicked, this, &VpnGateTab::onConnectClicked);
-    topRow->addWidget(m_connectBtn);
+    actionRow->addWidget(m_connectBtn);
 
     m_disconnectBtn = new QPushButton("⛔ Ngắt kết nối", this);
     m_disconnectBtn->setStyleSheet(VpnUi::dangerButtonStyle());
     m_disconnectBtn->setCursor(Qt::PointingHandCursor);
+    m_disconnectBtn->setMinimumWidth(130);
     m_disconnectBtn->setVisible(false);
     connect(m_disconnectBtn, &QPushButton::clicked, this, &VpnGateTab::onDisconnectClicked);
-    topRow->addWidget(m_disconnectBtn);
-
-    m_checkBtn = new QPushButton("🔎 Kiểm tra kết nối", this);
-    m_checkBtn->setStyleSheet(VpnUi::buttonStyle());
-    m_checkBtn->setCursor(Qt::PointingHandCursor);
-    m_checkBtn->setToolTip("Kiểm tra máy chủ đang chọn có còn \"chạm\" được không (TCP) trước khi kết nối VPN.");
-    connect(m_checkBtn, &QPushButton::clicked, this, &VpnGateTab::onCheckConnectivityClicked);
-    topRow->addWidget(m_checkBtn);
-    root->addLayout(topRow);
-
-    m_countLabel = new QLabel("Bấm \"Tải danh sách máy chủ\" để lấy danh sách máy chủ công cộng mới nhất.", this);
-    m_countLabel->setStyleSheet("color: #57606a; font-size: 12px;");
-    m_countLabel->setWordWrap(true);
-    root->addWidget(m_countLabel);
+    actionRow->addWidget(m_disconnectBtn);
+    root->addLayout(actionRow);
 
     // ---- Bảng máy chủ ----
     m_table = new QTableWidget(0, 5, this);
@@ -348,6 +359,7 @@ void VpnGateTab::updateButtons()
 
     m_fetchBtn->setEnabled(!busy && !connected);
     m_countryFilter->setEnabled(!busy);
+    m_methodCombo->setEnabled(!busy && !connected); // đổi giao thức giữa chừng phiên đang nối là vô nghĩa
     m_table->setEnabled(!busy);
     m_connectBtn->setVisible(!connected);
     m_connectBtn->setEnabled(!busy && !connected && s != nullptr);

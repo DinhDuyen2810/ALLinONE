@@ -30,10 +30,9 @@ void ConnectivityTab::buildUi()
     root->setSpacing(10);
 
     auto* hint = new QLabel(
-        "Kiểm tra xem có \"chạm\" được tới một máy chủ hay không bằng cách thử mở một kết nối TCP, kèm độ "
-        "trễ. Dùng để lọc nhanh máy chủ đã chết trước khi kết nối VPN. Lưu ý: VPN L2TP chạy trên UDP nên "
-        "phép thử TCP này chỉ là CHỈ BÁO máy chủ còn sống (thường thử cổng 443 - nhiều máy chủ VPN Gate có "
-        "bật), không khẳng định chắc chắn L2TP sẽ kết nối được.",
+        "Kiểm tra có \"chạm\" được tới một máy chủ không bằng cách mở thử một kết nối TCP, kèm độ trễ - để lọc "
+        "nhanh máy chủ đã chết trước khi kết nối. Cổng 443 chạm được nghĩa là máy chủ còn sống và SSTP có thể dùng; "
+        "L2TP chạy trên UDP nên phép thử này không khẳng định chắc L2TP kết nối được.",
         this);
     hint->setWordWrap(true);
     hint->setStyleSheet(VpnUi::bannerStyle("info"));
@@ -52,7 +51,11 @@ void ConnectivityTab::buildUi()
     m_portSpin->setStyleSheet(VpnUi::inputStyle());
     m_portSpin->setRange(1, 65535);
     m_portSpin->setValue(443);
-    m_portSpin->setFixedWidth(90);
+    // Bỏ mũi tên tăng/giảm: stylesheet bo góc + đệm của ô nhập làm vỡ cụm mũi tên (chỉ còn một vạch dọc - thấy
+    // khi rà giao diện bằng ảnh chụp). Cổng là số gõ tay, không cần bấm tăng/giảm.
+    m_portSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
+    m_portSpin->setAlignment(Qt::AlignCenter);
+    m_portSpin->setFixedWidth(80);
     row->addWidget(m_portSpin);
 
     m_checkBtn = new QPushButton("🔎 Kiểm tra", this);

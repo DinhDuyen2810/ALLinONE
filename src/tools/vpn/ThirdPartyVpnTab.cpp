@@ -140,10 +140,10 @@ void ThirdPartyVpnTab::buildUi()
     root->setSpacing(10);
 
     auto* hint = new QLabel(
-        "Phát hiện các kết nối VPN đã cấu hình sẵn trên máy (FortiClient, GlobalProtect, OpenVPN, Cisco Secure Client). "
-        "Hồ sơ FortiClient SSL-VPN và GlobalProtect có thể KẾT NỐI TRỰC TIẾP ngay tại đây (nhập tài khoản do cơ quan "
-        "cấp - mật khẩu chỉ dùng cho phiên này, không lưu; cần bấm Yes ở hộp thoại Administrator để tạo adapter mạng). "
-        "Ứng dụng KHÔNG đọc/giải mã mật khẩu đã lưu trong các phần mềm đó. Hồ sơ khác: \"Mở phần mềm\" để kết nối.",
+        "Các kết nối VPN đã cấu hình sẵn trên máy (FortiClient, GlobalProtect, OpenVPN, Cisco). Hồ sơ FortiClient "
+        "SSL-VPN và GlobalProtect KẾT NỐI TRỰC TIẾP được ngay tại đây bằng tài khoản cơ quan (mật khẩu không lưu; cần "
+        "bấm Yes ở hộp thoại Administrator). Hồ sơ khác: bấm \"Mở phần mềm\". Ứng dụng không đọc mật khẩu đã lưu của "
+        "các phần mềm đó.",
         this);
     hint->setWordWrap(true);
     hint->setStyleSheet(VpnUi::bannerStyle("info"));

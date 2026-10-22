@@ -190,7 +190,10 @@ void DevicesTab::buildUi()
     connect(m_connectBtn, &QPushButton::clicked, this, &DevicesTab::onConnectClicked);
     topRow->addWidget(m_connectBtn);
 
-    m_switchWirelessBtn = new QPushButton("📶 Chuyển thiết bị đã chọn sang không dây", this);
+    // Nhãn ngắn: hàng có 5 nút, nhãn cũ "Chuyển thiết bị đã chọn sang không dây" bị cắt chữ ngay ở cỡ cửa sổ mặc
+    // định (thấy khi rà giao diện bằng ảnh chụp) - nghĩa đầy đủ nằm ở tooltip.
+    m_switchWirelessBtn = new QPushButton("📶 Chuyển sang không dây", this);
+    m_switchWirelessBtn->setToolTip("Chuyển thiết bị đang chọn (đang cắm USB) sang kết nối không dây qua Wi-Fi - sau đó có thể rút cáp.");
     m_switchWirelessBtn->setStyleSheet(AndroidUi::buttonStyle());
     m_switchWirelessBtn->setCursor(Qt::PointingHandCursor);
     m_switchWirelessBtn->setEnabled(false);
@@ -211,6 +214,7 @@ void DevicesTab::buildUi()
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_table->setShowGrid(false);
     m_table->setStyleSheet(AndroidUi::tableStyle());
+    m_table->setMinimumHeight(140); // đủ tiêu đề + ~3 thiết bị (trước đây bị nhóm tùy chọn ép còn ~2 dòng)
     connect(m_table, &QTableWidget::itemSelectionChanged, this, &DevicesTab::onRowSelectionChanged);
     root->addWidget(m_table, 1);
 

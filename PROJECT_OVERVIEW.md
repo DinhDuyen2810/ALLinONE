@@ -2795,6 +2795,27 @@ fortinet.c/ppp.c/gpst.c/auth-globalprotect.c, KHÔNG chép mã, tự viết lạ
 - (Đã kiểm chứng sau: lớp adapter wintun + định tuyến chạy Admin - 10/10, xem trên.) Còn lại DUY NHẤT bước đăng nhập
   bằng tài khoản cơ quan thật rồi chạy đường hầm thật - phải do người dùng nhập tài khoản trong ứng dụng.
 
+## 4zr. Lấy IP chậm sau khi nối VPN + rà giao diện bằng ảnh chụp thật (2026-10-22, v1.19.32)
+
+**Lấy IP chậm/"Operation canceled"** (người dùng gửi ảnh): `PublicIpChecker` của tab giữ một `QNetworkAccessManager`
+suốt đời -> kết nối HTTPS keep-alive tới ipwho.is mở TRƯỚC khi nối VPN được dùng lại SAU khi tuyến đổi; kết nối đó
+gắn IP của card Wi-Fi nên gói bị rơi, yêu cầu treo đủ `kTimeoutMs` (8 s) rồi bị hủy. Tái hiện bằng
+`vpn_gate_sstp_real_check` sửa lại để dùng MỘT checker cho trước/sau (đúng như tab): 7997 ms rồi "Operation
+canceled". Sửa: `clearConnectionCache()` trước mỗi lần tra cứu + thử lại 1 lần (kết nối mới, sau 1 s) khi lỗi mạng
+(`setEndpointForTest` đặt 0 lần thử lại để test giữ số yêu cầu xác định). Đo lại: 1093 ms, đúng IP qua VPN.
+
+**Rà giao diện** - công cụ kiểm tra tay `ui_snapshot` (target `EXCLUDE_FROM_ALL`): dựng 8 cửa sổ công cụ, duyệt mọi
+tab, `grab()` ra PNG ở cỡ mặc định + 820x640. Mặc định nền offscreen (kiểu Fusion + font Windows qua
+`QT_QPA_FONTDIR`); `UI_SNAPSHOT_NATIVE=1` dùng nền Windows THẬT với `WA_DontShowOnScreen` - vẽ đúng kiểu gốc
+(windowsvista: ô tích, thanh trượt) mà không hiện lên màn hình. Bài học: offscreen + kiểu gốc KHÔNG vẽ được ô tích
+(dễ kết luận nhầm "mất ô tích"); kết luận bố cục phải dựa trên ảnh kiểu gốc. Lỗi thật đã sửa: hàng điều khiển tab
+"Đổi IP" cắt chữ (tách 2 hàng, hàng NAT chỉ hiện với L2TP), ô Cổng vỡ mũi tên (QSpinBox + stylesheet bo góc -> bỏ
+mũi tên), nút Android cắt chữ, nhóm ghép đôi Connect bị ép bẹp (vùng cuộn + chiều cao tối thiểu).
+
+**Nhật ký chẩn đoán kết nối trực tiếp**: `DirectVpnSession` ghi các mốc vào `app.log` (không bí mật). Phát hiện khi
+người dùng báo "đã kết nối" nhưng hệ thống không có tiến trình phụ/adapter - lỗi giai đoạn trước tiến trình phụ trước
+đây không để lại dấu vết nào.
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
@@ -2976,6 +2997,7 @@ Quy tắc đứng nằm ở `CLAUDE.md` (gốc dự án). Tóm tắt - mỗi l�
 | 2026-10-22 | VPN: quét thêm tunnel FortiClient IPsec + chẩn đoán lỗi VPN Gate (v1.19.29) | (a) Tab "VPN đã cài sẵn" bỏ sót tunnel IPsec của FortiClient (vd VPN_CVTLT): tunnel IPsec nằm ở `IPSec\Tunnels\<tên>` với gateway ở subkey `<tên>\P1\RemoteGW`, khác SSL-VPN (`Sslvpn\Tunnels` giá trị `Server`). Đã đọc cả hai + đúng khóa HKCU, dedup ưu tiên bản có địa chỉ. Xác nhận thật: quét ra đủ 4 hồ sơ. (b) Chẩn đoán thật lỗi VPN Gate: NAT-T đã =2, IKEEXT/PolicyAgent Running, nhưng L2TP tới 5 máy chủ đều lỗi 791 -> L2TP native hỏng trên máy này (nghi FortiClient IPsec xung đột/ISP chặn), KHÔNG phải lỗi app. OpenVPN (IP:443) là lối thoát - cần đóng gói openvpn.exe (giai đoạn 2, sẽ hỏi trước). `vpn_tests` 200/0, `vpn_ui_tests` 7/0. Chỉ push code, KHÔNG tag/Release. |
 | 2026-10-22 | VPN: kết nối VPN Gate bằng OpenVPN (đóng gói openvpn.exe + wintun.dll) (v1.19.30) | Tiếp v1.19.29 (L2TP native hỏng): thêm cách kết nối OpenVPN cho tab "Đổi IP theo quốc gia" (ô chọn OpenVPN/L2TP). `OpenVpnRunner` (vpn_core) chạy `openvpn.exe` đóng gói qua UAC, điều khiển qua management interface (127.0.0.1 + mật khẩu ngẫu nhiên): đọc `>STATE...CONNECTED`, gửi `signal SIGTERM` để ngắt. `buildConfig()` (thuần, test được) dựng `.ovpn` chạy nền: bỏ auth-user-pass/management/dev-node/windows-driver/block-outside-dns, thêm management-hold + windows-driver wintun + auth-nocache; CHỈ thêm lại auth-user-pass khi gốc có (VPN Gate xác thực bằng `<cert>/<key>` nhúng, không user/pass - xác minh trên .ovpn THẬT). `VpnGateServer.ovpnConfig` lấy từ cột Base64 cuối của API (không lưu cache). Đóng cửa sổ khi đang bật OpenVPN sẽ tự ngắt. Đóng gói `vendor/openvpn/` (không commit): openvpn.exe + OpenSSL DLLs từ build.openvpn.net, wintun.dll từ wintun.net - xác minh bằng **chữ ký Authenticode** (OpenVPN Inc./Microsoft/WireGuard LLC; Windows-native, không phụ thuộc gpg vốn hỏng trên CI do GNUPGHOME kiểu Windows); `build_app.bat`/CI/`scripts/ci_fetch_vendor.ps1` tự tải+chép. `vpn_tests` 223/0 (+23). CHƯA kiểm chứng đầu-cuối đổi IP (cần 1 lần bấm Yes UAC - chưa tự bấm thay được); đã xác minh chữ ký nhị phân + dựng cấu hình đúng .ovpn thật + build/đóng gói đủ. Chỉ push code, KHÔNG tag/Release. **(Đã bỏ ở v1.19.31.)** |
 | 2026-10-22 | VPN: bỏ OpenVPN -> SSTP; sửa lỗi gốc quay số RAS; kết nối trực tiếp FortiGate/GlobalProtect (v1.19.31) | Mục 4zq. OpenVPN treo vì lời nhắc `ENTER PASSWORD:` không bị xóa khỏi bộ đệm (không gửi `hold release`) + rò `openvpn.exe` nâng quyền khi hết giờ -> gỡ hẳn. VPN Gate nối SSTP (RAS gốc, `<HostName>.opengw.net` khớp chứng chỉ Let's Encrypt). Lỗi gốc `VpnConnector`: mã 6 TẠM THỜI của `RasGetConnectStatusW` ở +16ms bị coi là thất bại -> mọi lần quay số qua app hỏng (cả "Lỗi 6" người dùng gặp từ đầu); `dwNotifierType` sửa lại 1 (v1.19.27 đổi nhầm 2). Đã đổi IP THẬT bằng code của app (VN -> Tokyo). Kết nối trực tiếp FortiGate SSL-VPN/GlobalProtect: client giao thức tự viết (PPP/LCP/IPCP, đăng nhập/OTP/cấu hình), adapter wintun.dll + iphlpapi, tiến trình phụ nâng quyền `--vpn-helper` (pipe + mã một lần, tự dọn khi pipe đóng), ghim vân tay chứng chỉ tự ký. `vpn_tests` 219/0, `vpn_ui_tests` 7/0, `vpn_direct_tests` 150/0 (mới; máy chủ FortiGate/GP giả đầu-cuối). Đã chạy thật: adapter wintun Admin 10/10, thăm dò 3/3 máy chủ thật (không đăng nhập). CHƯA kiểm chứng: đăng nhập + đường hầm bằng tài khoản cơ quan thật. Chỉ push code, KHÔNG tag/Release. |
+| 2026-10-22 | Lấy IP chậm sau khi nối VPN + rà giao diện bằng ảnh chụp thật (v1.19.32) | Mục 4zr. Kết nối HTTPS keep-alive cũ kẹt sau khi tuyến đổi -> 8 s rồi hủy; `clearConnectionCache()` + thử lại 1 lần -> 1093 ms. Công cụ `ui_snapshot` (offscreen hoặc kiểu gốc không hiện màn hình) rà 8 công cụ: sửa cắt chữ hàng điều khiển VPN Gate (2 hàng, NAT chỉ khi L2TP), ô Cổng, nút Android, nhóm ghép đôi Connect bị ép. Nhật ký chẩn đoán kết nối trực tiếp. vpn 219/7, vpn_direct 150, android 153/30, connect_ui 17. Chỉ push code, KHÔNG tag/Release. |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `

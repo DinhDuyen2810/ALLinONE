@@ -80,6 +80,9 @@ void DirectVpnSession::connectTo(const Request& req)
     m_req = req;
     m_connected = false;
     m_cert = PendingCert{};
+    // Nhật ký chẩn đoán: chỉ máy chủ + giao thức + tên đăng nhập - KHÔNG BAO GIỜ mật khẩu/OTP/cookie.
+    Logger::instance().info("VPN trực tiếp", QStringLiteral("Bắt đầu kết nối %1 tới %2 (tài khoản %3)")
+                                                 .arg(DirectVpn::protocolName(req.protocol), req.server, req.username));
     if (m_sock && m_verified)
     {
         sendJob(); // tiến trình phụ vẫn còn (vd thử lại sau khi tin cậy chứng chỉ) - không cần UAC lại
@@ -88,6 +91,7 @@ void DirectVpnSession::connectTo(const Request& req)
     QString err;
     if (!launchHelper(&err))
     {
+        Logger::instance().warning("VPN trực tiếp", "Không khởi chạy được tiến trình kết nối: " + err);
         wipePassword();
         emit ended(false, err);
         return;
@@ -222,6 +226,8 @@ void DirectVpnSession::onReadyRead()
             }
             m_verified = true;
             m_launchTimeout->stop();
+            Logger::instance().info("VPN trực tiếp", QStringLiteral("Tiến trình phụ đã nối kênh điều khiển (nâng quyền: %1)")
+                                                         .arg(m.value("elevated").toBool() ? "có" : "KHÔNG"));
             if (!m.value("elevated").toBool())
                 Logger::instance().warning("VPN trực tiếp", "Tiến trình phụ KHÔNG có quyền Administrator.");
             if (m_jobPending)
@@ -229,7 +235,10 @@ void DirectVpnSession::onReadyRead()
             continue;
         }
         if (t == QLatin1String("status"))
+        {
+            Logger::instance().info("VPN trực tiếp", m.value("text").toString());
             emit statusChanged(m.value("text").toString());
+        }
         else if (t == QLatin1String("log"))
             Logger::instance().info("VPN trực tiếp", m.value("text").toString());
         else if (t == QLatin1String("otp"))
@@ -238,11 +247,14 @@ void DirectVpnSession::onReadyRead()
         {
             m_cert = PendingCert{m.value("host").toString(), m.value("sha256").toString(), m.value("subject").toString(),
                                  m.value("issuer").toString(), true};
+            Logger::instance().info("VPN trực tiếp", QStringLiteral("Chứng chỉ %1 chưa được tin cậy (SHA-256 %2) - hỏi người dùng")
+                                                         .arg(m_cert.host, m_cert.sha256));
         }
         else if (t == QLatin1String("up"))
         {
             m_connected = true;
             wipePassword();
+            Logger::instance().info("VPN trực tiếp", "ĐÃ KẾT NỐI: " + m.value("summary").toString());
             emit connected(m.value("summary").toString());
         }
         else if (t == QLatin1String("end"))
@@ -315,6 +327,8 @@ void DirectVpnSession::finish(bool wasConnected, const QString& message)
 {
     if (!m_active)
         return;
+    Logger::instance().info("VPN trực tiếp", QStringLiteral("Kết thúc (%1): %2")
+                                                 .arg(wasConnected ? "đã từng kết nối" : "chưa kết nối", message));
     m_active = false;
     m_connected = false;
     m_verified = m_sock != nullptr && m_verified;

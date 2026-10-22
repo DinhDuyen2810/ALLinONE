@@ -12,6 +12,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QTableWidget>
@@ -38,7 +39,22 @@ PairingTab::PairingTab(ConnectSessionController* controller, QWidget* parent)
 
 void PairingTab::buildUi()
 {
-    auto* root = new QVBoxLayout(this);
+    // Nội dung đặt trong vùng CUỘN: ở cỡ cửa sổ mặc định (760x680) hai nhóm cần cao hơn chỗ trống, và trước đây
+    // Qt ép bẹp nhóm "Ghép đôi vào máy khác" - ba ô Địa chỉ/Cổng/Mã chồng lên nhau, bảng máy LAN chỉ còn tiêu đề
+    // (thấy khi rà giao diện bằng ảnh chụp kiểu gốc Windows). Thiếu chỗ thì cuộn, không bao giờ chồng chữ.
+    auto* outer = new QVBoxLayout(this);
+    outer->setContentsMargins(0, 0, 0, 0);
+    auto* scroll = new QScrollArea(this);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setStyleSheet("QScrollArea { background: transparent; border: none; }");
+    auto* content = new QWidget(scroll);
+    content->setObjectName("pairingContent");
+    content->setStyleSheet("QWidget#pairingContent { background: transparent; }");
+    scroll->setWidget(content);
+    outer->addWidget(scroll);
+
+    auto* root = new QVBoxLayout(content);
     root->setContentsMargins(10, 10, 10, 10);
     root->setSpacing(12);
 
@@ -105,6 +121,7 @@ void PairingTab::buildUi()
     m_discoveredTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_discoveredTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_discoveredTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_discoveredTable->setMinimumHeight(96); // tiêu đề + ~2 máy - không bao giờ bị ép còn mỗi tiêu đề
     m_discoveredTable->setMaximumHeight(120);
     m_discoveredTable->setStyleSheet(ConnectUi::tableStyle());
     connect(m_discoveredTable, &QTableWidget::itemSelectionChanged, this, &PairingTab::onDiscoveredSelectionChanged);

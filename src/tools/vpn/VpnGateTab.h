@@ -82,6 +82,7 @@ private:
     QPushButton* m_disconnectBtn{nullptr};
     QPushButton* m_checkBtn{nullptr};
     QPushButton* m_natFixBtn{nullptr};
+    QWidget* m_natRow{nullptr}; // hàng "Sửa lỗi L2TP sau NAT" - chỉ hiện khi chọn L2TP
     QLabel* m_statusLabel{nullptr};
     QLabel* m_countLabel{nullptr};
 

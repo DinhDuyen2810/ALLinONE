@@ -49,7 +49,11 @@ signals:
 private:
     QNetworkAccessManager* m_nam{nullptr};
     /// QPointer: tự về null nếu phản hồi bị hủy ở nơi khác - không bao giờ so/gọi qua một địa chỉ đã giải phóng.
+    void startRequest(int attempt);
+
     QPointer<QNetworkReply> m_activeReply;
     QUrl m_url;
     int m_timeoutMs{0};
+    /// Số lần thử lại khi lỗi mạng (mặc định 1; test đặt 0 để giữ số yêu cầu xác định).
+    int m_retries{1};
 };

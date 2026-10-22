@@ -122,7 +122,7 @@ void ConnectWindow::buildUi()
 
     m_logView = new QPlainTextEdit(this);
     m_logView->setReadOnly(true);
-    m_logView->setMaximumHeight(110);
+    m_logView->setMaximumHeight(84); // ~5 dòng - nhường chỗ cho tab Ghép đôi ở cỡ cửa sổ mặc định
     m_logView->setStyleSheet(
         "QPlainTextEdit { background-color: #ffffff; color: #57606a; border: 1px solid #d0d7de; "
         "border-radius: 8px; font-family: 'Consolas', monospace; font-size: 11px; padding: 6px; }");

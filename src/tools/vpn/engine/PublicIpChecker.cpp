@@ -28,12 +28,23 @@ void PublicIpChecker::setEndpointForTest(const QUrl& url, int timeoutMs)
 {
     m_url = url;
     m_timeoutMs = timeoutMs;
+    m_retries = 0;
 }
 
 void PublicIpChecker::check()
 {
     if (m_activeReply)
         return; // đã có yêu cầu đang chạy
+    startRequest(0);
+}
+
+void PublicIpChecker::startRequest(int attempt)
+{
+    // BỎ các kết nối HTTPS đang giữ (keep-alive) trước mỗi lần tra cứu: ngay sau khi bật/tắt VPN, tuyến mạng đã
+    // đổi nhưng kết nối cũ vẫn gắn với IP của card mạng trước đó -> gói tin bị rơi, yêu cầu treo đủ 8 giây rồi
+    // "Operation canceled" (đã TÁI HIỆN thật: SSTP tới VPN Gate, checker dùng lại -> 7997 ms rồi hủy; người
+    // dùng thấy đúng lỗi này sau khi nối VPN). Kết nối mới luôn đi theo tuyến hiện tại.
+    m_nam->clearConnectionCache();
 
     QNetworkRequest req(m_url);
     req.setHeader(QNetworkRequest::UserAgentHeader, "OneForAll-VPN-Check/1.0");
@@ -49,7 +60,7 @@ void PublicIpChecker::check()
     connect(timeout, &QTimer::timeout, thisReply, &QNetworkReply::abort);
     timeout->start(m_timeoutMs);
 
-    connect(thisReply, &QNetworkReply::finished, this, [this, thisReply]() {
+    connect(thisReply, &QNetworkReply::finished, this, [this, thisReply, attempt]() {
         thisReply->deleteLater();
         if (m_activeReply != thisReply)
             return; // reply cũ đã bị thay bởi một yêu cầu mới hơn - bỏ qua
@@ -57,6 +68,15 @@ void PublicIpChecker::check()
 
         if (thisReply->error() != QNetworkReply::NoError)
         {
+            // Lỗi mạng ngay sau khi đổi VPN (tuyến/DNS chưa ổn định): thử lại MỘT lần với kết nối mới sau 1 giây.
+            if (attempt < m_retries && thisReply->error() != QNetworkReply::ContentNotFoundError)
+            {
+                QTimer::singleShot(1000, this, [this, attempt]() {
+                    if (!m_activeReply)
+                        startRequest(attempt + 1);
+                });
+                return;
+            }
             emit errorOccurred("Không tra cứu được IP công khai: " + thisReply->errorString());
             return;
         }

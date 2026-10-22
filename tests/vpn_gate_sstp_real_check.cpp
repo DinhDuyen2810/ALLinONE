@@ -14,6 +14,7 @@
 #include "tools/vpn/model/VpnProfile.h"
 
 #include <QCoreApplication>
+#include <QElapsedTimer>
 #include <QEventLoop>
 #include <QTimer>
 
@@ -34,9 +35,15 @@ template <typename Setup> bool waitFor(int timeoutMs, Setup setup)
     return finished;
 }
 
-QString publicIp(QString* place = nullptr)
+// Dùng chung MỘT checker cho cả trước/sau khi nối (đúng như tab "Đổi IP theo quốc gia") - để tái hiện việc kết
+// nối HTTPS cũ được giữ lại (keep-alive) bị kẹt sau khi tuyến mạng đổi.
+PublicIpChecker* g_checker = nullptr;
+
+QString publicIp(QString* place = nullptr, qint64* elapsedMs = nullptr)
 {
-    PublicIpChecker checker;
+    PublicIpChecker& checker = *g_checker;
+    QElapsedTimer timer;
+    timer.start();
     QString ip;
     waitFor(25000, [&](auto done) {
         QObject::connect(&checker, &PublicIpChecker::result, [&, done](PublicIpInfo info) {
@@ -51,6 +58,9 @@ QString publicIp(QString* place = nullptr)
         });
         checker.check();
     });
+    QObject::disconnect(&checker, nullptr, nullptr, nullptr);
+    if (elapsedMs)
+        *elapsedMs = timer.elapsed();
     return ip;
 }
 
@@ -73,6 +83,8 @@ bool runConnector(VpnConnector& c, QString* message)
 int main(int argc, char** argv)
 {
     QCoreApplication app(argc, argv);
+    PublicIpChecker sharedChecker;
+    g_checker = &sharedChecker;
     const int maxTries = argc > 1 ? QString(argv[1]).toInt() : 5;
 
     QList<VpnGateServer> servers;
@@ -124,8 +136,9 @@ int main(int argc, char** argv)
         if (ok)
         {
             QString place;
-            const QString ipVpn = publicIp(&place);
-            std::printf("  IP qua VPN: %s (%s)\n", qPrintable(ipVpn), qPrintable(place));
+            qint64 ms = 0;
+            const QString ipVpn = publicIp(&place, &ms);
+            std::printf("  IP qua VPN: %s (%s) - mat %lld ms\n", qPrintable(ipVpn), qPrintable(place), static_cast<long long>(ms));
             std::printf("  => IP %s\n", (ipVpn != ipBefore && !ipVpn.startsWith("ERR")) ? "DA DOI (DAT)" : "KHONG DOI");
 
             VpnConnector disc;
