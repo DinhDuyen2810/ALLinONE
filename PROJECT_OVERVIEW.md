@@ -2606,6 +2606,41 @@ FortiClient/GlobalProtect/OpenVPN/Cisco (bố cục có thể đổi theo phiên
 không lỗi), và việc MỞ client + tham số `--connect` của OpenVPN hoạt động thật. Cần người dùng tự kiểm trên máy
 có cài các phần mềm đó.
 
+## 4zo. VPN: quét thêm tunnel FortiClient IPsec + chẩn đoán lỗi kết nối VPN Gate (2026-10-22, v1.19.29)
+
+Người dùng báo (kèm ảnh): (a) tab "VPN đã cài sẵn" QUÉT THIẾU hồ sơ - khay hệ thống FortiClient có `VPN_CVTLT`
+nhưng app không thấy; (b) kết nối VPN Gate vẫn lỗi dù đã bật "Sửa lỗi L2TP sau NAT" + khởi động lại.
+
+**Sửa (a) - quét thiếu tunnel FortiClient IPsec:** soi registry thật trên máy người dùng (FortiClient 7.4.3): các
+tunnel SSL-VPN nằm ở `...\FortiClient\Sslvpn\Tunnels\<tên>` (giá trị `Server`), nhưng tunnel **IPsec** nằm ở chỗ
+KHÁC - `...\FortiClient\IPSec\Tunnels\<tên>` với địa chỉ gateway trong SUBKEY `<tên>\P1` giá trị `RemoteGW`.
+Scanner cũ chỉ đọc Sslvpn nên bỏ sót mọi tunnel IPsec. Đã bổ sung: đọc cả `IPSec\Tunnels` (lấy `P1\RemoteGW`) và
+đúng khóa HKCU `...\FortiClient\Sslvpn\Tunnels`; dedup theo tên nhưng ƯU TIÊN bản CÓ địa chỉ (giá trị Server/
+RemoteGW thường chỉ nằm ở HKLM, HKCU chỉ giữ cờ hiển thị). **Xác nhận thật trên máy có FortiClient:** nay quét ra
+đủ `VPN_BDTTG` (103.221.228.37:10443), `VPN_VNU` (112.137.143.2:444), `VPN_CVTLT` (IPsec, 119.17.206.59),
+GlobalProtect - đủ 4 hồ sơ (trước chỉ 3, thiếu VPN_CVTLT).
+
+**Chẩn đoán (b) - vì sao VPN Gate vẫn lỗi** (thử THẬT trên máy người dùng, không đoán): khóa NAT-T đã = 2 thật
+(nút hoạt động đúng, chỉ chạy ẩn nên không thấy cửa sổ), dịch vụ IKEEXT/PolicyAgent đều Running. Nhưng quay số
+L2TP thật tới 5 máy chủ VPN Gate khác nhau đều **lỗi 791** ("security policy for the connection was not found"),
+kể cả khi đặt cấu hình IPsec tường minh (3DES/SHA1/DH2). Tức **L2TP/IPsec native của Windows hỏng trên máy này** -
+rất có thể do thành phần IPsec của FortiClient (máy có cài FortiClient với tunnel IPsec) xung đột với IPsec của
+Windows, hoặc ISP chặn. **SSTP** (TCP 443, không dùng tầng IPsec) bắt tay TLS tới máy chủ OK nhưng chứng chỉ là
+`*.opengw.net` nên phải kết nối bằng hostname `<id>.opengw.net` - hostname này KHÔNG có trong API iphone của VPN
+Gate (cả cấu hình .ovpn cũng chỉ ghi IP). **OpenVPN** kết nối bằng IP trên cổng 443 (chạm được) với chứng chỉ CA
+nhúng sẵn trong .ovpn - đây là lối thoát khả thi nhất, nhưng cần đóng gói `openvpn.exe` (giai đoạn 2, chưa làm).
+
+Kết luận (b): đây KHÔNG phải lỗi trong ứng dụng (app đã bật NAT-T đúng và nay báo đúng mã lỗi). Trên máy mà L2TP
+native bị hỏng/chặn, cần OpenVPN - sẽ hỏi người dùng trước khi thêm (thêm một nhị phân vendored + sửa CI, giống
+yt-dlp/scrcpy).
+
+**Kiểm thử:** `vpn_tests` 200/0 (scan() thật trên máy có FortiClient ra đủ 4 hồ sơ gồm VPN_CVTLT IPsec với địa chỉ
+đúng), `vpn_ui_tests` 7/0. Phần đọc registry là Win32 nên không unit-test được bằng dữ liệu giả - đã xác nhận TRỰC
+TIẾP trên máy thật.
+
+**CHƯA làm (chờ người dùng quyết):** đóng gói OpenVPN để kết nối VPN Gate thật (giai đoạn 2); kết nối THẲNG trong
+ứng dụng tới FortiClient/GlobalProtect (cần openfortivpn/OpenConnect + xử lý thông tin đăng nhập - giai đoạn 3).
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
@@ -2784,6 +2819,7 @@ Quy tắc đứng nằm ở `CLAUDE.md` (gốc dự án). Tóm tắt - mỗi l�
 | 2026-10-22 | VPN: tab "Đổi IP theo quốc gia" (VPN Gate) + gộp tối đa máy chủ + tab "Kiểm tra kết nối" (v1.19.26) | Yêu cầu (ảnh Hotspot Shield): chọn quốc gia rồi connect đổi IP; lấy nhiều máy chủ free nhất có thể; có tab riêng kiểm tra kết nối. App KHÔNG có máy chủ riêng nên dùng danh sách relay tình nguyện CÔNG KHAI của VPN Gate (ĐH Tsukuba) qua API `vpngate.net/api/iphone/`, kết nối L2TP/IPsec qua RAS có sẵn (tài khoản công khai "vpn"). Tab "🌍 Đổi IP theo quốc gia": tải danh sách, lọc theo quốc gia, bảng ping/tốc độ, kết nối qua hồ sơ tạm `OneForAll-VPNGate` (tự xóa khi ngắt). `VpnGateCache` GỘP + lưu đĩa (dedup IP, loại cũ 3 ngày) vì API chỉ trả ~100 máy chủ/lần (đo thật). Tab "🔎 Kiểm tra kết nối" (`ConnectivityTester`, QTcpSocket) lọc máy chủ còn sống. `vpn_tests` 182/0 (+27), `vpn_ui_tests` 7/0; parser kiểm CSV thật 98/98. CHƯA kiểm chứng kết nối L2TP thật đầu-cuối. Yêu cầu 2 (FortiClient/GlobalProtect) để sau. Chỉ push code, KHÔNG tag/Release. |
 | 2026-10-22 | VPN: sửa lỗi kết nối L2TP "Lỗi 6: The handle is invalid" + helper NAT-T (v1.19.27) | Người dùng báo mọi lần kết nối VPN Gate đều "Lỗi 6: The handle is invalid". Bug thật: `dialCallback` là RASDIALFUNC1 nhưng RasDialW truyền `dwNotifierType=1` (phải là 2) -> hàm gọi lại lệch tham số, mất mã lỗi RAS thật, chỉ còn RasGetConnectStatus trả handle đã thu hồi (6). Sửa 1->2; evaluateDialPoll cho thông báo hữu ích (L2TP/NAT) thay vì "handle is invalid". Thêm nút "Sửa lỗi L2TP sau NAT" đặt khóa registry AssumeUDPEncapsulationContextOnSendRule=2 (Microsoft tài liệu hóa, qua UAC, cần khởi động lại). `vpn_tests` 188/0 (+6), `vpn_ui_tests` 7/0. CHƯA kiểm chứng kết nối L2TP thật đầu-cuối. Chỉ push code, KHÔNG tag/Release. |
 | 2026-10-22 | VPN: tab "VPN đã cài sẵn" - đọc hồ sơ FortiClient/GlobalProtect/OpenVPN/Cisco rồi mở client (v1.19.28) | Yêu cầu 2: đọc profile các VPN client khác. `ThirdPartyVpnScanner` (vpn_core) CHỈ ĐỌC tên + địa chỉ máy chủ từ registry/tệp cấu hình của FortiClient (SslvpnClient\Tunnels), GlobalProtect (PanSetup\Portal), OpenVPN (*.ovpn remote), Cisco (profile XML HostEntry) - KHÔNG giải mã mật khẩu, KHÔNG kết nối thẳng. Nút "Mở phần mềm để kết nối" ShellExecute client (OpenVPN: --connect). Tab "🏢 VPN đã cài sẵn". `vpn_tests` 200/0 (+12 parser thuần + scan() thật không crash), `vpn_ui_tests` 7/0. CHƯA kiểm chứng trên máy có cài sẵn các phần mềm đó. Chỉ push code, KHÔNG tag/Release. |
+| 2026-10-22 | VPN: quét thêm tunnel FortiClient IPsec + chẩn đoán lỗi VPN Gate (v1.19.29) | (a) Tab "VPN đã cài sẵn" bỏ sót tunnel IPsec của FortiClient (vd VPN_CVTLT): tunnel IPsec nằm ở `IPSec\Tunnels\<tên>` với gateway ở subkey `<tên>\P1\RemoteGW`, khác SSL-VPN (`Sslvpn\Tunnels` giá trị `Server`). Đã đọc cả hai + đúng khóa HKCU, dedup ưu tiên bản có địa chỉ. Xác nhận thật: quét ra đủ 4 hồ sơ. (b) Chẩn đoán thật lỗi VPN Gate: NAT-T đã =2, IKEEXT/PolicyAgent Running, nhưng L2TP tới 5 máy chủ đều lỗi 791 -> L2TP native hỏng trên máy này (nghi FortiClient IPsec xung đột/ISP chặn), KHÔNG phải lỗi app. OpenVPN (IP:443) là lối thoát - cần đóng gói openvpn.exe (giai đoạn 2, sẽ hỏi trước). `vpn_tests` 200/0, `vpn_ui_tests` 7/0. Chỉ push code, KHÔNG tag/Release. |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `

@@ -3,6 +3,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QRegularExpression>
 #include <QXmlStreamReader>
 
@@ -147,32 +148,68 @@ void scanFortiClient(QList<ThirdPartyVpnProfile>& out)
         envDir("ProgramFiles(x86)") + "/Fortinet/FortiClient/FortiClient.exe",
     });
 
-    struct Base { HKEY root; const wchar_t* path; REGSAM extra; };
+    // FortiClient lưu HAI loại tunnel ở hai nơi khác nhau:
+    //  - SSL-VPN: địa chỉ ở giá trị "Server" (host:port) NGAY trong khóa tunnel.
+    //  - IPsec:   địa chỉ ở giá trị "RemoteGW" trong SUBKEY "<tunnel>\P1" (xác nhận thật trên máy có FortiClient
+    //    7.4: tunnel IPsec "VPN_CVTLT" nằm ở ...\FortiClient\IPSec\Tunnels\VPN_CVTLT\P1\RemoteGW). Trước đây chỉ
+    //    đọc Sslvpn nên bỏ sót mọi tunnel IPsec.
+    struct Base { HKEY root; const wchar_t* path; bool ipsec; };
     const Base bases[] = {
-        {HKEY_CURRENT_USER, L"Software\\Fortinet\\SslvpnClient\\Tunnels", 0},
-        {HKEY_LOCAL_MACHINE, L"SOFTWARE\\Fortinet\\SslvpnClient\\Tunnels", 0},
-        {HKEY_LOCAL_MACHINE, L"SOFTWARE\\Fortinet\\FortiClient\\Sslvpn\\Tunnels", 0},
-        {HKEY_LOCAL_MACHINE, L"SOFTWARE\\WOW6432Node\\Fortinet\\FortiClient\\Sslvpn\\Tunnels", 0},
+        {HKEY_CURRENT_USER, L"Software\\Fortinet\\FortiClient\\Sslvpn\\Tunnels", false},
+        {HKEY_LOCAL_MACHINE, L"SOFTWARE\\Fortinet\\FortiClient\\Sslvpn\\Tunnels", false},
+        {HKEY_LOCAL_MACHINE, L"SOFTWARE\\WOW6432Node\\Fortinet\\FortiClient\\Sslvpn\\Tunnels", false},
+        {HKEY_CURRENT_USER, L"Software\\Fortinet\\SslvpnClient\\Tunnels", false},  // bản FortiClient cũ hơn
+        {HKEY_LOCAL_MACHINE, L"SOFTWARE\\Fortinet\\SslvpnClient\\Tunnels", false}, // bản FortiClient cũ hơn
+        {HKEY_CURRENT_USER, L"Software\\Fortinet\\FortiClient\\IPSec\\Tunnels", true},
+        {HKEY_LOCAL_MACHINE, L"SOFTWARE\\Fortinet\\FortiClient\\IPSec\\Tunnels", true},
+        {HKEY_LOCAL_MACHINE, L"SOFTWARE\\WOW6432Node\\Fortinet\\FortiClient\\IPSec\\Tunnels", true},
     };
-    QStringList seen;
+    // Dedup theo TÊN tunnel, nhưng ƯU TIÊN bản CÓ địa chỉ máy chủ: cùng một tunnel xuất hiện ở cả HKCU lẫn
+    // HKLM, nhưng giá trị "Server"/"RemoteGW" thường chỉ nằm ở HKLM (HKCU chỉ giữ cờ hiển thị) - nếu gặp bản
+    // rỗng trước rồi bỏ qua bản có địa chỉ thì cột Máy chủ sẽ trống.
+    QList<ThirdPartyVpnProfile> forti;
+    QHash<QString, int> idx; // tên (thường) -> vị trí trong forti
     for (const Base& b : bases)
     {
-        for (const QString& tunnel : regEnumSubkeys(b.root, b.path, b.extra))
+        for (const QString& tunnel : regEnumSubkeys(b.root, b.path))
         {
-            if (seen.contains(tunnel, Qt::CaseInsensitive))
+            QString server;
+            if (b.ipsec)
+            {
+                const std::wstring p1 = (QString::fromWCharArray(b.path) + "\\" + tunnel + "\\P1").toStdWString();
+                server = regReadString(b.root, p1.c_str(), L"RemoteGW");
+            }
+            else
+            {
+                const std::wstring sub = (QString::fromWCharArray(b.path) + "\\" + tunnel).toStdWString();
+                server = regReadString(b.root, sub.c_str(), L"Server");
+            }
+            server = internal::normalizeServer(server);
+            const QString source = (b.root == HKEY_CURRENT_USER ? "HKCU\\" : "HKLM\\") + QString::fromWCharArray(b.path) + "\\" + tunnel;
+
+            const QString key = tunnel.toLower();
+            const auto it = idx.constFind(key);
+            if (it != idx.constEnd())
+            {
+                // Đã có: bổ sung địa chỉ nếu bản trước còn trống.
+                if (forti[it.value()].server.isEmpty() && !server.isEmpty())
+                {
+                    forti[it.value()].server = server;
+                    forti[it.value()].source = source;
+                }
                 continue;
-            const std::wstring sub = (QString::fromWCharArray(b.path) + "\\" + tunnel).toStdWString();
-            const QString server = regReadString(b.root, sub.c_str(), L"Server", b.extra);
-            seen << tunnel;
+            }
             ThirdPartyVpnProfile p;
-            p.clientName = "FortiClient";
+            p.clientName = b.ipsec ? "FortiClient (IPsec)" : "FortiClient";
             p.name = tunnel;
-            p.server = internal::normalizeServer(server);
-            p.source = (b.root == HKEY_CURRENT_USER ? "HKCU\\" : "HKLM\\") + QString::fromWCharArray(b.path) + "\\" + tunnel;
+            p.server = server;
+            p.source = source;
             p.exePath = exe;
-            out << p;
+            idx.insert(key, forti.size());
+            forti << p;
         }
     }
+    out += forti;
 #else
     Q_UNUSED(out)
 #endif
