@@ -4,7 +4,6 @@
 
 #include <functional>
 
-#include "engine/OpenVpnRunner.h"
 #include "engine/PublicIpChecker.h"
 #include "model/VpnGateServer.h"
 
@@ -20,10 +19,14 @@ class VpnGateClient;
 /// Tsukuba, Nhật), lọc theo quốc gia, rồi KẾT NỐI để đổi IP ra quốc gia đó - đúng trải nghiệm "chọn quốc
 /// gia rồi bấm kết nối" của các ứng dụng VPN thương mại, nhưng KHÔNG cần ứng dụng tự dựng máy chủ.
 ///
-/// Kết nối bằng L2TP/IPsec qua RAS có sẵn của Windows (tài khoản công khai của VPN Gate: user/mật khẩu/PSK
-/// đều là "vpn"). Ứng dụng tạo một hồ sơ VPN TẠM tên "OneForAll-VPNGate" trỏ tới IP máy chủ đã chọn, kết
-/// nối, rồi khi ngắt sẽ tự xóa hồ sơ tạm đó. KHÔNG phải máy chủ nào cũng bật L2TP - nếu kết nối thất bại,
-/// người dùng thử máy chủ khác (giao diện có nêu rõ).
+/// Kết nối qua RAS có sẵn của Windows (không daemon/nhị phân ngoài, không cần quyền Administrator), tài
+/// khoản công khai của VPN Gate (user/mật khẩu đều là "vpn"). Hai cách:
+/// - **SSTP** (mặc định): TLS trên TCP 443 tới `<HostName>.opengw.net` - tên miền DDNS của chính máy chủ
+///   (cột HostName của API), khớp chứng chỉ Let's Encrypt `*.opengw.net` nên Windows xác thực được máy chủ.
+///   Không đụng tầng IPsec nên chạy được cả trên máy mà L2TP hỏng (vd máy có FortiClient IPsec).
+/// - **L2TP/IPsec** (PSK "vpn"): tới IP máy chủ.
+/// Ứng dụng tạo một hồ sơ VPN TẠM tên "OneForAll-VPNGate", kết nối, rồi khi ngắt sẽ tự xóa hồ sơ đó.
+/// KHÔNG phải máy chủ nào cũng bật mọi giao thức - nếu thất bại, người dùng thử máy chủ khác.
 class VpnGateTab : public QWidget
 {
     Q_OBJECT
@@ -38,9 +41,6 @@ public:
     void cancelAndWait(int waitMs = 3000);
     /// Yêu cầu hủy, KHÔNG CHỜ - gọi từ VpnControlWindow::forceStopNow() lúc ứng dụng thoát ở nơi khác.
     void requestCancelNoWait();
-    /// Còn tunnel OpenVPN đang chạy không (kể cả ĐÃ kết nối ổn định - không tính là isBusy()). Dùng khi
-    /// đóng cửa sổ để NGẮT sạch, nếu không openvpn.exe nâng quyền sẽ chạy tiếp và giữ VPN sau khi đóng.
-    bool hasActiveOpenVpnTunnel() const;
 
 signals:
     /// Người dùng muốn kiểm tra kết nối tới máy chủ đang chọn - VpnControlWindow chuyển sang tab "Kiểm tra
@@ -57,10 +57,6 @@ private slots:
     void onCheckConnectivityClicked();
     void onNatFixClicked();
     void onConnectorFinished(bool success, QString message);
-    void onOvpnConnected();
-    void onOvpnFailed(QString reason);
-    void onOvpnDisconnected();
-    void onOvpnState(QString human);
     void onCheckLocationClicked();
     void onIpResult(PublicIpInfo info);
     void onIpError(QString message);
@@ -80,7 +76,7 @@ private:
 
     QTableWidget* m_table{nullptr}; // [Quốc gia][Ping][Tốc độ][Phiên][IP]
     QComboBox* m_countryFilter{nullptr};
-    QComboBox* m_methodCombo{nullptr};
+    QComboBox* m_methodCombo{nullptr}; // "sstp" (mặc định) / "l2tp"
     QPushButton* m_fetchBtn{nullptr};
     QPushButton* m_connectBtn{nullptr};
     QPushButton* m_disconnectBtn{nullptr};
@@ -96,11 +92,10 @@ private:
     QList<VpnGateServer> m_allServers; // toàn bộ danh sách tải về (đã sắp theo điểm giảm dần)
     QList<VpnGateServer> m_shown;      // các dòng đang hiển thị (sau khi lọc quốc gia)
     QString m_connectedCountry;
+    QString m_connectedMethod; // "SSTP"/"L2TP" của phiên đang kết nối - để thông báo lỗi đúng giao thức
 
     VpnGateClient* m_client{nullptr};
     VpnConnector* m_connector{nullptr};
-    OpenVpnRunner* m_openvpn{nullptr};
-    bool m_usingOpenVpn{false}; // true nếu phiên đang kết nối/đã kết nối bằng OpenVPN (khác L2TP qua m_connector)
     PublicIpChecker* m_ipChecker{nullptr};
     QThread* m_backgroundThread{nullptr};
 };

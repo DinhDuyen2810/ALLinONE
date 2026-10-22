@@ -11,7 +11,8 @@
 /// Phát hiện các hồ sơ VPN đã cấu hình sẵn bởi phần mềm VPN bên thứ ba trên máy (FortiClient,
 /// GlobalProtect, OpenVPN GUI, Cisco Secure Client/AnyConnect) và cho phép MỞ chính phần mềm đó để kết nối.
 /// CHỈ ĐỌC thông tin không bí mật (tên + địa chỉ máy chủ) từ registry/tệp cấu hình của chính phần mềm đó -
-/// KHÔNG đụng tới mật khẩu đã lưu, KHÔNG tự kết nối thẳng. Xem model/ThirdPartyVpnProfile.h.
+/// KHÔNG đụng tới mật khẩu đã lưu. Đánh dấu hồ sơ nào ứng dụng tự kết nối trực tiếp được
+/// (ThirdPartyVpnProfile::direct - việc kết nối nằm ở direct/, không ở đây). Xem model/ThirdPartyVpnProfile.h.
 namespace ThirdPartyVpnScanner
 {
 /// Quét toàn bộ (registry + thư mục cấu hình) - trả về mọi hồ sơ tìm được (có thể rỗng nếu máy không cài

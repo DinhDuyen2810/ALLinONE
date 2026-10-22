@@ -49,6 +49,11 @@ void VpnControlWindow::forceStopNow()
         m_vpnGateTab->requestCancelNoWait();
     if (m_vpnTab)
         m_vpnTab->requestCancelNoWait();
+    // Kết nối trực tiếp (FortiGate/GlobalProtect): báo tiến trình phụ ngắt rồi chờ NGẮN - kể cả khi không kịp,
+    // đóng kênh điều khiển là đủ: tiến trình phụ tự gỡ tuyến + xóa adapter rồi thoát (xem VpnHelperMain.h).
+    // Đóng cửa sổ (chỉ ẩn) thì KHÔNG ngắt - giống VPN hệ thống, đường hầm vẫn chạy khi cửa sổ ẩn.
+    if (m_thirdPartyTab)
+        m_thirdPartyTab->shutdownDirect(1500);
 }
 
 void VpnControlWindow::closeEvent(QCloseEvent* event)
@@ -82,11 +87,6 @@ void VpnControlWindow::closeEvent(QCloseEvent* event)
         event->ignore();
         return;
     }
-    // OpenVPN (tab "Đổi IP theo quốc gia"): một tunnel ĐÃ kết nối ổn định KHÔNG tính là isBusy() nên không
-    // rơi vào nhánh hỏi ở trên - nhưng openvpn.exe là tiến trình NÂNG QUYỀN, đóng cửa sổ mà không ngắt sẽ để
-    // nó chạy tiếp (VPN vẫn bật sau khi đóng). Ngắt sạch ở đây (cancelAndWait gửi SIGTERM qua management).
-    if (m_vpnGateTab && m_vpnGateTab->hasActiveOpenVpnTunnel())
-        m_vpnGateTab->cancelAndWait();
     event->accept();
 }
 

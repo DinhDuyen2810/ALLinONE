@@ -115,7 +115,7 @@
 | `src/third_party/` | qrcodegen (MIT), quirc (ISC), xem `THIRD_PARTY.md` |
 | `vendor/scrcpy/` | scrcpy + adb đóng gói (Apache-2.0, KHÔNG commit Git) - xem `THIRD_PARTY.md` |
 | `vendor/yt-dlp/` | yt-dlp + ffmpeg/ffprobe đóng gói (Unlicense/GPLv3+ kết hợp + GPL, KHÔNG commit Git) - xem `THIRD_PARTY.md` |
-| `tests/` | `qr_tests`/`qr_ui_tests`, `wifi_tests`/`wifi_ui_tests`, `connect_tests`/`connect_ui_tests` (506 + 2, ghép đôi 2 chiều thật qua TCP, ổn định qua 40+ lần chạy liên tiếp), `diskcleanup_tests`/`diskcleanup_ui_tests` (176 + 19 kiểm tra, có xóa file thật qua Thùng rác, liệt kê phân vùng thật), `android_tests`/`android_ui_tests` (45 + 7 kiểm tra, có gọi `adb devices` thật - chỉ đọc), `vpn_tests`/`vpn_ui_tests` (41 + 6 kiểm tra, có gọi `Get-VpnConnection` thật - chỉ đọc), `security_tests`/`security_ui_tests` (76 + 6 kiểm tra, có gọi `Get-MpComputerStatus`/đọc hosts file thật - chỉ đọc), `downloader_tests`/`downloader_ui_tests` (652 + 100 kiểm tra từ v1.19.22, trước đó 554 + 65 ở v1.19.18: máy chủ HTTP 127.0.0.1 cho cả luồng hàng đợi lẫn giao diện, có tải thật một tệp công khai nhỏ qua HTTP thật) |
+| `tests/` | `qr_tests`/`qr_ui_tests`, `wifi_tests`/`wifi_ui_tests`, `connect_tests`/`connect_ui_tests` (506 + 2, ghép đôi 2 chiều thật qua TCP, ổn định qua 40+ lần chạy liên tiếp), `diskcleanup_tests`/`diskcleanup_ui_tests` (176 + 19 kiểm tra, có xóa file thật qua Thùng rác, liệt kê phân vùng thật), `android_tests`/`android_ui_tests` (45 + 7 kiểm tra, có gọi `adb devices` thật - chỉ đọc), `vpn_tests`/`vpn_ui_tests` (219 + 7 kiểm tra ở v1.19.31, có gọi `Get-VpnConnection` thật - chỉ đọc), `vpn_direct_tests` (150 kiểm tra từ v1.19.31: PPP/giao thức FortiGate-GlobalProtect + máy chủ GIẢ đầu-cuối trên 127.0.0.1 + tiến trình phụ `--vpn-helper` thật), `security_tests`/`security_ui_tests` (76 + 6 kiểm tra, có gọi `Get-MpComputerStatus`/đọc hosts file thật - chỉ đọc), `downloader_tests`/`downloader_ui_tests` (652 + 100 kiểm tra từ v1.19.22, trước đó 554 + 65 ở v1.19.18: máy chủ HTTP 127.0.0.1 cho cả luồng hàng đợi lẫn giao diện, có tải thật một tệp công khai nhỏ qua HTTP thật) |
 | `assets/resources.qrc`, `icon/` | Icon nhúng vào exe |
 | `profiles/default.json` | Chuỗi Auto Click MẪU đóng gói kèm (lần chạy đầu được chép sang thư mục dữ liệu người dùng) |
 | `CLAUDE.md` | Quy tắc làm việc đứng cho Claude Code (build → commit → push sau mỗi lần sửa...) |
@@ -2643,6 +2643,10 @@ TIẾP trên máy thật.
 
 ## 4zp. VPN: kết nối VPN Gate bằng OpenVPN (đóng gói openvpn.exe + wintun.dll) (2026-10-22, v1.19.30)
 
+> **ĐÃ BỎ ở v1.19.31 (mục 4zq):** người dùng báo kết nối đứng ở "Đang khởi động OpenVPN..." và yêu cầu bỏ OpenVPN.
+> Toàn bộ mô tả dưới đây chỉ còn giá trị lịch sử - mã `OpenVpnRunner`, gói `vendor/openvpn/` và bước CI tương ứng đã
+> bị gỡ. Nguyên nhân treo (đọc từ log thật) và cách thay thế: xem 4zq.
+
 Thực hiện "giai đoạn 2" của mục 4zo: trên máy mà L2TP/IPsec native hỏng, dùng **OpenVPN** để kết nối máy chủ công
 cộng VPN Gate. Người dùng đã chọn "Có, thêm OpenVPN".
 
@@ -2695,6 +2699,93 @@ minh THẬT: tải + GPG-verify `.msi`, Authenticode-verify `openvpn.exe`/`wintu
 **CHƯA kiểm chứng đầu-cuối trên máy này:** việc kết nối OpenVPN thật và đổi IP cần MỘT lần bấm **Yes ở hộp thoại UAC**
 (môi trường tự động hóa không tự bấm thay được). Mọi phần không cần UAC đã xác minh. Khi người dùng sẵn sàng: mở app →
 tab "Đổi IP theo quốc gia" → Tải máy chủ → chọn 1 dòng → "Kết nối" (OpenVPN) → bấm Yes ở UAC → xem IP công khai đổi.
+
+## 4zq. VPN: bỏ OpenVPN -> SSTP; sửa lỗi gốc quay số RAS; kết nối TRỰC TIẾP FortiGate/GlobalProtect (2026-10-22, v1.19.31)
+
+Người dùng: (1) "ấn mở openvpn daemon rồi mà có gì xảy ra đâu - bỏ openvpn đi, tự làm một cái kết nối được tới
+các server VPN free"; (2) "thêm kết nối các profile trực tiếp qua tiện ích".
+
+### (a) Vì sao OpenVPN treo (đọc log THẬT, không đoán)
+`%TEMP%\OneForAll-*\openvpn.log`: app ĐÃ nối cổng quản lý nhưng openvpn đứng `Need hold release ... waiting` 60 giây.
+Lời nhắc `ENTER PASSWORD:` không có ký tự xuống dòng nên không bị xóa khỏi bộ đệm -> dòng kế tiếp thành
+`ENTER PASSWORD:SUCCESS: password is correct` -> app không nhận ra nên không bao giờ gửi `hold release`. Hết giờ
+thì app cắt socket mà KHÔNG gửi SIGTERM -> 2 tiến trình `openvpn.exe` NÂNG QUYỀN bị rò (đã dọn bằng cách nối cổng
+quản lý với mật khẩu trong tệp tạm rồi gửi `signal SIGTERM`). Theo yêu cầu, OpenVPN bị gỡ hoàn toàn.
+
+### (b) VPN Gate qua SSTP của Windows (không daemon, không nhị phân ngoài, không quyền Admin)
+Phát hiện quan trọng (sửa kết luận sai ở 4zo): cột `HostName` của API iphone CHÍNH LÀ tiền tố tên miền DDNS -
+`<HostName>.opengw.net` phân giải đúng IP máy chủ (đo 12/12), và chứng chỉ máy chủ trình ra trên 443
+(`CN=opengw.net`, Let's Encrypt) được Windows xác thực KHÔNG lỗi với tên đó. SSTP (TLS/443) không đụng tầng IPsec
+nên chạy được cả trên máy mà L2TP hỏng (lỗi 791). `VpnGateServer::sstpHost()` (lọc chặt: chỉ nhãn DNS a-z0-9-,
+1-63 ký tự - dữ liệu từ mạng đi vào lệnh PowerShell). Tab có ô chọn "SSTP - cổng 443 (khuyến nghị) / L2TP".
+`Add-VpnConnection -TunnelType Sstp -EncryptionLevel Required` (code cũ) chạy được với SoftEther (đã thử).
+
+### (c) Lỗi gốc của `VpnConnector` - MỌI lần quay số qua app đều hỏng
+Thử SSTP bằng `rasdial.exe` thì đổi IP được, nhưng qua code của app (`vpn_gate_sstp_real_check`) thì cả 5 máy chủ
+đều "đóng ngay khi thiết lập". Công cụ chẩn đoán riêng (quay số đồng bộ + in từng hàm gọi lại) cho thấy:
+- Hàm gọi lại kiểu RasDialFunc1 chạy trên luồng riêng của RAS và báo đủ trạng thái 0->5 - nhưng bản v1.19.27 đã đổi
+  NHẦM `dwNotifierType` 1 -> 2 (đối chiếu nguyên văn tài liệu `RasDialW`: 0 = RasDialFunc, 1 = RasDialFunc1,
+  2 = RasDialFunc2 7 tham số) -> RAS gọi hàm 5 tham số như hàm 7 tham số, mọi trạng thái/mã lỗi bị đọc lệch. Trả về 1.
+- NGUYÊN NHÂN CHÍNH: `RasGetConnectStatusW` trả **mã 6 (ERROR_INVALID_HANDLE) TẠM THỜI ở +16ms** khi phiên chưa đăng
+  ký xong với dịch vụ RAS. `evaluateDialPoll` coi đó là "phiên đã chết" ở nhịp thăm dò đầu tiên rồi gác máy (máy chủ
+  thấy lỗi 628). Đây chính là "Lỗi 6: The handle is invalid" người dùng gặp từ đầu - lỗi của app, không chỉ do
+  mạng. Nay `DialPoll::invalidHandleMs` đo mã 6 kéo dài liên tục; chỉ kết luận khi quá `kInvalidHandleGraceMs`
+  (15 giây) mà hàm gọi lại chưa báo kết quả (hàm gọi lại luôn báo mã lỗi thật khi quay số thất bại). Chờ alertable
+  (`SleepEx`). Sửa này áp dụng cho cả tab VPN thủ công.
+- **Xác nhận thật bằng đúng code của app**: IP `42.113.162.72` (VN) -> SSTP `public-vpn-257.opengw.net` ->
+  `219.100.37.245` (Tokyo, Japan) -> ngắt -> trở lại `42.113.162.72`.
+
+### (d) Kết nối TRỰC TIẾP FortiGate SSL-VPN / GlobalProtect (`src/tools/vpn/direct/`)
+FortiClient 7.4 KHÔNG có lệnh kết nối công khai (`FortiVPN.exe` chỉ có `-h` và `-s`, điều khiển qua named pipe riêng)
+nên không thể "ra lệnh cho phần mềm của họ". Ứng dụng tự nói giao thức (tham chiếu mã nguồn mở OpenConnect -
+fortinet.c/ppp.c/gpst.c/auth-globalprotect.c, KHÔNG chép mã, tự viết lại bằng Qt):
+- `PppSession` (thuần): LCP (MRU+Magic, từ chối xác thực PPP/tùy chọn lạ, Echo, Terminate, Protocol-Reject IPv6CP/
+  CCP), IPCP (xin IP 0.0.0.0/DNS qua Nak - RFC 1332/1877), gửi lại 3 giây, phát hiện mất kết nối (4 Echo không trả
+  lời). `FortinetFraming`: đầu 6 byte `len|0x5050|len`; phản hồi `HTTP/...` = máy chủ từ chối đường hầm.
+- `FortinetProtocol` (thuần): `POST /remote/logincheck` (HTTP 405 = sai mật khẩu; `ret=..,tokeninfo=` = OTP, gửi lại
+  reqid/polid/grp/portal/peer/magic; FortiToken push), `GET /remote/fortisslvpn_xml` (IP, DNS, chia tuyến/negate),
+  `GET /remote/sslvpn-tunnel` (thành công thì KHÔNG trả HTTP mà vào PPP ngay).
+- `GlobalProtectProtocol` (thuần): prelogin (phát hiện SAML -> chưa hỗ trợ), portal getconfig (gateway, cookie
+  portal), gateway login.esp (đối số JNLP theo vị trí), OTP dạng JavaScript `respStatus="Challenge"`, getconfig
+  (IP, netmask, DNS, access-routes - `0.0.0.0/0` = toàn phần), đường hầm `START_TUNNEL` + khung 16 byte `1a2b3c4d`,
+  keepalive 10 giây. Không gửi báo cáo HIP (gateway đòi HIP có thể hạn chế truy cập - CHƯA kiểm chứng).
+- `WintunAdapter` + `NetConfigurator`: `wintun.dll` nạp động bằng đường dẫn tuyệt đối (`<thư mục chạy>/wintun/`,
+  `LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR|SYSTEM32`), adapter "OneForAll VPN" (GUID cố định -> hồ sơ NLA ổn định), luồng đọc
+  riêng (chỉ chuyển gói IPv4). iphlpapi: IP (`CreateUnicastIpAddressEntry`), metric 1 + MTU, tuyến /32 tới máy chủ qua
+  đường GỐC (đo bằng `GetBestRoute2` TRƯỚC khi thêm tuyến VPN - chống vòng lặp), đường hầm toàn phần = 0/1 + 128/1
+  (không xóa tuyến mặc định - ngắt là mạng trở lại như cũ), chia tuyến/negate, DNS (`SetInterfaceDnsSettings` nạp
+  động). Gỡ mọi tuyến đã thêm khi ngắt; xóa adapter.
+- `TunnelEngine` (chạy trong tiến trình phụ): HTTPS qua QNetworkAccessManager (cookie tự quản, không lẫn kho chung),
+  đường hầm `QSslSocket`; chứng chỉ không được Windows tin -> chỉ chấp nhận khi SHA-256 trùng vân tay người dùng đã
+  xác nhận, ngược lại báo `certificateUntrusted` (FortiGate dùng chứng chỉ mặc định tự ký - đã thấy thật trên 2 máy chủ
+  của người dùng). Mật khẩu xóa trắng ngay khi xác thực xong; đăng xuất phiên (best-effort 4 giây) khi ngắt.
+  `opened` của PPP được hoãn sang vòng sự kiện sau (tránh hủy `PppSession` từ bên trong chính nó).
+- **Tiến trình phụ nâng quyền** (`OneForAll.exe --vpn-helper <pipe> <mã>`, `VpnHelperMain`): ứng dụng chính
+  (`DirectVpnSession`) tạo named pipe tên ngẫu nhiên, khởi chạy qua UAC, chỉ gửi việc (kèm mật khẩu) cho kết nối gửi
+  đúng mã một lần 128-bit; mật khẩu không bao giờ nằm trên dòng lệnh. Pipe đóng (đóng app/app bị dừng) -> tiến trình
+  phụ tự ngắt, gỡ tuyến, xóa adapter rồi thoát - không bao giờ để lại tiến trình nâng quyền mồ côi (bài học từ
+  openvpn.exe). Thử lại sau khi tin cậy chứng chỉ dùng lại tiến trình phụ, không hỏi UAC lại.
+- UI (tab "VPN đã cài sẵn"): cột "Kết nối trực tiếp", nút "🔌 Kết nối trực tiếp"/"⛔ Ngắt", hộp tài khoản (chỉ nhớ
+  TÊN đăng nhập theo máy chủ - `profiles/vpn_direct_users.json`; mật khẩu không lưu), hộp OTP (để trống = FortiToken
+  push), hộp xác nhận vân tay (`profiles/vpn_trusted_certs.json`). Đóng cửa sổ (chỉ ẩn) KHÔNG ngắt - như VPN hệ thống;
+  thoát app thì ngắt (`forceStopNow`). FortiClient IPsec (IKEv1+XAuth), Cisco, OpenVPN: vẫn "Mở phần mềm".
+
+### Kiểm thử
+- `vpn_tests` 219/0 (gồm hồi quy mã 6 tạm thời của `evaluateDialPoll`, `sstpHost`), `vpn_ui_tests` 7/0.
+- **`vpn_direct_tests` 150/0 (bộ mới)**: kiểu IP/tuyến/host:port (chặn chèn header), PPP với máy chủ kịch bản (từ chối
+  PAP, gửi lại, Nak IP+DNS, khung nén, Echo, Protocol-Reject, Terminate, mất kết nối), khung Fortinet/GP (nạp từng
+  byte), giao thức Fortinet/GP (gồm phản hồi prelogin THẬT của portal 171.226.12.171), **đầu-cuối `TunnelEngine` với
+  FortiGate GIẢ** (đăng nhập + OTP + XML + PPP + gói hai chiều + ngắt êm), sai mật khẩu, **GlobalProtect GIẢ** (portal
+  -> OTP -> gateway kèm cookie portal -> getconfig -> START_TUNNEL -> gói hai chiều -> keepalive), **tiến trình phụ
+  thật** (`--vpn-helper`: mã xác thực, báo lỗi, tự thoát khi pipe đóng).
+- Kiểm tra tay (không thuộc bộ tự động): `vpn_gate_sstp_real_check` (ĐÃ chạy - đổi IP thật), `vpn_wintun_real_check`
+  (adapter wintun thật trên dải thử nghiệm 198.18.0.0/15, cần quyền Admin - lần chạy duy nhất bị hủy ở UAC).
+
+### CHƯA kiểm chứng
+- Đăng nhập + đường hầm tới FortiGate/GlobalProtect THẬT của người dùng (cần tài khoản cơ quan; không thử đăng nhập
+  bằng tài khoản giả vào máy chủ của cơ quan).
+- Lớp adapter wintun + bảng định tuyến chạy với quyền Administrator trên máy thật (UAC của lần thử bị hủy) - mã đã
+  biên dịch, đúng chữ ký hàm `wintun.h` 0.14, công cụ `vpn_wintun_real_check` sẵn để chạy tay.
 
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
@@ -2875,7 +2966,8 @@ Quy tắc đứng nằm ở `CLAUDE.md` (gốc dự án). Tóm tắt - mỗi l�
 | 2026-10-22 | VPN: sửa lỗi kết nối L2TP "Lỗi 6: The handle is invalid" + helper NAT-T (v1.19.27) | Người dùng báo mọi lần kết nối VPN Gate đều "Lỗi 6: The handle is invalid". Bug thật: `dialCallback` là RASDIALFUNC1 nhưng RasDialW truyền `dwNotifierType=1` (phải là 2) -> hàm gọi lại lệch tham số, mất mã lỗi RAS thật, chỉ còn RasGetConnectStatus trả handle đã thu hồi (6). Sửa 1->2; evaluateDialPoll cho thông báo hữu ích (L2TP/NAT) thay vì "handle is invalid". Thêm nút "Sửa lỗi L2TP sau NAT" đặt khóa registry AssumeUDPEncapsulationContextOnSendRule=2 (Microsoft tài liệu hóa, qua UAC, cần khởi động lại). `vpn_tests` 188/0 (+6), `vpn_ui_tests` 7/0. CHƯA kiểm chứng kết nối L2TP thật đầu-cuối. Chỉ push code, KHÔNG tag/Release. |
 | 2026-10-22 | VPN: tab "VPN đã cài sẵn" - đọc hồ sơ FortiClient/GlobalProtect/OpenVPN/Cisco rồi mở client (v1.19.28) | Yêu cầu 2: đọc profile các VPN client khác. `ThirdPartyVpnScanner` (vpn_core) CHỈ ĐỌC tên + địa chỉ máy chủ từ registry/tệp cấu hình của FortiClient (SslvpnClient\Tunnels), GlobalProtect (PanSetup\Portal), OpenVPN (*.ovpn remote), Cisco (profile XML HostEntry) - KHÔNG giải mã mật khẩu, KHÔNG kết nối thẳng. Nút "Mở phần mềm để kết nối" ShellExecute client (OpenVPN: --connect). Tab "🏢 VPN đã cài sẵn". `vpn_tests` 200/0 (+12 parser thuần + scan() thật không crash), `vpn_ui_tests` 7/0. CHƯA kiểm chứng trên máy có cài sẵn các phần mềm đó. Chỉ push code, KHÔNG tag/Release. |
 | 2026-10-22 | VPN: quét thêm tunnel FortiClient IPsec + chẩn đoán lỗi VPN Gate (v1.19.29) | (a) Tab "VPN đã cài sẵn" bỏ sót tunnel IPsec của FortiClient (vd VPN_CVTLT): tunnel IPsec nằm ở `IPSec\Tunnels\<tên>` với gateway ở subkey `<tên>\P1\RemoteGW`, khác SSL-VPN (`Sslvpn\Tunnels` giá trị `Server`). Đã đọc cả hai + đúng khóa HKCU, dedup ưu tiên bản có địa chỉ. Xác nhận thật: quét ra đủ 4 hồ sơ. (b) Chẩn đoán thật lỗi VPN Gate: NAT-T đã =2, IKEEXT/PolicyAgent Running, nhưng L2TP tới 5 máy chủ đều lỗi 791 -> L2TP native hỏng trên máy này (nghi FortiClient IPsec xung đột/ISP chặn), KHÔNG phải lỗi app. OpenVPN (IP:443) là lối thoát - cần đóng gói openvpn.exe (giai đoạn 2, sẽ hỏi trước). `vpn_tests` 200/0, `vpn_ui_tests` 7/0. Chỉ push code, KHÔNG tag/Release. |
-| 2026-10-22 | VPN: kết nối VPN Gate bằng OpenVPN (đóng gói openvpn.exe + wintun.dll) (v1.19.30) | Tiếp v1.19.29 (L2TP native hỏng): thêm cách kết nối OpenVPN cho tab "Đổi IP theo quốc gia" (ô chọn OpenVPN/L2TP). `OpenVpnRunner` (vpn_core) chạy `openvpn.exe` đóng gói qua UAC, điều khiển qua management interface (127.0.0.1 + mật khẩu ngẫu nhiên): đọc `>STATE...CONNECTED`, gửi `signal SIGTERM` để ngắt. `buildConfig()` (thuần, test được) dựng `.ovpn` chạy nền: bỏ auth-user-pass/management/dev-node/windows-driver/block-outside-dns, thêm management-hold + windows-driver wintun + auth-nocache; CHỈ thêm lại auth-user-pass khi gốc có (VPN Gate xác thực bằng `<cert>/<key>` nhúng, không user/pass - xác minh trên .ovpn THẬT). `VpnGateServer.ovpnConfig` lấy từ cột Base64 cuối của API (không lưu cache). Đóng cửa sổ khi đang bật OpenVPN sẽ tự ngắt. Đóng gói `vendor/openvpn/` (không commit): openvpn.exe + OpenSSL DLLs từ build.openvpn.net, wintun.dll từ wintun.net - xác minh bằng **chữ ký Authenticode** (OpenVPN Inc./Microsoft/WireGuard LLC; Windows-native, không phụ thuộc gpg vốn hỏng trên CI do GNUPGHOME kiểu Windows); `build_app.bat`/CI/`scripts/ci_fetch_vendor.ps1` tự tải+chép. `vpn_tests` 223/0 (+23). CHƯA kiểm chứng đầu-cuối đổi IP (cần 1 lần bấm Yes UAC - chưa tự bấm thay được); đã xác minh chữ ký nhị phân + dựng cấu hình đúng .ovpn thật + build/đóng gói đủ. Chỉ push code, KHÔNG tag/Release. |
+| 2026-10-22 | VPN: kết nối VPN Gate bằng OpenVPN (đóng gói openvpn.exe + wintun.dll) (v1.19.30) | Tiếp v1.19.29 (L2TP native hỏng): thêm cách kết nối OpenVPN cho tab "Đổi IP theo quốc gia" (ô chọn OpenVPN/L2TP). `OpenVpnRunner` (vpn_core) chạy `openvpn.exe` đóng gói qua UAC, điều khiển qua management interface (127.0.0.1 + mật khẩu ngẫu nhiên): đọc `>STATE...CONNECTED`, gửi `signal SIGTERM` để ngắt. `buildConfig()` (thuần, test được) dựng `.ovpn` chạy nền: bỏ auth-user-pass/management/dev-node/windows-driver/block-outside-dns, thêm management-hold + windows-driver wintun + auth-nocache; CHỈ thêm lại auth-user-pass khi gốc có (VPN Gate xác thực bằng `<cert>/<key>` nhúng, không user/pass - xác minh trên .ovpn THẬT). `VpnGateServer.ovpnConfig` lấy từ cột Base64 cuối của API (không lưu cache). Đóng cửa sổ khi đang bật OpenVPN sẽ tự ngắt. Đóng gói `vendor/openvpn/` (không commit): openvpn.exe + OpenSSL DLLs từ build.openvpn.net, wintun.dll từ wintun.net - xác minh bằng **chữ ký Authenticode** (OpenVPN Inc./Microsoft/WireGuard LLC; Windows-native, không phụ thuộc gpg vốn hỏng trên CI do GNUPGHOME kiểu Windows); `build_app.bat`/CI/`scripts/ci_fetch_vendor.ps1` tự tải+chép. `vpn_tests` 223/0 (+23). CHƯA kiểm chứng đầu-cuối đổi IP (cần 1 lần bấm Yes UAC - chưa tự bấm thay được); đã xác minh chữ ký nhị phân + dựng cấu hình đúng .ovpn thật + build/đóng gói đủ. Chỉ push code, KHÔNG tag/Release. **(Đã bỏ ở v1.19.31.)** |
+| 2026-10-22 | VPN: bỏ OpenVPN -> SSTP; sửa lỗi gốc quay số RAS; kết nối trực tiếp FortiGate/GlobalProtect (v1.19.31) | Mục 4zq. OpenVPN treo vì lời nhắc `ENTER PASSWORD:` không bị xóa khỏi bộ đệm (không gửi `hold release`) + rò `openvpn.exe` nâng quyền khi hết giờ -> gỡ hẳn. VPN Gate nối SSTP (RAS gốc, `<HostName>.opengw.net` khớp chứng chỉ Let's Encrypt). Lỗi gốc `VpnConnector`: mã 6 TẠM THỜI của `RasGetConnectStatusW` ở +16ms bị coi là thất bại -> mọi lần quay số qua app hỏng (cả "Lỗi 6" người dùng gặp từ đầu); `dwNotifierType` sửa lại 1 (v1.19.27 đổi nhầm 2). Đã đổi IP THẬT bằng code của app (VN -> Tokyo). Kết nối trực tiếp FortiGate SSL-VPN/GlobalProtect: client giao thức tự viết (PPP/LCP/IPCP, đăng nhập/OTP/cấu hình), adapter wintun.dll + iphlpapi, tiến trình phụ nâng quyền `--vpn-helper` (pipe + mã một lần, tự dọn khi pipe đóng), ghim vân tay chứng chỉ tự ký. `vpn_tests` 219/0, `vpn_ui_tests` 7/0, `vpn_direct_tests` 150/0 (mới; máy chủ FortiGate/GP giả đầu-cuối). CHƯA kiểm chứng: máy chủ thật của người dùng (cần tài khoản), adapter wintun chạy Admin (UAC lần thử bị hủy). Chỉ push code, KHÔNG tag/Release. |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `

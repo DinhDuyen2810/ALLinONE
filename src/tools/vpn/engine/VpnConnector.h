@@ -57,7 +57,14 @@ public:
         quint32 statusResult{0};          ///< giá trị trả về của RasGetConnectStatusW (0 = đọc được)
         quint32 connState{0};             ///< RASCONNSTATUS::rasconnstate - chỉ có nghĩa khi statusResult == 0
         quint32 statusError{0};           ///< RASCONNSTATUS::dwError - chỉ có nghĩa khi statusResult == 0
+        /// RasGetConnectStatusW đã trả ERROR_INVALID_HANDLE LIÊN TỤC bao lâu (ms, 0 = nhịp này không trả mã đó).
+        quint32 invalidHandleMs{0};
     };
+    /// ERROR_INVALID_HANDLE từ RasGetConnectStatusW lúc đang quay số là TẠM THỜI - đo thật (SSTP tới VPN Gate):
+    /// nó trả mã 6 ngay ở +16ms trong khi hàm gọi lại vẫn báo phiên tiến triển bình thường (trạng thái 0->5)
+    /// và phiên kết nối thành công nếu không bị gác máy. Chỉ coi là "phiên đã mất" khi kéo dài quá ngưỡng
+    /// này mà hàm gọi lại vẫn chưa báo kết quả (hàm gọi lại luôn báo lỗi thật khi quay số thất bại).
+    static constexpr quint32 kInvalidHandleGraceMs = 15000;
     enum class DialOutcome { Pending, Connected, Failed };
 
     /// Quyết định của vòng chờ cho một nhịp thăm dò; khi Failed thì *failureMessage là thông báo cho người

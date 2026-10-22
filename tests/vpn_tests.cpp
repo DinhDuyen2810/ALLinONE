@@ -15,7 +15,6 @@
 #include "tools/vpn/engine/VpnGateCache.h"
 #include "tools/vpn/engine/VpnGateClient.h"
 #include "tools/vpn/engine/ConnectivityTester.h"
-#include "tools/vpn/engine/OpenVpnRunner.h"
 #include "tools/vpn/engine/ThirdPartyVpnScanner.h"
 #include "tools/vpn/engine/WireGuardController.h"
 
@@ -305,26 +304,43 @@ int main(int argc, char** argv)
         poll.connState = VpnConnector::kRasStateDisconnected; // rác - statusResult != 0
         CHECK(VpnConnector::evaluateDialPoll(poll, &msg) == Outcome::Pending);
 
-        // Đã kết nối luôn thắng; phiên bị Windows đóng (ERROR_INVALID_HANDLE = 6) là thất bại
+        // Đã kết nối luôn thắng
         poll = Poll{};
         poll.connState = VpnConnector::kRasStateConnected;
         CHECK(VpnConnector::evaluateDialPoll(poll, &msg) == Outcome::Connected);
         poll = Poll{};
         poll.callbackConnected = true;
         poll.statusResult = 6;
+        poll.invalidHandleMs = VpnConnector::kInvalidHandleGraceMs + 1000;
         CHECK(VpnConnector::evaluateDialPoll(poll, &msg) == Outcome::Connected);
+
+        // HỒI QUY v1.19.30 (lỗi THẬT, đo trên máy người dùng): RasGetConnectStatusW trả ERROR_INVALID_HANDLE
+        // (6) ngay ở +16ms trong lúc phiên vẫn đang tiến triển. Coi đó là thất bại ở nhịp đầu khiến MỌI lần
+        // quay số qua app bị gác máy (rasdial.exe vẫn nối được cùng hồ sơ). Mã 6 tạm thời phải là Pending.
         poll = Poll{};
         poll.statusResult = 6;
+        poll.invalidHandleMs = 0;
         msg.clear();
+        CHECK(VpnConnector::evaluateDialPoll(poll, &msg) == Outcome::Pending && msg.isEmpty());
+        poll.invalidHandleMs = VpnConnector::kInvalidHandleGraceMs - 1;
+        CHECK(VpnConnector::evaluateDialPoll(poll, &msg) == Outcome::Pending);
+        // Kéo dài quá ngưỡng mà hàm gọi lại không báo gì -> mới coi là phiên đã mất, thông báo dễ hiểu
+        // (KHÔNG phải "The handle is invalid").
+        poll.invalidHandleMs = VpnConnector::kInvalidHandleGraceMs;
         CHECK(VpnConnector::evaluateDialPoll(poll, &msg) == Outcome::Failed);
-        // v1.19.27: handle bị thu hồi -> thông báo hữu ích về L2TP/NAT, KHÔNG phải "handle is invalid".
-        CHECK(msg.contains("L2TP") && !msg.contains("handle"));
-        // Nếu hàm gọi lại ĐÃ có mã lỗi thật (vd 789) thì ưu tiên mã đó, không dùng thông báo handle.
+        CHECK(!msg.isEmpty() && !msg.contains("handle"));
+        // Hàm gọi lại ĐÃ có mã lỗi thật (vd 789) thì báo NGAY theo mã đó, không cần chờ ngưỡng.
         poll = Poll{};
         poll.statusResult = 6;
         poll.callbackError = 789;
         msg.clear();
         CHECK(VpnConnector::evaluateDialPoll(poll, &msg) == Outcome::Failed && msg.contains("789"));
+        // ...và hàm gọi lại báo đã ngắt (vd sau khi máy chủ từ chối) cũng là thất bại ngay
+        poll = Poll{};
+        poll.statusResult = 6;
+        poll.callbackDisconnected = true;
+        poll.callbackError = 628;
+        CHECK(VpnConnector::evaluateDialPoll(poll, &msg) == Outcome::Failed && msg.contains("628"));
     }
 
     // ---- PublicIpChecker: máy chủ HTTP GIẢ trên 127.0.0.1 (không gọi ra Internet) ----
@@ -751,67 +767,37 @@ SERVICE_NAME: WireGuardTunnel$NL-Proton
         const auto found = ThirdPartyVpnScanner::scan();
         std::printf("ThirdPartyVpnScanner::scan() that: %d ho so VPN ben thu ba\n", static_cast<int>(found.size()));
         for (const auto& p : found)
-            std::printf("  - [%s] %s (%s)\n", qPrintable(p.clientName), qPrintable(p.name), qPrintable(p.server));
+        {
+            std::printf("  - [%s] %s (%s) truc tiep=%s\n", qPrintable(p.clientName), qPrintable(p.name), qPrintable(p.server),
+                        qPrintable(DirectVpn::protocolName(p.direct)));
+            // v1.19.31: đúng loại kết nối trực tiếp theo phần mềm/kiểu tunnel.
+            if (p.clientName == "FortiClient")
+                CHECK(p.direct == DirectProtocol::FortinetSsl);
+            else if (p.clientName == "FortiClient (IPsec)")
+                CHECK(p.direct == DirectProtocol::None && !p.canConnectDirectly());
+            else if (p.clientName == "GlobalProtect" && !p.server.isEmpty())
+                CHECK(p.direct == DirectProtocol::GlobalProtect && p.canConnectDirectly());
+            else if (p.clientName == "OpenVPN" || p.clientName == "Cisco Secure Client")
+                CHECK(p.direct == DirectProtocol::None);
+        }
         CHECK(true); // tới đây không crash là đạt
     }
 
-    // ---- OpenVpnRunner::Internal: buildConfig + stateName (thuần, không chạy openvpn.exe) ----
+    // ---- VpnGateServer::sstpHost: tên miền SSTP <HostName>.opengw.net (lọc chặt dữ liệu từ mạng) ----
     {
-        using OI = OpenVpnRunner::Internal;
-
-        // Cấu hình .ovpn kiểu VPN Gate: có remote + vài chỉ thị cần loại/giữ.
-        const QString raw =
-            "dev tun\n"
-            "proto tcp\n"
-            "remote 1.2.3.4 443\n"
-            "auth-user-pass\n"                 // phải bị loại (sẽ thay bằng tệp)
-            "management 127.0.0.1 7777\n"      // phải bị loại (ta tự đặt)
-            "dev-node MyTap\n"                 // phải bị loại
-            "windows-driver tap-windows6\n"    // phải bị loại (ta ép wintun)
-            "block-outside-dns\n"              // phải bị loại
-            "<ca>\n-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----\n</ca>\n";
-        const QString cfg = OI::buildConfig(raw, 12345, "auth.txt", "mgmt.txt");
-
-        CHECK(cfg.contains("remote 1.2.3.4 443"));          // giữ remote
-        CHECK(cfg.contains("<ca>") && cfg.contains("END CERTIFICATE")); // giữ khối CA
-        CHECK(cfg.contains("auth-user-pass auth.txt"));     // thêm lại theo tệp (vì gốc có auth-user-pass)
-        CHECK(!cfg.contains("auth-user-pass\n"));           // dòng tương tác gốc đã mất
-        CHECK(cfg.contains("management 127.0.0.1 12345 mgmt.txt"));
-        CHECK(!cfg.contains("management 127.0.0.1 7777"));  // management cũ đã mất
-        CHECK(cfg.contains("management-hold"));
-        CHECK(cfg.contains("windows-driver wintun"));
-        CHECK(!cfg.contains("tap-windows6"));               // windows-driver cũ đã mất
-        CHECK(!cfg.contains("dev-node"));
-        CHECK(!cfg.contains("block-outside-dns"));
-        CHECK(cfg.contains("auth-nocache"));
-
-        // Cấu hình kiểu VPN Gate THẬT: xác thực bằng <cert>/<key> nhúng sẵn, KHÔNG có auth-user-pass ->
-        // buildConfig KHÔNG được tự thêm auth-user-pass (thêm thừa làm hỏng bắt tay).
-        const QString certOnly =
-            "client\ndev tun\nproto tcp\nremote 219.100.37.208 443\n"
-            "cipher AES-128-CBC\nauth SHA1\n"
-            "<ca>\n-----BEGIN CERTIFICATE-----\nA\n-----END CERTIFICATE-----\n</ca>\n"
-            "<cert>\n-----BEGIN CERTIFICATE-----\nB\n-----END CERTIFICATE-----\n</cert>\n"
-            "<key>\n-----BEGIN RSA PRIVATE KEY-----\nC\n-----END RSA PRIVATE KEY-----\n</key>\n";
-        const QString cfg2 = OI::buildConfig(certOnly, 23456, "auth.txt", "mgmt.txt");
-        CHECK(!cfg2.contains("auth-user-pass"));            // không tự thêm khi gốc không có
-        CHECK(cfg2.contains("<cert>") && cfg2.contains("</key>")); // giữ nguyên chứng chỉ/khóa client nhúng
-        CHECK(cfg2.contains("remote 219.100.37.208 443"));
-        CHECK(cfg2.contains("management 127.0.0.1 23456 mgmt.txt"));
-        CHECK(cfg2.contains("windows-driver wintun"));
-
-        // stateName: lấy đúng trường thứ 2 của dòng >STATE.
-        CHECK(OI::stateName(">STATE:1700000000,CONNECTED,SUCCESS,10.8.0.2,,") == "CONNECTED");
-        CHECK(OI::stateName(">STATE:1700000000,WAIT,,,") == "WAIT");
-        CHECK(OI::stateName(">STATE:1,TCP_CONNECT") == "TCP_CONNECT");
-        CHECK(OI::stateName(">INFO:xyz").isEmpty());        // không phải dòng STATE
-        CHECK(OI::stateName("linh tinh").isEmpty());
-
-        // isAvailable: môi trường build không có thư mục openvpn/ -> false + nêu thiếu gì.
-        QString missing;
-        const bool avail = OpenVpnRunner::isAvailable(&missing);
-        std::printf("OpenVpnRunner::isAvailable()=%d missing=\"%s\"\n", avail ? 1 : 0, qPrintable(missing));
-        CHECK(avail || !missing.isEmpty()); // nếu không sẵn sàng thì phải nêu thiếu gì
+        auto host = [](const QString& h) { VpnGateServer s; s.hostName = h; return s.sstpHost(); };
+        CHECK(host("public-vpn-119") == "public-vpn-119.opengw.net"); // dạng thật trong API
+        CHECK(host("vpn788502559") == "vpn788502559.opengw.net");
+        CHECK(host("VPN123") == "vpn123.opengw.net");                 // chuẩn hóa chữ thường
+        CHECK(host("").isEmpty());
+        CHECK(host("-abc").isEmpty());                                // nhãn DNS không bắt đầu bằng '-'
+        CHECK(host("abc-").isEmpty());
+        CHECK(host("a.b").isEmpty());                                 // không cho chèn thêm nhãn/tên miền khác
+        CHECK(host("evil.com/x").isEmpty());
+        CHECK(host("x' ; Remove-Item C:\\").isEmpty());               // ký tự lạ (sẽ đi vào lệnh PowerShell) bị chặn
+        CHECK(host(QString(64, 'a')).isEmpty());                      // > 63 ký tự
+        CHECK(host(QString(63, 'a')) == QString(63, 'a') + ".opengw.net");
+        CHECK(host(QString::fromUtf8("vpn\xc3\xa9")).isEmpty());       // ký tự ngoài ASCII
     }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);

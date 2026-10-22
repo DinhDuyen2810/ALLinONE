@@ -362,11 +362,27 @@ add_library(vpn_core STATIC
     src/tools/vpn/model/ThirdPartyVpnProfile.h
     src/tools/vpn/engine/ThirdPartyVpnScanner.h
     src/tools/vpn/engine/ThirdPartyVpnScanner.cpp
-    src/tools/vpn/engine/OpenVpnRunner.h
-    src/tools/vpn/engine/OpenVpnRunner.cpp
+    # Kết nối TRỰC TIẾP tới FortiGate SSL-VPN / GlobalProtect (client giao thức tự viết + adapter wintun.dll,
+    # tầng mạng chạy trong tiến trình phụ nâng quyền "--vpn-helper").
+    src/tools/vpn/direct/DirectVpnTypes.h
+    src/tools/vpn/direct/DirectVpnTypes.cpp
+    src/tools/vpn/direct/PppSession.h
+    src/tools/vpn/direct/PppSession.cpp
+    src/tools/vpn/direct/FortinetProtocol.h
+    src/tools/vpn/direct/FortinetProtocol.cpp
+    src/tools/vpn/direct/GlobalProtectProtocol.h
+    src/tools/vpn/direct/GlobalProtectProtocol.cpp
+    src/tools/vpn/direct/WintunAdapter.h
+    src/tools/vpn/direct/WintunAdapter.cpp
+    src/tools/vpn/direct/TunnelEngine.h
+    src/tools/vpn/direct/TunnelEngine.cpp
+    src/tools/vpn/direct/VpnHelperMain.h
+    src/tools/vpn/direct/VpnHelperMain.cpp
+    src/tools/vpn/direct/DirectVpnSession.h
+    src/tools/vpn/direct/DirectVpnSession.cpp
 )
 target_include_directories(vpn_core PUBLIC src)
-target_link_libraries(vpn_core PUBLIC Qt6::Core Qt6::Network advapi32 shell32 rasapi32 core_shared)
+target_link_libraries(vpn_core PUBLIC Qt6::Core Qt6::Network advapi32 shell32 rasapi32 iphlpapi ws2_32 core_shared)
 
 # qr_ui dùng lại PublicIpChecker của vpn_core cho nút "Lấy vị trí hiện tại" (ước lượng gần đúng theo IP
 # công khai) ở trang tạo mã QR Vị trí (Geo) - cùng lý do/khuôn mẫu đã thêm cho wifi_ui ở trên.
@@ -375,6 +391,24 @@ target_link_libraries(qr_ui PUBLIC vpn_core)
 # ---- Kiểm thử lõi VPN: cmake --build build --target vpn_tests ----
 add_executable(vpn_tests EXCLUDE_FROM_ALL tests/vpn_tests.cpp)
 target_link_libraries(vpn_tests PRIVATE vpn_core)
+
+# ---- Kiểm thử kết nối VPN trực tiếp (FortiGate SSL-VPN / GlobalProtect): lõi thuần + máy chủ GIẢ trên
+# 127.0.0.1 + tiến trình phụ thật (không nâng quyền) - không mạng thật, không adapter, không đổi tuyến:
+# cmake --build build --target vpn_direct_tests ----
+add_executable(vpn_direct_tests EXCLUDE_FROM_ALL tests/vpn_direct_tests.cpp)
+target_link_libraries(vpn_direct_tests PRIVATE vpn_core)
+
+# ---- KIỂM TRA TAY (cần quyền Administrator - tạo adapter wintun THẬT, chỉ dùng dải thử nghiệm 198.18.0.0/15,
+# không đổi tuyến mặc định/DNS): lớp adapter + định tuyến của kết nối trực tiếp, hai chiều gói tin:
+# cmake --build build --target vpn_wintun_real_check ----
+add_executable(vpn_wintun_real_check EXCLUDE_FROM_ALL tests/vpn_wintun_real_check.cpp)
+target_link_libraries(vpn_wintun_real_check PRIVATE vpn_core)
+
+# ---- KIỂM TRA TAY (không phải test tự động - KẾT NỐI VPN THẬT): VPN Gate qua SSTP bằng đúng code của tab
+# "Đổi IP theo quốc gia", đo IP trước/sau rồi ngắt + xóa hồ sơ tạm. Chỉ chạy tay khi cần xác nhận trên máy thật:
+# cmake --build build --target vpn_gate_sstp_real_check ----
+add_executable(vpn_gate_sstp_real_check EXCLUDE_FROM_ALL tests/vpn_gate_sstp_real_check.cpp)
+target_link_libraries(vpn_gate_sstp_real_check PRIVATE vpn_core)
 
 # ---- Giao diện VPN & Location ----
 add_library(vpn_ui STATIC

@@ -1,7 +1,9 @@
 #include <QApplication>
+#include <cstring>
 #include "ui/MainWindow.h"
 #include "core/Logger.h"
 #include "core/Version.h"
+#include "tools/vpn/direct/VpnHelperMain.h"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -10,6 +12,11 @@
 
 int main(int argc, char* argv[])
 {
+    // Tiến trình phụ NÂNG QUYỀN của kết nối VPN trực tiếp (do chính ứng dụng khởi chạy qua UAC) - không dựng
+    // giao diện, không giữ mutex của ứng dụng; tự thoát khi ứng dụng chính đóng kênh điều khiển.
+    if (argc >= 4 && std::strcmp(argv[1], "--vpn-helper") == 0)
+        return runVpnHelper(argc, argv);
+
 #ifdef _WIN32
     // Thiết lập Per-Monitor DPI Awareness V2 theo mục 68 trong tài liệu thiết kế
     // Đảm bảo tọa độ GetCursorPos/SetCursorPos khớp 1:1 với màn hình vật lý

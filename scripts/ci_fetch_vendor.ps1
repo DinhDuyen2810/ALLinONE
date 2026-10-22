@@ -10,9 +10,9 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $vendorScrcpy = Join-Path $root "vendor\scrcpy"
 $vendorYtDlp = Join-Path $root "vendor\yt-dlp"
-$vendorOpenVpn = Join-Path $root "vendor\openvpn"
+$vendorWintun = Join-Path $root "vendor\wintun"
 $tmp = Join-Path $env:RUNNER_TEMP "vendor_fetch"
-New-Item -ItemType Directory -Force -Path $vendorScrcpy, $vendorYtDlp, $vendorOpenVpn, $tmp | Out-Null
+New-Item -ItemType Directory -Force -Path $vendorScrcpy, $vendorYtDlp, $vendorWintun, $tmp | Out-Null
 
 function Get-Sha256($path) {
     return (Get-FileHash -Path $path -Algorithm SHA256).Hash.ToLower()
@@ -93,12 +93,11 @@ if ($ffmpegLicense) {
 }
 Write-Host "  Da cai dat vendor/yt-dlp/ffmpeg.exe + ffprobe.exe"
 
-# ---- 4) OpenVPN community (openvpn.exe + wintun.dll, GPLv2) - dùng cho tab "Doi IP theo quoc gia" (VPN
-# Gate qua OpenVPN, loi thoat khi L2TP native hong). Nguon CHINH THUC build.openvpn.net KHONG co
-# SHA256SUMS, nhung MOI nhi phan (.msi, openvpn.exe, cac DLL) deu duoc ky AUTHENTICODE boi OpenVPN Inc. ->
-# xac minh bang CHU KY AUTHENTICODE (Get-AuthenticodeSignature) - kiem tra Windows-native, chac chan tren
-# CI va KHONG phu thuoc gpg/keyring (gpg cua Git tren runner hieu sai duong dan GNUPGHOME kieu Windows nen
-# khong dung duoc). Nguon van cung cap chu ky GPG .asc neu muon kiem tay - xem THIRD_PARTY.md. ----
+# ---- 4) wintun.dll (WireGuard LLC - driver adapter mang ao TUN tang 3) cho ket noi VPN TRUC TIEP toi
+# FortiGate SSL-VPN / GlobalProtect trong tab "VPN da cai san" (client giao thuc tu viet, xem
+# src/tools/vpn/direct/). Nguon CHINH THUC wintun.net. .zip khong co SHA256SUMS rieng, nhung wintun.dll duoc
+# ky AUTHENTICODE boi WireGuard LLC -> xac minh bang Get-AuthenticodeSignature (Windows-native, chac chan tren
+# CI; khong dung gpg - gpg cua Git tren runner hieu sai duong dan GNUPGHOME kieu Windows, da gap that). ----
 function Assert-Authenticode($path, $subjectMatch) {
     $sig = Get-AuthenticodeSignature $path
     $subj = if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { "(khong co chu ky)" }
@@ -111,42 +110,6 @@ function Assert-Authenticode($path, $subjectMatch) {
     Write-Host "  OK Authenticode $([System.IO.Path]::GetFileName($path)) <= $(($subj -split ',')[0])"
 }
 
-Write-Host "==> OpenVPN community (latest stable, Authenticode-verified)"
-$ovpnMsi = Join-Path $tmp "openvpn-latest-stable-amd64.msi"
-Invoke-WebRequest -Uri "https://build.openvpn.net/downloads/releases/latest/openvpn-latest-stable-amd64.msi" -OutFile $ovpnMsi
-Assert-Authenticode $ovpnMsi "OpenVPN"   # chinh goi .msi phai do OpenVPN Inc. ky
-Write-Host "  sha256 (tham khao) = $(Get-Sha256 $ovpnMsi)"
-
-# Admin install (/a) chi GIAI NEN tep tu .msi vao thu muc dich - KHONG cai driver/dich vu, khong can quyen
-# admin. openvpn.exe can them cac DLL ben canh (OpenSSL + pkcs11-helper + vcruntime) moi chay duoc -> copy
-# ca bo. LUU Y: ban .msi 2.6 KHONG bundle wintun.dll duoi dang tep (driver nam trong driver store), nen
-# wintun.dll phai lay rieng tu nguon chinh thuc wintun.net o buoc duoi.
-$ovpnExtract = Join-Path $tmp "openvpn-extract"
-New-Item -ItemType Directory -Force -Path $ovpnExtract | Out-Null
-$p = Start-Process msiexec.exe -ArgumentList @("/a", "`"$ovpnMsi`"", "/qn", "TARGETDIR=`"$ovpnExtract`"") -Wait -PassThru -NoNewWindow
-if ($p.ExitCode -ne 0) { throw "msiexec /a (admin install extract) that bai, ExitCode=$($p.ExitCode)" }
-$ovpnExe = Get-ChildItem -Path $ovpnExtract -Filter "openvpn.exe" -Recurse | Select-Object -First 1
-if (-not $ovpnExe) { throw "Khong tim thay openvpn.exe trong ban OpenVPN giai nen" }
-Assert-Authenticode $ovpnExe.FullName "OpenVPN"
-$ovpnBin = $ovpnExe.DirectoryName
-# openvpn.exe phu thuc (objdump -p): libssl-3-x64 + libcrypto-3-x64 + libpkcs11-helper-1 (ky OpenVPN Inc.)
-# + vcruntime140 (ky Microsoft). Xac minh Authenticode tung cai truoc khi dong goi.
-$ovpnDlls = @("libssl-3-x64.dll", "libcrypto-3-x64.dll", "libpkcs11-helper-1.dll", "vcruntime140.dll")
-Copy-Item $ovpnExe.FullName (Join-Path $vendorOpenVpn "openvpn.exe") -Force
-foreach ($d in $ovpnDlls) {
-    $src = Join-Path $ovpnBin $d
-    if (-not (Test-Path $src)) { throw "Thieu DLL bat buoc cua openvpn.exe: $d" }
-    $who = if ($d -eq "vcruntime140.dll") { "Microsoft" } else { "OpenVPN" }
-    Assert-Authenticode $src $who
-    Copy-Item $src (Join-Path $vendorOpenVpn $d) -Force
-}
-$ovpnLicense = Get-ChildItem -Path $ovpnExtract -Filter "license.txt" -Recurse | Select-Object -First 1
-if ($ovpnLicense) { Copy-Item $ovpnLicense.FullName (Join-Path $vendorOpenVpn "LICENSE-OpenVPN.txt") -Force }
-Write-Host "  Da cai dat vendor/openvpn/openvpn.exe + OpenSSL DLLs"
-
-# ---- 4b) wintun.dll (WireGuard LLC, GPLv2/BSD-2 - driver adapter ao cho OpenVPN). Nguon CHINH THUC
-# wintun.net. .zip khong co SHA256SUMS rieng, nhung wintun.dll duoc ky Authenticode boi WireGuard LLC ->
-# xac minh bang chu ky Authenticode (du voi THIRD_PARTY.md: xac minh tinh xac thuc truoc khi dung). ----
 Write-Host "==> wintun 0.14.1 (WireGuard LLC, Authenticode-verified)"
 $wintunVersion = "0.14.1"
 $wintunZip = Join-Path $tmp "wintun-$wintunVersion.zip"
@@ -157,7 +120,9 @@ Expand-Archive -Path $wintunZip -DestinationPath $wintunExtract -Force
 $wintunDll = Get-ChildItem -Path (Join-Path $wintunExtract "wintun\bin\amd64") -Filter "wintun.dll" | Select-Object -First 1
 if (-not $wintunDll) { throw "Khong tim thay wintun/bin/amd64/wintun.dll trong ban wintun giai nen" }
 Assert-Authenticode $wintunDll.FullName "WireGuard"
-Copy-Item $wintunDll.FullName (Join-Path $vendorOpenVpn "wintun.dll") -Force
-Write-Host "  Da cai dat vendor/openvpn/wintun.dll"
+Copy-Item $wintunDll.FullName (Join-Path $vendorWintun "wintun.dll") -Force
+$wintunLicense = Join-Path $wintunExtract "wintun\LICENSE.txt"
+if (Test-Path $wintunLicense) { Copy-Item $wintunLicense (Join-Path $vendorWintun "LICENSE.txt") -Force }
+Write-Host "  Da cai dat vendor/wintun/wintun.dll"
 
 Write-Host "==> Xong - vendor/ da san sang."

@@ -54,12 +54,6 @@ VpnGateTab::VpnGateTab(QWidget* parent)
     m_connector = new VpnConnector(this);
     connect(m_connector, &VpnConnector::operationFinished, this, &VpnGateTab::onConnectorFinished);
 
-    m_openvpn = new OpenVpnRunner(this);
-    connect(m_openvpn, &OpenVpnRunner::connected, this, &VpnGateTab::onOvpnConnected);
-    connect(m_openvpn, &OpenVpnRunner::failed, this, &VpnGateTab::onOvpnFailed);
-    connect(m_openvpn, &OpenVpnRunner::disconnected, this, &VpnGateTab::onOvpnDisconnected);
-    connect(m_openvpn, &OpenVpnRunner::stateChanged, this, &VpnGateTab::onOvpnState);
-
     m_ipChecker = new PublicIpChecker(this);
     connect(m_ipChecker, &PublicIpChecker::result, this, &VpnGateTab::onIpResult);
     connect(m_ipChecker, &PublicIpChecker::errorOccurred, this, &VpnGateTab::onIpError);
@@ -86,22 +80,13 @@ VpnGateTab::~VpnGateTab()
         m_backgroundThread->wait();
 }
 
-bool VpnGateTab::hasActiveOpenVpnTunnel() const
-{
-    return m_openvpn && m_openvpn->isActive();
-}
-
 bool VpnGateTab::isBusy() const
 {
-    // OpenVPN: coi là bận khi ĐANG kết nối (phiên đã nối thì cho đóng, sẽ ngắt ở cancelAndWait).
-    const bool ovpnConnecting = m_openvpn && m_openvpn->isActive() && m_phase == Phase::Connecting;
-    return (m_connector && m_connector->isRunning()) || m_backgroundThread != nullptr || ovpnConnecting;
+    return (m_connector && m_connector->isRunning()) || m_backgroundThread != nullptr;
 }
 
 void VpnGateTab::cancelAndWait(int waitMs)
 {
-    if (m_openvpn && m_openvpn->isActive())
-        m_openvpn->disconnectVpn(); // ngắt tunnel OpenVPN khi đóng cửa sổ
     if (m_connector && m_connector->isRunning())
     {
         m_connector->requestCancel();
@@ -112,8 +97,6 @@ void VpnGateTab::cancelAndWait(int waitMs)
 
 void VpnGateTab::requestCancelNoWait()
 {
-    if (m_openvpn && m_openvpn->isActive())
-        m_openvpn->disconnectVpn();
     if (m_connector && m_connector->isRunning())
         m_connector->requestCancel();
 }
@@ -127,8 +110,9 @@ void VpnGateTab::buildUi()
     auto* hint = new QLabel(
         "Kết nối tới máy chủ CÔNG CỘNG MIỄN PHÍ của VPN Gate (dự án nghiên cứu của ĐH Tsukuba, Nhật Bản) để "
         "đổi IP ra quốc gia bạn chọn. Đây là relay do tình nguyện viên chia sẻ: IP đổi theo thời gian, tốc độ/"
-        "ổn định KHÔNG được bảo đảm, bạn tự chịu trách nhiệm khi dùng. Kết nối bằng L2TP/IPsec tích hợp sẵn "
-        "Windows - không phải máy chủ nào cũng bật L2TP, nếu lỗi hãy thử máy chủ khác.",
+        "ổn định KHÔNG được bảo đảm, bạn tự chịu trách nhiệm khi dùng. Kết nối bằng VPN tích hợp sẵn của "
+        "Windows (mặc định SSTP qua cổng 443 - không cần cài thêm gì, không cần quyền Administrator). Không phải "
+        "máy chủ nào cũng bật đủ giao thức - nếu lỗi hãy thử máy chủ khác.",
         this);
     hint->setWordWrap(true);
     hint->setStyleSheet(VpnUi::bannerStyle("warn"));
@@ -138,7 +122,7 @@ void VpnGateTab::buildUi()
     // máy chủ công cộng (thường nằm sau NAT) thất bại trên Windows. Nút này có quyền Admin đặt khóa registry
     // Microsoft tài liệu hóa, rồi cần khởi động lại máy.
     auto* natRow = new QHBoxLayout();
-    auto* natHint = new QLabel("Nếu kết nối hay báo lỗi \"handle/khởi tạo\": máy chủ công cộng thường nằm sau NAT -", this);
+    auto* natHint = new QLabel("Chỉ cho cách L2TP/IPsec - nếu hay báo lỗi \"handle/khởi tạo\": máy chủ công cộng thường nằm sau NAT -", this);
     natHint->setStyleSheet("color: #57606a; font-size: 11px;");
     natHint->setWordWrap(true);
     natRow->addWidget(natHint, 1);
@@ -194,11 +178,12 @@ void VpnGateTab::buildUi()
     topRow->addWidget(methodLabel);
     m_methodCombo = new QComboBox(this);
     m_methodCombo->setStyleSheet(VpnUi::inputStyle());
-    // OpenVPN (qua openvpn.exe đóng gói, cổng 443) là lối thoát khi L2TP native bị hỏng/chặn - ưu tiên nếu có.
-    const bool hasOvpn = OpenVpnRunner::isAvailable();
-    if (hasOvpn)
-        m_methodCombo->addItem("OpenVPN (khuyến nghị)", "ovpn");
+    // SSTP (TLS/443 tới <HostName>.opengw.net) không đụng tầng IPsec nên chạy được cả khi L2TP native của
+    // Windows hỏng/bị chặn (đã xác nhận thật: L2TP lỗi 791 nhưng SSTP đổi được IP trên cùng máy) - mặc định.
+    m_methodCombo->addItem("SSTP - cổng 443 (khuyến nghị)", "sstp");
     m_methodCombo->addItem("L2TP/IPsec", "l2tp");
+    m_methodCombo->setToolTip("SSTP: kết nối TLS qua cổng 443 tới tên miền <máy chủ>.opengw.net - vượt được mạng chặn L2TP.\n"
+                              "L2TP/IPsec: qua UDP 500/4500/1701 tới IP máy chủ.");
     topRow->addWidget(m_methodCombo);
 
     m_connectBtn = new QPushButton("🔌 Kết nối", this);
@@ -398,42 +383,35 @@ void VpnGateTab::onConnectClicked()
     if (!s)
         return;
 
-    // --- OpenVPN (qua openvpn.exe đóng gói) ---
-    if (m_methodCombo && m_methodCombo->currentData().toString() == "ovpn")
-    {
-        QString missing;
-        if (!OpenVpnRunner::isAvailable(&missing))
-        {
-            m_statusLabel->setText("⚠ Thiếu " + missing + " (thư mục \"openvpn\" cạnh file chạy) - chọn L2TP hoặc cài bản đủ.");
-            return;
-        }
-        if (s->ovpnConfig.isEmpty())
-        {
-            m_statusLabel->setText("⚠ Máy chủ này chưa có cấu hình OpenVPN (nạp từ cache cũ). Bấm \"Tải thêm máy chủ\" rồi thử lại.");
-            return;
-        }
-        m_connectedCountry = s->countryLong;
-        m_usingOpenVpn = true;
-        m_phase = Phase::Connecting;
-        m_statusLabel->setText("⏳ Đang kết nối tới " + s->countryLong + " qua OpenVPN (sẽ hiện UAC - bấm Yes)...");
-        m_openvpn->connectConfig(s->ovpnConfig, "vpn", "vpn");
-        updateButtons();
-        return;
-    }
-
-    // Dựng hồ sơ VPN TẠM (ghi đè nếu đã có) trỏ tới IP máy chủ đã chọn, giao thức L2TP/IPsec, tài khoản
-    // công khai của VPN Gate. Tạo hồ sơ chạy nền (PowerShell ~1-3 giây), xong mới quay số RAS.
+    // Dựng hồ sơ VPN TẠM (ghi đè nếu đã có) cho máy chủ đã chọn, tài khoản công khai của VPN Gate. Tạo hồ
+    // sơ chạy nền (PowerShell ~1-3 giây), xong mới quay số RAS.
     VpnProfile p;
     p.name = kTempProfileName;
     p.countryLabel = s->countryLong;
-    p.serverAddress = s->ip;
-    p.tunnelType = VpnTunnelType::L2tp;
     p.username = kVpnGateUser;
-    p.l2tpPsk = kVpnGatePsk;
+    const bool useSstp = !m_methodCombo || m_methodCombo->currentData().toString() != "l2tp";
+    if (useSstp)
+    {
+        // SSTP phải tới đúng TÊN MIỀN (chứng chỉ là *.opengw.net) - kết nối bằng IP sẽ bị Windows từ chối.
+        const QString host = s->sstpHost();
+        if (host.isEmpty())
+        {
+            m_statusLabel->setText("⚠ Máy chủ này thiếu tên miền hợp lệ cho SSTP - chọn máy chủ khác hoặc dùng L2TP/IPsec.");
+            return;
+        }
+        p.serverAddress = host;
+        p.tunnelType = VpnTunnelType::Sstp;
+    }
+    else
+    {
+        p.serverAddress = s->ip;
+        p.tunnelType = VpnTunnelType::L2tp;
+        p.l2tpPsk = kVpnGatePsk;
+    }
 
     const QString country = s->countryLong;
     m_connectedCountry = country;
-    m_usingOpenVpn = false;
+    m_connectedMethod = useSstp ? QStringLiteral("SSTP") : QStringLiteral("L2TP");
     m_phase = Phase::Connecting;
 
     auto ok = std::make_shared<bool>(false);
@@ -451,7 +429,7 @@ void VpnGateTab::onConnectClicked()
             // Quay số RAS tới hồ sơ tạm với tài khoản công khai của VPN Gate (mật khẩu đi thẳng vào bộ
             // nhớ VpnConnector, tự xóa trắng sau khi dùng - xem VpnConnector.h).
             m_connector->setConnectTarget(kTempProfileName, kVpnGateUser, kVpnGatePass);
-            m_statusLabel->setText("⏳ Đang kết nối tới máy chủ " + country + " (tối đa 45 giây)...");
+            m_statusLabel->setText("⏳ Đang kết nối tới máy chủ " + country + " qua " + m_connectedMethod + " (tối đa 45 giây)...");
             m_connector->start();
             updateButtons();
         });
@@ -463,12 +441,6 @@ void VpnGateTab::onDisconnectClicked()
         return;
     m_phase = Phase::Disconnecting;
     m_statusLabel->setText("⏳ Đang ngắt kết nối...");
-    if (m_usingOpenVpn)
-    {
-        m_openvpn->disconnectVpn(); // gửi SIGTERM; disconnected() sẽ về
-        onOvpnDisconnected();
-        return;
-    }
     m_connector->setDisconnectTarget(kTempProfileName);
     m_connector->start();
     updateButtons();
@@ -481,16 +453,18 @@ void VpnGateTab::onConnectorFinished(bool success, QString message)
         if (success)
         {
             m_phase = Phase::Connected;
-            m_statusLabel->setText("✓ Đã kết nối qua " + m_connectedCountry + ". IP của bạn giờ hiển thị ở quốc gia này.");
+            m_statusLabel->setText("✓ Đã kết nối qua " + m_connectedCountry + " (" + m_connectedMethod +
+                                   "). IP của bạn giờ hiển thị ở quốc gia này.");
             onCheckLocationClicked();
         }
         else
         {
             m_phase = Phase::Idle;
             m_statusLabel->setText(
-                "⚠ Không kết nối được máy chủ này (" +
-                (message.isEmpty() ? QString("thất bại") : message) +
-                "). Máy chủ có thể không bật L2TP hoặc bị tường lửa chặn - hãy chọn máy chủ khác rồi thử lại.");
+                "⚠ Không kết nối được máy chủ này qua " + m_connectedMethod + " (" +
+                (message.isEmpty() ? QString("thất bại") : message) + "). Máy chủ có thể không bật " +
+                m_connectedMethod + " hoặc bị tường lửa chặn - hãy chọn máy chủ khác"
+                + (m_connectedMethod == "SSTP" ? QString() : QString(" hoặc đổi sang SSTP")) + " rồi thử lại.");
             removeTempProfileInBackground(); // dọn hồ sơ tạm (không còn kết nối nên xóa được)
         }
     }
@@ -549,39 +523,6 @@ void VpnGateTab::onNatFixClicked()
             else
                 m_statusLabel->setText("Đã chạy lệnh nhưng chưa xác nhận được khóa đã đặt. Hãy khởi động lại máy rồi thử lại.");
         });
-}
-
-void VpnGateTab::onOvpnConnected()
-{
-    m_phase = Phase::Connected;
-    m_statusLabel->setText("✓ Đã kết nối qua " + m_connectedCountry + " (OpenVPN). IP của bạn giờ ở quốc gia này.");
-    onCheckLocationClicked();
-    updateButtons();
-}
-
-void VpnGateTab::onOvpnFailed(QString reason)
-{
-    m_phase = Phase::Idle;
-    m_usingOpenVpn = false;
-    m_statusLabel->setText("⚠ OpenVPN: " + reason);
-    updateButtons();
-}
-
-void VpnGateTab::onOvpnDisconnected()
-{
-    if (m_phase == Phase::Idle)
-        return;
-    m_phase = Phase::Idle;
-    m_usingOpenVpn = false;
-    m_statusLabel->setText("Đã ngắt kết nối.");
-    onCheckLocationClicked();
-    updateButtons();
-}
-
-void VpnGateTab::onOvpnState(QString human)
-{
-    if (m_phase == Phase::Connecting || m_phase == Phase::Connected)
-        m_statusLabel->setText(human);
 }
 
 void VpnGateTab::onCheckConnectivityClicked()

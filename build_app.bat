@@ -52,14 +52,14 @@ if exist "vendor\yt-dlp\yt-dlp.exe" (
 )
 
 echo.
-echo [6/8] Dong goi openvpn.exe/wintun.dll (VPN - ket noi VPN Gate qua OpenVPN) neu co san trong vendor\openvpn...
-if exist "vendor\openvpn\openvpn.exe" (
-    if not exist "build\openvpn" mkdir "build\openvpn"
-    xcopy /y /q "vendor\openvpn\*" "build\openvpn\" >nul
-    echo   Da dong goi vendor\openvpn vao build\openvpn.
+echo [6/8] Dong goi wintun.dll (VPN - adapter mang ao cho ket noi truc tiep FortiGate/GlobalProtect) neu co san trong vendor\wintun...
+if exist "vendor\wintun\wintun.dll" (
+    if not exist "build\wintun" mkdir "build\wintun"
+    xcopy /y /q "vendor\wintun\*" "build\wintun\" >nul
+    echo   Da dong goi vendor\wintun vao build\wintun.
 ) else (
-    echo   [CANH BAO] Khong thay vendor\openvpn\openvpn.exe - tab "Doi IP theo quoc gia" se thieu lua chon OpenVPN.
-    echo   Xem THIRD_PARTY.md de biet cach tai ban OpenVPN community + wintun.dll chinh thuc va dat vao vendor\openvpn\.
+    echo   [CANH BAO] Khong thay vendor\wintun\wintun.dll - tab "VPN da cai san" se khong ket noi truc tiep duoc.
+    echo   Xem THIRD_PARTY.md de biet cach tai wintun.dll chinh thuc ^(wintun.net^) va dat vao vendor\wintun\.
 )
 
 echo.
@@ -69,7 +69,7 @@ copy /y "build\OneForAll.exe" "OneForAll_Release\" >nul
 if exist "build\*.dll" xcopy /y /q "build\*.dll" "OneForAll_Release\" >nul
 if exist "build\scrcpy" xcopy /y /q /s /i "build\scrcpy" "OneForAll_Release\scrcpy\" >nul
 if exist "build\yt-dlp" xcopy /y /q /s /i "build\yt-dlp" "OneForAll_Release\yt-dlp\" >nul
-if exist "build\openvpn" xcopy /y /q /s /i "build\openvpn" "OneForAll_Release\openvpn\" >nul
+if exist "build\wintun" xcopy /y /q /s /i "build\wintun" "OneForAll_Release\wintun\" >nul
 for %%D in (generic iconengines imageformats multimedia networkinformation platforms styles tls) do (
     if exist "build\%%D" xcopy /y /q /s /i "build\%%D" "OneForAll_Release\%%D\" >nul
 )

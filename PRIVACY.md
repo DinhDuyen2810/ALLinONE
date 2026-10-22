@@ -26,7 +26,17 @@ này - muốn xóa sạch dữ liệu, tự xóa thư mục đó.
   dán link Google Maps ĐẦY ĐỦ chỉ đọc tọa độ từ chuỗi bạn dán, không gọi mạng; dán link RÚT GỌN
   (`maps.app.goo.gl/...`) thì ứng dụng gửi MỘT yêu cầu HTTPS tới Google để đọc địa chỉ chuyển hướng (chỉ đọc
   header, không tải trang; chỉ đi theo các địa chỉ thuộc Google, tối đa 5 bước).
-- **VPN đã cài sẵn (từ 1.19.28)**: ứng dụng ĐỌC (chỉ đọc) tên hồ sơ + địa chỉ máy chủ của các kết nối VPN đã cấu hình bởi FortiClient/GlobalProtect/OpenVPN/Cisco trên máy bạn (từ registry/tệp cấu hình của CHÍNH các phần mềm đó) để hiển thị và mở phần mềm đó khi bạn bấm - KHÔNG đọc/giải mã mật khẩu, KHÔNG gửi gì ra mạng, không ghi ra đâu.
+- **VPN đã cài sẵn (từ 1.19.28)**: ứng dụng ĐỌC (chỉ đọc) tên hồ sơ + địa chỉ máy chủ của các kết nối VPN đã cấu hình bởi FortiClient/GlobalProtect/OpenVPN/Cisco trên máy bạn (từ registry/tệp cấu hình của CHÍNH các phần mềm đó) để hiển thị và mở phần mềm đó khi bạn bấm - KHÔNG đọc/giải mã mật khẩu đã lưu trong các phần mềm đó.
+- **Kết nối trực tiếp FortiGate SSL-VPN / GlobalProtect (từ 1.19.31)**: khi bạn bấm "Kết nối trực tiếp", ứng dụng gửi
+  tên đăng nhập + mật khẩu (và mã OTP nếu máy chủ hỏi) MÀ BẠN NHẬP tới ĐÚNG máy chủ VPN của cơ quan đã cấu hình trong
+  hồ sơ, qua HTTPS. Mật khẩu/OTP chỉ nằm trong bộ nhớ cho tới khi đăng nhập xong rồi bị xóa trắng - KHÔNG ghi ra đĩa
+  hay nhật ký; chỉ TÊN đăng nhập được nhớ theo máy chủ cho tiện (`profiles\vpn_direct_users.json`). Nếu chứng chỉ máy
+  chủ không được Windows tin cậy (FortiGate hay dùng chứng chỉ mặc định tự ký), ứng dụng hiện vân tay SHA-256 để bạn
+  đối chiếu; vân tay bạn chấp nhận được lưu theo "máy chủ:cổng" (`profiles\vpn_trusted_certs.json`). Phần mạng chạy
+  trong một tiến trình phụ của chính ứng dụng với quyền Administrator (hộp thoại UAC) để tạo adapter mạng ảo wintun
+  và đặt tuyến/DNS; nó nhận việc qua kênh nội bộ có mã một lần (mật khẩu không nằm trên dòng lệnh) và tự gỡ tuyến,
+  xóa adapter, thoát khi bạn ngắt hoặc khi ứng dụng đóng. Khi kết nối, lưu lượng theo tuyến máy chủ cấp (toàn bộ hoặc
+  chỉ mạng nội bộ cơ quan) đi qua máy chủ VPN của cơ quan bạn - như khi dùng FortiClient/GlobalProtect.
 - **Connect Together**: danh sách thiết bị đã ghép đôi + khóa dài hạn của từng cặp máy
   (`profiles\connect_peers.json`, khóa được bảo vệ bằng Windows DPAPI theo tài khoản của bạn), định danh máy
   bạn tự sinh ngẫu nhiên (`profiles\connect_identity.json`, không gắn với danh tính thật). Khi đang kết nối,
@@ -38,13 +48,11 @@ này - muốn xóa sạch dữ liệu, tự xóa thư mục đó.
   (Windows tự lưu như khi bạn thêm VPN trong Cài đặt), ứng dụng không ghi nó ra tệp nào. Nhãn quốc gia/tên đăng nhập bạn
   tự khai báo (`profiles\vpn_profiles.json`); mật khẩu
   VPN KHÔNG được ghi ra đĩa dưới bất kỳ hình thức nào.
-- **Đổi IP theo quốc gia (VPN Gate) qua OpenVPN (từ 1.19.30)**: khi bạn chọn cách kết nối "OpenVPN", ứng dụng chạy
-  `openvpn.exe` ĐÓNG GÓI KÈM (cần bấm Yes ở hộp thoại UAC vì tạo adapter mạng cần quyền Administrator) để kết nối tới
-  máy chủ VPN Gate bạn chọn. Cấu hình `.ovpn` (gồm chứng chỉ do chính VPN Gate cung cấp) và một tệp mật khẩu điều khiển
-  cục bộ chỉ được ghi vào MỘT thư mục TẠM tự xóa, không nằm trong dữ liệu người dùng; management interface của OpenVPN
-  chỉ mở trên `127.0.0.1` (máy cục bộ) và có mật khẩu ngẫu nhiên. Khi kết nối, TOÀN BỘ lưu lượng mạng của bạn đi qua máy
-  chủ tình nguyện của VPN Gate (bên thứ ba) - đây là bản chất của mọi VPN công cộng miễn phí; chỉ dùng khi bạn chấp nhận
-  điều đó. Đóng cửa sổ VPN sẽ tự ngắt kết nối OpenVPN.
+- **Đổi IP theo quốc gia (VPN Gate)**: ứng dụng tạo một hồ sơ VPN TẠM của Windows ("OneForAll-VPNGate") tới máy chủ
+  bạn chọn - SSTP (mặc định từ 1.19.31) hoặc L2TP/IPsec - với tài khoản CÔNG KHAI của VPN Gate ("vpn"), và tự xóa hồ sơ
+  khi ngắt. Không cần quyền Administrator, không chạy chương trình ngoài. Khi kết nối, TOÀN BỘ lưu lượng mạng của bạn đi
+  qua máy chủ tình nguyện của VPN Gate (bên thứ ba) - đây là bản chất của mọi VPN công cộng miễn phí; chỉ dùng khi bạn
+  chấp nhận điều đó. (Bản 1.19.30 từng chạy `openvpn.exe` đóng gói kèm - đã gỡ hoàn toàn ở 1.19.31.)
 - **Downloader**: cài đặt (`profiles\downloader_settings.json`: thư mục tải xuống, số tệp đồng thời, giới hạn mục, bật/tắt trình duyệt ẩn, chế độ cookie cùng TÊN trình duyệt hoặc ĐƯỜNG DẪN tệp `cookies.txt` - ứng dụng KHÔNG đọc hay lưu nội dung cookie) và lịch sử tải (`profiles\downloader_history.json`, tối đa 2000 mục: tên, đường dẫn tệp, link nguồn, link tệp, thời gian, kích thước, kết quả). Link nguồn có thể chứa mã/token của trang bạn đã tải - xóa từng mục hoặc toàn bộ trong tab "Lịch sử". Các tệp đã tải nằm ở thư mục bạn chọn, không bị xóa khi xóa lịch sử.
 - **Log ứng dụng**: `logs\*.log` - nhật ký hoạt động/chẩn đoán lỗi, ở lại trên máy bạn, không gửi đi đâu
   (trừ khi chính bạn chủ động gửi để báo lỗi). Log không ghi nội dung văn bản Auto Click gõ hộ bạn.

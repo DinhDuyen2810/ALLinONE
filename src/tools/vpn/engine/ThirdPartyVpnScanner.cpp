@@ -205,6 +205,8 @@ void scanFortiClient(QList<ThirdPartyVpnProfile>& out)
             p.server = server;
             p.source = source;
             p.exePath = exe;
+            // SSL-VPN kết nối trực tiếp được trong ứng dụng; IPsec (IKEv1 + XAuth của FortiGate) thì chưa.
+            p.direct = b.ipsec ? DirectProtocol::None : DirectProtocol::FortinetSsl;
             idx.insert(key, forti.size());
             forti << p;
         }
@@ -238,6 +240,7 @@ void scanGlobalProtect(QList<ThirdPartyVpnProfile>& out)
         pr.server = portal;
         pr.source = "registry: Palo Alto Networks\\GlobalProtect";
         pr.exePath = exe;
+        pr.direct = DirectProtocol::GlobalProtect;
         out << pr;
     }
     // Có cài GlobalProtect nhưng chưa có portal nào lưu: vẫn liệt kê một mục để người dùng mở client tự nhập.
