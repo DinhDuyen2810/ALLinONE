@@ -117,6 +117,23 @@ void VpnGateTab::buildUi()
     hint->setStyleSheet(VpnUi::bannerStyle("warn"));
     root->addWidget(hint);
 
+    // Sửa lỗi L2TP sau NAT (AssumeUDPEncapsulationContextOnSendRule) - nguyên nhân phổ biến khiến L2TP tới
+    // máy chủ công cộng (thường nằm sau NAT) thất bại trên Windows. Nút này có quyền Admin đặt khóa registry
+    // Microsoft tài liệu hóa, rồi cần khởi động lại máy.
+    auto* natRow = new QHBoxLayout();
+    auto* natHint = new QLabel("Nếu kết nối hay báo lỗi \"handle/khởi tạo\": máy chủ công cộng thường nằm sau NAT -", this);
+    natHint->setStyleSheet("color: #57606a; font-size: 11px;");
+    natHint->setWordWrap(true);
+    natRow->addWidget(natHint, 1);
+    m_natFixBtn = new QPushButton("🔧 Sửa lỗi L2TP sau NAT (Admin)", this);
+    m_natFixBtn->setStyleSheet(VpnUi::buttonStyle());
+    m_natFixBtn->setCursor(Qt::PointingHandCursor);
+    m_natFixBtn->setToolTip("Đặt khóa registry AssumeUDPEncapsulationContextOnSendRule=2 (Microsoft tài liệu hóa) để "
+                            "L2TP/IPsec kết nối được tới máy chủ nằm sau NAT. Cần quyền Administrator và KHỞI ĐỘNG LẠI máy.");
+    connect(m_natFixBtn, &QPushButton::clicked, this, &VpnGateTab::onNatFixClicked);
+    natRow->addWidget(m_natFixBtn);
+    root->addLayout(natRow);
+
     // ---- Vị trí hiện tại (theo IP) ----
     auto* locGroup = new QGroupBox("Vị trí hiện tại (theo IP)", this);
     locGroup->setStyleSheet(VpnUi::groupStyle());
@@ -324,6 +341,8 @@ void VpnGateTab::updateButtons()
     m_disconnectBtn->setVisible(connected);
     m_disconnectBtn->setEnabled(!busy && connected);
     m_checkBtn->setEnabled(s != nullptr);
+    if (m_natFixBtn)
+        m_natFixBtn->setEnabled(!busy);
 }
 
 void VpnGateTab::runInBackground(const QString& statusText, std::function<void()> work, std::function<void()> done)
@@ -435,6 +454,43 @@ void VpnGateTab::removeTempProfileInBackground()
         return;
     runInBackground(
         m_statusLabel->text(), []() { VpnController::removeConnection(kTempProfileName, nullptr); }, [this]() {});
+}
+
+void VpnGateTab::onNatFixClicked()
+{
+    if (isBusy())
+        return;
+    const auto ans = QMessageBox::question(
+        this, "Sửa lỗi L2TP sau NAT",
+        "L2TP/IPsec tới máy chủ nằm sau NAT (đa số máy chủ công cộng/miễn phí) thường THẤT BẠI trên Windows "
+        "cho tới khi bật một khóa registry được Microsoft tài liệu hóa:\n\n"
+        "HKLM\\SYSTEM\\CurrentControlSet\\Services\\PolicyAgent\\AssumeUDPEncapsulationContextOnSendRule = 2\n\n"
+        "Thao tác này cần quyền Administrator (sẽ hiện hộp thoại UAC) và CHỈ CÓ HIỆU LỰC SAU KHI KHỞI ĐỘNG LẠI "
+        "MÁY. Tiếp tục?",
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (ans != QMessageBox::Yes)
+        return;
+
+    auto ok = std::make_shared<bool>(false);
+    auto error = std::make_shared<QString>();
+    auto state = std::make_shared<int>(0); // 0=Unknown,1=Disabled,2=Enabled
+    runInBackground(
+        "⏳ Đang áp dụng (chờ xác nhận quyền Administrator)...",
+        [ok, error, state]() {
+            *ok = VpnController::enableAssumeUdpEncapsulationElevated(error.get());
+            *state = static_cast<int>(VpnController::assumeUdpEncapsulationState());
+        },
+        [this, ok, error, state]() {
+            if (!*ok)
+            {
+                m_statusLabel->setText("⚠ Chưa áp dụng được: " + *error);
+                return;
+            }
+            if (*state == static_cast<int>(VpnController::NatTState::Enabled))
+                m_statusLabel->setText("✓ Đã bật sửa lỗi L2TP sau NAT. Hãy KHỞI ĐỘNG LẠI máy rồi thử kết nối lại.");
+            else
+                m_statusLabel->setText("Đã chạy lệnh nhưng chưa xác nhận được khóa đã đặt. Hãy khởi động lại máy rồi thử lại.");
+        });
 }
 
 void VpnGateTab::onCheckConnectivityClicked()

@@ -185,10 +185,9 @@ VpnConnector::DialOutcome VpnConnector::evaluateDialPoll(const DialPoll& poll, Q
         if (error == 0 && poll.statusError != PENDING)
             error = poll.statusError;
     }
-    else if (poll.statusResult == ERROR_INVALID_HANDLE && error == 0 && !connected)
-    {
-        error = poll.statusResult; // phiên đã bị đóng từ phía Windows
-    }
+    // ERROR_INVALID_HANDLE (6): phiên đã bị Windows thu hồi mà hàm gọi lại CHƯA báo mã lỗi cụ thể - thường
+    // do L2TP/IPsec thất bại rất nhanh. Xử lý RIÊNG để KHÔNG hiện "The handle is invalid" khó hiểu.
+    const bool handleGone = poll.statusResult == ERROR_INVALID_HANDLE && !connected;
     // Mọi mã khác (vd không đọc được trạng thái lúc này): không kết luận gì - tiếp tục dựa vào hàm gọi lại,
     // và giới hạn 45 giây của vòng chờ bảo đảm nó luôn kết thúc.
 
@@ -197,6 +196,15 @@ VpnConnector::DialOutcome VpnConnector::evaluateDialPoll(const DialPoll& poll, Q
     if (error != 0)
     {
         *failureMessage = describeRasError(error);
+        return DialOutcome::Failed;
+    }
+    if (handleGone)
+    {
+        *failureMessage =
+            "Kết nối bị đóng ngay khi đang thiết lập. Với máy chủ VPN công cộng (L2TP/IPsec), thường do: máy "
+            "chủ không bật L2TP; hoặc mạng/ISP của bạn chặn L2TP (các cổng UDP 500/4500/1701); hoặc máy chủ "
+            "nằm sau NAT. Hãy thử máy chủ khác (xem trạng thái ở tab \"Kiểm tra kết nối\"). Nếu nhiều máy chủ "
+            "đều lỗi, bấm \"Sửa lỗi L2TP sau NAT\" (cần quyền Administrator + khởi động lại máy) rồi thử lại.";
         return DialOutcome::Failed;
     }
     if (disconnected)
@@ -254,10 +262,16 @@ bool VpnConnector::doConnect(QString& password, QString* message)
         g_callback = CallbackState{};
     }
 
-    // Kiểu thông báo 1 (RasDialFunc1) = KHÔNG ĐỒNG BỘ: RasDial trả về ngay, tiến độ/lỗi báo qua hàm gọi
-    // lại. Sổ danh bạ nullptr = sổ mặc định của người dùng (nơi Add-VpnConnection tạo kết nối per-user).
+    // Hàm gọi lại dialCallback có chữ ký RASDIALFUNC1 (HRASCONN,UINT,RASCONNSTATE,DWORD,DWORD) nên
+    // dwNotifierType PHẢI là 2 (xem tài liệu RasDial của Microsoft: 1 = RASDIALFUNC 3 tham số, 2 =
+    // RASDIALFUNC1 5 tham số). Trước đây truyền NHẦM 1: RAS gọi lại theo ABI 3 tham số nên tham số đầu
+    // (HRASCONN) đọc nhầm sang mã thông điệp, g_callback.conn KHÔNG BAO GIỜ khớp HRASCONN thật -> mất mã
+    // lỗi thật của hàm gọi lại, và khi quay số thất bại thì chỉ còn RasGetConnectStatus trả về handle đã bị
+    // thu hồi (ERROR_INVALID_HANDLE = "Lỗi 6: The handle is invalid") - đúng lỗi khó hiểu người dùng gặp.
+    // KHÔNG ĐỒNG BỘ: RasDial trả về ngay, tiến độ/lỗi báo qua hàm gọi lại. Sổ danh bạ nullptr = sổ mặc định
+    // của người dùng (nơi Add-VpnConnection tạo kết nối per-user).
     HRASCONN conn = nullptr;
-    const DWORD dialResult = RasDialW(nullptr, nullptr, &params, 1, reinterpret_cast<LPVOID>(dialCallback), &conn);
+    const DWORD dialResult = RasDialW(nullptr, nullptr, &params, 2, reinterpret_cast<LPVOID>(dialCallback), &conn);
 
     bool success = false;
     if (dialResult != ERROR_SUCCESS)

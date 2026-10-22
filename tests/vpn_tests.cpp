@@ -313,7 +313,16 @@ int main(int argc, char** argv)
         CHECK(VpnConnector::evaluateDialPoll(poll, &msg) == Outcome::Connected);
         poll = Poll{};
         poll.statusResult = 6;
+        msg.clear();
         CHECK(VpnConnector::evaluateDialPoll(poll, &msg) == Outcome::Failed);
+        // v1.19.27: handle bị thu hồi -> thông báo hữu ích về L2TP/NAT, KHÔNG phải "handle is invalid".
+        CHECK(msg.contains("L2TP") && !msg.contains("handle"));
+        // Nếu hàm gọi lại ĐÃ có mã lỗi thật (vd 789) thì ưu tiên mã đó, không dùng thông báo handle.
+        poll = Poll{};
+        poll.statusResult = 6;
+        poll.callbackError = 789;
+        msg.clear();
+        CHECK(VpnConnector::evaluateDialPoll(poll, &msg) == Outcome::Failed && msg.contains("789"));
     }
 
     // ---- PublicIpChecker: máy chủ HTTP GIẢ trên 127.0.0.1 (không gọi ra Internet) ----
@@ -696,6 +705,16 @@ SERVICE_NAME: WireGuardTunnel$NL-Proton
         reachable = true; ms = -1;
         CHECK(runTest(t2, "127.0.0.1", openPort, 4000, &reachable, &ms));
         CHECK(!reachable);
+    }
+
+    // ---- "Sửa lỗi L2TP sau NAT": script đọc + lệnh đặt khóa registry (thuần) ----
+    {
+        const QString readScript = VpnController::internal::buildReadAssumeUdpScript();
+        CHECK(readScript.contains("AssumeUDPEncapsulationContextOnSendRule"));
+        CHECK(readScript.contains("PolicyAgent") && readScript.contains("none"));
+        const QString setCmd = VpnController::internal::assumeUdpSetCommand();
+        CHECK(setCmd.contains("AssumeUDPEncapsulationContextOnSendRule"));
+        CHECK(setCmd.contains("PolicyAgent") && setCmd.contains("-Value 2") && setCmd.contains("DWord"));
     }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);

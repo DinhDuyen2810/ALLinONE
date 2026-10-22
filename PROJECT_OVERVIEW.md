@@ -2532,6 +2532,44 @@ tự bấm thử. Máy chủ chọn không bật L2TP thì kết nối báo lỗ
 các kết nối đã cấu hình trên máy (tên, địa chỉ cổng - từ registry của chính các client đó) rồi khởi chạy chính
 client đó để kết nối; KHÔNG giải mã mật khẩu đã lưu, KHÔNG kết nối thẳng (giao thức SSL-VPN riêng).
 
+## 4zm. VPN: sửa lỗi kết nối L2TP "Lỗi 6: The handle is invalid" + helper NAT-T (2026-10-22, v1.19.27)
+
+Người dùng báo (kèm ảnh): kết nối máy chủ VPN Gate **lần nào cũng** báo "Không kết nối được máy chủ này (Thao
+tác VPN thất bại. (Lỗi 6: The handle is invalid.))". Đây là đường `RasDialW` thật mà tài liệu ghi "CHƯA kiểm
+chứng" (môi trường build không có VPN thật) - giờ chạy thật mới lộ.
+
+**Nguyên nhân thật (bug, không đoán):** hàm gọi lại `dialCallback` có đúng chữ ký `RASDIALFUNC1`
+(`HRASCONN,UINT,RASCONNSTATE,DWORD,DWORD`), nhưng `RasDialW` lại truyền `dwNotifierType = 1`. Theo tài liệu
+Microsoft, **1 = RASDIALFUNC (3 tham số), 2 = RASDIALFUNC1 (5 tham số)** (xác nhận trong `ras.h` của MinGW:
+dòng 440-441). Truyền nhầm 1: RAS gọi lại theo ABI 3 tham số nên tham số đầu (`HRASCONN`) bị đọc lệch, biến
+`g_callback.conn` KHÔNG BAO GIỜ khớp HRASCONN thật → mất toàn bộ mã lỗi thật mà hàm gọi lại báo về. Khi quay số
+thất bại, chỉ còn `RasGetConnectStatusW` trả về handle đã bị Windows thu hồi = `ERROR_INVALID_HANDLE` (6) →
+hiện "The handle is invalid" khó hiểu thay vì lý do thật (789/800...).
+
+**Đã sửa:**
+- `VpnConnector::doConnect`: `dwNotifierType` 1 → **2** (đúng cho `RASDIALFUNC1`). Nay hàm gọi lại khớp
+  HRASCONN, mã lỗi RAS thật (789 = bắt tay L2TP/IPsec thất bại, 800/809 = không liên lạc được máy chủ, 691 =
+  sai tài khoản...) được báo đúng.
+- `VpnConnector::evaluateDialPoll`: khi handle bị thu hồi mà chưa có mã lỗi cụ thể, KHÔNG hiện "handle is
+  invalid" nữa mà cho thông báo hướng dẫn: máy chủ có thể không bật L2TP, hoặc mạng/ISP chặn L2TP (UDP
+  500/4500/1701), hoặc máy chủ sau NAT → thử máy chủ khác / dùng tab Kiểm tra kết nối / bật "Sửa lỗi L2TP sau NAT".
+
+**Helper "Sửa lỗi L2TP sau NAT" (nguyên nhân phổ biến nhất khiến L2TP tới máy chủ công cộng thất bại):**
+L2TP/IPsec tới máy chủ nằm sau NAT (đa số máy chủ tình nguyện của VPN Gate) THẤT BẠI trên Windows cho tới khi
+đặt khóa registry `HKLM\SYSTEM\CurrentControlSet\Services\PolicyAgent\AssumeUDPEncapsulationContextOnSendRule`
+= 2 - cách sửa được Microsoft tài liệu hóa chính thức. Thêm nút "🔧 Sửa lỗi L2TP sau NAT (Admin)" ở tab VPN
+Gate: hỏi xác nhận rõ ràng → mở UAC chạy PowerShell quyền Admin đặt khóa (`VpnController::enableAssumeUdp
+EncapsulationElevated` qua `ShellExecuteExW` verb "runas") → báo cần KHỞI ĐỘNG LẠI máy. `buildReadAssumeUdp
+Script()`/`assumeUdpSetCommand()` thuần, test được; đọc trạng thái không cần Admin.
+
+**Kiểm thử:** `vpn_tests` 188/0 (+6: `evaluateDialPoll` khi handle thu hồi cho thông báo L2TP đúng + ưu tiên mã
+lỗi thật của hàm gọi lại; script đọc/đặt AssumeUDPEncapsulation), `vpn_ui_tests` 7/0.
+
+**CHƯA kiểm chứng (cần VPN thật + máy thật):** kết nối L2TP đầu-cuối sau khi sửa; việc đặt khóa registry NAT-T
+và khởi động lại có làm L2TP tới VPN Gate thành công hay không - cần người dùng tự thử trên máy thật. Nếu sau
+khi bật NAT-T + khởi động lại vẫn lỗi với nhiều máy chủ, nhiều khả năng mạng/ISP chặn hẳn L2TP - khi đó cần
+OpenVPN/SSTP (giai đoạn sau), không khắc phục được bằng L2TP.
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
@@ -2708,6 +2746,7 @@ Quy tắc đứng nằm ở `CLAUDE.md` (gốc dự án). Tóm tắt - mỗi l�
 | 2026-10-18 | WiFi chia sẻ QR + Android ghép đôi QR; tab Cài đặt WiFi (v1.19.24) | WiFi > Hồ sơ đã lưu: nút "Chia sẻ QR" dựng mã `WIFI:...` từ hồ sơ (qua `qr_core`; mật khẩu dạng chữ cần Admin). Android > Thiết bị: nút "Ghép bằng QR..." hiện mã `WIFI:T:ADB;...`, dò `_adb-tls-pairing._tcp` qua `adb mdns services` (`AdbController::internal::parseMdnsPairingService`) rồi tự `adb pair` với mã 6 số do app sinh. WiFi > Cài đặt: mật khẩu mặc định cho nút "Kết nối lab" (một mật khẩu, một lần thử); kết luận kết nối theo phản hồi adapter (`ConnectionWatcher::evaluateAttempt`), không chờ hết giờ; ô khoảng From/To hệ 36 chỉ LƯU trong QSettings, CHƯA nối vào hành động nào. Phụ thuộc: wifi_ui/android_ui link thêm `qr_core` (một chiều, tránh vòng với qr_ui). CHƯA kiểm chứng hai luồng QR (cần điện thoại thật). Lần này chỉ push code, KHÔNG tạo tag/Release. |
 | 2026-10-19 | VPN: thêm tab WireGuard - giai đoạn 1/3 đa giao thức VPN (v1.19.25) | `VpnControlWindow` nay là `QTabWidget` [VPN hệ thống, WireGuard]. `WireGuardController` (vpn_core) dùng CHÍNH WireGuard for Windows đã cài trên máy (không đóng gói driver): `importTunnel()` → `wireguard.exe /installtunnelservice`; `startTunnel()`/`stopTunnel()` → `sc.exe start/stop "WireGuardTunnel$<tên>"`; `removeTunnel()` → `/uninstalltunnelservice`; `listTunnels()` đọc thư mục cấu hình WireGuard + metadata hiển thị riêng (KHÔNG bao giờ lưu PrivateKey). Mọi thao tác cần Administrator, banner relaunch cùng mẫu MalwareScanTab/WebProtectionTab. `vpn_tests` 155/0 (+ test thuần cho sanitizeTunnelName/serviceName/parseConfForDisplay/isServiceRunningOutput/tunnelNameFromConfigFileName), `vpn_ui_tests` 7/0 (dựng thật WireGuardTab, không crash). CHƯA kiểm chứng gọi wireguard.exe/sc.exe thật (môi trường build không có WireGuard cài sẵn + máy chủ thật). Còn lại kế hoạch: OpenVPN (giai đoạn 2), FortiClient/GlobalProtect detect-and-launch + OpenConnect (giai đoạn 3) - CHƯA làm. Lần này chỉ push code, KHÔNG tạo tag/Release. |
 | 2026-10-22 | VPN: tab "Đổi IP theo quốc gia" (VPN Gate) + gộp tối đa máy chủ + tab "Kiểm tra kết nối" (v1.19.26) | Yêu cầu (ảnh Hotspot Shield): chọn quốc gia rồi connect đổi IP; lấy nhiều máy chủ free nhất có thể; có tab riêng kiểm tra kết nối. App KHÔNG có máy chủ riêng nên dùng danh sách relay tình nguyện CÔNG KHAI của VPN Gate (ĐH Tsukuba) qua API `vpngate.net/api/iphone/`, kết nối L2TP/IPsec qua RAS có sẵn (tài khoản công khai "vpn"). Tab "🌍 Đổi IP theo quốc gia": tải danh sách, lọc theo quốc gia, bảng ping/tốc độ, kết nối qua hồ sơ tạm `OneForAll-VPNGate` (tự xóa khi ngắt). `VpnGateCache` GỘP + lưu đĩa (dedup IP, loại cũ 3 ngày) vì API chỉ trả ~100 máy chủ/lần (đo thật). Tab "🔎 Kiểm tra kết nối" (`ConnectivityTester`, QTcpSocket) lọc máy chủ còn sống. `vpn_tests` 182/0 (+27), `vpn_ui_tests` 7/0; parser kiểm CSV thật 98/98. CHƯA kiểm chứng kết nối L2TP thật đầu-cuối. Yêu cầu 2 (FortiClient/GlobalProtect) để sau. Chỉ push code, KHÔNG tag/Release. |
+| 2026-10-22 | VPN: sửa lỗi kết nối L2TP "Lỗi 6: The handle is invalid" + helper NAT-T (v1.19.27) | Người dùng báo mọi lần kết nối VPN Gate đều "Lỗi 6: The handle is invalid". Bug thật: `dialCallback` là RASDIALFUNC1 nhưng RasDialW truyền `dwNotifierType=1` (phải là 2) -> hàm gọi lại lệch tham số, mất mã lỗi RAS thật, chỉ còn RasGetConnectStatus trả handle đã thu hồi (6). Sửa 1->2; evaluateDialPoll cho thông báo hữu ích (L2TP/NAT) thay vì "handle is invalid". Thêm nút "Sửa lỗi L2TP sau NAT" đặt khóa registry AssumeUDPEncapsulationContextOnSendRule=2 (Microsoft tài liệu hóa, qua UAC, cần khởi động lại). `vpn_tests` 188/0 (+6), `vpn_ui_tests` 7/0. CHƯA kiểm chứng kết nối L2TP thật đầu-cuối. Chỉ push code, KHÔNG tag/Release. |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `

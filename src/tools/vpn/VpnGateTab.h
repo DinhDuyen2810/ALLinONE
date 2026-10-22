@@ -51,6 +51,7 @@ private slots:
     void onConnectClicked();
     void onDisconnectClicked();
     void onCheckConnectivityClicked();
+    void onNatFixClicked();
     void onConnectorFinished(bool success, QString message);
     void onCheckLocationClicked();
     void onIpResult(PublicIpInfo info);
@@ -75,6 +76,7 @@ private:
     QPushButton* m_connectBtn{nullptr};
     QPushButton* m_disconnectBtn{nullptr};
     QPushButton* m_checkBtn{nullptr};
+    QPushButton* m_natFixBtn{nullptr};
     QLabel* m_statusLabel{nullptr};
     QLabel* m_countLabel{nullptr};
 

@@ -65,6 +65,17 @@ bool setProfileMeta(const QString& name, const VpnProfileMeta& meta, QString* er
 /// Chỉ đổi nhãn quốc gia đã lưu, giữ nguyên tên đăng nhập.
 void setCountryLabel(const QString& name, const QString& countryLabel);
 
+/// "Sửa lỗi L2TP sau NAT" - trạng thái khóa registry AssumeUDPEncapsulationContextOnSendRule
+/// (HKLM\SYSTEM\CurrentControlSet\Services\PolicyAgent). L2TP/IPsec tới máy chủ nằm sau NAT (đa số máy chủ
+/// công cộng/tình nguyện của VPN Gate) THẤT BẠI trên Windows nếu khóa này chưa = 2 - đây là cách sửa được
+/// Microsoft tài liệu hóa chính thức. Đọc được KHÔNG cần quyền Admin; GHI cần Administrator + KHỞI ĐỘNG LẠI
+/// máy mới có hiệu lực.
+enum class NatTState { Unknown, Disabled, Enabled };
+NatTState assumeUdpEncapsulationState();
+/// Mở hộp thoại UAC chạy PowerShell quyền Admin đặt khóa = 2. Trả về true nếu tiến trình nâng quyền đã CHẠY
+/// XONG (nơi gọi đọc lại trạng thái để biết kết quả); false + *error nếu người dùng từ chối UAC/không chạy được.
+bool enableAssumeUdpEncapsulationElevated(QString* error = nullptr);
+
 // ---- Lõi thuần (không gọi PowerShell thật) - tách riêng để kiểm thử được bằng dữ liệu mẫu ----
 namespace internal
 {
@@ -77,5 +88,9 @@ QString escapePsString(const QString& s);
 QString buildAddConnectionScript(const VpnProfile& profile);
 QString buildRemoveConnectionScript(const QString& name);
 QString buildListConnectionsScript();
+/// Script đọc giá trị AssumeUDPEncapsulationContextOnSendRule (in "none" nếu chưa đặt) - thuần, test được.
+QString buildReadAssumeUdpScript();
+/// Dòng lệnh PowerShell (sau -Command) để ĐẶT khóa = 2 - thuần, test được (chạy có quyền Admin ở nơi khác).
+QString assumeUdpSetCommand();
 } // namespace internal
 } // namespace VpnController

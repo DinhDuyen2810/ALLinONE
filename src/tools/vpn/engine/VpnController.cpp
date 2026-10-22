@@ -4,6 +4,12 @@
 
 #include "core/AppPaths.h"
 
+#ifdef Q_OS_WIN
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <shellapi.h>
+#endif
+
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -182,6 +188,52 @@ bool setProfileMeta(const QString& name, const VpnProfileMeta& meta, QString* er
     return saveProfileMetas(metas, error);
 }
 
+VpnController::NatTState assumeUdpEncapsulationState()
+{
+    bool ok = false;
+    const QByteArray out = PowerShellRunner::run(internal::buildReadAssumeUdpScript(), &ok);
+    if (!ok)
+        return NatTState::Unknown;
+    const QString v = QString::fromUtf8(out).trimmed();
+    return v == QStringLiteral("2") ? NatTState::Enabled : NatTState::Disabled;
+}
+
+bool enableAssumeUdpEncapsulationElevated(QString* error)
+{
+#ifdef Q_OS_WIN
+    const QString psExe = AppPaths::powershellExecutable();
+    const QString args = QStringLiteral("-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command \"") +
+                         internal::assumeUdpSetCommand() + QStringLiteral("\"");
+    const std::wstring exeW = psExe.toStdWString();
+    const std::wstring argsW = args.toStdWString();
+
+    SHELLEXECUTEINFOW info{};
+    info.cbSize = sizeof(info);
+    info.fMask = SEE_MASK_NOCLOSEPROCESS;
+    info.lpVerb = L"runas"; // UAC chuẩn của Windows - không qua mặt gì cả
+    info.lpFile = exeW.c_str();
+    info.lpParameters = argsW.c_str();
+    info.nShow = SW_HIDE;
+    if (!ShellExecuteExW(&info))
+    {
+        const DWORD e = GetLastError();
+        if (error)
+            *error = (e == ERROR_CANCELLED) ? QStringLiteral("Bạn đã từ chối cấp quyền Administrator (hộp thoại UAC).")
+                                            : QStringLiteral("Không chạy được tiến trình nâng quyền (mã lỗi %1).").arg(e);
+        return false;
+    }
+    if (info.hProcess)
+    {
+        WaitForSingleObject(info.hProcess, 20000); // đặt một khóa registry nhỏ - rất nhanh
+        CloseHandle(info.hProcess);
+    }
+    return true;
+#else
+    if (error) *error = QStringLiteral("Chỉ hỗ trợ trên Windows.");
+    return false;
+#endif
+}
+
 void setCountryLabel(const QString& name, const QString& countryLabel)
 {
     VpnProfileMeta meta = profileMeta(name);
@@ -199,6 +251,22 @@ QString escapePsString(const QString& s)
     // ASCII, nên một tên kết nối chứa ’ đóng chuỗi sớm và phần còn lại chạy như LỆNH PowerShell (tên lấy
     // từ Get-VpnConnection, tức không phải lúc nào cũng do chính ứng dụng này đặt).
     return PowerShellRunner::quoteLiteral(s);
+}
+
+QString buildReadAssumeUdpScript()
+{
+    return QStringLiteral(
+        "$k='HKLM:\\SYSTEM\\CurrentControlSet\\Services\\PolicyAgent';"
+        "$v=(Get-ItemProperty -Path $k -Name 'AssumeUDPEncapsulationContextOnSendRule' -ErrorAction SilentlyContinue)."
+        "AssumeUDPEncapsulationContextOnSendRule; if($null -eq $v){'none'}else{\"$v\"}");
+}
+
+QString assumeUdpSetCommand()
+{
+    // New-ItemProperty với -Force tạo mới hoặc ghi đè. Giá trị 2 = cả client lẫn server đều có thể sau NAT.
+    return QStringLiteral(
+        "New-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\PolicyAgent' "
+        "-Name 'AssumeUDPEncapsulationContextOnSendRule' -PropertyType DWord -Value 2 -Force | Out-Null");
 }
 
 QString buildListConnectionsScript()
