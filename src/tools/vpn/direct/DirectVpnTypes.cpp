@@ -44,6 +44,11 @@ QString ipv4ToString(quint32 a)
     return QStringLiteral("%1.%2.%3.%4").arg((a >> 24) & 0xFF).arg((a >> 16) & 0xFF).arg((a >> 8) & 0xFF).arg(a & 0xFF);
 }
 
+bool isPrivateIpv4(quint32 a)
+{
+    return (a >> 24) == 10 || (a >> 20) == 0xAC1 || (a >> 16) == 0xC0A8;
+}
+
 int maskToPrefix(const QString& mask)
 {
     quint32 m = 0;

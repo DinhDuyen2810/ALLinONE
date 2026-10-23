@@ -45,6 +45,8 @@ QString protocolName(DirectProtocol p);
 /// Phân tích "a.b.c.d" (IPv4 chuẩn, không chấp nhận dạng rút gọn/ký tự lạ) sang số thứ tự byte máy.
 bool parseIpv4(const QString& text, quint32* out);
 QString ipv4ToString(quint32 addr);
+/// Địa chỉ dải riêng RFC 1918 (10/8, 172.16/12, 192.168/16).
+bool isPrivateIpv4(quint32 addr);
 
 /// Mặt nạ "255.255.255.0" -> độ dài tiền tố (24); -1 nếu không phải mặt nạ liền mạch hợp lệ.
 int maskToPrefix(const QString& mask);

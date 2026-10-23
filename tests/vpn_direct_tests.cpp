@@ -6,6 +6,7 @@
 #include "TestDataDir.h"
 
 #include "core/AppPaths.h"
+#include "tools/vpn/direct/CredentialStore.h"
 #include "tools/vpn/direct/DirectVpnTypes.h"
 #include "tools/vpn/direct/FortinetProtocol.h"
 #include "tools/vpn/direct/GlobalProtectProtocol.h"
@@ -274,6 +275,12 @@ int main(int argc, char** argv)
         CHECK(!DirectVpn::parseIpv4("1.2.3.4x", nullptr));
         CHECK(!DirectVpn::parseIpv4("1.2.3.-4", nullptr));
         CHECK(DirectVpn::ipv4ToString(0xC0A80101) == "192.168.1.1");
+        // Dải riêng RFC 1918 (DNS nội bộ cần tuyến qua VPN khi chia tuyến - lỗi thật v1.19.33: 10.45.1.20 đi Wi-Fi).
+        CHECK(DirectVpn::isPrivateIpv4(0x0A2D0114));    // 10.45.1.20
+        CHECK(DirectVpn::isPrivateIpv4(0xAC1F0001));    // 172.31.0.1
+        CHECK(!DirectVpn::isPrivateIpv4(0xAC200001));   // 172.32.0.1 - ngoài 172.16/12
+        CHECK(DirectVpn::isPrivateIpv4(0xC0A80001));    // 192.168.0.1
+        CHECK(!DirectVpn::isPrivateIpv4(0x08080808));   // 8.8.8.8
 
         CHECK(DirectVpn::maskToPrefix("255.255.255.0") == 24);
         CHECK(DirectVpn::maskToPrefix("255.255.255.255") == 32);
@@ -300,6 +307,25 @@ int main(int argc, char** argv)
         CHECK(!DirectVpn::splitHostPort("a b", 443, nullptr, nullptr));
         CHECK(!DirectVpn::splitHostPort("evil.com\r\nHost: x", 443, nullptr, nullptr)); // chặn chèn header
         CHECK(!DirectVpn::splitHostPort("", 443, nullptr, nullptr));
+    }
+
+    // ================= CredentialStore (Windows Credential Manager) - tiền tố RIÊNG cho test, luôn xóa sau =================
+    {
+        CredentialStore::setTargetPrefixForTest(QStringLiteral("OneForAll-TEST-") + QString::number(QCoreApplication::applicationPid()) + "/");
+        const QString server = QStringLiteral("vpn-test.invalid:10443");
+        CredentialStore::remove(server);
+        CHECK(!CredentialStore::has(server));
+        QString err;
+        CHECK(CredentialStore::save(server, QStringLiteral("alice"), QString::fromUtf8("m\xe1\xba\xadt kh\xe1\xba\xa9u & ký tự"), &err));
+        QString u, p;
+        CHECK(CredentialStore::load(server, &u, &p) && u == "alice" && p == QString::fromUtf8("m\xe1\xba\xadt kh\xe1\xba\xa9u & ký tự"));
+        CHECK(CredentialStore::has(QStringLiteral("VPN-TEST.invalid:10443"))); // khóa không phân biệt hoa/thường
+        CHECK(CredentialStore::save(server, QStringLiteral("alice"), QStringLiteral("moi"), &err)); // ghi đè
+        CHECK(CredentialStore::load(server, &u, &p) && p == "moi");
+        CHECK(!CredentialStore::save(QString(), QStringLiteral("x"), QStringLiteral("y"), &err));
+        CredentialStore::remove(server);
+        CHECK(!CredentialStore::has(server) && !CredentialStore::load(server, &u, &p));
+        CredentialStore::setTargetPrefixForTest(QStringLiteral("OneForAll/VPN/"));
     }
 
     // ================= PppSession với máy chủ PPP kịch bản =================

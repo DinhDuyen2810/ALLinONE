@@ -32,6 +32,7 @@ private slots:
     void onOpenClicked();
     void onDirectConnectClicked();
     void onDirectDisconnectClicked();
+    void onForgetCredentialsClicked();
     void onRowSelectionChanged();
 
 private:
@@ -39,17 +40,26 @@ private:
     void reload();
     void updateButtons();
     const ThirdPartyVpnProfile* selected() const;
-    bool askCredentials(const ThirdPartyVpnProfile& p, QString* user, QString* pass);
+    bool askCredentials(const ThirdPartyVpnProfile& p, QString* user, QString* pass, bool* save);
+    void clearPendingCredentials();
 
     QTableWidget* m_table{nullptr}; // [Phần mềm][Tên hồ sơ][Máy chủ][Kết nối trực tiếp]
     QPushButton* m_refreshBtn{nullptr};
     QPushButton* m_openBtn{nullptr};
     QPushButton* m_directBtn{nullptr};
     QPushButton* m_directStopBtn{nullptr};
+    QPushButton* m_forgetBtn{nullptr};
     QLabel* m_statusLabel{nullptr};
     QLabel* m_directLabel{nullptr};
 
     QList<ThirdPartyVpnProfile> m_profiles;
     DirectVpnSession* m_session{nullptr};
-    QString m_activeName; ///< tên hồ sơ của phiên trực tiếp đang chạy
+    QString m_activeName;   ///< tên hồ sơ của phiên trực tiếp đang chạy
+    QString m_activeServer; ///< máy chủ của phiên đang chạy (khóa của tài khoản đã lưu)
+    bool m_usingSaved{false};  ///< phiên này dùng tài khoản đã lưu trong Windows Credential Manager
+    /// Người dùng tích "Lưu": CHỈ lưu sau khi đăng nhập THÀNH CÔNG (không lưu mật khẩu sai) - giữ tạm trong bộ nhớ
+    /// tới lúc đó rồi xóa trắng.
+    bool m_pendingSave{false};
+    QString m_pendingUser;
+    QString m_pendingPass;
 };

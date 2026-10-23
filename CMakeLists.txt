@@ -380,6 +380,8 @@ add_library(vpn_core STATIC
     src/tools/vpn/direct/VpnHelperMain.cpp
     src/tools/vpn/direct/DirectVpnSession.h
     src/tools/vpn/direct/DirectVpnSession.cpp
+    src/tools/vpn/direct/CredentialStore.h
+    src/tools/vpn/direct/CredentialStore.cpp
 )
 target_include_directories(vpn_core PUBLIC src)
 target_link_libraries(vpn_core PUBLIC Qt6::Core Qt6::Network advapi32 shell32 rasapi32 iphlpapi ws2_32 core_shared)

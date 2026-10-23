@@ -29,8 +29,11 @@ này - muốn xóa sạch dữ liệu, tự xóa thư mục đó.
 - **VPN đã cài sẵn (từ 1.19.28)**: ứng dụng ĐỌC (chỉ đọc) tên hồ sơ + địa chỉ máy chủ của các kết nối VPN đã cấu hình bởi FortiClient/GlobalProtect/OpenVPN/Cisco trên máy bạn (từ registry/tệp cấu hình của CHÍNH các phần mềm đó) để hiển thị và mở phần mềm đó khi bạn bấm - KHÔNG đọc/giải mã mật khẩu đã lưu trong các phần mềm đó.
 - **Kết nối trực tiếp FortiGate SSL-VPN / GlobalProtect (từ 1.19.31)**: khi bạn bấm "Kết nối trực tiếp", ứng dụng gửi
   tên đăng nhập + mật khẩu (và mã OTP nếu máy chủ hỏi) MÀ BẠN NHẬP tới ĐÚNG máy chủ VPN của cơ quan đã cấu hình trong
-  hồ sơ, qua HTTPS. Mật khẩu/OTP chỉ nằm trong bộ nhớ cho tới khi đăng nhập xong rồi bị xóa trắng - KHÔNG ghi ra đĩa
-  hay nhật ký; chỉ TÊN đăng nhập được nhớ theo máy chủ cho tiện (`profiles\vpn_direct_users.json`). Nếu chứng chỉ máy
+  hồ sơ, qua HTTPS. Mật khẩu/OTP KHÔNG ghi ra tệp hay nhật ký. Nếu bạn tích "Lưu tên đăng nhập và mật khẩu" (từ
+  1.19.33), tài khoản được lưu trong **Windows Credential Manager** (mục "OneForAll/VPN/<máy chủ>", Windows mã hóa theo
+  tài khoản Windows của bạn) CHỈ sau khi đăng nhập thành công, để lần sau chỉ cần bấm Kết nối; xóa bằng nút "Quên mật
+  khẩu đã lưu" hoặc trong Control Panel > Credential Manager. Không tích thì mật khẩu chỉ nằm trong bộ nhớ tới khi đăng
+  nhập xong rồi bị xóa trắng. Tên đăng nhập gần nhất được nhớ theo máy chủ (`profiles\vpn_direct_users.json`). Nếu chứng chỉ máy
   chủ không được Windows tin cậy (FortiGate hay dùng chứng chỉ mặc định tự ký), ứng dụng hiện vân tay SHA-256 để bạn
   đối chiếu; vân tay bạn chấp nhận được lưu theo "máy chủ:cổng" (`profiles\vpn_trusted_certs.json`). Phần mạng chạy
   trong một tiến trình phụ của chính ứng dụng với quyền Administrator (hộp thoại UAC) để tạo adapter mạng ảo wintun

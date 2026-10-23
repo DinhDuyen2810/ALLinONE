@@ -2,10 +2,12 @@
 
 #include "VpnUiStyle.h"
 #include "core/AppPaths.h"
+#include "direct/CredentialStore.h"
 #include "direct/DirectVpnSession.h"
 #include "direct/WintunAdapter.h"
 #include "engine/ThirdPartyVpnScanner.h"
 
+#include <QCheckBox>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QFile>
@@ -104,14 +106,37 @@ ThirdPartyVpnTab::ThirdPartyVpnTab(QWidget* parent)
                     m_session->disconnectVpn();
             });
     connect(m_session, &DirectVpnSession::connected, this, [this](const QString& summary) {
-        m_directLabel->setText(QStringLiteral("✓ Đã kết nối trực tiếp \"%1\" - %2").arg(m_activeName, summary));
-        updateButtons();
+        QString saved;
+        if (m_pendingSave)
+        {
+            // Chỉ lưu SAU khi đăng nhập thành công - không bao giờ lưu một mật khẩu sai.
+            QString err;
+            saved = CredentialStore::save(m_activeServer, m_pendingUser, m_pendingPass, &err)
+                        ? QStringLiteral(" · đã lưu tài khoản (lần sau chỉ cần bấm Kết nối)")
+                        : QStringLiteral(" · ⚠ ") + err;
+        }
+        clearPendingCredentials();
+        m_directLabel->setText(QStringLiteral("✓ Đã kết nối trực tiếp \"%1\" - %2%3").arg(m_activeName, summary, saved));
+        reload();
     });
     connect(m_session, &DirectVpnSession::ended, this, [this](bool wasConnected, const QString& message) {
+        QString extra;
+        // Tài khoản đã lưu bị máy chủ từ chối (đổi mật khẩu, khóa tài khoản...) -> xóa để lần sau hỏi lại.
+        const bool badCredentials = message.contains(QStringLiteral("Sai tên đăng nhập")) ||
+                                    message.contains(QStringLiteral("bị từ chối")) ||
+                                    message.contains(QStringLiteral("không có quyền"));
+        if (!wasConnected && m_usingSaved && badCredentials)
+        {
+            CredentialStore::remove(m_activeServer);
+            extra = QStringLiteral(" Đã xóa tài khoản đã lưu - lần sau sẽ hỏi lại.");
+        }
+        clearPendingCredentials();
         m_directLabel->setText(wasConnected ? QStringLiteral("Đã ngắt kết nối \"%1\". %2").arg(m_activeName, message)
-                                            : QStringLiteral("⚠ Không kết nối được \"%1\": %2").arg(m_activeName, message));
+                                            : QStringLiteral("⚠ Không kết nối được \"%1\": %2%3").arg(m_activeName, message, extra));
         m_activeName.clear();
-        updateButtons();
+        m_activeServer.clear();
+        m_usingSaved = false;
+        reload();
     });
 
     reload();
@@ -141,9 +166,9 @@ void ThirdPartyVpnTab::buildUi()
 
     auto* hint = new QLabel(
         "Các kết nối VPN đã cấu hình sẵn trên máy (FortiClient, GlobalProtect, OpenVPN, Cisco). Hồ sơ FortiClient "
-        "SSL-VPN và GlobalProtect KẾT NỐI TRỰC TIẾP được ngay tại đây bằng tài khoản cơ quan (mật khẩu không lưu; cần "
-        "bấm Yes ở hộp thoại Administrator). Hồ sơ khác: bấm \"Mở phần mềm\". Ứng dụng không đọc mật khẩu đã lưu của "
-        "các phần mềm đó.",
+        "SSL-VPN và GlobalProtect KẾT NỐI TRỰC TIẾP được ngay tại đây bằng tài khoản cơ quan (có thể lưu tài khoản - mã "
+        "hóa bởi Windows - để lần sau chỉ bấm Kết nối; cần bấm Yes ở hộp thoại Administrator). Hồ sơ khác: bấm \"Mở "
+        "phần mềm\". Ứng dụng không đọc mật khẩu đã lưu của các phần mềm đó.",
         this);
     hint->setWordWrap(true);
     hint->setStyleSheet(VpnUi::bannerStyle("info"));
@@ -169,6 +194,13 @@ void ThirdPartyVpnTab::buildUi()
     m_directStopBtn->setVisible(false);
     connect(m_directStopBtn, &QPushButton::clicked, this, &ThirdPartyVpnTab::onDirectDisconnectClicked);
     topRow->addWidget(m_directStopBtn);
+
+    m_forgetBtn = new QPushButton("🔑 Quên mật khẩu đã lưu", this);
+    m_forgetBtn->setStyleSheet(VpnUi::buttonStyle());
+    m_forgetBtn->setCursor(Qt::PointingHandCursor);
+    m_forgetBtn->setToolTip("Xóa tên đăng nhập + mật khẩu đã lưu (Windows Credential Manager) của hồ sơ đang chọn.");
+    connect(m_forgetBtn, &QPushButton::clicked, this, &ThirdPartyVpnTab::onForgetCredentialsClicked);
+    topRow->addWidget(m_forgetBtn);
 
     m_openBtn = new QPushButton("▶ Mở phần mềm", this);
     m_openBtn->setStyleSheet(VpnUi::buttonStyle());
@@ -205,6 +237,9 @@ void ThirdPartyVpnTab::buildUi()
 
 void ThirdPartyVpnTab::reload()
 {
+    // Giữ dòng đang chọn qua lần quét lại (vd sau khi kết nối/ngắt để cập nhật cột "đã lưu TK").
+    const ThirdPartyVpnProfile* before = selected();
+    const QString keepKey = before ? before->clientName + '|' + before->name : QString();
     m_profiles = ThirdPartyVpnScanner::scan();
     m_table->setRowCount(m_profiles.size());
     for (int i = 0; i < m_profiles.size(); ++i)
@@ -219,7 +254,9 @@ void ThirdPartyVpnTab::reload()
         set(0, p.clientName, p.canLaunch() ? p.exePath : "Không tìm thấy chương trình để mở");
         set(1, p.name);
         set(2, p.server.isEmpty() ? "(không rõ)" : p.server, p.source);
-        set(3, p.canConnectDirectly() ? "✓ " + DirectVpn::protocolName(p.direct) : QStringLiteral("— chỉ mở phần mềm"),
+        set(3, p.canConnectDirectly() ? "✓ " + DirectVpn::protocolName(p.direct) +
+                                            (CredentialStore::has(p.server) ? QStringLiteral(" · đã lưu TK") : QString())
+                                      : QStringLiteral("— chỉ mở phần mềm"),
             p.canConnectDirectly() ? QString()
                                    : QStringLiteral("Loại kết nối này (vd FortiClient IPsec, OpenVPN, Cisco) chưa hỗ trợ "
                                                     "kết nối trực tiếp - dùng \"Mở phần mềm\"."));
@@ -234,6 +271,12 @@ void ThirdPartyVpnTab::reload()
     if (!WintunAdapter::isAvailable())
         m_statusLabel->setText(m_statusLabel->text() +
                                QStringLiteral(" ⚠ Thiếu wintun\\wintun.dll trong thư mục cài đặt - chưa kết nối trực tiếp được."));
+    for (int i = 0; i < m_profiles.size() && !keepKey.isEmpty(); ++i)
+        if (m_profiles[i].clientName + '|' + m_profiles[i].name == keepKey)
+        {
+            m_table->selectRow(i);
+            break;
+        }
     updateButtons();
 }
 
@@ -257,6 +300,8 @@ void ThirdPartyVpnTab::updateButtons()
     m_directBtn->setEnabled(!active && p != nullptr && p->canConnectDirectly() && WintunAdapter::isAvailable());
     m_directStopBtn->setVisible(active);
     m_refreshBtn->setEnabled(!active);
+    m_forgetBtn->setVisible(p != nullptr && p->canConnectDirectly() && CredentialStore::has(p->server));
+    m_forgetBtn->setEnabled(!active);
 }
 
 void ThirdPartyVpnTab::onRowSelectionChanged()
@@ -281,13 +326,12 @@ void ThirdPartyVpnTab::onOpenClicked()
         QMessageBox::warning(this, "Không mở được", error);
 }
 
-bool ThirdPartyVpnTab::askCredentials(const ThirdPartyVpnProfile& p, QString* user, QString* pass)
+bool ThirdPartyVpnTab::askCredentials(const ThirdPartyVpnProfile& p, QString* user, QString* pass, bool* save)
 {
     QDialog dlg(this);
     dlg.setWindowTitle(QStringLiteral("Đăng nhập VPN - %1").arg(p.name));
     auto* lay = new QVBoxLayout(&dlg);
-    auto* info = new QLabel(QStringLiteral("Kết nối trực tiếp tới %1 (%2).\nNhập tài khoản VPN do cơ quan cấp - mật khẩu chỉ "
-                                           "dùng cho phiên này, KHÔNG được lưu.")
+    auto* info = new QLabel(QStringLiteral("Kết nối trực tiếp tới %1 (%2).\nNhập tài khoản VPN do cơ quan cấp.")
                                 .arg(p.server, DirectVpn::protocolName(p.direct)),
                             &dlg);
     info->setWordWrap(true);
@@ -299,6 +343,11 @@ bool ThirdPartyVpnTab::askCredentials(const ThirdPartyVpnProfile& p, QString* us
     form->addRow(QStringLiteral("Tên đăng nhập:"), userEdit);
     form->addRow(QStringLiteral("Mật khẩu:"), passEdit);
     lay->addLayout(form);
+    auto* saveCheck = new QCheckBox(QStringLiteral("Lưu tên đăng nhập và mật khẩu - lần sau chỉ cần bấm Kết nối"), &dlg);
+    saveCheck->setChecked(true);
+    saveCheck->setToolTip(QStringLiteral("Lưu trong Windows Credential Manager (mã hóa theo tài khoản Windows của bạn), CHỈ "
+                                         "sau khi đăng nhập thành công. Xóa bằng nút \"Quên mật khẩu đã lưu\"."));
+    lay->addWidget(saveCheck);
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
     buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("Kết nối"));
     buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("Hủy"));
@@ -314,8 +363,27 @@ bool ThirdPartyVpnTab::askCredentials(const ThirdPartyVpnProfile& p, QString* us
     }
     *user = userEdit->text().trimmed();
     *pass = passEdit->text();
+    *save = saveCheck->isChecked();
     passEdit->clear();
     return true;
+}
+
+void ThirdPartyVpnTab::clearPendingCredentials()
+{
+    m_pendingSave = false;
+    m_pendingUser.clear();
+    m_pendingPass.fill(QChar(0));
+    m_pendingPass.clear();
+}
+
+void ThirdPartyVpnTab::onForgetCredentialsClicked()
+{
+    const ThirdPartyVpnProfile* p = selected();
+    if (!p || isDirectActive())
+        return;
+    CredentialStore::remove(p->server);
+    m_directLabel->setText(QStringLiteral("Đã xóa tài khoản đã lưu của \"%1\" - lần sau sẽ hỏi lại.").arg(p->name));
+    reload();
 }
 
 void ThirdPartyVpnTab::onDirectConnectClicked()
@@ -325,17 +393,32 @@ void ThirdPartyVpnTab::onDirectConnectClicked()
         return;
     const ThirdPartyVpnProfile profile = *p; // bản sao: danh sách có thể được quét lại
     QString user, pass;
-    if (!askCredentials(profile, &user, &pass))
-        return;
+    clearPendingCredentials();
+    // Đã lưu tài khoản (Windows Credential Manager) -> nối luôn, không hỏi - theo yêu cầu người dùng.
+    m_usingSaved = CredentialStore::load(profile.server, &user, &pass);
+    if (!m_usingSaved)
+    {
+        bool save = false;
+        if (!askCredentials(profile, &user, &pass, &save))
+            return;
+        if (save)
+        {
+            m_pendingSave = true;
+            m_pendingUser = user;
+            m_pendingPass = pass;
+        }
+    }
     rememberUser(profile.server, user);
     m_activeName = profile.name;
+    m_activeServer = profile.server;
     DirectVpnSession::Request req;
     req.protocol = profile.direct;
     req.server = profile.server;
     req.username = user;
     req.password = pass;
     pass.fill(QChar(0));
-    m_directLabel->setText(QStringLiteral("⏳ Đang chuẩn bị kết nối \"%1\"...").arg(profile.name));
+    m_directLabel->setText(QStringLiteral("⏳ Đang chuẩn bị kết nối \"%1\"%2...")
+                               .arg(profile.name, m_usingSaved ? QStringLiteral(" bằng tài khoản đã lưu") : QString()));
     m_session->connectTo(req);
     req.password.fill(QChar(0));
     updateButtons();

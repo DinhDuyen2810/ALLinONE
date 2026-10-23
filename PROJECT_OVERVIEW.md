@@ -2816,6 +2816,21 @@ mũi tên), nút Android cắt chữ, nhóm ghép đôi Connect bị ép bẹp (
 người dùng báo "đã kết nối" nhưng hệ thống không có tiến trình phụ/adapter - lỗi giai đoạn trước tiến trình phụ trước
 đây không để lại dấu vết nào.
 
+## 4zs. Kết nối trực tiếp chạy THẬT + lưu tài khoản + DNS nội bộ (2026-10-23, v1.19.33)
+
+Người dùng tự nhập tài khoản trong ứng dụng (v1.19.32) và nối `VPN_BDTTG` (FortiGate SSL-VPN 103.221.228.37:10443):
+nhật ký + trạng thái hệ thống xác nhận chứng chỉ tự ký được hỏi/ghim, đăng nhập, cấu hình (IP 10.212.134.201, 2 tuyến,
+DNS 10.45.1.20 + 8.8.8.8), adapter wintun Up, PPP mở; **ping 10.45.1.33/10.45.1.34 đi qua card "OneForAll VPN" thành
+công**. Ngắt + thoát: PPP Terminate, adapter bị xóa, tuyến /32 tới máy chủ bị gỡ, tiến trình phụ tự thoát.
+
+Lỗi phát hiện khi chạy thật: DNS nội bộ 10.45.1.20 không thuộc tuyến riêng nên Windows gửi truy vấn ra Wi-Fi.
+`NetConfigurator::apply` nay thêm tuyến /32 qua adapter cho DNS dải riêng RFC 1918 chưa được tuyến nào phủ
+(`DirectVpn::isPrivateIpv4`). CHƯA kiểm chứng lại trên máy chủ thật sau khi sửa.
+
+Lưu tài khoản (`CredentialStore`): Windows Credential Manager (`CredWriteW`, kiểu Generic, `CRED_PERSIST_LOCAL_MACHINE`,
+DPAPI theo người dùng) - không ghi tệp. Chỉ lưu sau `connected()`; dùng tài khoản đã lưu mà máy chủ từ chối thì
+`CredentialStore::remove` để lần sau hỏi lại.
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để

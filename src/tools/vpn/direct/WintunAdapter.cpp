@@ -331,6 +331,24 @@ bool NetConfigurator::apply(quint64 adapterLuid, const TunnelConfig& cfg, quint3
         for (const IpRoute& in : cfg.includeRoutes)
             if (!addRoute(adapterLuid, in, 0, 0, error))
                 return false;
+        // Chia tuyến: máy chủ DNS NỘI BỘ mà máy chủ VPN cấp (vd 10.45.1.20) thường KHÔNG nằm trong các tuyến
+        // riêng - không có tuyến /32 thì truy vấn DNS đi ra Wi-Fi và thất bại, tên miền nội bộ không phân giải
+        // được (đã gặp THẬT với FortiGate của người dùng: ping 10.45.1.20 đi qua Wi-Fi). Chỉ thêm cho địa chỉ
+        // dải riêng (RFC 1918) - DNS công cộng như 8.8.8.8 vẫn đi đường thường.
+        for (const QString& d : cfg.dns)
+        {
+            quint32 a = 0;
+            if (!DirectVpn::parseIpv4(d, &a) || !DirectVpn::isPrivateIpv4(a))
+                continue;
+            bool covered = false;
+            for (const IpRoute& in : cfg.includeRoutes)
+            {
+                const quint32 mask = in.prefix == 0 ? 0u : (0xFFFFFFFFu << (32 - in.prefix));
+                covered = covered || (a & mask) == in.network;
+            }
+            if (!covered)
+                addRoute(adapterLuid, IpRoute{a, 32}, 0, 0, nullptr);
+        }
     }
 
     // 4) DNS (SetInterfaceDnsSettings - Windows 10 2004+; nạp động vì header MinGW chưa có).
