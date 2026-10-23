@@ -73,6 +73,20 @@ QByteArray getConfigBody(const GatewayAuth& auth, const QString& appVersion);
 /// Đọc XML getconfig.esp của gateway. *tunnelPath = đường dẫn đường hầm SSL (mặc định /ssl-tunnel-connect.sslvpn).
 bool parseGatewayConfig(const QByteArray& xml, TunnelConfig* out, QString* tunnelPath, QString* error);
 
+// ---- HIP (Host Information Profile) - gateway thường YÊU CẦU báo cáo tình trạng máy sau khi nối, không nộp
+// thì gateway ngừng chuyển gói (đường hầm "treo" rồi app báo mất kết nối). Client chính thức luôn kiểm + nộp.
+// MD5 là định danh ổn định của (máy + gateway), không đổi theo IP/authcookie (dựa trên cookie bỏ authcookie/
+// preferred-ip - đúng cách OpenConnect build_csd_token).
+QString hipMd5(const GatewayAuth& auth);
+/// POST /ssl-vpn/hipreportcheck.esp: client-role + cookie + client-ip + md5.
+QByteArray hipCheckBody(const GatewayAuth& auth, const QString& clientIp, const QString& md5);
+/// true nếu phản hồi hipreportcheck có <hip-report-needed>yes</hip-report-needed>.
+bool hipReportNeeded(const QByteArray& xml);
+/// Nội dung XML báo cáo HIP (bản Windows tối thiểu, theo mẫu công khai của OpenConnect).
+QString buildHipReportXml(const GatewayAuth& auth, const QString& clientIp, const QString& md5, const QString& appVersion);
+/// POST /ssl-vpn/hipreport.esp: client-role + cookie + client-ip + report=<XML đã mã hóa URL>.
+QByteArray hipReportBody(const GatewayAuth& auth, const QString& clientIp, const QByteArray& reportXml);
+
 QByteArray tunnelRequest(const QString& path, const GatewayAuth& auth);
 } // namespace GlobalProtectProtocol
 

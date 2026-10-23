@@ -395,7 +395,38 @@ void TunnelEngine::gpGetConfig()
                      .arg(m_cfg.prefixLength)
                      .arg(m_cfg.dns.size())
                      .arg(m_cfg.includeRoutes.size()));
-             resolveAndOpenTunnel();
+             // Nộp HIP TRƯỚC khi mở đường hầm (như client chính thức) - gateway yêu cầu HIP thường ngừng chuyển
+             // gói nếu chưa nhận báo cáo, khiến đường hầm "treo" rồi app báo mất kết nối ở mốc 60 giây.
+             gpHipCheck([this]() { resolveAndOpenTunnel(); });
+         });
+}
+
+void TunnelEngine::gpHipCheck(std::function<void()> done)
+{
+    emit status(QStringLiteral("Đang kiểm tra tình trạng máy (HIP)..."));
+    if (m_gpHipMd5.isEmpty())
+        m_gpHipMd5 = GlobalProtectProtocol::hipMd5(m_gpAuth);
+    m_gpLastHipMs = now();
+    const QString hp = m_host + ':' + QString::number(m_port);
+    auto proceed = std::make_shared<std::function<void()>>(std::move(done));
+    http("POST", hp, QStringLiteral("/ssl-vpn/hipreportcheck.esp"),
+         GlobalProtectProtocol::hipCheckBody(m_gpAuth, m_cfg.ipv4, m_gpHipMd5), kGpUa, {}, [this, hp, proceed](const HttpResult& r) {
+             if (m_phase == Phase::Stopping || m_phase == Phase::Done)
+                 return;
+             // Lỗi mạng/HTTP khi kiểm HIP không nên chặn kết nối: nhiều gateway KHÔNG bật HIP (báo lỗi/không cần).
+             if (r.status != 200 || !GlobalProtectProtocol::hipReportNeeded(r.body))
+             {
+                 (*proceed)();
+                 return;
+             }
+             log(QStringLiteral("Gateway yêu cầu báo cáo HIP - đang nộp."));
+             const QByteArray xml = GlobalProtectProtocol::buildHipReportXml(m_gpAuth, m_cfg.ipv4, m_gpHipMd5, m_portal.version).toUtf8();
+             http("POST", hp, QStringLiteral("/ssl-vpn/hipreport.esp"), GlobalProtectProtocol::hipReportBody(m_gpAuth, m_cfg.ipv4, xml),
+                  kGpUa, {}, [this, proceed](const HttpResult&) {
+                      if (m_phase == Phase::Stopping || m_phase == Phase::Done)
+                          return;
+                      (*proceed)(); // nộp xong (dù máy chủ phản hồi gì) thì đi tiếp
+                  });
          });
 }
 
@@ -653,6 +684,7 @@ void TunnelEngine::onTunnelUp()
     m_phase = Phase::Up;
     m_wasUp = true;
     m_lastKeepalive = now();
+    m_gpLastHipMs = now();
 
     QString routes = m_cfg.fullTunnel() ? QStringLiteral("toàn bộ lưu lượng qua VPN")
                                         : QStringLiteral("%1 mạng nội bộ qua VPN").arg(m_cfg.includeRoutes.size());
@@ -705,6 +737,9 @@ void TunnelEngine::onTick()
             m_lastKeepalive = t;
             writeTunnel(GpFraming::keepalive());
         }
+        // Nộp lại HIP định kỳ (qua kênh HTTPS riêng, không qua đường hầm) - gateway kiểm lại theo chu kỳ.
+        if (t - m_gpLastHipMs >= m_gpHipIntervalMs)
+            gpHipCheck([]() {});
         if (t - m_lastRx >= kDeadPeerMs)
             fail(QStringLiteral("Gateway GlobalProtect không còn phản hồi (mất kết nối)."));
     }

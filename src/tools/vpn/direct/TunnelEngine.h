@@ -98,6 +98,8 @@ private:
     void gpPortalConfig(const QString& otpCode);
     void gpGatewayLogin(const QString& otpCode);
     void gpGetConfig();
+    /// Kiểm tra + (nếu cần) nộp báo cáo HIP; done() được gọi khi xong (thành công hoặc bỏ qua) để đi tiếp.
+    void gpHipCheck(std::function<void()> done);
 
     // Đường hầm
     void resolveAndOpenTunnel();
@@ -145,6 +147,9 @@ private:
     QByteArray m_gpHandshake; ///< gom 12 byte "START_TUNNEL" đầu tiên
     bool m_gpStarted{false};
     GpFraming::Deframer m_gpDeframer;
+    QString m_gpHipMd5;         ///< định danh HIP của phiên (ổn định)
+    qint64 m_gpLastHipMs{0};    ///< mốc nộp/kiểm HIP gần nhất
+    qint64 m_gpHipIntervalMs{3600000}; ///< chu kỳ kiểm lại HIP (mặc định 1 giờ, như client chính thức)
 
     OtpContext m_otp{OtpContext::None};
     TunnelConfig m_cfg;

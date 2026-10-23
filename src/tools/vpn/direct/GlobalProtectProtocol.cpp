@@ -1,5 +1,7 @@
 #include "GlobalProtectProtocol.h"
 
+#include <QCryptographicHash>
+#include <QDateTime>
 #include <QRegularExpression>
 #include <QUrl>
 #include <QXmlStreamReader>
@@ -405,6 +407,89 @@ bool parseGatewayConfig(const QByteArray& xml, TunnelConfig* out, QString* tunne
     if (tunnelPath)
         *tunnelPath = path;
     return true;
+}
+
+QString hipMd5(const GatewayAuth& auth)
+{
+    // Chuỗi ổn định cho (máy + gateway) - KHÔNG gồm authcookie/preferred-ip (đổi mỗi phiên).
+    const QByteArray basis = (auth.portal + '|' + auth.user + '|' + auth.domain + '|' + auth.computer).toUtf8();
+    return QString::fromLatin1(QCryptographicHash::hash(basis, QCryptographicHash::Md5).toHex());
+}
+
+QByteArray hipCheckBody(const GatewayAuth& auth, const QString& clientIp, const QString& md5)
+{
+    QByteArray b = "client-role=global-protect-full&" + auth.cookieQuery();
+    b += opt("client-ip", clientIp);
+    b += opt("md5", md5);
+    return b;
+}
+
+bool hipReportNeeded(const QByteArray& xml)
+{
+    QXmlStreamReader r(xml);
+    while (!r.atEnd())
+    {
+        r.readNext();
+        if (r.isStartElement() && r.name() == QLatin1String("hip-report-needed"))
+            return r.readElementText().trimmed().compare(QLatin1String("no"), Qt::CaseInsensitive) != 0;
+    }
+    return false; // không rõ -> coi như không cần (tránh nộp thừa gây lỗi)
+}
+
+QString buildHipReportXml(const GatewayAuth& auth, const QString& clientIp, const QString& md5, const QString& appVersion)
+{
+    const QString ver = appVersion.isEmpty() ? QStringLiteral("6.3.0-33") : appVersion;
+    const QDateTime now = QDateTime::currentDateTime();
+    const QString nowStr = now.toString(QStringLiteral("MM/dd/yyyy HH:mm:ss"));
+    const QString user = auth.user.toHtmlEscaped();
+    const QString domain = auth.domain.toHtmlEscaped();
+    const QString pc = auth.computer.toHtmlEscaped();
+    // Bản Windows tối thiểu theo mẫu công khai OpenConnect (trojans/hipreport.sh) - đủ cho gateway chấp nhận.
+    return QStringLiteral(
+               "<hip-report name=\"hip-report\">\n"
+               "<md5-sum>%1</md5-sum>\n"
+               "<user-name>%2</user-name>\n"
+               "<domain>%3</domain>\n"
+               "<host-name>%4</host-name>\n"
+               "<host-id>deadbeef-dead-beef-dead-beefdeadbeef</host-id>\n"
+               "<ip-address>%5</ip-address>\n"
+               "<ipv6-address></ipv6-address>\n"
+               "<generate-time>%6</generate-time>\n"
+               "<hip-report-version>4</hip-report-version>\n"
+               "<categories>\n"
+               "<entry name=\"host-info\">\n"
+               "<client-version>%7</client-version>\n"
+               "<os>Microsoft Windows 10 Pro , 64-bit</os>\n"
+               "<os-vendor>Microsoft</os-vendor>\n"
+               "<domain>%3.internal</domain>\n"
+               "<host-name>%4</host-name>\n"
+               "<host-id>deadbeef-dead-beef-dead-beefdeadbeef</host-id>\n"
+               "<network-interface>\n"
+               "<entry name=\"{DEADBEEF-DEAD-BEEF-DEAD-BEEFDEADBEEF}\">\n"
+               "<description>PANGP Virtual Ethernet Adapter</description>\n"
+               "<mac-address>01-02-03-00-00-01</mac-address>\n"
+               "<ip-address><entry name=\"%5\"/></ip-address>\n"
+               "<ipv6-address><entry name=\"\"/></ipv6-address>\n"
+               "</entry>\n"
+               "</network-interface>\n"
+               "</entry>\n"
+               "<entry name=\"firewall\">\n"
+               "<list>\n"
+               "<entry><ProductInfo><Prod name=\"Microsoft Windows Firewall\" version=\"10.0\" vendor=\"Microsoft Corp.\">"
+               "</Prod><is-enabled>yes</is-enabled></ProductInfo></entry>\n"
+               "</list>\n"
+               "</entry>\n"
+               "</categories>\n"
+               "</hip-report>")
+        .arg(md5, user, domain, pc, clientIp, nowStr, ver.toHtmlEscaped());
+}
+
+QByteArray hipReportBody(const GatewayAuth& auth, const QString& clientIp, const QByteArray& reportXml)
+{
+    QByteArray b = "client-role=global-protect-full&" + auth.cookieQuery();
+    b += opt("client-ip", clientIp);
+    b += "&report=" + QUrl::toPercentEncoding(QString::fromUtf8(reportXml));
+    return b;
 }
 
 QByteArray tunnelRequest(const QString& path, const GatewayAuth& auth)

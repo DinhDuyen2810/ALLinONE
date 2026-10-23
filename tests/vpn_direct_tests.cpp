@@ -703,6 +703,28 @@ int main(int argc, char** argv)
         CHECK(GlobalProtectProtocol::tunnelRequest("/ssl-tunnel-connect.sslvpn", ga) ==
               "GET /ssl-tunnel-connect.sslvpn?authcookie=a1b2c3d4e5f6&user=alice HTTP/1.1\r\n\r\n");
 
+        // HIP (Host Information Profile): md5 ổn định (không phụ thuộc authcookie/preferred-ip); check/report.
+        const QString md5 = GlobalProtectProtocol::hipMd5(ga);
+        CHECK(md5.size() == 32);
+        GlobalProtectProtocol::GatewayAuth ga2 = ga;
+        ga2.authcookie = "KHAC";
+        ga2.preferredIp = "10.9.9.9";
+        CHECK(GlobalProtectProtocol::hipMd5(ga2) == md5); // đổi authcookie/preferred-ip -> md5 giữ nguyên
+        ga2.user = "bob";
+        CHECK(GlobalProtectProtocol::hipMd5(ga2) != md5); // đổi user -> md5 đổi
+        const QByteArray hcb = GlobalProtectProtocol::hipCheckBody(ga, "10.200.0.9", md5);
+        CHECK(hcb.startsWith("client-role=global-protect-full&authcookie=a1b2c3d4e5f6") &&
+              hcb.contains("&client-ip=10.200.0.9") && hcb.contains("&md5=" + md5.toLatin1()));
+        CHECK(GlobalProtectProtocol::hipReportNeeded("<response><hip-report-needed>yes</hip-report-needed></response>"));
+        CHECK(!GlobalProtectProtocol::hipReportNeeded("<response><hip-report-needed>no</hip-report-needed></response>"));
+        CHECK(!GlobalProtectProtocol::hipReportNeeded("<response></response>")); // không rõ -> không nộp
+        const QString hipXml = GlobalProtectProtocol::buildHipReportXml(ga, "10.200.0.9", md5, "6.3.3-915");
+        CHECK(hipXml.contains("<md5-sum>" + md5 + "</md5-sum>") && hipXml.contains("<user-name>alice</user-name>") &&
+              hipXml.contains("<ip-address>10.200.0.9</ip-address>") && hipXml.contains("<host-name>PC-01</host-name>"));
+        CHECK(hipXml.startsWith("<hip-report") && hipXml.trimmed().endsWith("</hip-report>"));
+        const QByteArray hrb = GlobalProtectProtocol::hipReportBody(ga, "10.200.0.9", hipXml.toUtf8());
+        CHECK(hrb.contains("client-role=global-protect-full&") && hrb.contains("&report=%3Chip-report"));
+
         // Khung gói GlobalProtect.
         const QByteArray ip = fakeIpPacket(9);
         const QByteArray enc = GpFraming::encapsulateIpv4(ip);
@@ -834,8 +856,21 @@ int main(int argc, char** argv)
         QList<QByteArray> clientPackets;
         int keepalives = 0;
         bool gatewayGotPortalCookie = false;
+        bool hipChecked = false, hipReported = false;
         srv.onRequest = [&](QTcpSocket* s, const HttpReq& r) {
             const QUrlQuery q(QString::fromUtf8(r.body));
+            if (r.path == "/ssl-vpn/hipreportcheck.esp")
+            {
+                hipChecked = q.queryItemValue("md5").size() == 32 && q.queryItemValue("client-ip") == "10.200.0.9";
+                FakeServer::respond(s, 200, "<response><hip-report-needed>yes</hip-report-needed></response>");
+                return;
+            }
+            if (r.path == "/ssl-vpn/hipreport.esp")
+            {
+                hipReported = r.body.contains("report=%3Chip-report") && q.queryItemValue("authcookie") == "AUTH77";
+                FakeServer::respond(s, 200, "<response status=\"success\"></response>");
+                return;
+            }
             if (r.path == "/global-protect/prelogin.esp")
                 FakeServer::respond(s, 200, "<prelogin-response><status>Success</status><username-label>Username</username-label></prelogin-response>");
             else if (r.path == "/global-protect/getconfig.esp")
@@ -904,7 +939,9 @@ int main(int argc, char** argv)
         CHECK(waitUntil([&]() { return engine.isUp() || ended; }, 15000));
         CHECK(engine.isUp() && otpPrompt == "Enter OTP" && gatewayGotPortalCookie);
         CHECK(summary.contains("10.200.0.9") && summary.contains(QString::fromUtf8("toàn bộ lưu lượng")));
-        std::printf("GP gia -> connected: %s\n", qPrintable(summary));
+        // HIP: gateway yêu cầu -> phải kiểm VÀ nộp báo cáo TRƯỚC khi đường hầm lên (nếu không gateway bỏ gói -> rớt).
+        CHECK(hipChecked && hipReported);
+        std::printf("GP gia -> connected: %s (HIP checked=%d reported=%d)\n", qPrintable(summary), hipChecked, hipReported);
         tunnelSock->write(GpFraming::encapsulateIpv4(fakeIpPacket(0x31)));
         CHECK(waitUntil([&]() { return !toAdapter.isEmpty(); }, 5000) && toAdapter.first() == fakeIpPacket(0x31));
         engine.injectFromAdapterForTest(fakeIpPacket(0x32));

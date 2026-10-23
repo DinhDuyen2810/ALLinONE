@@ -2831,6 +2831,24 @@ Lưu tài khoản (`CredentialStore`): Windows Credential Manager (`CredWriteW`,
 DPAPI theo người dùng) - không ghi tệp. Chỉ lưu sau `connected()`; dùng tài khoản đã lưu mà máy chủ từ chối thì
 `CredentialStore::remove` để lần sau hỏi lại.
 
+## 4zt. GlobalProtect: báo cáo HIP (sửa rớt sau ~60s); FortiGate chạy ổn định (2026-10-23, v1.19.34)
+
+Người dùng nối GlobalProtect thật (portal 171.226.12.171): đăng nhập/portal/gateway/getconfig OK, adapter wintun Up,
+IP 10.0.20.22, 6 tuyến - nhưng sau ~60 giây app báo "Gateway không còn phản hồi". Đây là `kDeadPeerMs` của ta: suốt
+60s KHÔNG nhận gì từ gateway. Nguyên nhân thật: gateway GlobalProtect bật **HIP (Host Information Profile)** - client
+phải nộp báo cáo tình trạng máy; chưa nộp thì gateway thiết lập đường hầm nhưng NGỪNG chuyển gói. Client chính thức
+luôn nộp HIP sau getconfig (OpenConnect: `check_and_maybe_submit_hip_report` trong `gpst_setup`, trước `gpst_connect`).
+
+Thêm (thuần, trong `GlobalProtectProtocol`): `hipMd5` (md5 của portal|user|domain|computer - định danh ổn định của
+máy+gateway, KHÔNG đổi theo authcookie/preferred-ip), `hipCheckBody`, `hipReportNeeded`, `buildHipReportXml` (bản
+Windows tối thiểu theo mẫu công khai `trojans/hipreport.sh`), `hipReportBody`. `TunnelEngine::gpHipCheck`: POST
+`ssl-vpn/hipreportcheck.esp`; nếu cần thì POST `ssl-vpn/hipreport.esp` kèm XML - TRƯỚC khi mở đường hầm; nộp lại định
+kỳ trong `onTick` (mặc định 1 giờ). Lỗi mạng/không cần HIP -> bỏ qua, không chặn kết nối. Các POST này đi qua kênh
+HTTPS riêng tới gateway (tuyến /32 qua đường gốc đã phủ IP gateway).
+
+FortiGate SSL-VPN (`VPN_BDTTG`) đã chạy ổn định thật, lưu tài khoản hoạt động (lần 2 không hỏi), tuyến DNS nội bộ đã
+thêm. CHƯA kiểm chứng lại GlobalProtect thật sau khi thêm HIP (chờ người dùng thử).
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
