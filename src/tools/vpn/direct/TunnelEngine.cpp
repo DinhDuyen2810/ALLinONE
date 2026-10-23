@@ -46,6 +46,8 @@ TunnelEngine::TunnelEngine(QObject* parent)
 TunnelEngine::~TunnelEngine()
 {
     // Lưới an toàn: tiến trình phụ thoát giữa chừng vẫn phải gỡ tuyến + xóa adapter.
+    if (m_esp)
+        m_esp->stop();
     if (m_adapter)
         m_adapter->close();
     if (m_net)
@@ -395,6 +397,13 @@ void TunnelEngine::gpGetConfig()
                      .arg(m_cfg.prefixLength)
                      .arg(m_cfg.dns.size())
                      .arg(m_cfg.includeRoutes.size()));
+             // Kênh dữ liệu ESP (IPsec/UDP): nhiều gateway BẮT BUỘC - chỉ dùng SSL để thiết lập rồi gửi dữ liệu
+             // qua ESP. Nạp cấu hình ESP (khóa/SPI gateway cấp sẵn) để dùng; thiếu/không có thì rơi về SSL.
+             m_espCfg = GlobalProtectProtocol::EspConfig{};
+             const bool hasEsp = !m_job.noEspForTest && GlobalProtectProtocol::parseEspConfig(r.body, &m_espCfg);
+             log(QStringLiteral("GP config: ESP=%1%2").arg(hasEsp ? "CÓ (dùng ESP)" : "không (dùng SSL)",
+                     hasEsp ? QStringLiteral(" udp=%1 enc=%2 hmac=%3").arg(m_espCfg.udpPort).arg(m_espCfg.encAlgo, m_espCfg.hmacAlgo)
+                            : QString()));
              // Nộp HIP TRƯỚC khi mở đường hầm (như client chính thức) - gateway yêu cầu HIP thường ngừng chuyển
              // gói nếu chưa nhận báo cáo, khiến đường hầm "treo" rồi app báo mất kết nối ở mốc 60 giây.
              gpHipCheck([this]() { resolveAndOpenTunnel(); });
@@ -413,8 +422,11 @@ void TunnelEngine::gpHipCheck(std::function<void()> done)
          GlobalProtectProtocol::hipCheckBody(m_gpAuth, m_cfg.ipv4, m_gpHipMd5), kGpUa, {}, [this, hp, proceed](const HttpResult& r) {
              if (m_phase == Phase::Stopping || m_phase == Phase::Done)
                  return;
+             m_hipStatus = r.status;
+             m_hipNeeded = r.status == 200 && GlobalProtectProtocol::hipReportNeeded(r.body);
+             log(QStringLiteral("HIP check: HTTP %1, cần nộp=%2").arg(r.status).arg(m_hipNeeded ? "có" : "không"));
              // Lỗi mạng/HTTP khi kiểm HIP không nên chặn kết nối: nhiều gateway KHÔNG bật HIP (báo lỗi/không cần).
-             if (r.status != 200 || !GlobalProtectProtocol::hipReportNeeded(r.body))
+             if (!m_hipNeeded)
              {
                  (*proceed)();
                  return;
@@ -502,6 +514,13 @@ void TunnelEngine::openTunnel(quint32 serverIp)
             return;
         }
     }
+    // GlobalProtect có ESP -> dùng kênh dữ liệu ESP/UDP (KHÔNG mở đường hầm SSL: việc GET /ssl-tunnel-connect
+    // sẽ làm khóa ESP vô hiệu). Chỉ rơi về SSL nếu ESP không lên.
+    if (m_job.protocol == DirectProtocol::GlobalProtect && m_espCfg.present)
+    {
+        startGpEsp();
+        return;
+    }
     emit status(QStringLiteral("Đang mở đường hầm tới %1:%2...").arg(m_host).arg(m_port));
     const QString hp = m_host + ':' + QString::number(m_port);
     QTcpSocket* sock = nullptr;
@@ -534,6 +553,67 @@ void TunnelEngine::openTunnel(quint32 serverIp)
         sock->connectToHost(m_host, static_cast<quint16>(m_port));
     else
         static_cast<QSslSocket*>(sock)->connectToHostEncrypted(m_host, static_cast<quint16>(m_port));
+}
+
+void TunnelEngine::startGpEsp()
+{
+    emit status(QStringLiteral("Đang thiết lập kênh dữ liệu ESP (IPsec/UDP %1)...").arg(m_espCfg.udpPort));
+    quint32 clientIp = 0;
+    if (!DirectVpn::parseIpv4(m_cfg.ipv4, &clientIp))
+    {
+        fail(QStringLiteral("Địa chỉ gateway cấp không hợp lệ cho ESP."));
+        return;
+    }
+    // Cấu hình adapter + tuyến TRƯỚC (trừ chế độ test): để gói trả về được định tuyến vào adapter ngay khi ESP
+    // lên. MTU trong trừ chi phí ESP (SPI+seq 8 + IV 16 + đệm 16 + HMAC 12 + IP ngoài 20 + UDP 8 ≈ 80 byte).
+    if (!m_job.noAdapterForTest && m_adapter && m_net && !m_netApplied)
+    {
+        const int base = (m_cfg.mtu >= 576 && m_cfg.mtu <= 1500) ? m_cfg.mtu : 1400;
+        QString err;
+        if (!m_net->apply(m_adapter->luid(), m_cfg, m_serverIp, base - 80, &err))
+        {
+            fail(err);
+            return;
+        }
+        m_netApplied = true;
+    }
+
+    m_esp = new GpEspChannel(this);
+    GpEspChannel::Callbacks cb;
+    cb.ipReceived = [this](const QByteArray& ip) { deliverToAdapter(ip); };
+    cb.established = [this]() { onGpEspEstablished(); };
+    cb.activity = [this]() { m_lastRx = now(); };
+    cb.log = [this](const QString& m) { log(m); };
+    QString err;
+    if (!m_esp->start(m_espCfg, clientIp, QHostAddress(m_serverIp), cb, &err))
+    {
+        fail(err);
+        return;
+    }
+    m_phase = Phase::Tunnel;
+    m_lastRx = now();
+    m_espStartMs = now();
+    m_lastProbeMs = now();
+    m_tick->start();
+}
+
+void TunnelEngine::onGpEspEstablished()
+{
+    if (m_phase != Phase::Tunnel)
+        return;
+    if (!m_job.noAdapterForTest && m_adapter)
+        m_adapter->startReader([this](QByteArray ip) {
+            QMetaObject::invokeMethod(this, [this, ip]() { onAdapterPacket(ip); }, Qt::QueuedConnection);
+        });
+    m_phase = Phase::Up;
+    m_wasUp = true;
+    m_lastKeepalive = now();
+    m_gpLastHipMs = now();
+    const QString routes = m_cfg.fullTunnel() ? QStringLiteral("toàn bộ lưu lượng qua VPN")
+                                              : QStringLiteral("%1 mạng nội bộ qua VPN").arg(m_cfg.includeRoutes.size());
+    const QString summary = QStringLiteral("IP %1 · %2 · ESP").arg(m_cfg.ipv4, routes);
+    log(QStringLiteral("Đường hầm ESP đã lên: %1").arg(summary));
+    emit connected(summary);
 }
 
 void TunnelEngine::writeTunnel(const QByteArray& data)
@@ -586,6 +666,8 @@ void TunnelEngine::onTunnelReadyRead()
     if (data.isEmpty())
         return;
     m_lastRx = now();
+    m_rxBytes += data.size();
+    ++m_rxPackets;
     if (m_job.protocol == DirectProtocol::FortinetSsl)
     {
         m_fortiDeframer.feed(data);
@@ -705,7 +787,15 @@ void TunnelEngine::deliverToAdapter(const QByteArray& ip)
 
 void TunnelEngine::onAdapterPacket(const QByteArray& ip)
 {
-    if (m_phase != Phase::Up || !m_tunnel || m_tunnel->bytesToWrite() > kMaxQueuedBytes)
+    if (m_phase != Phase::Up)
+        return;
+    // GlobalProtect qua ESP: gói IP -> ESP/UDP.
+    if (m_esp && m_esp->isEstablished())
+    {
+        m_esp->sendIp(ip);
+        return;
+    }
+    if (!m_tunnel || m_tunnel->bytesToWrite() > kMaxQueuedBytes)
         return;
     if (m_job.protocol == DirectProtocol::FortinetSsl)
     {
@@ -730,18 +820,40 @@ void TunnelEngine::onTick()
             m_ppp->tick(t); // PPP tự thăm dò (LCP echo) và tự kết thúc khi máy chủ im lặng quá lâu
         return;
     }
+    // GlobalProtect qua ESP: đang thiết lập -> gửi lại gói dò mỗi ~2 giây; quá 10 giây chưa lên -> thất bại
+    // (gateway bắt buộc ESP mà UDP %1 có thể bị chặn/không tới).
+    if (m_esp && !m_esp->isEstablished())
+    {
+        if (t - m_lastProbeMs >= 2000)
+        {
+            m_lastProbeMs = t;
+            m_esp->sendProbe();
+        }
+        if (t - m_espStartMs >= 10000)
+            fail(QStringLiteral("Không thiết lập được kênh dữ liệu ESP (gateway bắt buộc ESP nhưng UDP cổng %1 có thể bị "
+                                "tường lửa chặn). Thử mạng khác hoặc dùng \"Mở phần mềm\".").arg(m_espCfg.udpPort));
+        return;
+    }
     if (m_phase == Phase::Up)
     {
         if (t - m_lastKeepalive >= kGpKeepaliveMs)
         {
             m_lastKeepalive = t;
-            writeTunnel(GpFraming::keepalive());
+            if (m_esp)
+                m_esp->sendProbe(); // DPD/keepalive qua ESP
+            else
+                writeTunnel(GpFraming::keepalive());
+            ++m_keepalivesSent;
         }
-        // Nộp lại HIP định kỳ (qua kênh HTTPS riêng, không qua đường hầm) - gateway kiểm lại theo chu kỳ.
+        // Nộp lại HIP định kỳ (qua kênh HTTPS riêng) - gateway kiểm lại theo chu kỳ.
         if (t - m_gpLastHipMs >= m_gpHipIntervalMs)
             gpHipCheck([]() {});
         if (t - m_lastRx >= kDeadPeerMs)
+        {
+            log(QStringLiteral("Chẩn đoán mất kết nối GP: kênh=%1, nhận %2 byte/%3 gói SSL, gửi %4 keepalive, HIP HTTP %5")
+                    .arg(m_esp ? "ESP" : "SSL").arg(m_rxBytes).arg(m_rxPackets).arg(m_keepalivesSent).arg(m_hipStatus));
             fail(QStringLiteral("Gateway GlobalProtect không còn phản hồi (mất kết nối)."));
+        }
     }
 }
 
@@ -792,6 +904,12 @@ void TunnelEngine::teardown(const QString& message)
         m_tunnel = nullptr;
     }
     m_ppp.reset();
+    if (m_esp)
+    {
+        m_esp->stop();
+        m_esp->deleteLater();
+        m_esp = nullptr;
+    }
     // Gỡ tuyến TRƯỚC khi xóa adapter (tuyến /32 tới máy chủ nằm trên card mạng thật, không tự mất).
     if (m_net)
         m_net->revert();

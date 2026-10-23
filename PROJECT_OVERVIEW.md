@@ -2849,6 +2849,27 @@ HTTPS riêng tới gateway (tuyến /32 qua đường gốc đã phủ IP gatewa
 FortiGate SSL-VPN (`VPN_BDTTG`) đã chạy ổn định thật, lưu tài khoản hoạt động (lần 2 không hỏi), tuyến DNS nội bộ đã
 thêm. CHƯA kiểm chứng lại GlobalProtect thật sau khi thêm HIP (chờ người dùng thử).
 
+## 4zu. GlobalProtect: kênh dữ liệu ESP (IPsec/UDP) - gateway bắt buộc ESP (2026-10-23, v1.19.35)
+
+Chẩn đoán thật (v1.19.34 thêm log): GP nối xong nhận ĐÚNG 12 byte "START_TUNNEL" rồi gateway im lặng trên SSL, không
+trả lời 5 keepalive -> rớt ở 60s (dead-peer của ta). Log cấu hình: `ESP(ipsec)=CÓ, udp-port=4501`. Gateway này (chính
+sách admin) BẮT BUỘC kênh dữ liệu ESP; đường hầm SSL chỉ để thiết lập. Thử bỏ quảng cáo enc/hmac trong getconfig ->
+gateway VẪN trả `<ipsec>` (không chuyển sang SSL). Nên phải làm ESP.
+
+`GpEsp` (`GpEspCrypto` + `GpEspChannel`): ESP RFC 4303 trên UDP. Crypto bằng **BCrypt** (bcrypt.dll - AES-128/256-CBC,
+HMAC-SHA1-96/SHA256-128/MD5-96). Khóa đối xứng + SPI do gateway cấp sẵn trong `<ipsec>` (ekey/akey-c2s/s2c, c2s/s2c-spi)
+- KHÔNG có IKE. Khuôn gói: `[SPI 4][seq 4][IV 16][ciphertext][HMAC trunc]`; ciphertext = `[payload][đệm][padlen][next-hdr]`.
+Thiết lập: mở UDP tới gateway:udp-port, gửi gói "ping" dò = gói IPv4/ICMP-echo tới `<gw-address>` mang payload magic bắt
+buộc của GP ("monitor  pan ha "); nhận được ESP hợp lệ (phản hồi dò) -> kênh lên. Dữ liệu: gói IP từ adapter ->
+seal -> UDP; UDP nhận -> open -> adapter. Keepalive/DPD = gửi lại gói dò mỗi 10s; mất hoạt động 60s -> rớt.
+
+`TunnelEngine`: sau getconfig+HIP, `parseEspConfig`; nếu có ESP thì `startGpEsp` (tạo adapter + áp tuyến với MTU trừ ~80
+byte chi phí ESP, mở `GpEspChannel`) và KHÔNG mở đường hầm SSL (GET /ssl-tunnel-connect làm khóa ESP vô hiệu). ESP không
+lên trong 10s -> báo lỗi (gợi ý UDP bị chặn). Gateway không ép ESP (`<ipsec>` vắng) -> giữ luồng SSL như cũ.
+
+CHƯA kiểm chứng trên gateway GlobalProtect THẬT sau khi làm ESP (đã test đầu-cuối với gateway giả phản hồi ESP thật qua
+UDP loopback - round-trip dữ liệu đạt).
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để

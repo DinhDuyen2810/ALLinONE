@@ -318,7 +318,10 @@ QByteArray getConfigBody(const GatewayAuth& auth, const QString& appVersion)
     b += opt("ipv6-support", QStringLiteral("no"));
     b += opt("clientos", QStringLiteral("Windows"));
     b += opt("os-version", QStringLiteral("Microsoft Windows 10 Pro , 64-bit"));
-    b += opt("hmac-algo", QStringLiteral("sha1,md5,sha256"));
+    // Quảng cáo thuật toán ESP ta hỗ trợ (qua BCrypt của Windows) - gateway chọn trong số này. Nhiều gateway
+    // BẮT BUỘC kênh dữ liệu ESP (IPsec/UDP): chỉ dùng đường hầm SSL để thiết lập rồi gửi dữ liệu qua ESP, không
+    // gửi gì qua SSL (đã xác nhận thật: gateway im lặng trên SSL -> rớt ở 60s). Xem GpEsp/TunnelEngine.
+    b += opt("hmac-algo", QStringLiteral("sha1,sha256"));
     b += opt("enc-algo", QStringLiteral("aes-128-cbc,aes-256-cbc"));
     b += '&' + auth.cookieQuery();
     return b;
@@ -407,6 +410,75 @@ bool parseGatewayConfig(const QByteArray& xml, TunnelConfig* out, QString* tunne
     if (tunnelPath)
         *tunnelPath = path;
     return true;
+}
+
+bool parseEspConfig(const QByteArray& xml, EspConfig* out)
+{
+    EspConfig c;
+    QXmlStreamReader r(xml);
+    bool inIpsec = false;
+    while (!r.atEnd())
+    {
+        r.readNext();
+        if (!r.isStartElement())
+            continue;
+        const QString name = r.name().toString();
+        if (name == QLatin1String("ipsec"))
+        {
+            inIpsec = true;
+            c.present = true;
+            continue;
+        }
+        if (name == QLatin1String("gw-address"))
+        {
+            quint32 a = 0;
+            if (DirectVpn::parseIpv4(r.readElementText().trimmed(), &a))
+                c.magicV4 = a;
+            continue;
+        }
+        if (!inIpsec)
+            continue;
+        auto hexKey = [&r]() {
+            // <ekey-c2s><bits>128</bits><val>hex</val></ekey-c2s> - lấy <val>.
+            QByteArray key;
+            const QString end = r.name().toString();
+            while (!r.atEnd())
+            {
+                r.readNext();
+                if (r.isStartElement() && r.name() == QLatin1String("val"))
+                    key = QByteArray::fromHex(r.readElementText().trimmed().toLatin1());
+                else if (r.isEndElement() && r.name() == end)
+                    break;
+            }
+            return key;
+        };
+        if (name == QLatin1String("udp-port"))
+            c.udpPort = r.readElementText().toInt();
+        else if (name == QLatin1String("enc-algo"))
+            c.encAlgo = r.readElementText().trimmed().toLower();
+        else if (name == QLatin1String("hmac-algo"))
+            c.hmacAlgo = r.readElementText().trimmed().toLower();
+        else if (name == QLatin1String("c2s-spi"))
+            c.spiOut = r.readElementText().trimmed().toUInt(nullptr, 16);
+        else if (name == QLatin1String("s2c-spi"))
+            c.spiIn = r.readElementText().trimmed().toUInt(nullptr, 16);
+        else if (name == QLatin1String("ekey-c2s"))
+            c.encKeyOut = hexKey();
+        else if (name == QLatin1String("ekey-s2c"))
+            c.encKeyIn = hexKey();
+        else if (name == QLatin1String("akey-c2s"))
+            c.hmacKeyOut = hexKey();
+        else if (name == QLatin1String("akey-s2c"))
+            c.hmacKeyIn = hexKey();
+        else if (name == QLatin1String("ipsec") && r.isEndElement())
+            inIpsec = false;
+    }
+    // Đủ dùng khi có đủ 2 SPI + 4 khóa + thuật toán + địa chỉ magic.
+    const bool ok = c.present && c.spiOut && c.spiIn && !c.encKeyOut.isEmpty() && !c.encKeyIn.isEmpty() &&
+                    !c.hmacKeyOut.isEmpty() && !c.hmacKeyIn.isEmpty() && c.encAlgo.startsWith("aes") && c.magicV4;
+    if (ok && out)
+        *out = c;
+    return ok;
 }
 
 QString hipMd5(const GatewayAuth& auth)

@@ -10,6 +10,7 @@
 #include "tools/vpn/direct/DirectVpnTypes.h"
 #include "tools/vpn/direct/FortinetProtocol.h"
 #include "tools/vpn/direct/GlobalProtectProtocol.h"
+#include "tools/vpn/direct/GpEsp.h"
 #include "tools/vpn/direct/PppSession.h"
 #include "tools/vpn/direct/TunnelEngine.h"
 
@@ -25,6 +26,7 @@
 #include <QProcess>
 #include <QSet>
 #include <QTcpServer>
+#include <QUdpSocket>
 #include <QTcpSocket>
 #include <QTimer>
 #include <QUrlQuery>
@@ -725,6 +727,90 @@ int main(int argc, char** argv)
         const QByteArray hrb = GlobalProtectProtocol::hipReportBody(ga, "10.200.0.9", hipXml.toUtf8());
         CHECK(hrb.contains("client-role=global-protect-full&") && hrb.contains("&report=%3Chip-report"));
 
+        // ESP config: khối <ipsec> + <gw-address> (khóa/SPI gateway cấp sẵn).
+        const QByteArray espXml = R"(<response status="success">
+<ip-address>10.0.20.9</ip-address><netmask>255.255.255.255</netmask>
+<access-routes><member>10.0.0.0/8</member></access-routes>
+<gw-address>10.0.20.1</gw-address>
+<ipsec>
+  <udp-port>4501</udp-port><enc-algo>aes-128-cbc</enc-algo><hmac-algo>sha1</hmac-algo>
+  <c2s-spi>0x11223344</c2s-spi><s2c-spi>0xAABBCCDD</s2c-spi>
+  <ekey-c2s><bits>128</bits><val>000102030405060708090a0b0c0d0e0f</val></ekey-c2s>
+  <ekey-s2c><bits>128</bits><val>101112131415161718191a1b1c1d1e1f</val></ekey-s2c>
+  <akey-c2s><bits>160</bits><val>202122232425262728292a2b2c2d2e2f30313233</val></akey-c2s>
+  <akey-s2c><bits>160</bits><val>404142434445464748494a4b4c4d4e4f50515253</val></akey-s2c>
+  <ipsec-mode>esp-tunnel</ipsec-mode>
+</ipsec></response>)";
+        GlobalProtectProtocol::EspConfig esp;
+        CHECK(GlobalProtectProtocol::parseEspConfig(espXml, &esp));
+        CHECK(esp.present && esp.udpPort == 4501 && esp.encAlgo == "aes-128-cbc" && esp.hmacAlgo == "sha1");
+        CHECK(esp.spiOut == 0x11223344u && esp.spiIn == 0xAABBCCDDu && esp.magicV4 == 0x0A001401u);
+        CHECK(esp.encKeyOut.size() == 16 && esp.encKeyIn.size() == 16 && esp.hmacKeyOut.size() == 20 && esp.hmacKeyIn.size() == 20);
+        CHECK(esp.encKeyOut == QByteArray::fromHex("000102030405060708090a0b0c0d0e0f"));
+        // Không có ESP / thiếu khóa -> false.
+        GlobalProtectProtocol::EspConfig e2;
+        CHECK(!GlobalProtectProtocol::parseEspConfig("<response><ip-address>10.0.0.9</ip-address></response>", &e2));
+        CHECK(!GlobalProtectProtocol::parseEspConfig("<response><ipsec><udp-port>4501</udp-port></ipsec></response>", &e2));
+
+        // Gói dò ESP (ICMP echo + payload magic): dựng và nhận diện phản hồi.
+        const QByteArray probe = GpEspChannel::buildProbePacket(0x0A001409 /*10.0.20.9*/, esp.magicV4, 7);
+        CHECK((static_cast<quint8>(probe[0]) >> 4) == 4 && static_cast<quint8>(probe[9]) == 1); // IPv4/ICMP
+        CHECK(static_cast<quint8>(probe[20]) == 8); // ICMP echo request
+        CHECK(probe.contains(QByteArray("monitor", 7)));
+        // Phản hồi = cùng gói nhưng đảo src<->magic, ICMP type 0.
+        QByteArray reply = probe;
+        reply[12] = char((esp.magicV4 >> 24) & 0xFF); reply[13] = char((esp.magicV4 >> 16) & 0xFF);
+        reply[14] = char((esp.magicV4 >> 8) & 0xFF);  reply[15] = char(esp.magicV4 & 0xFF);
+        reply[20] = char(0); // echo reply
+        CHECK(GpEspChannel::isProbeReply(reply, esp.magicV4));
+        CHECK(!GpEspChannel::isProbeReply(probe, esp.magicV4)); // echo REQUEST không phải reply
+        CHECK(!GpEspChannel::isProbeReply(reply, 0x01020304));  // sai địa chỉ magic
+
+        // ESP crypto (BCrypt) round-trip: đặt khóa/SPI in==out để một đối tượng seal rồi tự open được.
+        for (const char* enc : {"aes-128-cbc", "aes-256-cbc"})
+            for (const char* mac : {"sha1", "sha256", "md5"})
+            {
+                GlobalProtectProtocol::EspConfig c;
+                c.present = true;
+                c.encAlgo = enc;
+                c.hmacAlgo = mac;
+                c.spiOut = c.spiIn = 0x12345678;
+                const int klen = QByteArray(enc).contains("256") ? 32 : 16;
+                c.encKeyOut = c.encKeyIn = QByteArray(klen, '\x5a');
+                c.hmacKeyOut = c.hmacKeyIn = QByteArray(20, '\x3c');
+                c.magicV4 = 1;
+                GpEspCrypto crypto;
+                QString cerr;
+                CHECK(crypto.init(c, &cerr));
+                for (int plen : {1, 15, 16, 17, 100, 1400})
+                {
+                    QByteArray payload(plen, Qt::Uninitialized);
+                    for (int i = 0; i < plen; ++i)
+                        payload[i] = char(i & 0xFF);
+                    const QByteArray sealed = crypto.seal(payload, 4);
+                    CHECK(!sealed.isEmpty());
+                    QByteArray back;
+                    quint8 nh = 0;
+                    CHECK(crypto.open(sealed, &back, &nh) && back == payload && nh == 4);
+                    // Sửa 1 byte ciphertext -> HMAC phải phát hiện (từ chối).
+                    QByteArray tampered = sealed;
+                    tampered[tampered.size() - 1] = tampered[tampered.size() - 1] ^ 0x01;
+                    CHECK(!crypto.open(tampered, &back, &nh));
+                    QByteArray midTamper = sealed;
+                    midTamper[30] = midTamper[30] ^ 0x01;
+                    CHECK(!crypto.open(midTamper, &back, &nh));
+                }
+                // SPI khác -> open từ chối.
+                GlobalProtectProtocol::EspConfig c2 = c;
+                c2.spiIn = 0x99999999;
+                GpEspCrypto other;
+                CHECK(other.init(c2, &cerr));
+                QByteArray x;
+                quint8 nh2 = 0;
+                CHECK(!other.open(crypto.seal(QByteArray(20, 'z')), &x, &nh2)); // SPI không khớp
+            }
+        std::printf("ESP crypto round-trip (AES-128/256, SHA1/256/MD5) OK\n");
+
         // Khung gói GlobalProtect.
         const QByteArray ip = fakeIpPacket(9);
         const QByteArray enc = GpFraming::encapsulateIpv4(ip);
@@ -948,6 +1034,110 @@ int main(int argc, char** argv)
         CHECK(waitUntil([&]() { return !clientPackets.isEmpty(); }, 5000) && clientPackets.first() == fakeIpPacket(0x32));
         // Keepalive mỗi 10 giây (như client chính thức).
         CHECK(waitUntil([&]() { return keepalives > 0; }, 13000));
+        engine.stop("stop");
+        CHECK(waitUntil([&]() { return ended; }, 8000));
+    }
+
+    // ================= TunnelEngine đầu-cuối: GlobalProtect qua ESP (gateway GIẢ phản hồi ESP/UDP thật) =======
+    {
+        // Khóa/SPI cố định; gateway giả dùng bộ ĐẢO (c2s<->s2c) để giải mã gói client và seal gói trả về.
+        const QByteArray ekC2S = QByteArray::fromHex("000102030405060708090a0b0c0d0e0f");
+        const QByteArray ekS2C = QByteArray::fromHex("101112131415161718191a1b1c1d1e1f");
+        const QByteArray akC2S = QByteArray::fromHex("202122232425262728292a2b2c2d2e2f30313233");
+        const QByteArray akS2C = QByteArray::fromHex("404142434445464748494a4b4c4d4e4f50515253");
+
+        QUdpSocket espGw; // gateway ESP giả
+        CHECK(espGw.bind(QHostAddress(QHostAddress::LocalHost), 0));
+        const quint16 espPort = espGw.localPort();
+
+        GlobalProtectProtocol::EspConfig gwCfg; // crypto phía gateway = đảo chiều
+        gwCfg.present = true; gwCfg.encAlgo = "aes-128-cbc"; gwCfg.hmacAlgo = "sha1";
+        gwCfg.spiOut = 0xAABBCCDD; gwCfg.spiIn = 0x11223344; // out=s2c, in=c2s
+        gwCfg.encKeyOut = ekS2C; gwCfg.encKeyIn = ekC2S; gwCfg.hmacKeyOut = akS2C; gwCfg.hmacKeyIn = akC2S;
+        gwCfg.magicV4 = 1;
+        auto gwCrypto = std::make_shared<GpEspCrypto>();
+        QString gwErr;
+        CHECK(gwCrypto->init(gwCfg, &gwErr));
+
+        QList<QByteArray> gwDataFromClient;
+        int gwProbes = 0;
+        QObject::connect(&espGw, &QUdpSocket::readyRead, [&]() {
+            while (espGw.hasPendingDatagrams())
+            {
+                QByteArray dg(espGw.pendingDatagramSize(), Qt::Uninitialized);
+                QHostAddress from; quint16 fromPort = 0;
+                espGw.readDatagram(dg.data(), dg.size(), &from, &fromPort);
+                QByteArray inner; quint8 nh = 0;
+                if (!gwCrypto->open(dg, &inner, &nh))
+                    continue;
+                if (GpEspChannel::isProbeReply(inner, 0x0A001401) || (inner.size() > 20 && static_cast<quint8>(inner[20]) == 8))
+                {
+                    // Gói dò (echo request) -> trả echo REPLY: đảo src<->dst, ICMP type 0.
+                    ++gwProbes;
+                    QByteArray rep = inner;
+                    for (int i = 0; i < 4; ++i) std::swap(rep[12 + i], rep[16 + i]);
+                    rep[20] = char(0);
+                    espGw.writeDatagram(gwCrypto->seal(rep, 4), from, fromPort);
+                }
+                else if ((static_cast<quint8>(inner[0]) >> 4) == 4)
+                {
+                    gwDataFromClient << inner;
+                    espGw.writeDatagram(gwCrypto->seal(inner, 4), from, fromPort); // dội lại để client nhận
+                }
+            }
+        });
+
+        FakeServer srv;
+        const QString self = "127.0.0.1:" + QString::number(srv.port());
+        const QString espBlock = QStringLiteral(
+            "<gw-address>10.0.20.1</gw-address><ipsec><udp-port>%1</udp-port><enc-algo>aes-128-cbc</enc-algo>"
+            "<hmac-algo>sha1</hmac-algo><c2s-spi>0x11223344</c2s-spi><s2c-spi>0xAABBCCDD</s2c-spi>"
+            "<ekey-c2s><bits>128</bits><val>000102030405060708090a0b0c0d0e0f</val></ekey-c2s>"
+            "<ekey-s2c><bits>128</bits><val>101112131415161718191a1b1c1d1e1f</val></ekey-s2c>"
+            "<akey-c2s><bits>160</bits><val>202122232425262728292a2b2c2d2e2f30313233</val></akey-c2s>"
+            "<akey-s2c><bits>160</bits><val>404142434445464748494a4b4c4d4e4f50515253</val></akey-s2c>"
+            "<ipsec-mode>esp-tunnel</ipsec-mode></ipsec>").arg(espPort);
+        srv.onRequest = [&](QTcpSocket* s, const HttpReq& r) {
+            if (r.path == "/global-protect/prelogin.esp")
+                FakeServer::respond(s, 200, "<prelogin-response><status>Success</status></prelogin-response>");
+            else if (r.path == "/global-protect/getconfig.esp")
+                FakeServer::respond(s, 200, ("<policy><version>6.3</version><gateways><external><list><entry name=\"" + self +
+                                             "\"><description>GW</description></entry></list></external></gateways></policy>").toUtf8());
+            else if (r.path == "/ssl-vpn/login.esp")
+                FakeServer::respond(s, 200, "<jnlp><application-desc><argument/><argument>AUTH9</argument><argument/><argument>GP</argument>"
+                                            "<argument>bob</argument><argument/><argument/><argument/><argument/><argument/><argument/>"
+                                            "<argument/><argument>tunnel</argument></application-desc></jnlp>");
+            else if (r.path == "/ssl-vpn/hipreportcheck.esp")
+                FakeServer::respond(s, 200, "<response><hip-report-needed>no</hip-report-needed></response>");
+            else if (r.path == "/ssl-vpn/getconfig.esp")
+                FakeServer::respond(s, 200, ("<response><ip-address>10.0.20.9</ip-address><netmask>255.255.255.255</netmask>"
+                                             "<access-routes><member>10.0.0.0/8</member></access-routes>" + espBlock + "</response>").toUtf8());
+            else
+                FakeServer::respond(s, 404, "");
+        };
+
+        TunnelEngine engine;
+        QString summary;
+        bool ended = false;
+        QList<QByteArray> toAdapter;
+        QObject::connect(&engine, &TunnelEngine::connected, [&](const QString& s) { summary = s; });
+        QObject::connect(&engine, &TunnelEngine::packetToAdapterForTest, [&](const QByteArray& ip) { toAdapter << ip; });
+        QObject::connect(&engine, &TunnelEngine::finished, [&](bool, const QString& m) { ended = true; std::printf("GP-ESP ket thuc: %s\n", qPrintable(m)); });
+        TunnelEngine::Job job;
+        job.protocol = DirectProtocol::GlobalProtect;
+        job.server = self;
+        job.username = "bob";
+        job.password = "pw";
+        job.plainForTest = job.noAdapterForTest = true; // HTTP trần + không adapter; ESP vẫn chạy thật trên UDP loopback
+        engine.start(job);
+        CHECK(waitUntil([&]() { return engine.isUp() || ended; }, 15000));
+        CHECK(engine.isUp() && gwProbes > 0);
+        CHECK(summary.contains("ESP") && summary.contains("10.0.20.9"));
+        std::printf("GP-ESP -> connected: %s (gw nhan %d goi do)\n", qPrintable(summary), gwProbes);
+        // Dữ liệu client -> gateway (qua ESP) -> dội lại -> adapter.
+        engine.injectFromAdapterForTest(fakeIpPacket(0x5a));
+        CHECK(waitUntil([&]() { return !gwDataFromClient.isEmpty(); }, 5000) && gwDataFromClient.first() == fakeIpPacket(0x5a));
+        CHECK(waitUntil([&]() { return !toAdapter.isEmpty(); }, 5000) && toAdapter.first() == fakeIpPacket(0x5a));
         engine.stop("stop");
         CHECK(waitUntil([&]() { return ended; }, 8000));
     }

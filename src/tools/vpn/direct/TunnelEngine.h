@@ -3,6 +3,7 @@
 #include "DirectVpnTypes.h"
 #include "FortinetProtocol.h"
 #include "GlobalProtectProtocol.h"
+#include "GpEsp.h"
 #include "PppSession.h"
 
 #include <QElapsedTimer>
@@ -44,6 +45,7 @@ public:
         QMap<QString, QString> pins; ///< "host:port" -> SHA-256 (hex thường) của chứng chỉ người dùng đã chấp nhận
         bool plainForTest{false};    ///< CHỈ test: HTTP/TCP trần thay TLS (máy chủ giả trên 127.0.0.1)
         bool noAdapterForTest{false};///< CHỈ test: không tạo adapter/không đổi tuyến - gói đi qua tín hiệu test
+        bool noEspForTest{false};    ///< CHỈ test: bỏ qua kênh ESP (kiểm luồng SSL cũ dù config có ESP)
     };
 
     explicit TunnelEngine(QObject* parent = nullptr);
@@ -104,6 +106,8 @@ private:
     // Đường hầm
     void resolveAndOpenTunnel();
     void openTunnel(quint32 serverIp);
+    void startGpEsp();          ///< GlobalProtect dùng ESP: mở adapter + kênh ESP (không mở đường hầm SSL)
+    void onGpEspEstablished();  ///< ESP đã lên -> cấu hình adapter + chuyển sang trạng thái Up
     void onTunnelConnected();
     void onTunnelReadyRead();
     void onTunnelUp();
@@ -150,10 +154,22 @@ private:
     QString m_gpHipMd5;         ///< định danh HIP của phiên (ổn định)
     qint64 m_gpLastHipMs{0};    ///< mốc nộp/kiểm HIP gần nhất
     qint64 m_gpHipIntervalMs{3600000}; ///< chu kỳ kiểm lại HIP (mặc định 1 giờ, như client chính thức)
+    // Chẩn đoán (ghi vào nhật ký lúc mất kết nối) - để biết vì sao gateway im lặng.
+    qint64 m_rxBytes{0};
+    int m_rxPackets{0};
+    int m_keepalivesSent{0};
+    int m_hipStatus{-1};       ///< HTTP status của hipreportcheck (-1 = chưa chạy)
+    bool m_hipNeeded{false};
 
     OtpContext m_otp{OtpContext::None};
     TunnelConfig m_cfg;
     quint32 m_serverIp{0};
+
+    GlobalProtectProtocol::EspConfig m_espCfg;
+    GpEspChannel* m_esp{nullptr};
+    qint64 m_espStartMs{0};
+    qint64 m_lastProbeMs{0};
+    bool m_netApplied{false};
 
     std::unique_ptr<WintunAdapter> m_adapter;
     std::unique_ptr<NetConfigurator> m_net;

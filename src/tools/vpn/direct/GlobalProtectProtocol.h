@@ -73,6 +73,22 @@ QByteArray getConfigBody(const GatewayAuth& auth, const QString& appVersion);
 /// Đọc XML getconfig.esp của gateway. *tunnelPath = đường dẫn đường hầm SSL (mặc định /ssl-tunnel-connect.sslvpn).
 bool parseGatewayConfig(const QByteArray& xml, TunnelConfig* out, QString* tunnelPath, QString* error);
 
+/// Cấu hình kênh dữ liệu ESP (IPsec/UDP) mà gateway GlobalProtect cấp - nhiều gateway BẮT BUỘC dùng ESP (chỉ
+/// dùng đường hầm SSL để thiết lập rồi gửi dữ liệu qua ESP). Khóa/SPI do gateway cấp sẵn (không IKE).
+struct EspConfig
+{
+    bool present{false};
+    int udpPort{4501};
+    QString encAlgo;            ///< "aes-128-cbc" | "aes-256-cbc"
+    QString hmacAlgo;           ///< "sha1" | "sha256" | "md5"
+    quint32 spiOut{0};          ///< c2s-spi (client->server) - thứ tự byte MÁY
+    quint32 spiIn{0};           ///< s2c-spi (server->client)
+    QByteArray encKeyOut, encKeyIn, hmacKeyOut, hmacKeyIn;
+    quint32 magicV4{0};         ///< gw-address (IPv4, thứ tự byte máy) - đích của gói "ping" dò ESP
+};
+/// Đọc khối <ipsec> + <gw-address> của XML getconfig. Trả false nếu không có ESP/thiếu khóa.
+bool parseEspConfig(const QByteArray& xml, EspConfig* out);
+
 // ---- HIP (Host Information Profile) - gateway thường YÊU CẦU báo cáo tình trạng máy sau khi nối, không nộp
 // thì gateway ngừng chuyển gói (đường hầm "treo" rồi app báo mất kết nối). Client chính thức luôn kiểm + nộp.
 // MD5 là định danh ổn định của (máy + gateway), không đổi theo IP/authcookie (dựa trên cookie bỏ authcookie/

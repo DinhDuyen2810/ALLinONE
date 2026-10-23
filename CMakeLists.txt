@@ -372,6 +372,8 @@ add_library(vpn_core STATIC
     src/tools/vpn/direct/FortinetProtocol.cpp
     src/tools/vpn/direct/GlobalProtectProtocol.h
     src/tools/vpn/direct/GlobalProtectProtocol.cpp
+    src/tools/vpn/direct/GpEsp.h
+    src/tools/vpn/direct/GpEsp.cpp
     src/tools/vpn/direct/WintunAdapter.h
     src/tools/vpn/direct/WintunAdapter.cpp
     src/tools/vpn/direct/TunnelEngine.h
@@ -384,7 +386,7 @@ add_library(vpn_core STATIC
     src/tools/vpn/direct/CredentialStore.cpp
 )
 target_include_directories(vpn_core PUBLIC src)
-target_link_libraries(vpn_core PUBLIC Qt6::Core Qt6::Network advapi32 shell32 rasapi32 iphlpapi ws2_32 core_shared)
+target_link_libraries(vpn_core PUBLIC Qt6::Core Qt6::Network advapi32 shell32 rasapi32 iphlpapi ws2_32 bcrypt core_shared)
 
 # qr_ui dùng lại PublicIpChecker của vpn_core cho nút "Lấy vị trí hiện tại" (ước lượng gần đúng theo IP
 # công khai) ở trang tạo mã QR Vị trí (Geo) - cùng lý do/khuôn mẫu đã thêm cho wifi_ui ở trên.
