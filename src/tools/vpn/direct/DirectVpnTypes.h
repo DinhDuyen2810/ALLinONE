@@ -9,9 +9,10 @@
 /// của dự án OpenConnect) và dùng adapter mạng ảo wintun.dll để đưa lưu lượng vào đường hầm.
 enum class DirectProtocol
 {
-    None = 0,          // không hỗ trợ kết nối trực tiếp (vd FortiClient IPsec, Cisco, OpenVPN) - chỉ "Mở phần mềm"
+    None = 0,          // không hỗ trợ kết nối trực tiếp (vd Cisco, OpenVPN) - chỉ "Mở phần mềm"
     FortinetSsl = 1,   // FortiGate SSL-VPN (FortiClient "SSL-VPN"): đăng nhập HTTPS + PPP trong TLS
     GlobalProtect = 2, // Palo Alto GlobalProtect: portal -> gateway -> đường hầm HTTPS (gói IP thô)
+    FortinetIpsec = 3, // FortiGate IPsec (FortiClient "IPsec"): IKEv1 Aggressive + PSK + XAuth + Mode-cfg + ESP
 };
 
 /// Một tuyến IPv4 dạng mạng/độ dài tiền tố, thứ tự byte của MÁY (vd 10.0.0.0/8 = {0x0A000000, 8}).

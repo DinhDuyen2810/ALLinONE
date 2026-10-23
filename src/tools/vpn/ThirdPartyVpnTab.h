@@ -40,7 +40,7 @@ private:
     void reload();
     void updateButtons();
     const ThirdPartyVpnProfile* selected() const;
-    bool askCredentials(const ThirdPartyVpnProfile& p, QString* user, QString* pass, bool* save);
+    bool askCredentials(const ThirdPartyVpnProfile& p, QString* user, QString* pass, QString* psk, bool* save);
     void clearPendingCredentials();
 
     QTableWidget* m_table{nullptr}; // [Phần mềm][Tên hồ sơ][Máy chủ][Kết nối trực tiếp]
@@ -62,4 +62,6 @@ private:
     bool m_pendingSave{false};
     QString m_pendingUser;
     QString m_pendingPass;
+    QString m_pendingPsk;       ///< PSK chờ lưu (FortiGate IPsec)
+    bool m_activeIsIpsec{false}; ///< phiên đang chạy là IPsec (cần lưu/đọc PSK)
 };

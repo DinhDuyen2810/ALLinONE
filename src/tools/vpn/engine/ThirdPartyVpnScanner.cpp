@@ -205,8 +205,8 @@ void scanFortiClient(QList<ThirdPartyVpnProfile>& out)
             p.server = server;
             p.source = source;
             p.exePath = exe;
-            // SSL-VPN kết nối trực tiếp được trong ứng dụng; IPsec (IKEv1 + XAuth của FortiGate) thì chưa.
-            p.direct = b.ipsec ? DirectProtocol::None : DirectProtocol::FortinetSsl;
+            // SSL-VPN và IPsec (IKEv1 Aggressive + XAuth) đều kết nối trực tiếp được trong ứng dụng.
+            p.direct = b.ipsec ? DirectProtocol::FortinetIpsec : DirectProtocol::FortinetSsl;
             idx.insert(key, forti.size());
             forti << p;
         }

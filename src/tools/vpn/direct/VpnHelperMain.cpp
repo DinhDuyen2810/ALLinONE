@@ -98,6 +98,7 @@ int runVpnHelper(int argc, char* argv[])
                 job.username = m.value("user").toString();
                 job.password = m.value("pass").toString();
                 job.realm = m.value("realm").toString();
+                job.psk = m.value("psk").toString();
                 const QJsonObject pins = m.value("pins").toObject();
                 for (auto it = pins.begin(); it != pins.end(); ++it)
                     job.pins.insert(it.key(), it.value().toString());

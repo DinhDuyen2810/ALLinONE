@@ -2870,6 +2870,46 @@ lên trong 10s -> báo lỗi (gợi ý UDP bị chặn). Gateway không ép ESP 
 CHƯA kiểm chứng trên gateway GlobalProtect THẬT sau khi làm ESP (đã test đầu-cuối với gateway giả phản hồi ESP thật qua
 UDP loopback - round-trip dữ liệu đạt).
 
+## 4zv. Kết nối trực tiếp hồ sơ FortiClient IPsec: client IKEv1 tự viết (2026-10-23, v1.19.36)
+
+Người dùng hỏi hồ sơ FortiClient kiểu **IPsec** (VPN_CVTLT - trước đây `direct=None`, chỉ "Mở phần mềm") kết nối trực
+tiếp như nào. Hồ sơ này là FortiGate IPsec: **IKEv1 Aggressive mode + PSK + XAuth + Mode-config + Quick Mode + ESP**
+(đọc từ registry, KHÔNG bí mật: `Aggressive=1, AuthMethod=1(PSK), DHGroup=512, ikeversion=1, Modecfg=1, XAuth=1,
+RemoteGW=119.17.206.59, udp_port=500`). Tự viết client IKEv1 (không thư viện ngoài - dùng BCrypt của Windows).
+
+Kiến trúc (4 lớp thuần + tích hợp), tất cả trong `src/tools/vpn/direct/`:
+- **`IkeCrypto`**: Diffie-Hellman nhóm MODP 2/5/14 (BCrypt `BCRYPT_DH_ALGORITHM`, số nguyên tố RFC 3526 nhúng sẵn), băm
+  SHA1/SHA256/MD5, PRF=HMAC, `prf+` kiểu IKE, AES-CBC, byte ngẫu nhiên.
+- **`IsakmpMessage`**: mã hóa/giải mã bản tin ISAKMP (RFC 2408) - tiêu đề + chuỗi payload; dựng SA/proposal/transform
+  (lồng nhau), KE, Nonce, ID, HASH, Notify, Delete, Config (Mode-cfg/XAuth) + thuộc tính TV/TLV.
+- **`IkeKeys`**: dẫn xuất khóa RFC 2409 §5 - `SKEYID=prf(psk,Ni|Nr)`, SKEYID_d/a/e, HASH_I/HASH_R, mở rộng khóa mã hóa
+  phiên, IV khởi tạo Phase 1 (`hash(gxi|gxr)`) và Phase 2 (`hash(iv1|M-ID)`), KEYMAT ESP (prf nối theo SPI/Ni/Nr), HASH
+  Quick Mode 1/2/3.
+- **`IkeSession`** (QObject, máy trạng thái): gửi Aggressive msg1 (SA+KE+Ni+IDii+VID NAT-T) -> nhận msg2, tính g^xy +
+  SKEYID + kiểm HASH_R -> gửi msg3 (HASH_I) -> XAuth (máy chủ hỏi, trả user/pass mã hóa) -> Mode-config (xin IP/DNS/
+  subnet) -> Quick Mode (SA ESP + nonce, chốt SPI) -> dẫn xuất khóa/SPI ESP (đóng gói trong `EspConfig` để dùng lại
+  `GpEspCrypto`). Mã hóa payload sau Phase 1 bằng AES-CBC với chuỗi IV theo message-ID. KHÔNG tự mở socket - phát
+  `sendDatagram`/nhận `onDatagram` để test được.
+
+Tích hợp `TunnelEngine` (`DirectProtocol::FortinetIpsec`): một `QUdpSocket` dùng CHUNG cho IKE và ESP (bắt buộc với
+NAT-T để giữ ánh xạ NAT cùng cổng nguồn). Thương lượng trên UDP 500; phát hiện NAT-T (VID/NAT-D) -> chuyển cổng 4500,
+IKE thêm dấu non-ESP (4 byte 0) phân biệt với gói ESP (SPI≠0). Quick Mode xong -> tạo adapter wintun + áp IP/DNS/tuyến
+(MTU trừ ~80) + nạp khóa ESP (`GpEspCrypto`) -> bơm gói IP ↔ ESP/UDP 4500. Keepalive NAT = 1 byte 0xFF mỗi 20s; mất
+phản hồi 60s -> rớt. PSK nhập trong ứng dụng (hộp thoại đăng nhập, lưu kèm user/pass vào Windows Credential Manager
+dưới mục `<máy chủ>|psk`). Scanner đánh dấu hồ sơ IPsec = `FortinetIpsec` (kết nối trực tiếp được).
+
+Kiểm thử: `ike_crypto_check` (47/0) - DH round-trip nhóm 2/5/14, HMAC/băm theo vector RFC 2202/4231, AES-CBC vector
+NIST, round-trip bản tin ISAKMP + lồng SA/proposal/transform + config, dẫn xuất khóa hai vai nhất quán. **`ike_session_check`
+(24/0, MỚI): bắt tay IKEv1 TRỌN VẸN offline** - `IkeSession` (client) đấu một responder GIẢ dựng bằng chính các lớp
+trên; responder KIỂM HASH_I, HASH XAuth, HASH Quick Mode của client (chứng minh client tính đúng dải byte + mã hóa +
+IV + KEYMAT với một peer IKE chuẩn), cuối cùng hai bên dẫn xuất khóa ESP TRÙNG nhau. `vpn_direct_tests` 357/0.
+
+**CHƯA kiểm chứng với FortiGate THẬT** (cần PSK + tài khoản XAuth của người dùng; mỗi lần thử cần 1 UAC để tạo adapter).
+Rủi ro còn lại chỉ lộ ra khi thử thật: (1) **nhóm DH** - hồ sơ ghi `DHGroup=512`, theo bitmask FortiClient có thể là
+nhóm 20 (ECDH P-384) chứ không phải MODP; hiện đề xuất nhóm 14 trước, nếu máy chủ trả `NO-PROPOSAL-CHOSEN` thì cần thêm
+ECDH (hoặc đọc đúng đề xuất P1 từ registry); (2) **kiểu ID** của IDii (FortiGate dialup thường dùng group-id/key-id);
+(3) kiểu **đóng gói NAT-T** trong Quick Mode. `IkeSession` ghi log từng bước để dò.
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
@@ -3052,6 +3092,7 @@ Quy tắc đứng nằm ở `CLAUDE.md` (gốc dự án). Tóm tắt - mỗi l�
 | 2026-10-22 | VPN: kết nối VPN Gate bằng OpenVPN (đóng gói openvpn.exe + wintun.dll) (v1.19.30) | Tiếp v1.19.29 (L2TP native hỏng): thêm cách kết nối OpenVPN cho tab "Đổi IP theo quốc gia" (ô chọn OpenVPN/L2TP). `OpenVpnRunner` (vpn_core) chạy `openvpn.exe` đóng gói qua UAC, điều khiển qua management interface (127.0.0.1 + mật khẩu ngẫu nhiên): đọc `>STATE...CONNECTED`, gửi `signal SIGTERM` để ngắt. `buildConfig()` (thuần, test được) dựng `.ovpn` chạy nền: bỏ auth-user-pass/management/dev-node/windows-driver/block-outside-dns, thêm management-hold + windows-driver wintun + auth-nocache; CHỈ thêm lại auth-user-pass khi gốc có (VPN Gate xác thực bằng `<cert>/<key>` nhúng, không user/pass - xác minh trên .ovpn THẬT). `VpnGateServer.ovpnConfig` lấy từ cột Base64 cuối của API (không lưu cache). Đóng cửa sổ khi đang bật OpenVPN sẽ tự ngắt. Đóng gói `vendor/openvpn/` (không commit): openvpn.exe + OpenSSL DLLs từ build.openvpn.net, wintun.dll từ wintun.net - xác minh bằng **chữ ký Authenticode** (OpenVPN Inc./Microsoft/WireGuard LLC; Windows-native, không phụ thuộc gpg vốn hỏng trên CI do GNUPGHOME kiểu Windows); `build_app.bat`/CI/`scripts/ci_fetch_vendor.ps1` tự tải+chép. `vpn_tests` 223/0 (+23). CHƯA kiểm chứng đầu-cuối đổi IP (cần 1 lần bấm Yes UAC - chưa tự bấm thay được); đã xác minh chữ ký nhị phân + dựng cấu hình đúng .ovpn thật + build/đóng gói đủ. Chỉ push code, KHÔNG tag/Release. **(Đã bỏ ở v1.19.31.)** |
 | 2026-10-22 | VPN: bỏ OpenVPN -> SSTP; sửa lỗi gốc quay số RAS; kết nối trực tiếp FortiGate/GlobalProtect (v1.19.31) | Mục 4zq. OpenVPN treo vì lời nhắc `ENTER PASSWORD:` không bị xóa khỏi bộ đệm (không gửi `hold release`) + rò `openvpn.exe` nâng quyền khi hết giờ -> gỡ hẳn. VPN Gate nối SSTP (RAS gốc, `<HostName>.opengw.net` khớp chứng chỉ Let's Encrypt). Lỗi gốc `VpnConnector`: mã 6 TẠM THỜI của `RasGetConnectStatusW` ở +16ms bị coi là thất bại -> mọi lần quay số qua app hỏng (cả "Lỗi 6" người dùng gặp từ đầu); `dwNotifierType` sửa lại 1 (v1.19.27 đổi nhầm 2). Đã đổi IP THẬT bằng code của app (VN -> Tokyo). Kết nối trực tiếp FortiGate SSL-VPN/GlobalProtect: client giao thức tự viết (PPP/LCP/IPCP, đăng nhập/OTP/cấu hình), adapter wintun.dll + iphlpapi, tiến trình phụ nâng quyền `--vpn-helper` (pipe + mã một lần, tự dọn khi pipe đóng), ghim vân tay chứng chỉ tự ký. `vpn_tests` 219/0, `vpn_ui_tests` 7/0, `vpn_direct_tests` 150/0 (mới; máy chủ FortiGate/GP giả đầu-cuối). Đã chạy thật: adapter wintun Admin 10/10, thăm dò 3/3 máy chủ thật (không đăng nhập). CHƯA kiểm chứng: đăng nhập + đường hầm bằng tài khoản cơ quan thật. Chỉ push code, KHÔNG tag/Release. |
 | 2026-10-22 | Lấy IP chậm sau khi nối VPN + rà giao diện bằng ảnh chụp thật (v1.19.32) | Mục 4zr. Kết nối HTTPS keep-alive cũ kẹt sau khi tuyến đổi -> 8 s rồi hủy; `clearConnectionCache()` + thử lại 1 lần -> 1093 ms. Công cụ `ui_snapshot` (offscreen hoặc kiểu gốc không hiện màn hình) rà 8 công cụ: sửa cắt chữ hàng điều khiển VPN Gate (2 hàng, NAT chỉ khi L2TP), ô Cổng, nút Android, nhóm ghép đôi Connect bị ép. Nhật ký chẩn đoán kết nối trực tiếp. vpn 219/7, vpn_direct 150, android 153/30, connect_ui 17. Chỉ push code, KHÔNG tag/Release. |
+| 2026-10-23 | Kết nối trực tiếp FortiClient IPsec: client IKEv1 tự viết (v1.19.33→36) | Mục 4zs-4zv. v1.19.33: kết nối trực tiếp CHẠY THẬT với FortiGate người dùng + lưu tài khoản + sửa DNS nội bộ. v1.19.34: GlobalProtect nộp HIP (sửa rớt ~60s). v1.19.35: GlobalProtect kênh ESP (gateway bắt buộc). **v1.19.36**: hồ sơ FortiClient IPsec (VPN_CVTLT) nối trực tiếp bằng client **IKEv1 tự viết** (`IkeCrypto`+`IsakmpMessage`+`IkeKeys`+`IkeSession`, dựa BCrypt): Aggressive+PSK+XAuth+Mode-config+Quick Mode+ESP; IKE+ESP chung socket UDP (NAT-T 4500). Test `ike_crypto_check` 47/0, `ike_session_check` 24/0 (bắt tay TRỌN VẸN offline với responder giả, khớp khóa ESP hai bên), `vpn_direct_tests` 357/0. CHƯA kiểm chứng FortiGate IPsec THẬT (cần PSK+XAuth; có thể cần nhóm DH 20/ECDH, kiểu ID, NAT-T encap). Chỉ push code, KHÔNG tag/Release. |
 
 ### Chi tiết lần sửa 2026-10-06 (v1.0.6)
 - **InputController:** phím mở rộng (mũi tên, Home/End, PgUp/PgDn, Insert, Delete, Win) gửi kèm `KEYEVENTF_EXTENDEDKEY` + scancode (tránh bị hiểu thành numpad); hotkey nhả modifier theo thứ tự ngược; TypeText chuyển `

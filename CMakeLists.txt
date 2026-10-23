@@ -374,6 +374,14 @@ add_library(vpn_core STATIC
     src/tools/vpn/direct/GlobalProtectProtocol.cpp
     src/tools/vpn/direct/GpEsp.h
     src/tools/vpn/direct/GpEsp.cpp
+    src/tools/vpn/direct/IkeCrypto.h
+    src/tools/vpn/direct/IkeCrypto.cpp
+    src/tools/vpn/direct/IsakmpMessage.h
+    src/tools/vpn/direct/IsakmpMessage.cpp
+    src/tools/vpn/direct/IkeKeys.h
+    src/tools/vpn/direct/IkeKeys.cpp
+    src/tools/vpn/direct/IkeSession.h
+    src/tools/vpn/direct/IkeSession.cpp
     src/tools/vpn/direct/WintunAdapter.h
     src/tools/vpn/direct/WintunAdapter.cpp
     src/tools/vpn/direct/TunnelEngine.h
@@ -401,6 +409,14 @@ target_link_libraries(vpn_tests PRIVATE vpn_core)
 # cmake --build build --target vpn_direct_tests ----
 add_executable(vpn_direct_tests EXCLUDE_FROM_ALL tests/vpn_direct_tests.cpp)
 target_link_libraries(vpn_direct_tests PRIVATE vpn_core)
+
+# ---- Test nền IKEv1 crypto (DH/HMAC/AES theo vector chuẩn): cmake --build build --target ike_crypto_check ----
+add_executable(ike_crypto_check EXCLUDE_FROM_ALL tests/ike_crypto_check.cpp)
+target_link_libraries(ike_crypto_check PRIVATE vpn_core)
+
+# ---- Test bắt tay IKEv1 trọn vẹn offline (IkeSession vs responder giả): cmake --build build --target ike_session_check ----
+add_executable(ike_session_check EXCLUDE_FROM_ALL tests/ike_session_check.cpp)
+target_link_libraries(ike_session_check PRIVATE vpn_core)
 
 # ---- KIỂM TRA TAY (cần quyền Administrator - tạo adapter wintun THẬT, chỉ dùng dải thử nghiệm 198.18.0.0/15,
 # không đổi tuyến mặc định/DNS): lớp adapter + định tuyến của kết nối trực tiếp, hai chiều gói tin:

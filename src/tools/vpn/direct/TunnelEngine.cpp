@@ -13,6 +13,7 @@
 #include <QSysInfo>
 #include <QTcpSocket>
 #include <QTimer>
+#include <QUdpSocket>
 
 namespace
 {
@@ -76,6 +77,12 @@ void TunnelEngine::start(const Job& job)
     m_fortiDeframer = FortinetFraming::Deframer{};
     m_gpDeframer = GpFraming::Deframer{};
     m_ppp.reset();
+    m_espCfg = GlobalProtectProtocol::EspConfig{};
+    m_netApplied = false;
+    m_ikeNatT = false;
+    m_rxBytes = 0;
+    m_rxPackets = 0;
+    m_keepalivesSent = 0;
 
     const int defaultPort = 443;
     if (!DirectVpn::splitHostPort(job.server, defaultPort, &m_host, &m_port))
@@ -88,11 +95,182 @@ void TunnelEngine::start(const Job& job)
         fortiLogin();
     else if (job.protocol == DirectProtocol::GlobalProtect)
         gpPortalPrelogin();
+    else if (job.protocol == DirectProtocol::FortinetIpsec)
+        startIke();
     else
     {
         m_phase = Phase::Auth;
         fail(QStringLiteral("Hồ sơ này không hỗ trợ kết nối trực tiếp."));
     }
+}
+
+// ---- FortiGate IPsec (IKEv1 + ESP) ---------------------------------------------------------------------
+
+void TunnelEngine::startIke()
+{
+    m_phase = Phase::Auth;
+    emit status(QStringLiteral("Đang thương lượng IPsec/IKE tới %1...").arg(m_host));
+    quint32 ip = 0;
+    if (DirectVpn::parseIpv4(m_host, &ip))
+    {
+        beginIke(ip);
+        return;
+    }
+    QHostInfo::lookupHost(m_host, this, [this](const QHostInfo& info) {
+        if (m_phase != Phase::Auth)
+            return;
+        for (const QHostAddress& a : info.addresses())
+            if (a.protocol() == QAbstractSocket::IPv4Protocol)
+            {
+                beginIke(a.toIPv4Address());
+                return;
+            }
+        fail(QStringLiteral("Không phân giải được tên máy chủ %1.").arg(m_host));
+    });
+}
+
+void TunnelEngine::beginIke(quint32 gatewayIp)
+{
+    m_ikeGateway = gatewayIp;
+    m_serverIp = gatewayIp;
+    if (m_job.psk.isEmpty())
+    {
+        fail(QStringLiteral("Hồ sơ IPsec cần khóa chia sẻ trước (PSK) - chưa nhập."));
+        return;
+    }
+    m_ikeSock = new QUdpSocket(this);
+    if (!m_ikeSock->bind(QHostAddress(QHostAddress::AnyIPv4), 0))
+    {
+        fail(QStringLiteral("Không mở được socket UDP cho IKE: %1").arg(m_ikeSock->errorString()));
+        return;
+    }
+    connect(m_ikeSock, &QUdpSocket::readyRead, this, &TunnelEngine::onIkeDatagrams);
+
+    m_ike = new IkeSession(this);
+    IkeSession::Config c;
+    c.gatewayIp = gatewayIp;
+    c.psk = m_job.psk.toUtf8();
+    c.xauthUser = m_job.username;
+    c.xauthPass = m_job.password;
+    c.localIdType = Isakmp::ID_IPV4_ADDR; // FortiGate dialup: ID mặc định (chưa có group id) - dò lại nếu cần
+    c.dhGroup = IkeCrypto::DhGroup::Modp2048; // hồ sơ CVTLT DHGroup=512; thử group 14 trước (dò group khác nếu NO-PROPOSAL)
+    c.encKeyBits = 256;
+    c.hash = IkeCrypto::Hash::Sha256;
+    c.natT = true;
+    m_ike->configure(c);
+    connect(m_ike, &IkeSession::sendDatagram, this, &TunnelEngine::sendIkeDatagram);
+    connect(m_ike, &IkeSession::switchToNatT, this, [this]() { m_ikeNatT = true; log(QStringLiteral("IKE: chuyển NAT-T (UDP 4500).")); });
+    connect(m_ike, &IkeSession::established, this, &TunnelEngine::onIkeEstablished);
+    connect(m_ike, &IkeSession::failed, this, [this](const QString& r) { fail(r); });
+    connect(m_ike, &IkeSession::log, this, [this](const QString& m) { log(m); });
+
+    m_phase = Phase::Tunnel;
+    m_ikeStartMs = now();
+    m_ikeLastRetrans = now();
+    m_lastRx = now();
+    m_tick->start();
+    m_ike->start();
+}
+
+void TunnelEngine::sendIkeDatagram(const QByteArray& isakmp, bool natT)
+{
+    if (!m_ikeSock)
+        return;
+    const quint16 port = natT ? 4500 : 500;
+    QByteArray dg = isakmp;
+    if (natT)
+        dg.prepend(QByteArray(4, '\0')); // dấu non-ESP (phân biệt với gói ESP có SPI != 0)
+    m_ikeSock->writeDatagram(dg, QHostAddress(m_ikeGateway), port);
+}
+
+void TunnelEngine::onIkeDatagrams()
+{
+    while (m_ikeSock && m_ikeSock->hasPendingDatagrams())
+    {
+        QByteArray dg;
+        dg.resize(static_cast<int>(m_ikeSock->pendingDatagramSize()));
+        QHostAddress from;
+        quint16 fromPort = 0;
+        m_ikeSock->readDatagram(dg.data(), dg.size(), &from, &fromPort);
+        if (dg.size() < 4)
+            continue;
+        const bool nonEspMarker = (static_cast<quint8>(dg[0]) == 0 && static_cast<quint8>(dg[1]) == 0 &&
+                                   static_cast<quint8>(dg[2]) == 0 && static_cast<quint8>(dg[3]) == 0);
+        if (fromPort == 4500 || m_ikeNatT)
+        {
+            if (nonEspMarker)
+            {
+                if (m_ike)
+                    m_ike->onDatagram(dg.mid(4)); // bóc dấu
+            }
+            else if (m_ikeEsp && m_ikeEsp->ready())
+            {
+                QByteArray ip;
+                quint8 nh = 0;
+                if (m_ikeEsp->open(dg, &ip, &nh) && !ip.isEmpty())
+                {
+                    m_lastRx = now();
+                    m_rxBytes += dg.size();
+                    ++m_rxPackets;
+                    deliverToAdapter(ip);
+                }
+            }
+            continue;
+        }
+        // Cổng 500 (trước NAT-T): toàn bộ là IKE thô.
+        if (m_ike)
+            m_ike->onDatagram(dg);
+    }
+}
+
+void TunnelEngine::onIkeEstablished(const IkeSession::Result& r)
+{
+    // Dựng TunnelConfig từ kết quả mode-config.
+    m_cfg = TunnelConfig{};
+    m_cfg.ipv4 = DirectVpn::ipv4ToString(r.assignedIp);
+    m_cfg.prefixLength = 32;
+    for (quint32 d : r.dns)
+        m_cfg.dns << DirectVpn::ipv4ToString(d);
+    for (int i = 0; i < r.subnetsBase.size() && i < r.subnetsMask.size(); ++i)
+    {
+        const int pfx = DirectVpn::maskToPrefix(DirectVpn::ipv4ToString(r.subnetsMask[i]));
+        if (pfx >= 0)
+            m_cfg.includeRoutes.append(IpRoute{r.subnetsBase[i] & r.subnetsMask[i], pfx});
+    }
+    m_espCfg = r.esp;
+
+    if (!m_job.noAdapterForTest)
+    {
+        emit status(QStringLiteral("Đang tạo adapter mạng ảo..."));
+        QString err;
+        m_adapter = std::make_unique<WintunAdapter>();
+        if (!m_adapter->open(kAdapterName, &err)) { fail(err); return; }
+        m_net = std::make_unique<NetConfigurator>();
+        if (!m_net->captureUnderlay(m_serverIp, &err)) { fail(err); return; }
+        const int base = (m_cfg.mtu >= 576 && m_cfg.mtu <= 1500) ? m_cfg.mtu : 1400;
+        if (!m_net->apply(m_adapter->luid(), m_cfg, m_serverIp, base - 80, &err)) { fail(err); return; }
+        m_netApplied = true;
+    }
+
+    m_ikeEsp = std::make_unique<GpEspCrypto>();
+    QString err;
+    if (!m_ikeEsp->init(m_espCfg, &err)) { fail(QStringLiteral("Nạp khóa ESP thất bại: %1").arg(err)); return; }
+
+    if (!m_job.noAdapterForTest && m_adapter)
+        m_adapter->startReader([this](QByteArray ip) {
+            QMetaObject::invokeMethod(this, [this, ip]() { onAdapterPacket(ip); }, Qt::QueuedConnection);
+        });
+
+    m_phase = Phase::Up;
+    m_wasUp = true;
+    m_lastRx = now();
+    m_lastKeepalive = now();
+    m_natKeepaliveMs = now();
+    const QString routes = m_cfg.fullTunnel() ? QStringLiteral("toàn bộ lưu lượng qua VPN")
+                                              : QStringLiteral("%1 mạng nội bộ qua VPN").arg(m_cfg.includeRoutes.size());
+    const QString summary = QStringLiteral("IP %1 · %2 · IPsec/ESP").arg(m_cfg.ipv4, routes);
+    log(QStringLiteral("Đường hầm IPsec đã lên: %1").arg(summary));
+    emit connected(summary);
 }
 
 // ---- HTTP(S) -------------------------------------------------------------------------------------------
@@ -789,6 +967,17 @@ void TunnelEngine::onAdapterPacket(const QByteArray& ip)
 {
     if (m_phase != Phase::Up)
         return;
+    // FortiGate IPsec: gói IP -> ESP -> UDP 4500 (cùng socket IKE).
+    if (m_job.protocol == DirectProtocol::FortinetIpsec)
+    {
+        if (m_ikeEsp && m_ikeEsp->ready() && m_ikeSock)
+        {
+            const QByteArray esp = m_ikeEsp->seal(ip, 4);
+            if (!esp.isEmpty())
+                m_ikeSock->writeDatagram(esp, QHostAddress(m_ikeGateway), 4500);
+        }
+        return;
+    }
     // GlobalProtect qua ESP: gói IP -> ESP/UDP.
     if (m_esp && m_esp->isEstablished())
     {
@@ -818,6 +1007,30 @@ void TunnelEngine::onTick()
     {
         if (m_ppp)
             m_ppp->tick(t); // PPP tự thăm dò (LCP echo) và tự kết thúc khi máy chủ im lặng quá lâu
+        return;
+    }
+    if (m_job.protocol == DirectProtocol::FortinetIpsec)
+    {
+        if (m_phase != Phase::Up)
+        {
+            // Đang thương lượng: phát lại bản tin cuối mỗi 3 giây; quá 25 giây -> thất bại.
+            if (m_ike && t - m_ikeLastRetrans >= 3000)
+            {
+                m_ikeLastRetrans = t;
+                m_ike->onRetransmit();
+            }
+            if (t - m_ikeStartMs >= 25000)
+                fail(QStringLiteral("Thương lượng IPsec/IKE quá hạn (không phản hồi hoặc UDP 500/4500 bị chặn)."));
+            return;
+        }
+        // Đã lên: NAT-T keepalive (1 byte 0xFF tới cổng 4500) mỗi ~20 giây để giữ ánh xạ NAT.
+        if (m_ikeSock && t - m_natKeepaliveMs >= 20000)
+        {
+            m_natKeepaliveMs = t;
+            m_ikeSock->writeDatagram(QByteArray(1, '\xFF'), QHostAddress(m_ikeGateway), 4500);
+        }
+        if (t - m_lastRx >= kDeadPeerMs)
+            fail(QStringLiteral("Máy chủ IPsec không còn phản hồi (mất kết nối)."));
         return;
     }
     // GlobalProtect qua ESP: đang thiết lập -> gửi lại gói dò mỗi ~2 giây; quá 10 giây chưa lên -> thất bại
@@ -910,6 +1123,22 @@ void TunnelEngine::teardown(const QString& message)
         m_esp->deleteLater();
         m_esp = nullptr;
     }
+    if (m_ike)
+    {
+        m_ike->stop();
+        m_ike->disconnect(this);
+        m_ike->deleteLater();
+        m_ike = nullptr;
+    }
+    if (m_ikeSock)
+    {
+        m_ikeSock->disconnect(this);
+        m_ikeSock->close();
+        m_ikeSock->deleteLater();
+        m_ikeSock = nullptr;
+    }
+    m_ikeEsp.reset();
+    m_ikeNatT = false;
     // Gỡ tuyến TRƯỚC khi xóa adapter (tuyến /32 tới máy chủ nằm trên card mạng thật, không tự mất).
     if (m_net)
         m_net->revert();

@@ -7,7 +7,7 @@
 /// Một hồ sơ/kết nối VPN ĐÃ ĐƯỢC CẤU HÌNH SẴN trên máy bởi một phần mềm VPN BÊN THỨ BA (FortiClient,
 /// GlobalProtect, OpenVPN GUI, Cisco Secure Client/AnyConnect). Ứng dụng chỉ ĐỌC các thông tin KHÔNG bí
 /// mật (tên hồ sơ, địa chỉ máy chủ/cổng) từ registry/tệp cấu hình của chính phần mềm đó trên máy người
-/// dùng - KHÔNG giải mã/đọc mật khẩu đã lưu. Với FortiClient SSL-VPN và GlobalProtect, ứng dụng còn KẾT NỐI
+/// dùng - KHÔNG giải mã/đọc mật khẩu đã lưu. Với FortiClient SSL-VPN, FortiClient IPsec (IKEv1) và GlobalProtect, ứng dụng còn KẾT NỐI
 /// TRỰC TIẾP được (client giao thức tự viết, người dùng nhập tài khoản trong ứng dụng - xem direct/); các loại
 /// khác chỉ "Mở phần mềm" đó để kết nối.
 struct ThirdPartyVpnProfile

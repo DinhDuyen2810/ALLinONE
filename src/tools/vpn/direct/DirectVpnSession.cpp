@@ -192,6 +192,7 @@ void DirectVpnSession::sendJob()
                     {"server", m_req.server},
                     {"user", m_req.username},
                     {"pass", m_req.password},
+                    {"psk", m_req.psk},
                     {"pins", pins}};
     QByteArray bytes = QJsonDocument(job).toJson(QJsonDocument::Compact);
     send(bytes);
@@ -341,4 +342,6 @@ void DirectVpnSession::wipePassword()
 {
     m_req.password.fill(QChar(0));
     m_req.password.clear();
+    m_req.psk.fill(QChar(0));
+    m_req.psk.clear();
 }

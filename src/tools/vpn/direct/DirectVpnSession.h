@@ -29,6 +29,7 @@ public:
         QString server;
         QString username;
         QString password;
+        QString psk; ///< khóa chia sẻ trước - chỉ FortiGate IPsec (IKEv1)
     };
 
     explicit DirectVpnSession(QObject* parent = nullptr);

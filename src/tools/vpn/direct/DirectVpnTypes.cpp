@@ -11,6 +11,7 @@ QString protocolName(DirectProtocol p)
     {
         case DirectProtocol::FortinetSsl: return QStringLiteral("FortiGate SSL-VPN");
         case DirectProtocol::GlobalProtect: return QStringLiteral("GlobalProtect");
+        case DirectProtocol::FortinetIpsec: return QStringLiteral("FortiGate IPsec");
         case DirectProtocol::None: default: return QStringLiteral("(không hỗ trợ)");
     }
 }

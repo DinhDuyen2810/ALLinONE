@@ -111,9 +111,11 @@ ThirdPartyVpnTab::ThirdPartyVpnTab(QWidget* parent)
         {
             // Chỉ lưu SAU khi đăng nhập thành công - không bao giờ lưu một mật khẩu sai.
             QString err;
-            saved = CredentialStore::save(m_activeServer, m_pendingUser, m_pendingPass, &err)
-                        ? QStringLiteral(" · đã lưu tài khoản (lần sau chỉ cần bấm Kết nối)")
-                        : QStringLiteral(" · ⚠ ") + err;
+            bool ok = CredentialStore::save(m_activeServer, m_pendingUser, m_pendingPass, &err);
+            if (ok && m_activeIsIpsec && !m_pendingPsk.isEmpty())
+                ok = CredentialStore::save(m_activeServer + QStringLiteral("|psk"), QStringLiteral("psk"), m_pendingPsk, &err);
+            saved = ok ? QStringLiteral(" · đã lưu tài khoản (lần sau chỉ cần bấm Kết nối)")
+                       : QStringLiteral(" · ⚠ ") + err;
         }
         clearPendingCredentials();
         m_directLabel->setText(QStringLiteral("✓ Đã kết nối trực tiếp \"%1\" - %2%3").arg(m_activeName, summary, saved));
@@ -136,6 +138,7 @@ ThirdPartyVpnTab::ThirdPartyVpnTab(QWidget* parent)
         m_activeName.clear();
         m_activeServer.clear();
         m_usingSaved = false;
+        m_activeIsIpsec = false;
         reload();
     });
 
@@ -166,7 +169,7 @@ void ThirdPartyVpnTab::buildUi()
 
     auto* hint = new QLabel(
         "Các kết nối VPN đã cấu hình sẵn trên máy (FortiClient, GlobalProtect, OpenVPN, Cisco). Hồ sơ FortiClient "
-        "SSL-VPN và GlobalProtect KẾT NỐI TRỰC TIẾP được ngay tại đây bằng tài khoản cơ quan (có thể lưu tài khoản - mã "
+        "SSL-VPN, FortiClient IPsec và GlobalProtect KẾT NỐI TRỰC TIẾP được ngay tại đây bằng tài khoản cơ quan (có thể lưu tài khoản - mã "
         "hóa bởi Windows - để lần sau chỉ bấm Kết nối; cần bấm Yes ở hộp thoại Administrator). Hồ sơ khác: bấm \"Mở "
         "phần mềm\". Ứng dụng không đọc mật khẩu đã lưu của các phần mềm đó.",
         this);
@@ -326,13 +329,15 @@ void ThirdPartyVpnTab::onOpenClicked()
         QMessageBox::warning(this, "Không mở được", error);
 }
 
-bool ThirdPartyVpnTab::askCredentials(const ThirdPartyVpnProfile& p, QString* user, QString* pass, bool* save)
+bool ThirdPartyVpnTab::askCredentials(const ThirdPartyVpnProfile& p, QString* user, QString* pass, QString* psk, bool* save)
 {
+    const bool ipsec = (p.direct == DirectProtocol::FortinetIpsec);
     QDialog dlg(this);
     dlg.setWindowTitle(QStringLiteral("Đăng nhập VPN - %1").arg(p.name));
     auto* lay = new QVBoxLayout(&dlg);
-    auto* info = new QLabel(QStringLiteral("Kết nối trực tiếp tới %1 (%2).\nNhập tài khoản VPN do cơ quan cấp.")
-                                .arg(p.server, DirectVpn::protocolName(p.direct)),
+    auto* info = new QLabel(QStringLiteral("Kết nối trực tiếp tới %1 (%2).\nNhập tài khoản VPN do cơ quan cấp%3.")
+                                .arg(p.server, DirectVpn::protocolName(p.direct),
+                                     ipsec ? QStringLiteral(" và khóa chia sẻ trước (PSK)") : QString()),
                             &dlg);
     info->setWordWrap(true);
     lay->addWidget(info);
@@ -340,8 +345,15 @@ bool ThirdPartyVpnTab::askCredentials(const ThirdPartyVpnProfile& p, QString* us
     auto* userEdit = new QLineEdit(rememberedUser(p.server), &dlg);
     auto* passEdit = new QLineEdit(&dlg);
     passEdit->setEchoMode(QLineEdit::Password);
+    auto* pskEdit = new QLineEdit(psk ? *psk : QString(), &dlg); // có thể đã nạp sẵn PSK đã lưu
+    pskEdit->setEchoMode(QLineEdit::Password);
     form->addRow(QStringLiteral("Tên đăng nhập:"), userEdit);
     form->addRow(QStringLiteral("Mật khẩu:"), passEdit);
+    if (ipsec)
+    {
+        form->addRow(QStringLiteral("PSK (khóa chia sẻ trước):"), pskEdit);
+        pskEdit->setToolTip(QStringLiteral("Khóa chia sẻ trước của tunnel IPsec, do quản trị mạng cấp (FortiGate: Pre-shared Key)."));
+    }
     lay->addLayout(form);
     auto* saveCheck = new QCheckBox(QStringLiteral("Lưu tên đăng nhập và mật khẩu - lần sau chỉ cần bấm Kết nối"), &dlg);
     saveCheck->setChecked(true);
@@ -356,15 +368,20 @@ bool ThirdPartyVpnTab::askCredentials(const ThirdPartyVpnProfile& p, QString* us
     lay->addWidget(buttons);
     (userEdit->text().isEmpty() ? userEdit : passEdit)->setFocus();
     dlg.resize(420, dlg.sizeHint().height());
-    if (dlg.exec() != QDialog::Accepted || userEdit->text().trimmed().isEmpty())
+    if (dlg.exec() != QDialog::Accepted || userEdit->text().trimmed().isEmpty() ||
+        (ipsec && pskEdit->text().isEmpty()))
     {
         passEdit->clear();
+        pskEdit->clear();
         return false;
     }
     *user = userEdit->text().trimmed();
     *pass = passEdit->text();
+    if (psk)
+        *psk = ipsec ? pskEdit->text() : QString();
     *save = saveCheck->isChecked();
     passEdit->clear();
+    pskEdit->clear();
     return true;
 }
 
@@ -374,6 +391,8 @@ void ThirdPartyVpnTab::clearPendingCredentials()
     m_pendingUser.clear();
     m_pendingPass.fill(QChar(0));
     m_pendingPass.clear();
+    m_pendingPsk.fill(QChar(0));
+    m_pendingPsk.clear();
 }
 
 void ThirdPartyVpnTab::onForgetCredentialsClicked()
@@ -382,6 +401,8 @@ void ThirdPartyVpnTab::onForgetCredentialsClicked()
     if (!p || isDirectActive())
         return;
     CredentialStore::remove(p->server);
+    if (p->direct == DirectProtocol::FortinetIpsec)
+        CredentialStore::remove(p->server + QStringLiteral("|psk"));
     m_directLabel->setText(QStringLiteral("Đã xóa tài khoản đã lưu của \"%1\" - lần sau sẽ hỏi lại.").arg(p->name));
     reload();
 }
@@ -392,35 +413,47 @@ void ThirdPartyVpnTab::onDirectConnectClicked()
     if (!p || !p->canConnectDirectly() || isDirectActive())
         return;
     const ThirdPartyVpnProfile profile = *p; // bản sao: danh sách có thể được quét lại
-    QString user, pass;
+    const bool ipsec = (profile.direct == DirectProtocol::FortinetIpsec);
+    const QString pskKey = profile.server + QStringLiteral("|psk");
+    QString user, pass, psk;
     clearPendingCredentials();
     // Đã lưu tài khoản (Windows Credential Manager) -> nối luôn, không hỏi - theo yêu cầu người dùng.
+    // Với IPsec còn cần PSK đã lưu; thiếu PSK thì vẫn phải hỏi.
     m_usingSaved = CredentialStore::load(profile.server, &user, &pass);
-    if (!m_usingSaved)
+    QString pskUser;
+    const bool pskSaved = ipsec && CredentialStore::load(pskKey, &pskUser, &psk);
+    const bool canSkipPrompt = m_usingSaved && (!ipsec || pskSaved);
+    if (!canSkipPrompt)
     {
         bool save = false;
-        if (!askCredentials(profile, &user, &pass, &save))
+        if (!askCredentials(profile, &user, &pass, &psk, &save))
             return;
+        m_usingSaved = false;
         if (save)
         {
             m_pendingSave = true;
             m_pendingUser = user;
             m_pendingPass = pass;
+            m_pendingPsk = psk;
         }
     }
     rememberUser(profile.server, user);
     m_activeName = profile.name;
     m_activeServer = profile.server;
+    m_activeIsIpsec = ipsec;
     DirectVpnSession::Request req;
     req.protocol = profile.direct;
     req.server = profile.server;
     req.username = user;
     req.password = pass;
+    req.psk = psk;
     pass.fill(QChar(0));
+    psk.fill(QChar(0));
     m_directLabel->setText(QStringLiteral("⏳ Đang chuẩn bị kết nối \"%1\"%2...")
                                .arg(profile.name, m_usingSaved ? QStringLiteral(" bằng tài khoản đã lưu") : QString()));
     m_session->connectTo(req);
     req.password.fill(QChar(0));
+    req.psk.fill(QChar(0));
     updateButtons();
 }
 

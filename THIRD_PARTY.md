@@ -71,6 +71,7 @@ Ghi chú tích hợp:
 |---|---|---|---|
 | **OpenConnect** (`fortinet.c`, `ppp.c`, `gpst.c`, `auth-globalprotect.c`) | Đặc tả thực tế của giao thức FortiGate SSL-VPN (đăng nhập, OTP, XML cấu hình, khung PPP 6 byte) và GlobalProtect (prelogin/portal/gateway, JNLP, khung gói 16 byte) - Fortinet/Palo Alto không công bố giao thức | LGPL-2.1 | https://gitlab.com/openconnect/openconnect - ứng dụng TỰ VIẾT lại bằng Qt/C++ theo hành vi đã mô tả, không sao chép mã nguồn OpenConnect vào dự án |
 | RFC 1661 (PPP/LCP), RFC 1332 (IPCP), RFC 1877 (DNS qua IPCP) | Phiên PPP trong đường hầm FortiGate (`PppSession`) | Tiêu chuẩn IETF | |
+| RFC 2408 (ISAKMP), RFC 2409 (IKEv1), RFC 3526 (nhóm MODP), RFC 3947/3948 (NAT-T), RFC 4303 (ESP), draft-ietf-ipsec-isakmp-xauth / mode-cfg | Client IKEv1 tự viết cho FortiGate IPsec (`IkeCrypto`/`IsakmpMessage`/`IkeKeys`/`IkeSession`): Aggressive + PSK + XAuth + Mode-config + Quick Mode + ESP | Tiêu chuẩn IETF | Hiện thực bằng Qt/C++ trên **BCrypt** của Windows - KHÔNG thêm thư viện mật mã ngoài, KHÔNG chép mã strongSwan/libreswan |
 
 ## Nguồn dữ liệu trực tuyến (không đóng gói mã nguồn/nhị phân, chỉ gọi API công khai khi dùng tính năng)
 

@@ -4,6 +4,7 @@
 #include "FortinetProtocol.h"
 #include "GlobalProtectProtocol.h"
 #include "GpEsp.h"
+#include "IkeSession.h"
 #include "PppSession.h"
 
 #include <QElapsedTimer>
@@ -42,6 +43,7 @@ public:
         QString username;
         QString password;
         QString realm;               ///< realm FortiGate (thường rỗng)
+        QString psk;                 ///< khóa chia sẻ trước (chỉ FortiGate IPsec/IKEv1)
         QMap<QString, QString> pins; ///< "host:port" -> SHA-256 (hex thường) của chứng chỉ người dùng đã chấp nhận
         bool plainForTest{false};    ///< CHỈ test: HTTP/TCP trần thay TLS (máy chủ giả trên 127.0.0.1)
         bool noAdapterForTest{false};///< CHỈ test: không tạo adapter/không đổi tuyến - gói đi qua tín hiệu test
@@ -106,6 +108,12 @@ private:
     // Đường hầm
     void resolveAndOpenTunnel();
     void openTunnel(quint32 serverIp);
+    // FortiGate IPsec (IKEv1): thương lượng trên UDP 500/4500 (NAT-T) rồi bơm ESP trên cùng socket.
+    void startIke();                               ///< phân giải tên + mở UDP + chạy IkeSession
+    void beginIke(quint32 gatewayIp);
+    void sendIkeDatagram(const QByteArray& isakmp, bool natT);
+    void onIkeDatagrams();                         ///< đọc UDP: phân biệt IKE (dấu 4 byte 0) với ESP
+    void onIkeEstablished(const IkeSession::Result& r); ///< tạo adapter + nạp khóa ESP + chuyển Up
     void startGpEsp();          ///< GlobalProtect dùng ESP: mở adapter + kênh ESP (không mở đường hầm SSL)
     void onGpEspEstablished();  ///< ESP đã lên -> cấu hình adapter + chuyển sang trạng thái Up
     void onTunnelConnected();
@@ -170,6 +178,16 @@ private:
     qint64 m_espStartMs{0};
     qint64 m_lastProbeMs{0};
     bool m_netApplied{false};
+
+    // FortiGate IPsec (IKEv1 + ESP trên UDP, cùng socket cho NAT-T)
+    IkeSession* m_ike{nullptr};
+    QUdpSocket* m_ikeSock{nullptr};
+    std::unique_ptr<GpEspCrypto> m_ikeEsp;   ///< mã hóa ESP sau khi Quick Mode xong
+    quint32 m_ikeGateway{0};
+    bool m_ikeNatT{false};                   ///< đã chuyển sang cổng 4500 (có dấu non-ESP)
+    qint64 m_ikeLastRetrans{0};
+    qint64 m_ikeStartMs{0};
+    qint64 m_natKeepaliveMs{0};
 
     std::unique_ptr<WintunAdapter> m_adapter;
     std::unique_ptr<NetConfigurator> m_net;
