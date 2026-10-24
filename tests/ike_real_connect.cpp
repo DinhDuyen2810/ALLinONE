@@ -220,9 +220,9 @@ private:
         if (m_espMode)
         {
             if (t - m_espSentMs >= 2000) { m_espSentMs = t; sendEspPings(); } // gửi lại ping
-            if (t - m_espStartMs >= 35000)
+            if (t - m_espStartMs >= 75000)
             {
-                std::printf("\n== BAT TAY OK nhung ESP KHONG co BAT KY goi nao ve trong 35s. ==\n");
+                std::printf("\n== BAT TAY OK nhung ESP KHONG co goi du lieu ve trong 75s. ==\n");
                 QCoreApplication::exit(0);
             }
             return;

@@ -602,6 +602,23 @@ void IkeSession::onInformational(const Isakmp::Message& m)
     {
         const quint16 type = rd16(n, 6);
         emit log(QString("IKE: nhận Notify type=%1").arg(type));
+        // DPD (RFC 3706): R-U-THERE(36136) -> phải trả R-U-THERE-ACK(36137), không thì gateway coi ta chết -> DELETE.
+        if (type == 36136)
+        {
+            const int spiSize = static_cast<quint8>(n[5]);
+            const QByteArray seqData = n.mid(8 + spiSize); // số thứ tự DPD
+            const QByteArray ack = notifyPayload(1 /*ISAKMP*/, m_ckyI + m_ckyR, 36137, seqData);
+            const quint32 mid = newMsgId();
+            const QByteArray hash = IkeKeys::genericHash(m_cfg.hash, m_sk.a, mid, chain({{NOTIFY, ack}}));
+            Isakmp::Message r;
+            r.exchange = Informational;
+            r.messageId = mid;
+            r.payloads = {{HASH, hash}, {NOTIFY, ack}};
+            send(r, true);
+            emit log("IKE: trả lời DPD (R-U-THERE-ACK).");
+            return;
+        }
+        if (type == 36137) return; // ACK của DPD ta gửi (nếu có) - bỏ qua
         // 14 = NO-PROPOSAL-CHOSEN, 24 = AUTHENTICATION-FAILED...
         if (type == 14) fail("máy chủ từ chối đề xuất (NO-PROPOSAL-CHOSEN) - thử nhóm DH/thuật toán khác");
         else if (type == 24) fail("máy chủ báo xác thực thất bại (PSK?)");
