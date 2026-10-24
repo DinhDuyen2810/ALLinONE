@@ -91,8 +91,10 @@ Chúng là target `EXCLUDE_FROM_ALL`, phải gọi tên. `vpn_direct_tests` cầ
 `--vpn-helper`). `ike_crypto_check`/`ike_session_check` kiểm client IKEv1 của FortiGate IPsec (crypto theo vector chuẩn +
 bắt tay trọn vẹn offline với responder giả). Hai target
 `vpn_gate_sstp_real_check` (nối VPN thật), `vpn_wintun_real_check` (tạo adapter thật, cần Admin),
-`vpn_direct_real_probe` (gọi máy chủ VPN thật, không đăng nhập) và `ike_real_probe` (gửi IKEv1 msg1 tới gateway
-FortiGate IPsec thật để xem nhóm DH/thuật toán gateway chấp nhận, không đăng nhập) là công cụ KIỂM TRA TAY - không chạy như test tự động
+`vpn_direct_real_probe` (gọi máy chủ VPN thật, không đăng nhập), `ike_real_probe` (gửi IKEv1 msg1 tới gateway
+FortiGate IPsec thật để xem nhóm DH/thuật toán gateway chấp nhận, không đăng nhập) và `ike_real_connect <ip> <user>
+<pass> <psk> [pfs]` (chạy ĐÚNG lớp IkeSession với tài khoản thật để kiểm bắt tay IKEv1 đầu-cuối + thử ESP, không tạo
+adapter nên không cần Admin; bí mật truyền qua tham số, không ghi tệp/log) là công cụ KIỂM TRA TAY - không chạy như test tự động
 (quy tắc 5). Rà giao diện: `ui_snapshot <thư mục ảnh> [công cụ,...]` chụp PNG mọi tab; đặt `UI_SNAPSHOT_NATIVE=1` để
 vẽ đúng kiểu gốc Windows (không hiện cửa sổ) - nền offscreen không vẽ được ô tích kiểu gốc.
 

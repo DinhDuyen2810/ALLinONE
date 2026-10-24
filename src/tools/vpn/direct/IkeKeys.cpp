@@ -71,9 +71,9 @@ QByteArray phase2Iv(Hash h, const QByteArray& phase1IvVal, quint32 msgid, int bl
 }
 
 QByteArray keymat(Hash h, const QByteArray& skeyidD, quint8 proto, quint32 spiNet, const QByteArray& niB,
-                  const QByteArray& nrB, int length)
+                  const QByteArray& nrB, int length, const QByteArray& pfsGxy)
 {
-    const QByteArray fixed = QByteArray(1, static_cast<char>(proto)) + be32(spiNet) + niB + nrB;
+    const QByteArray fixed = pfsGxy + QByteArray(1, static_cast<char>(proto)) + be32(spiNet) + niB + nrB;
     QByteArray out;
     QByteArray k = prf(h, skeyidD, fixed);
     out += k;

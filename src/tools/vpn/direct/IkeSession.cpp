@@ -101,8 +101,11 @@ bool IkeSession::decryptMessage(const QByteArray& raw, Isakmp::Message* out)
     const QByteArray pt = IkeCrypto::aesCbcDecrypt(m_encKey, iv, ct);
     if (pt.isEmpty())
         return false;
+    // Chỉ đẩy IV khi bản tin GIẢI MÃ ĐÚNG - tránh một gói phát lại/lạc làm lệch chuỗi IV của message-ID này.
+    if (!Isakmp::Message::decode(raw.left(28) + pt, out))
+        return false;
     iv = ct.right(blockSize());
-    return Isakmp::Message::decode(raw.left(28) + pt, out);
+    return true;
 }
 
 void IkeSession::send(Isakmp::Message& m, bool encrypted)
@@ -397,27 +400,65 @@ void IkeSession::sendQuick1()
     if (m_spiIn == 0) m_spiIn = 0x1000;
     m_qmNi = IkeCrypto::randomBytes(20);
 
-    // SA ESP: 1 proposal (ESP), 1 transform (AES) + thuộc tính.
-    quint16 keyLen = static_cast<quint16>(m_cfg.encKeyBits);
-    quint16 authAttr = (m_cfg.hash == IkeCrypto::Hash::Sha256) ? 5 : (m_cfg.hash == IkeCrypto::Hash::Md5 ? 1 : 2);
-    m_espEnc = (m_cfg.encKeyBits == 128) ? "aes-128-cbc" : "aes-256-cbc";
-    m_espHmac = (m_cfg.hash == IkeCrypto::Hash::Sha256) ? "sha256" : (m_cfg.hash == IkeCrypto::Hash::Md5 ? "md5" : "sha1");
+    // PFS: FortiClient mặc định bật Perfect Forward Secrecy -> Quick Mode trao KE riêng (cùng nhóm Phase 1) và
+    // transform mang thuộc tính Group. KEYMAT khi đó ghép g^xy(Quick Mode) vào đầu (RFC 2409 §5.5).
+    quint16 pfsGroup = 0;
+    m_qmDh.reset();
+    m_qmGxy.clear();
+    if (m_cfg.pfs)
+    {
+        m_qmDh = std::make_unique<IkeCrypto::Dh>();
+        QString dhErr;
+        if (!m_qmDh->generate(m_cfg.dhGroup, &dhErr))
+        {
+            fail("không tạo được khóa DH Quick Mode (PFS): " + dhErr);
+            return;
+        }
+        pfsGroup = static_cast<quint16>(m_cfg.dhGroup);
+    }
 
-    QByteArray attrs;
-    attrs += attribute(1, 1);                 // SA Life Type = seconds
-    attrs += attributeVar(2, be32b(3600));    // SA Life Duration
-    attrs += attribute(4, 1);                 // Encapsulation Mode = Tunnel
-    attrs += attribute(5, authAttr);          // Authentication Algorithm
-    attrs += attribute(6, keyLen);            // Key Length
-    const QByteArray tf = transform(1, 12 /*ESP_AES*/, attrs, true);
-    const QByteArray pr = proposal(1, 3 /*ESP*/, be32b(m_spiIn), tf, 1, true);
+    // SA ESP: 1 proposal, NHIỀU transform (AES-256/128 × SHA256/SHA1 × encap UDP-Tunnel(3,NAT-T)/Tunnel(1)) -
+    // gateway chọn 1; transform chọn được đọc lại trong QM2 (applyChosenEspTransform) để dẫn xuất khóa cho đúng.
+    struct E { quint16 key, auth, encap; };
+    QList<E> all;
+    const quint16 keys[] = {256, 128};
+    const quint16 auths[] = {5 /*HMAC-SHA256*/, 2 /*HMAC-SHA1*/};
+    const quint16 encaps[] = {1}; // Tunnel (FortiGate NAT-T vẫn dùng Tunnel + đóng gói UDP qua thương lượng NAT-T)
+    for (quint16 k : keys)
+        for (quint16 au : auths)
+            for (quint16 en : encaps)
+                all.append({k, au, en});
+    QByteArray tfs;
+    for (int i = 0; i < all.size(); ++i)
+    {
+        QByteArray a;
+        a += attribute(1, 1);                   // SA Life Type = seconds
+        a += attributeVar(2, be32b(3600));      // SA Life Duration
+        if (pfsGroup)
+            a += attribute(3, pfsGroup);        // Group Description (chỉ khi PFS)
+        a += attribute(4, all[i].encap);        // Encapsulation Mode
+        a += attribute(5, all[i].auth);         // Authentication Algorithm
+        a += attribute(6, all[i].key);          // Key Length
+        tfs += transform(static_cast<quint8>(i + 1), 12 /*ESP_AES*/, a, i + 1 == all.size());
+    }
+    const QByteArray pr = proposal(1, 3 /*ESP*/, be32b(m_spiIn), tfs, all.size(), true);
     const QByteArray espSa = saPayload(pr);
     m_qmEspSaB = espSa;
+    // Mặc định (ghi đè khi đọc transform gateway chọn ở QM2).
+    m_espKeyBits = 256;
+    m_espEnc = "aes-256-cbc";
+    m_espHmac = "sha256";
 
-    const QByteArray idci = idPayload(ID_IPV4_ADDR, 0, 0, be32b(m_result.assignedIp));
-    const QByteArray idcr = idPayload(ID_IPV4_SUBNET, 0, 0, be32b(0) + be32b(0)); // 0.0.0.0/0 full tunnel
+    // Proxy-ID: FortiGate dialup mặc định selector 0.0.0.0/0 ↔ 0.0.0.0/0; IDci/IDcr lệch -> NO-PROPOSAL.
+    const QByteArray idci = idPayload(ID_IPV4_SUBNET, 0, 0, be32b(0) + be32b(0)); // 0.0.0.0/0
+    const QByteArray idcr = idPayload(ID_IPV4_SUBNET, 0, 0, be32b(0) + be32b(0)); // 0.0.0.0/0
 
-    QList<QPair<quint8, QByteArray>> after = {{SA, espSa}, {NONCE, m_qmNi}, {ID, idci}, {ID, idcr}};
+    // Thứ tự Quick Mode: SA, Ni, [KE nếu PFS], IDci, IDcr.
+    QList<QPair<quint8, QByteArray>> after = {{SA, espSa}, {NONCE, m_qmNi}};
+    if (m_qmDh)
+        after.append({KE, m_qmDh->publicKey()});
+    after.append({ID, idci});
+    after.append({ID, idcr});
     const QByteArray hash = IkeKeys::qmHash1(m_cfg.hash, m_sk.a, m_qmMsgId, chain(after));
     Isakmp::Message m;
     m.exchange = QuickMode;
@@ -450,6 +491,20 @@ void IkeSession::onQuick2(const Isakmp::Message& m)
         fail("Quick Mode: không đọc được SPI máy chủ");
         return;
     }
+    applyChosenEspTransform(sa); // đọc enc/keylen/auth gateway chọn TRƯỚC khi dẫn xuất khóa ESP
+
+    // PFS: tính bí mật DH Quick Mode từ KE của gateway (nếu có).
+    const QByteArray peerKe = m.payload(KE);
+    if (m_qmDh && !peerKe.isEmpty())
+    {
+        m_qmGxy = m_qmDh->computeShared(peerKe);
+        if (m_qmGxy.isEmpty())
+        {
+            fail("Quick Mode PFS: tính bí mật DH thất bại");
+            return;
+        }
+        emit log(QString("IKE: PFS Quick Mode - bí mật DH %1 byte").arg(m_qmGxy.size()));
+    }
     // Gửi QM3 (HASH(3)) rồi dẫn xuất ESP.
     const QByteArray h3 = IkeKeys::qmHash3(m_cfg.hash, m_sk.a, m_qmMsgId, m_qmNi, m_qmNr);
     Isakmp::Message r; r.exchange = QuickMode; r.messageId = m_qmMsgId; r.payloads = {{HASH, h3}};
@@ -457,14 +512,41 @@ void IkeSession::onQuick2(const Isakmp::Message& m)
     deriveEsp();
 }
 
+// Đọc transform ESP gateway chọn trong QM2 (keylen/auth) -> cập nhật m_espKeyBits/m_espEnc/m_espHmac.
+void IkeSession::applyChosenEspTransform(const QByteArray& sa)
+{
+    if (sa.size() < 16)
+        return;
+    const int spiSize = static_cast<quint8>(sa[8 + 4 + 2]);
+    const int off = 8 + 4 + 4 + spiSize; // tới transform đầu
+    if (off + 8 > sa.size())
+        return;
+    const quint16 tfLen = static_cast<quint16>((static_cast<quint8>(sa[off + 2]) << 8) | static_cast<quint8>(sa[off + 3]));
+    const int attrStart = off + 8;
+    const int attrEnd = qMin(off + tfLen, sa.size());
+    if (attrStart >= attrEnd)
+        return;
+    const QByteArray attrs = sa.mid(attrStart, attrEnd - attrStart);
+    quint32 auth = 0;
+    forEachAttribute(attrs, [&](quint16 t, bool var, quint32 val, const QByteArray&) {
+        if (var) return;
+        if (t == 6 /*Key Length*/) m_espKeyBits = static_cast<int>(val);
+        else if (t == 5 /*Auth Algo*/) auth = val;
+    });
+    m_espEnc = (m_espKeyBits == 128) ? "aes-128-cbc" : "aes-256-cbc";
+    m_espHmac = (auth == 5) ? "sha256" : (auth == 1 ? "md5" : "sha1");
+    emit log(QString("IKE: ESP gateway chọn %1 + %2").arg(m_espEnc, m_espHmac));
+}
+
 void IkeSession::deriveEsp()
 {
-    const int espEncLen = (m_cfg.encKeyBits == 128) ? 16 : 32;
+    const int espEncLen = (m_espKeyBits == 128) ? 16 : 32;
     const int espHmacLen = (m_espHmac == "sha256") ? 32 : (m_espHmac == "md5" ? 16 : 20);
     const int need = espEncLen + espHmacLen;
 
-    const QByteArray kmOut = IkeKeys::keymat(m_cfg.hash, m_sk.d, 3, m_spiOut, m_qmNi, m_qmNr, need); // ta GỬI
-    const QByteArray kmIn = IkeKeys::keymat(m_cfg.hash, m_sk.d, 3, m_spiIn, m_qmNi, m_qmNr, need);   // ta NHẬN
+    // PFS: ghép g^xy(Quick Mode) vào KEYMAT (m_qmGxy rỗng nếu không PFS).
+    const QByteArray kmOut = IkeKeys::keymat(m_cfg.hash, m_sk.d, 3, m_spiOut, m_qmNi, m_qmNr, need, m_qmGxy); // ta GỬI
+    const QByteArray kmIn = IkeKeys::keymat(m_cfg.hash, m_sk.d, 3, m_spiIn, m_qmNi, m_qmNr, need, m_qmGxy);   // ta NHẬN
 
     GlobalProtectProtocol::EspConfig& e = m_result.esp;
     e.present = true;

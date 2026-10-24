@@ -36,6 +36,7 @@ public:
         int encKeyBits{256};    ///< AES-128/256
         IkeCrypto::Hash hash{IkeCrypto::Hash::Sha256}; ///< prf + hash Phase 1
         bool natT{true};        ///< ép đóng gói UDP-4500 (cần khi sau NAT - gần như luôn đúng ở máy người dùng)
+        bool pfs{true};         ///< Perfect Forward Secrecy ở Quick Mode (trao KE riêng, cùng nhóm Phase 1)
     };
 
     struct Result
@@ -78,6 +79,7 @@ private:
     // --- Quick Mode (exchange=32) ---
     void sendQuick1();
     void onQuick2(const Isakmp::Message& m);
+    void applyChosenEspTransform(const QByteArray& sa); // đọc transform ESP gateway chọn trong QM2
     void deriveEsp();
     // --- Thông tin/Lỗi ---
     void onInformational(const Isakmp::Message& m);
@@ -120,12 +122,15 @@ private:
     bool m_natActive{false};         // đã chuyển cổng 4500
 
     // Quick Mode
+    std::unique_ptr<IkeCrypto::Dh> m_qmDh; // PFS: khóa DH riêng cho Quick Mode
+    QByteArray m_qmGxy;                     // PFS: bí mật DH Quick Mode (rỗng = không PFS)
     quint32 m_qmMsgId{0};
     quint32 m_spiIn{0};              // SPI ta chọn (máy chủ gửi về ta dùng SPI này)
     quint32 m_spiOut{0};            // SPI máy chủ chọn (ta gửi đi dùng SPI này)
     QByteArray m_qmNi, m_qmNr;       // nonce Quick Mode
     QByteArray m_qmEspSaB;           // thân SA ESP ta gửi (để nếu cần)
     QString m_espEnc, m_espHmac;     // thuật toán ESP chốt được
+    int m_espKeyBits{256};           // độ dài khóa ESP gateway chọn (128/256)
 
     Result m_result;
     QByteArray m_lastSent;           // để phát lại

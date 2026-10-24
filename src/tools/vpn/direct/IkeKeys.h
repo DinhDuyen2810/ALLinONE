@@ -41,10 +41,11 @@ QByteArray phase1Iv(Hash h, const QByteArray& gxi, const QByteArray& gxr, int bl
 /// IV khởi tạo cho một trao đổi Phase 2 (message-ID khác 0) = hash(phase1Iv | M-ID) cắt còn blockSize.
 QByteArray phase2Iv(Hash h, const QByteArray& phase1IvVal, quint32 msgid, int blockSize);
 
-/// KEYMAT cho một SA ESP: nối K1=prf(d, proto|SPI|Ni|Nr), K2=prf(d, K1|proto|SPI|Ni|Nr), ... đủ 'length' byte.
-/// SPI theo thứ tự byte MẠNG (như trên dây). proto = 3 (ESP).
+/// KEYMAT cho một SA ESP: nối K1=prf(d, [g^xy]|proto|SPI|Ni|Nr), K2=prf(d, K1|[g^xy]|proto|SPI|Ni|Nr), ... đủ
+/// 'length' byte. SPI theo thứ tự byte MẠNG (như trên dây). proto = 3 (ESP). pfsGxy rỗng = không PFS; nếu có
+/// (Quick Mode trao KE) thì g^xy của Quick Mode được ghép vào ĐẦU như RFC 2409 §5.5.
 QByteArray keymat(Hash h, const QByteArray& skeyidD, quint8 proto, quint32 spiNet, const QByteArray& niB,
-                  const QByteArray& nrB, int length);
+                  const QByteArray& nrB, int length, const QByteArray& pfsGxy = QByteArray());
 
 /// HASH chung cho bản tin Mode-config/Transaction/Thông tin = prf(SKEYID_a, M-ID | <payload sau HASH>).
 QByteArray genericHash(Hash h, const QByteArray& skeyidA, quint32 msgid, const QByteArray& afterHash);

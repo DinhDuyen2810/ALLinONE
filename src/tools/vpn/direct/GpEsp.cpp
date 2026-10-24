@@ -123,7 +123,7 @@ bool GpEspCrypto::init(const GlobalProtectProtocol::EspConfig& cfg, QString* err
     m_hmacKeyIn = cfg.hmacKeyIn;
     m_spiOut = htonl(cfg.spiOut);
     m_spiIn = htonl(cfg.spiIn);
-    m_seqOut = 0;
+    m_seqOut = 1; // RFC 4303: gói đầu tiên của một SA có sequence = 1 (seq 0 không hợp lệ -> FortiGate chống phát lại bỏ)
     m_ready = true;
     return true;
 }
