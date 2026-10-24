@@ -380,9 +380,17 @@ void TunnelEngine::onFortiLogin(const HttpResult& r)
     if (handleHttpFailure(r, QStringLiteral("Không đăng nhập được FortiGate")))
         return;
     QByteArray cookie;
+    QByteArray cookieNames;
     for (const QNetworkCookie& c : r.cookies)
+    {
+        if (!cookieNames.isEmpty()) cookieNames += ',';
+        cookieNames += c.name() + (c.value().isEmpty() ? "(rong)" : "(co)");
         if (c.name() == "SVPNCOOKIE" && !c.value().isEmpty())
             cookie = c.value();
+    }
+    log(QStringLiteral("FortiGate login: HTTP %1, cookie[%2], SVPNCOOKIE=%3, body %4 byte")
+            .arg(r.status).arg(QString::fromLatin1(cookieNames), cookie.isEmpty() ? QStringLiteral("KHÔNG") : QStringLiteral("CÓ"))
+            .arg(r.body.size()));
     const FortinetProtocol::LoginOutcome o = FortinetProtocol::interpretLogin(r.status, r.body, !cookie.isEmpty());
     switch (o.kind)
     {

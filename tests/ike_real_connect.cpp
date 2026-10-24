@@ -247,43 +247,58 @@ private:
         std::printf("  -> vong %d: gui ESP (SYN+ICMP 172.16.6.25) bang bien the '%s'\n", m_round, m_vnames[i].toUtf8().constData());
     }
 
-    // Dựng EspConfig cho một biến thể KEYMAT. gxy rỗng=không PFS; swapN=đảo Ni/Nr; swapSpi=đảo vai SPI; authFirst=khóa auth trước enc.
-    GlobalProtectProtocol::EspConfig cfgFor(const QByteArray& gxy, bool swapN, bool swapSpi, bool authFirst)
+    // KEYMAT linh hoạt: hash prf, g^xy đầu/cuối/không.
+    static QByteArray km(IkeCrypto::Hash h, const QByteArray& d, quint32 spiNet, const QByteArray& ni, const QByteArray& nr,
+                         int len, const QByteArray& gxy, bool gxyEnd)
+    {
+        QByteArray spiB; put32(spiB, spiNet);
+        const QByteArray midp = QByteArray(1, '\x03') + spiB + ni + nr;
+        const QByteArray fixed = gxyEnd ? (midp + gxy) : (gxy + midp);
+        QByteArray out, k = IkeCrypto::prf(h, d, fixed);
+        out += k;
+        while (out.size() < len) { k = IkeCrypto::prf(h, d, k + fixed); out += k; }
+        return out.left(len);
+    }
+
+    struct Opt { QByteArray gxy; bool swapN=false; bool swapSpi=false; bool authFirst=false; bool gxyEnd=false; IkeCrypto::Hash h=IkeCrypto::Hash::Sha256; };
+    GlobalProtectProtocol::EspConfig cfgFor(const Opt& o)
     {
         GlobalProtectProtocol::EspConfig e;
         e.present = true; e.udpPort = 4500;
         e.encAlgo = m_res.esp.encAlgo; e.hmacAlgo = m_res.esp.hmacAlgo;
         e.spiOut = m_res.esp.spiOut; e.spiIn = m_res.esp.spiIn;
         const int el = m_res.kmEncLen, hl = m_res.kmHmacLen, need = el + hl;
-        const QByteArray ni = swapN ? m_res.kmNr : m_res.kmNi;
-        const QByteArray nr = swapN ? m_res.kmNi : m_res.kmNr;
-        const quint32 spiForOut = swapSpi ? m_res.esp.spiIn : m_res.esp.spiOut;
-        const quint32 spiForIn = swapSpi ? m_res.esp.spiOut : m_res.esp.spiIn;
-        const QByteArray kmOut = IkeKeys::keymat(m_res.kmHash, m_res.kmSkeyidD, 3, spiForOut, ni, nr, need, gxy);
-        const QByteArray kmIn = IkeKeys::keymat(m_res.kmHash, m_res.kmSkeyidD, 3, spiForIn, ni, nr, need, gxy);
-        if (authFirst) {
-            e.hmacKeyOut = kmOut.left(hl); e.encKeyOut = kmOut.mid(hl, el);
-            e.hmacKeyIn = kmIn.left(hl);   e.encKeyIn = kmIn.mid(hl, el);
-        } else {
-            e.encKeyOut = kmOut.left(el); e.hmacKeyOut = kmOut.mid(el, hl);
-            e.encKeyIn = kmIn.left(el);   e.hmacKeyIn = kmIn.mid(el, hl);
-        }
+        const QByteArray ni = o.swapN ? m_res.kmNr : m_res.kmNi;
+        const QByteArray nr = o.swapN ? m_res.kmNi : m_res.kmNr;
+        const quint32 spiForOut = o.swapSpi ? m_res.esp.spiIn : m_res.esp.spiOut;
+        const quint32 spiForIn = o.swapSpi ? m_res.esp.spiOut : m_res.esp.spiIn;
+        const QByteArray kmOut = km(o.h, m_res.kmSkeyidD, spiForOut, ni, nr, need, o.gxy, o.gxyEnd);
+        const QByteArray kmIn = km(o.h, m_res.kmSkeyidD, spiForIn, ni, nr, need, o.gxy, o.gxyEnd);
+        if (o.authFirst) { e.hmacKeyOut = kmOut.left(hl); e.encKeyOut = kmOut.mid(hl, el); e.hmacKeyIn = kmIn.left(hl); e.encKeyIn = kmIn.mid(hl, el); }
+        else { e.encKeyOut = kmOut.left(el); e.hmacKeyOut = kmOut.mid(el, hl); e.encKeyIn = kmIn.left(el); e.hmacKeyIn = kmIn.mid(el, hl); }
         return e;
     }
 
     void startEspTest(const IkeSession::Result& r)
     {
         m_res = r;
-        struct V { const char* name; QByteArray gxy; bool swapN; bool swapSpi; bool authFirst; };
-        const QList<V> vs = {{"PFS", r.kmGxy, false, false, false}, {"PFS+authFirst", r.kmGxy, false, false, true},
-                             {"PFS+swapSPI", r.kmGxy, false, true, false}, {"noPFS", {}, false, false, false},
-                             {"PFS+swapN", r.kmGxy, true, false, false}};
-        for (const V& v : vs)
+        const QByteArray g = r.kmGxy;
+        using H = IkeCrypto::Hash;
+        QList<QPair<QString, Opt>> vs;
+        vs << qMakePair(QString("PFS"), Opt{g});
+        vs << qMakePair(QString("PFS-SHA1prf"), Opt{g, false, false, false, false, H::Sha1});
+        vs << qMakePair(QString("PFS-gxyEnd"), Opt{g, false, false, false, true, H::Sha256});
+        vs << qMakePair(QString("PFS-authFirst"), Opt{g, false, false, true, false, H::Sha256});
+        vs << qMakePair(QString("PFS-swapN"), Opt{g, true});
+        vs << qMakePair(QString("PFS-swapSPI"), Opt{g, false, true});
+        vs << qMakePair(QString("noPFS"), Opt{QByteArray()});
+        vs << qMakePair(QString("noPFS-SHA1prf"), Opt{QByteArray(), false, false, false, false, H::Sha1});
+        for (const auto& v : vs)
         {
             auto* c = new GpEspCrypto();
             QString err;
-            if (c->init(cfgFor(v.gxy, v.swapN, v.swapSpi, v.authFirst), &err)) { m_variants << c; m_vnames << v.name; }
-            else { std::printf("  bien the %s loi: %s\n", v.name, err.toUtf8().constData()); delete c; }
+            if (c->init(cfgFor(v.second), &err)) { m_variants << c; m_vnames << v.first; }
+            else { std::printf("  bien the %s loi: %s\n", v.first.toUtf8().constData(), err.toUtf8().constData()); delete c; }
         }
         std::printf("  Thu %d bien the KEYMAT. Gui TCP SYN + ICMP toi 172.16.6.25 moi vong...\n", m_variants.size());
         // Chẩn đoán: gửi ESP với SPI GIẢ -> nếu gateway tra INVALID-SPI (notify) thi SA that DA cai (loi khoa);

@@ -426,6 +426,10 @@ target_link_libraries(ike_real_probe PRIVATE vpn_core Qt6::Network)
 add_executable(ike_real_connect EXCLUDE_FROM_ALL tests/ike_real_connect.cpp)
 target_link_libraries(ike_real_connect PRIVATE vpn_core Qt6::Network)
 
+# ---- KIỂM TRA TAY: dò đăng nhập FortiGate SSL-VPN THẬT (in nguyên văn phản hồi): forti_login_probe ----
+add_executable(forti_login_probe EXCLUDE_FROM_ALL tests/forti_login_probe.cpp)
+target_link_libraries(forti_login_probe PRIVATE vpn_core Qt6::Network)
+
 # ---- KIỂM TRA TAY (cần quyền Administrator - tạo adapter wintun THẬT, chỉ dùng dải thử nghiệm 198.18.0.0/15,
 # không đổi tuyến mặc định/DNS): lớp adapter + định tuyến của kết nối trực tiếp, hai chiều gói tin:
 # cmake --build build --target vpn_wintun_real_check ----

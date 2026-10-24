@@ -340,6 +340,7 @@ bool ThirdPartyVpnTab::askCredentials(const ThirdPartyVpnProfile& p, QString* us
                                      ipsec ? QStringLiteral(" và khóa chia sẻ trước (PSK)") : QString()),
                             &dlg);
     info->setWordWrap(true);
+    info->setMinimumWidth(392); // ép bề rộng để nhãn tự xuống dòng ĐÚNG -> sizeHint tính đủ chiều cao (trước đây dòng đầu bị cắt)
     lay->addWidget(info);
     auto* form = new QFormLayout();
     auto* userEdit = new QLineEdit(rememberedUser(p.server), &dlg);
@@ -367,7 +368,8 @@ bool ThirdPartyVpnTab::askCredentials(const ThirdPartyVpnProfile& p, QString* us
     connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
     lay->addWidget(buttons);
     (userEdit->text().isEmpty() ? userEdit : passEdit)->setFocus();
-    dlg.resize(420, dlg.sizeHint().height());
+    dlg.setMinimumWidth(420);
+    dlg.adjustSize(); // để layout tự tính chiều cao đủ cho nhãn đã xuống dòng
     if (dlg.exec() != QDialog::Accepted || userEdit->text().trimmed().isEmpty() ||
         (ipsec && pskEdit->text().isEmpty()))
     {
