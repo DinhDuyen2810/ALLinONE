@@ -153,8 +153,9 @@ void TunnelEngine::beginIke(quint32 gatewayIp)
     c.xauthUser = m_job.username;
     c.xauthPass = m_job.password;
     c.localIdType = Isakmp::ID_IPV4_ADDR; // FortiGate dialup: ID mặc định (chưa có group id) - dò lại nếu cần
-    c.dhGroup = IkeCrypto::DhGroup::Modp2048; // hồ sơ CVTLT DHGroup=512; thử group 14 trước (dò group khác nếu NO-PROPOSAL)
-    c.encKeyBits = 256;
+    // Hồ sơ CVTLT DHGroup=512 = nhóm 20 (ECP-384): ĐÃ xác nhận bằng dò thật (gateway chỉ trả lời nhóm 20).
+    c.dhGroup = IkeCrypto::DhGroup::Ecp384;
+    c.encKeyBits = 256;               // chào nhiều transform; transform gateway chọn được đọc lại trong msg2
     c.hash = IkeCrypto::Hash::Sha256;
     c.natT = true;
     m_ike->configure(c);

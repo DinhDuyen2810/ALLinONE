@@ -62,6 +62,21 @@ QByteArray padLeft(const QByteArray& b, int size)
         return b.right(size);
     return QByteArray(size - b.size(), '\0') + b;
 }
+
+bool isEcp(DhGroup g) { return g == DhGroup::Ecp256 || g == DhGroup::Ecp384 || g == DhGroup::Ecp521; }
+
+// Thông tin đường cong elip (RFC 5903): định danh thuật toán BCrypt, độ dài toạ độ, số bit, magic blob public.
+struct EcpInfo { const wchar_t* alg; int coord; ULONG bits; ULONG pubMagic; };
+EcpInfo ecpInfo(DhGroup g)
+{
+    switch (g)
+    {
+        case DhGroup::Ecp256: return {BCRYPT_ECDH_P256_ALGORITHM, 32, 256, BCRYPT_ECDH_PUBLIC_P256_MAGIC};
+        case DhGroup::Ecp384: return {BCRYPT_ECDH_P384_ALGORITHM, 48, 384, BCRYPT_ECDH_PUBLIC_P384_MAGIC};
+        case DhGroup::Ecp521: return {BCRYPT_ECDH_P521_ALGORITHM, 66, 521, BCRYPT_ECDH_PUBLIC_P521_MAGIC};
+        default: return {BCRYPT_ECDH_P384_ALGORITHM, 48, 384, BCRYPT_ECDH_PUBLIC_P384_MAGIC};
+    }
+}
 } // namespace
 
 // ---- Diffie-Hellman ----
@@ -81,6 +96,36 @@ bool Dh::generate(DhGroup group, QString* error)
             *error = m;
         return false;
     };
+
+    // ---- Đường cong elip (ECDH, nhóm 19/20/21) ----
+    if (isEcp(group))
+    {
+        const EcpInfo ec = ecpInfo(group);
+        m_ecp = true;
+        m_coord = ec.coord;
+        m_size = 2 * ec.coord; // KE = X||Y
+        BCRYPT_ALG_HANDLE alg = nullptr;
+        if (BCryptOpenAlgorithmProvider(&alg, ec.alg, nullptr, 0) != STATUS_SUCCESS)
+            return fail(QStringLiteral("Không mở được ECDH (BCrypt)."));
+        m_alg = alg;
+        BCRYPT_KEY_HANDLE key = nullptr;
+        if (BCryptGenerateKeyPair(alg, &key, ec.bits, 0) != STATUS_SUCCESS)
+            return fail(QStringLiteral("Không tạo được khóa ECDH."));
+        m_key = key;
+        if (BCryptFinalizeKeyPair(key, 0) != STATUS_SUCCESS)
+            return fail(QStringLiteral("Không hoàn tất được khóa ECDH."));
+        ULONG blobLen = 0;
+        BCryptExportKey(key, nullptr, BCRYPT_ECCPUBLIC_BLOB, nullptr, 0, &blobLen, 0);
+        QByteArray blob(static_cast<int>(blobLen), '\0');
+        if (BCryptExportKey(key, nullptr, BCRYPT_ECCPUBLIC_BLOB, reinterpret_cast<PUCHAR>(blob.data()), blobLen, &blobLen, 0) !=
+            STATUS_SUCCESS)
+            return fail(QStringLiteral("Không xuất được public key ECDH."));
+        // BCRYPT_ECCKEY_BLOB { dwMagic, cbKey } rồi X[cbKey], Y[cbKey]. KE của IKE = X||Y (không byte định dạng).
+        const int off = sizeof(BCRYPT_ECCKEY_BLOB);
+        m_public = blob.mid(off, 2 * ec.coord);
+        return m_public.size() == 2 * ec.coord;
+    }
+
     const QByteArray prime = primeFor(group, &m_size);
     const QByteArray gen = padLeft(QByteArray::fromHex("02"), m_size);
 
@@ -126,6 +171,48 @@ QByteArray Dh::computeShared(const QByteArray& peerPublic) const
 {
     if (!m_key || peerPublic.size() != m_size)
         return {};
+
+    // ---- ECDH: bí mật chung = toạ độ X của điểm chung (RFC 5903), độ dài = 1 toạ độ ----
+    if (m_ecp)
+    {
+        // Suy lại magic public theo độ dài toạ độ.
+        const ULONG pubMagic = m_coord == 32 ? BCRYPT_ECDH_PUBLIC_P256_MAGIC
+                             : (m_coord == 48 ? BCRYPT_ECDH_PUBLIC_P384_MAGIC : BCRYPT_ECDH_PUBLIC_P521_MAGIC);
+        QByteArray blob(sizeof(BCRYPT_ECCKEY_BLOB) + 2 * m_coord, '\0');
+        auto* kh = reinterpret_cast<BCRYPT_ECCKEY_BLOB*>(blob.data());
+        kh->dwMagic = pubMagic;
+        kh->cbKey = static_cast<ULONG>(m_coord);
+        std::memcpy(blob.data() + sizeof(BCRYPT_ECCKEY_BLOB), peerPublic.constData(), 2 * m_coord);
+
+        BCRYPT_KEY_HANDLE peer = nullptr;
+        if (BCryptImportKeyPair(static_cast<BCRYPT_ALG_HANDLE>(m_alg), nullptr, BCRYPT_ECCPUBLIC_BLOB, &peer,
+                                reinterpret_cast<PUCHAR>(blob.data()), static_cast<ULONG>(blob.size()), 0) != STATUS_SUCCESS)
+            return {};
+        BCRYPT_SECRET_HANDLE secret = nullptr;
+        if (BCryptSecretAgreement(static_cast<BCRYPT_KEY_HANDLE>(m_key), peer, &secret, 0) != STATUS_SUCCESS)
+        {
+            BCryptDestroyKey(peer);
+            return {};
+        }
+        ULONG len = 0;
+        QByteArray out;
+        if (BCryptDeriveKey(secret, BCRYPT_KDF_RAW_SECRET, nullptr, nullptr, 0, &len, 0) == STATUS_SUCCESS)
+        {
+            out.resize(static_cast<int>(len));
+            if (BCryptDeriveKey(secret, BCRYPT_KDF_RAW_SECRET, nullptr, reinterpret_cast<PUCHAR>(out.data()), len, &len, 0) ==
+                STATUS_SUCCESS)
+            {
+                std::reverse(out.begin(), out.end()); // little-endian -> big-endian toạ độ X
+                out = padLeft(out, m_coord);
+            }
+            else
+                out.clear();
+        }
+        BCryptDestroySecret(secret);
+        BCryptDestroyKey(peer);
+        return out;
+    }
+
     // Dựng public blob của peer từ cùng tham số (modulus+generator) + public của peer.
     int size = 0;
     DhGroup g = m_size == 128 ? DhGroup::Modp1024 : (m_size == 192 ? DhGroup::Modp1536 : DhGroup::Modp2048);

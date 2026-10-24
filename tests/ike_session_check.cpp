@@ -46,11 +46,23 @@ static QByteArray chain(const QList<QPair<quint8, QByteArray>>& ps)
     return b;
 }
 
+// Dựng SA Phase 1 chỉ gồm MỘT transform (vai gateway chọn 1 trong các transform client chào).
+static QByteArray p1ChosenSa(quint16 enc, quint16 keyBits, quint16 hash, quint16 grp, quint16 auth)
+{
+    QByteArray a = attribute(EncAlg, enc) + attribute(KeyLength, keyBits) + attribute(HashAlg, hash) +
+                   attribute(AuthMethod, auth) + attribute(GroupDesc, grp) + attribute(LifeType, 1) +
+                   attributeVar(LifeDuration, be32b(86400));
+    QByteArray tf = transform(1, 1 /*KEY_IKE*/, a, true);
+    QByteArray pr = proposal(1, 1 /*ISAKMP*/, QByteArray(), tf, 1, true);
+    return saPayload(pr);
+}
+
 // Responder giả: vai gateway FortiGate tối giản nhưng ĐÚNG công thức IKEv1.
 struct FakeGateway
 {
-    Hash H = Hash::Sha1;
+    Hash H = Hash::Sha256;
     int encKeyBits = 256;
+    IkeCrypto::DhGroup group = IkeCrypto::DhGroup::Ecp384; // như FortiGate thật (DHGroup=512 = grp20)
     QByteArray psk = "unit-test-psk";
     QString user = "alice", pass = "s3cret";
     quint32 gwIp = 0x0a000001; // 10.0.0.1
@@ -101,7 +113,7 @@ struct FakeGateway
             Message m; CHECK(Message::decode(raw, &m));
             ckyI = m.initiatorCookie; ckyR = IkeCrypto::randomBytes(8);
             saiB = m.payload(SA); gxi = m.payload(KE); ni = m.payload(NONCE); idiiB = m.payload(ID);
-            QString e; CHECK(dh.generate(encKeyBits == 128 ? IkeCrypto::DhGroup::Modp1024 : IkeCrypto::DhGroup::Modp1024, &e));
+            QString e; CHECK(dh.generate(group, &e));
             gxr = dh.publicKey(); nr = IkeCrypto::randomBytes(20);
             gxy = dh.computeShared(gxi); CHECK(!gxy.isEmpty());
             QByteArray skeyid = IkeKeys::skeyidPsk(H, psk, ni, nr);
@@ -109,11 +121,14 @@ struct FakeGateway
             encKey = IkeKeys::expandKey(H, sk.e, encKeyBits / 8);
             phase1Iv = IkeKeys::phase1Iv(H, gxi, gxr, 16);
             idirB = idPayload(ID_IPV4_ADDR, 0, 0, be32b(gwIp));
+            // HASH_R dùng SAi_b = TOÀN BỘ đề xuất client (saiB). msg2 chỉ echo 1 transform đã chọn (grp20).
             QByteArray hr = IkeKeys::hashR(H, skeyid, gxr, gxi, ckyR, ckyI, saiB, idirB);
-            // msg2: SA(echo), KE, Nonce, ID, HASH, VID NAT-T
+            const quint16 gnum = static_cast<quint16>(group);
+            QByteArray chosenSa = p1ChosenSa(ENC_AES_CBC, static_cast<quint16>(encKeyBits),
+                                             H == Hash::Sha256 ? HASH_SHA256 : HASH_SHA, gnum, AUTH_XAUTH_INIT_PSK);
             Message r; r.exchange = Aggressive; r.messageId = 0;
             r.initiatorCookie = ckyI; r.responderCookie = ckyR;
-            r.payloads = {{SA, saiB}, {KE, gxr}, {NONCE, nr}, {ID, idirB}, {HASH, hr},
+            r.payloads = {{SA, chosenSa}, {KE, gxr}, {NONCE, nr}, {ID, idirB}, {HASH, hr},
                           {VID, QByteArray::fromHex("4a131c81070358455c5728f20e95452f")}};
             out.append(r.encode());
             return out;
@@ -226,8 +241,9 @@ int main(int argc, char** argv)
     QCoreApplication app(argc, argv);
 
     FakeGateway gw;
-    gw.H = Hash::Sha1;
+    gw.H = Hash::Sha256;
     gw.encKeyBits = 256;
+    gw.group = IkeCrypto::DhGroup::Ecp384;
 
     IkeSession s;
     IkeSession::Config c;
@@ -236,9 +252,9 @@ int main(int argc, char** argv)
     c.xauthUser = gw.user;
     c.xauthPass = gw.pass;
     c.localIdType = ID_IPV4_ADDR;
-    c.dhGroup = IkeCrypto::DhGroup::Modp1024;
-    c.encKeyBits = 256;
-    c.hash = Hash::Sha1;
+    c.dhGroup = IkeCrypto::DhGroup::Ecp384; // nhóm 20 như FortiGate thật
+    c.encKeyBits = 256;                     // sẽ bị ghi đè theo transform gateway chọn (ở đây cũng 256)
+    c.hash = Hash::Sha256;
     c.natT = true;
     s.configure(c);
 
@@ -268,7 +284,7 @@ int main(int argc, char** argv)
     CHECK(result.esp.present && result.esp.spiOut == gw.spiServer && result.esp.spiIn == gw.spiClient);
 
     // Khóa ESP: client dẫn xuất phải khớp keymat tính độc lập từ các giá trị đã trao đổi.
-    const int encLen = 32, hmacLen = 20; // aes-256 + sha1
+    const int encLen = 32, hmacLen = 32; // aes-256 + sha256
     QByteArray kmOut = IkeKeys::keymat(gw.H, gw.sk.d, 3, gw.spiServer, gw.qmNi, gw.qmNr, encLen + hmacLen);
     QByteArray kmIn = IkeKeys::keymat(gw.H, gw.sk.d, 3, gw.spiClient, gw.qmNi, gw.qmNr, encLen + hmacLen);
     CHECK(result.esp.encKeyOut == kmOut.left(encLen) && result.esp.hmacKeyOut == kmOut.mid(encLen, hmacLen));

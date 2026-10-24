@@ -87,8 +87,10 @@ private:
     bool decryptMessage(const QByteArray& raw, Isakmp::Message* out);
     QByteArray& ivFor(quint32 msgid);
 
-    // Dựng SA Phase 1 (một proposal, một transform) + lưu SAi_b để tính HASH.
+    // Dựng SA Phase 1 (một proposal, nhiều transform) + lưu SAi_b để tính HASH.
     QByteArray buildPhase1Sa();
+    // Đọc transform gateway chọn trong SA msg2 -> cập nhật m_cfg.hash + encKeyBits.
+    void applyChosenTransform(const QByteArray& sa);
     // Nối byte các payload (đã có generic header) theo thứ tự - để tính HASH "phần sau HASH".
     static QByteArray chain(const QList<QPair<quint8, QByteArray>>& payloads);
     quint32 newMsgId();

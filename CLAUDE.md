@@ -90,8 +90,9 @@ Các bộ test: `qr`, `wifi`, `connect`, `diskcleanup`, `android`, `vpn`, `secur
 Chúng là target `EXCLUDE_FROM_ALL`, phải gọi tên. `vpn_direct_tests` cần `OneForAll.exe` đã build (thử tiến trình phụ
 `--vpn-helper`). `ike_crypto_check`/`ike_session_check` kiểm client IKEv1 của FortiGate IPsec (crypto theo vector chuẩn +
 bắt tay trọn vẹn offline với responder giả). Hai target
-`vpn_gate_sstp_real_check` (nối VPN thật), `vpn_wintun_real_check` (tạo adapter thật, cần Admin) và
-`vpn_direct_real_probe` (gọi máy chủ VPN thật, không đăng nhập) là công cụ KIỂM TRA TAY - không chạy như test tự động
+`vpn_gate_sstp_real_check` (nối VPN thật), `vpn_wintun_real_check` (tạo adapter thật, cần Admin),
+`vpn_direct_real_probe` (gọi máy chủ VPN thật, không đăng nhập) và `ike_real_probe` (gửi IKEv1 msg1 tới gateway
+FortiGate IPsec thật để xem nhóm DH/thuật toán gateway chấp nhận, không đăng nhập) là công cụ KIỂM TRA TAY - không chạy như test tự động
 (quy tắc 5). Rà giao diện: `ui_snapshot <thư mục ảnh> [công cụ,...]` chụp PNG mọi tab; đặt `UI_SNAPSHOT_NATIVE=1` để
 vẽ đúng kiểu gốc Windows (không hiện cửa sổ) - nền offscreen không vẽ được ô tích kiểu gốc.
 

@@ -418,6 +418,10 @@ target_link_libraries(ike_crypto_check PRIVATE vpn_core)
 add_executable(ike_session_check EXCLUDE_FROM_ALL tests/ike_session_check.cpp)
 target_link_libraries(ike_session_check PRIVATE vpn_core)
 
+# ---- KIỂM TRA TAY: dò IKEv1 tới gateway FortiGate THẬT (không đăng nhập): cmake --build build --target ike_real_probe ----
+add_executable(ike_real_probe EXCLUDE_FROM_ALL tests/ike_real_probe.cpp)
+target_link_libraries(ike_real_probe PRIVATE vpn_core Qt6::Network)
+
 # ---- KIỂM TRA TAY (cần quyền Administrator - tạo adapter wintun THẬT, chỉ dùng dải thử nghiệm 198.18.0.0/15,
 # không đổi tuyến mặc định/DNS): lớp adapter + định tuyến của kết nối trực tiếp, hai chiều gói tin:
 # cmake --build build --target vpn_wintun_real_check ----

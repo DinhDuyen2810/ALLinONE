@@ -74,6 +74,21 @@ int main()
         CHECK(a.computeShared(QByteArray(10, 'x')).isEmpty());
     }
 
+    // ---- ECDH (đường cong elip, nhóm 19/20/21): hai bên ra chung toạ độ X ----
+    for (DhGroup g : {DhGroup::Ecp256, DhGroup::Ecp384, DhGroup::Ecp521})
+    {
+        Dh a, b;
+        QString ea, eb;
+        CHECK(a.generate(g, &ea) && b.generate(g, &eb));
+        const int coord = g == DhGroup::Ecp256 ? 32 : (g == DhGroup::Ecp384 ? 48 : 66);
+        CHECK(a.publicKey().size() == 2 * coord && b.publicKey().size() == 2 * coord); // KE = X||Y
+        const QByteArray sa = a.computeShared(b.publicKey());
+        const QByteArray sb = b.computeShared(a.publicKey());
+        CHECK(!sa.isEmpty() && sa == sb && sa.size() == coord); // bí mật = toạ độ X
+        std::printf("ECDH group %d: shared %d byte OK\n", static_cast<int>(g), sa.size());
+        CHECK(a.computeShared(QByteArray(10, 'x')).isEmpty());
+    }
+
     // ---- ISAKMP: thuộc tính TV/TLV round-trip ----
     {
         using namespace Isakmp;

@@ -135,23 +135,63 @@ void IkeSession::stop() { m_state = State::Failed; }
 
 QByteArray IkeSession::buildPhase1Sa()
 {
-    quint16 grp = static_cast<quint16>(m_cfg.dhGroup);
-    quint16 encAttr = ENC_AES_CBC;
-    quint16 hashAttr = (m_cfg.hash == IkeCrypto::Hash::Sha256) ? HASH_SHA256 : (m_cfg.hash == IkeCrypto::Hash::Md5 ? HASH_MD5 : HASH_SHA);
-    quint16 authAttr = AUTH_XAUTH_INIT_PSK; // XAuth=1 trong hồ sơ FortiClient
+    // Aggressive gửi 1 KE nên nhóm DH cố định = m_cfg.dhGroup; nhưng chào NHIỀU transform (enc/hash/auth) để
+    // khớp cấu hình gateway. Transform gateway chọn được đọc lại trong msg2 (onAggr2) để dẫn xuất khóa cho đúng.
+    const quint16 grp = static_cast<quint16>(m_cfg.dhGroup);
+    struct T { quint16 enc, key, hash, auth; };
+    QList<T> all;
+    const quint16 auths[] = {AUTH_XAUTH_INIT_PSK, AUTH_PSK};
+    const quint16 keys[] = {256, 128};
+    const quint16 hashes[] = {HASH_SHA256, HASH_SHA};
+    for (quint16 au : auths)
+        for (quint16 k : keys)
+            for (quint16 h : hashes)
+                all.append({ENC_AES_CBC, k, h, au});
 
-    QByteArray attrs;
-    attrs += attribute(EncAlg, encAttr);
-    attrs += attribute(KeyLength, static_cast<quint32>(m_cfg.encKeyBits));
-    attrs += attribute(HashAlg, hashAttr);
-    attrs += attribute(AuthMethod, authAttr);
-    attrs += attribute(GroupDesc, grp);
-    attrs += attribute(LifeType, 1); // seconds
-    attrs += attributeVar(LifeDuration, be32b(86400));
-
-    const QByteArray tf = transform(1, 1 /*KEY_IKE*/, attrs, true);
-    const QByteArray pr = proposal(1, 1 /*ISAKMP*/, QByteArray(), tf, 1, true);
+    QByteArray tfs;
+    for (int i = 0; i < all.size(); ++i)
+    {
+        QByteArray attrs;
+        attrs += attribute(EncAlg, all[i].enc);
+        attrs += attribute(KeyLength, all[i].key);
+        attrs += attribute(HashAlg, all[i].hash);
+        attrs += attribute(AuthMethod, all[i].auth);
+        attrs += attribute(GroupDesc, grp);
+        attrs += attribute(LifeType, 1); // seconds
+        attrs += attributeVar(LifeDuration, be32b(86400));
+        tfs += transform(static_cast<quint8>(i + 1), 1 /*KEY_IKE*/, attrs, i + 1 == all.size());
+    }
+    const QByteArray pr = proposal(1, 1 /*ISAKMP*/, QByteArray(), tfs, all.size(), true);
     return saPayload(pr);
+}
+
+// Đọc transform Phase 1 gateway CHỌN trong SA của msg2 -> cập nhật hash + độ dài khóa để dẫn xuất đúng.
+// SA = DOI(4)+Situation(4) + proposal[genhdr(4)+fixed(4)+spi] + transform[genhdr(4)+fixed(4)+attrs].
+void IkeSession::applyChosenTransform(const QByteArray& sa)
+{
+    if (sa.size() < 16)
+        return;
+    const int spiSize = static_cast<quint8>(sa[8 + 4 + 2]);
+    int off = 8 + 4 + 4 + spiSize; // tới transform đầu
+    if (off + 8 > sa.size())
+        return;
+    const quint16 tfLen = static_cast<quint16>((static_cast<quint8>(sa[off + 2]) << 8) | static_cast<quint8>(sa[off + 3]));
+    const int attrStart = off + 8;
+    const int attrEnd = qMin(off + tfLen, sa.size());
+    if (attrStart >= attrEnd)
+        return;
+    const QByteArray attrs = sa.mid(attrStart, attrEnd - attrStart);
+    forEachAttribute(attrs, [&](quint16 t, bool var, quint32 val, const QByteArray&) {
+        if (var)
+            return;
+        if (t == KeyLength)
+            m_cfg.encKeyBits = static_cast<int>(val);
+        else if (t == HashAlg)
+            m_cfg.hash = (val == HASH_SHA256) ? IkeCrypto::Hash::Sha256
+                        : (val == HASH_MD5 ? IkeCrypto::Hash::Md5 : IkeCrypto::Hash::Sha1);
+    });
+    emit log(QString("IKE: gateway chọn AES-%1 + %2").arg(m_cfg.encKeyBits)
+                 .arg(m_cfg.hash == IkeCrypto::Hash::Sha256 ? "SHA256" : (m_cfg.hash == IkeCrypto::Hash::Md5 ? "MD5" : "SHA1")));
 }
 
 void IkeSession::sendAggr1()
@@ -202,6 +242,8 @@ void IkeSession::onAggr2(const Isakmp::Message& m)
         if (p.first == VID && p.second == kNatTVid) m_natDetected = true;
     if (!m.payload(NATD).isEmpty()) m_natDetected = true;
 
+    applyChosenTransform(sa); // cập nhật m_cfg.hash + encKeyBits theo transform gateway chọn TRƯỚC khi dẫn xuất khóa
+
     m_gxy = m_dh->computeShared(m_gxr);
     if (m_gxy.isEmpty())
     {
@@ -221,7 +263,6 @@ void IkeSession::onAggr2(const Isakmp::Message& m)
         return;
     }
     emit log("IKE: Phase 1 xong (HASH_R khớp). Chuyển msg3.");
-    (void)sa;
     sendAggr3();
 }
 

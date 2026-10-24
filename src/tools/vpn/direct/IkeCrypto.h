@@ -8,12 +8,16 @@
 /// Dựa trên BCrypt của Windows (không thêm thư viện). "Thuần" theo nghĩa không mạng - test bằng vector chuẩn.
 namespace IkeCrypto
 {
-/// Nhóm Diffie-Hellman MODP hỗ trợ (số nhóm theo IANA/RFC 3526).
+/// Nhóm Diffie-Hellman hỗ trợ (số nhóm theo IANA): MODP (RFC 3526) và ECP/đường cong elip (RFC 5903).
+/// FortiClient lưu DHGroup dạng bitmask: 512 = nhóm 20 (ECP-384) nên phải có cả ECDH.
 enum class DhGroup
 {
     Modp1024 = 2,
     Modp1536 = 5,
     Modp2048 = 14,
+    Ecp256 = 19,
+    Ecp384 = 20,
+    Ecp521 = 21,
 };
 
 /// Một phiên Diffie-Hellman (giữ khóa riêng qua BCrypt). Dùng: khởi tạo nhóm -> publicKey() gửi đi ->
@@ -36,7 +40,9 @@ private:
     void* m_key{nullptr}; // BCRYPT_KEY_HANDLE
     void* m_alg{nullptr}; // BCRYPT_ALG_HANDLE
     QByteArray m_public;
-    int m_size{0};
+    int m_size{0};        // độ dài public key (MODP: cỡ modulus; ECP: 2*toạ độ = X||Y)
+    bool m_ecp{false};    // nhóm đường cong elip (ECDH) thay vì MODP
+    int m_coord{0};       // ECP: độ dài một toạ độ (P-256=32, P-384=48, P-521=66); bí mật chung = toạ độ X
 };
 
 enum class Hash
