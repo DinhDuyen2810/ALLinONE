@@ -19,6 +19,12 @@ QByteArray be32b(quint32 v)
     b[2] = static_cast<char>((v >> 8) & 0xFF);  b[3] = static_cast<char>(v & 0xFF);
     return b;
 }
+QByteArray be16b(quint16 v)
+{
+    QByteArray b(2, '\0');
+    b[0] = static_cast<char>((v >> 8) & 0xFF); b[1] = static_cast<char>(v & 0xFF);
+    return b;
+}
 quint8 exchangeOf(const QByteArray& raw) { return raw.size() > 18 ? static_cast<quint8>(raw[18]) : 0; }
 quint8 flagsOf(const QByteArray& raw) { return raw.size() > 19 ? static_cast<quint8>(raw[19]) : 0; }
 quint32 msgIdOf(const QByteArray& raw) { return raw.size() >= 24 ? rd32(raw, 20) : 0; }
@@ -271,6 +277,7 @@ void IkeSession::onAggr2(const Isakmp::Message& m)
 
 void IkeSession::sendAggr3()
 {
+    // NAT-T initiator-driven: float sang 4500 ngay từ msg3 (gateway mirror theo cổng ta dùng). Gửi kèm NAT-D.
     if (m_natDetected && m_cfg.natT)
     {
         m_natActive = true;
@@ -282,9 +289,19 @@ void IkeSession::sendAggr3()
     m.exchange = Aggressive;
     m.messageId = 0;
     m.payloads = {{HASH, hashI}};
-    send(m, false); // msg3 (HASH_I) trong Aggressive KHÔNG mã hóa
+    // NAT-D (RFC 3947): báo địa chỉ ta cho gateway để nó phát hiện TA sau NAT -> bật đóng gói UDP cho ESP.
+    // Thiếu NAT-D thì FortiGate mặc định ESP thô (IP proto 50), không nhận ESP bọc UDP-4500 của ta (đường hầm "treo").
+    if (m_natDetected && m_cfg.natT)
+    {
+        auto natd = [&](quint32 ip, quint16 port) {
+            return IkeCrypto::hash(m_cfg.hash, m_ckyI + m_ckyR + be32b(ip) + be16b(port));
+        };
+        m.payloads.append({NATD, natd(m_cfg.gatewayIp, 500)}); // địa chỉ gateway (remote)
+        m.payloads.append({NATD, natd(m_localIp, m_localPort)}); // địa chỉ ta (local)
+    }
+    send(m, false); // msg3 (HASH_I + NAT-D) trong Aggressive KHÔNG mã hóa (đã float -> gửi trên 4500 có dấu)
     m_state = State::Phase1Done;
-    emit log("IKE: gửi msg3 (HASH_I). Chờ XAuth.");
+    emit log(QString("IKE: gửi msg3 (HASH_I%1). Chờ XAuth.").arg(m.payloads.size() > 1 ? " + NAT-D" : ""));
 }
 
 void IkeSession::onTransaction(const Isakmp::Message& m)
@@ -423,7 +440,7 @@ void IkeSession::sendQuick1()
     QList<E> all;
     const quint16 keys[] = {256, 128};
     const quint16 auths[] = {5 /*HMAC-SHA256*/, 2 /*HMAC-SHA1*/};
-    const quint16 encaps[] = {1}; // Tunnel (FortiGate NAT-T vẫn dùng Tunnel + đóng gói UDP qua thương lượng NAT-T)
+    const quint16 encaps[] = {1}; // FortiGate CHỈ nhận Tunnel(1) (encap 3/61443 -> NO-PROPOSAL); bọc UDP do NAT-T Phase 1 lo
     for (quint16 k : keys)
         for (quint16 au : auths)
             for (quint16 en : encaps)
@@ -527,15 +544,17 @@ void IkeSession::applyChosenEspTransform(const QByteArray& sa)
     if (attrStart >= attrEnd)
         return;
     const QByteArray attrs = sa.mid(attrStart, attrEnd - attrStart);
-    quint32 auth = 0;
+    quint32 auth = 0, encap = 0;
     forEachAttribute(attrs, [&](quint16 t, bool var, quint32 val, const QByteArray&) {
         if (var) return;
         if (t == 6 /*Key Length*/) m_espKeyBits = static_cast<int>(val);
         else if (t == 5 /*Auth Algo*/) auth = val;
+        else if (t == 4 /*Encap Mode*/) encap = val;
     });
     m_espEnc = (m_espKeyBits == 128) ? "aes-128-cbc" : "aes-256-cbc";
     m_espHmac = (auth == 5) ? "sha256" : (auth == 1 ? "md5" : "sha1");
-    emit log(QString("IKE: ESP gateway chọn %1 + %2").arg(m_espEnc, m_espHmac));
+    emit log(QString("IKE: ESP gateway chọn %1 + %2, encap=%3 (1=Tunnel,3=UDP-Tunnel,61443=UDP-Tunnel draft)")
+                 .arg(m_espEnc, m_espHmac).arg(encap));
 }
 
 void IkeSession::deriveEsp()
@@ -562,6 +581,14 @@ void IkeSession::deriveEsp()
     e.magicV4 = 0;
 
     m_result.gatewayIp = m_cfg.gatewayIp;
+    // Lộ nguyên liệu KEYMAT cho công cụ kiểm tra tay (thử biến thể dẫn xuất khóa).
+    m_result.kmSkeyidD = m_sk.d;
+    m_result.kmGxy = m_qmGxy;
+    m_result.kmNi = m_qmNi;
+    m_result.kmNr = m_qmNr;
+    m_result.kmHash = m_cfg.hash;
+    m_result.kmEncLen = espEncLen;
+    m_result.kmHmacLen = espHmacLen;
     m_state = State::Up;
     emit log(QString("IKE: Quick Mode xong. ESP %1/%2, SPI ra=%3 vào=%4. Đã lên.")
                  .arg(m_espEnc, m_espHmac).arg(m_spiOut, 0, 16).arg(m_spiIn, 0, 16));

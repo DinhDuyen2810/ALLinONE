@@ -6,6 +6,8 @@
 #include "tools/vpn/direct/IkeCrypto.h"
 #include "tools/vpn/direct/IsakmpMessage.h"
 
+#include <QList>
+
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QHostAddress>
@@ -64,7 +66,39 @@ static QByteArray buildMsg1(quint16 grp, const QByteArray& ke, const QByteArray&
     return m.encode();
 }
 
-static void dumpResponse(const QByteArray& r)
+static QByteArray be16(quint16 v) { QByteArray b(2, '\0'); b[0] = char(v >> 8); b[1] = char(v & 0xFF); return b; }
+
+// Phân tích NAT-D gateway gửi: dò mọi (hash, thứ tự cookie, IP, cổng) để tìm ĐÚNG định dạng NAT-D.
+static quint32 g_pubIp = 0;
+static quint16 g_localPort = 0;
+static void analyzeNatD(const Message& m, const QByteArray& ckyI, const QByteArray& ckyR, quint32 gwIp)
+{
+    QList<QByteArray> natds;
+    for (const auto& p : m.payloads) if (p.first == NATD) natds << p.second;
+    if (natds.isEmpty()) return;
+    struct HA { IkeCrypto::Hash h; const char* name; };
+    const HA hashes[] = {{IkeCrypto::Hash::Sha1, "SHA1"}, {IkeCrypto::Hash::Sha256, "SHA256"}, {IkeCrypto::Hash::Md5, "MD5"}};
+    struct IPV { quint32 ip; const char* name; };
+    const IPV ips[] = {{gwIp, "gwIP"}, {g_pubIp, "ourPubIP"}};
+    const quint16 ports[] = {500, 4500, g_localPort, 0};
+    for (int i = 0; i < natds.size(); ++i)
+    {
+        QString found = "KHONG KHOP (gateway co the sau NAT / IP:port khac)";
+        for (const HA& ha : hashes)
+            for (int co = 0; co < 2; ++co)
+                for (const IPV& ipv : ips)
+                    for (quint16 port : ports)
+                    {
+                        const QByteArray cc = co == 0 ? (ckyI + ckyR) : (ckyR + ckyI);
+                        const QByteArray h = IkeCrypto::hash(ha.h, cc + be32b(ipv.ip) + be16(port));
+                        if (h == natds[i])
+                            found = QString("= %1(%2 | %3:%4)").arg(ha.name, co == 0 ? "ckyI|ckyR" : "ckyR|ckyI", ipv.name).arg(port);
+                    }
+        std::printf("       NAT-D[%d] %s\n", i, found.toUtf8().constData());
+    }
+}
+
+static void dumpResponse(const QByteArray& r, const QByteArray& ckyI, quint32 gwIp)
 {
     std::printf("    <= NHAN %d byte\n", r.size());
     if (r.size() >= 28)
@@ -107,6 +141,8 @@ static void dumpResponse(const QByteArray& r)
             int natd = 0;
             for (auto& p : m.payloads) if (p.first == NATD) ++natd;
             if (natd) std::printf("       co %d NAT-D => sau NAT => dung NAT-T (UDP 4500)\n", natd);
+            // Phân tích NAT-D: khớp hash gateway gửi với HASH(ckyI|ckyR|gwIP|port) để biết ĐÚNG cổng/định dạng.
+            analyzeNatD(m, ckyI, m.responderCookie, gwIp);
         }
         else
             std::printf("       (khong decode duoc ISAKMP)\n");
@@ -146,7 +182,7 @@ static bool probeGroup(QUdpSocket& sock, const QHostAddress& ip, quint16 port, b
                 // Khớp cookie initiator (8 byte đầu) để chắc là trả lời của ta.
                 if (r.size() >= 8 && r.left(8) == cookie)
                 {
-                    dumpResponse(r);
+                    dumpResponse(r, cookie, ip.toIPv4Address());
                     got = true;
                 }
                 else
@@ -169,6 +205,8 @@ int main(int argc, char** argv)
 
     QUdpSocket sock;
     if (!sock.bind(QHostAddress(QHostAddress::AnyIPv4), 0)) { std::printf("khong bind duoc UDP\n"); return 1; }
+    g_localPort = sock.localPort();
+    { QHostAddress p; if (argc >= 4) p = QHostAddress(QString::fromLatin1(argv[3])); else p = QHostAddress("14.224.140.93"); g_pubIp = p.toIPv4Address(); }
 
     struct G { IkeCrypto::DhGroup g; const char* name; };
     const G groups[] = {{IkeCrypto::DhGroup::Ecp384, "ECP-384/grp20 (DHGroup=512)"},

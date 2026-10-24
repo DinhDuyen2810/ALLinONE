@@ -48,12 +48,20 @@ public:
         QList<quint32> subnetsMask;
         GlobalProtectProtocol::EspConfig esp; ///< khóa/SPI/thuật toán cho GpEspCrypto
         quint32 gatewayIp{0};
+        // Nguyên liệu KEYMAT (để công cụ kiểm tra tay thử biến thể dẫn xuất khóa ESP) - KHÔNG dùng trong luồng app.
+        QByteArray kmSkeyidD, kmGxy, kmNi, kmNr;
+        IkeCrypto::Hash kmHash{IkeCrypto::Hash::Sha256};
+        int kmEncLen{32}, kmHmacLen{20};
     };
 
     explicit IkeSession(QObject* parent = nullptr);
     ~IkeSession() override;
 
     void configure(const Config& c) { m_cfg = c; }
+    /// Điểm cuối UDP cục bộ (IP:port tiến trình đang gửi từ) - để dựng NAT-D cho NAT-T. Đặt trước start().
+    void setLocalEndpoint(quint32 ip, quint16 port) { m_localIp = ip; m_localPort = port; }
+    /// Transport gọi khi thấy gateway đã chuyển sang cổng 4500 (NAT-T) -> các bản tin sau gửi qua 4500.
+    void setNatActive(bool on) { m_natActive = on; }
     void start();                        ///< gửi Aggressive msg1
     void onDatagram(const QByteArray& isakmp); ///< nạp một bản tin ISAKMP đã bóc dấu non-ESP
     void onRetransmit();                 ///< gọi định kỳ: gửi lại bản tin cuối nếu chưa có hồi đáp
@@ -120,6 +128,8 @@ private:
 
     bool m_natDetected{false};
     bool m_natActive{false};         // đã chuyển cổng 4500
+    quint32 m_localIp{0};            // IP cục bộ (cho NAT-D)
+    quint16 m_localPort{0};          // cổng UDP cục bộ (cho NAT-D)
 
     // Quick Mode
     std::unique_ptr<IkeCrypto::Dh> m_qmDh; // PFS: khóa DH riêng cho Quick Mode

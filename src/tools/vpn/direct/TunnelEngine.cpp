@@ -138,13 +138,24 @@ void TunnelEngine::beginIke(quint32 gatewayIp)
         fail(QStringLiteral("Hồ sơ IPsec cần khóa chia sẻ trước (PSK) - chưa nhập."));
         return;
     }
+    // FortiClient làm TOÀN BỘ IKE+ESP trên UDP 4500<->4500 (0 gói cổng 500). Bắt chước: ưu tiên bind cổng 4500
+    // (nếu bận thì dùng cổng tạm) + ép NAT-T ngay từ msg1. Giúp NAT/gateway đưa đúng ESP về.
     m_ikeSock = new QUdpSocket(this);
-    if (!m_ikeSock->bind(QHostAddress(QHostAddress::AnyIPv4), 0))
+    bool bound4500 = m_ikeSock->bind(QHostAddress(QHostAddress::AnyIPv4), 4500);
+    if (!bound4500 && !m_ikeSock->bind(QHostAddress(QHostAddress::AnyIPv4), 0))
     {
         fail(QStringLiteral("Không mở được socket UDP cho IKE: %1").arg(m_ikeSock->errorString()));
         return;
     }
     connect(m_ikeSock, &QUdpSocket::readyRead, this, &TunnelEngine::onIkeDatagrams);
+    // IP cục bộ tuyến tới gateway (cho NAT-D).
+    quint32 localIp = 0;
+    {
+        QUdpSocket probe;
+        probe.connectToHost(QHostAddress(gatewayIp), 500);
+        if (probe.waitForConnected(500))
+            localIp = probe.localAddress().toIPv4Address();
+    }
 
     m_ike = new IkeSession(this);
     IkeSession::Config c;
@@ -159,6 +170,12 @@ void TunnelEngine::beginIke(quint32 gatewayIp)
     c.hash = IkeCrypto::Hash::Sha256;
     c.natT = true;
     m_ike->configure(c);
+    m_ike->setLocalEndpoint(localIp, m_ikeSock->localPort());
+    if (bound4500) // đã có cổng 4500 -> ép NAT-T ngay từ đầu như FortiClient
+    {
+        m_ikeNatT = true;
+        m_ike->setNatActive(true);
+    }
     connect(m_ike, &IkeSession::sendDatagram, this, &TunnelEngine::sendIkeDatagram);
     connect(m_ike, &IkeSession::switchToNatT, this, [this]() { m_ikeNatT = true; log(QStringLiteral("IKE: chuyển NAT-T (UDP 4500).")); });
     connect(m_ike, &IkeSession::established, this, &TunnelEngine::onIkeEstablished);
