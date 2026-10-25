@@ -430,6 +430,10 @@ target_link_libraries(ike_real_connect PRIVATE vpn_core Qt6::Network)
 add_executable(tunnel_engine_real_check EXCLUDE_FROM_ALL tests/tunnel_engine_real_check.cpp)
 target_link_libraries(tunnel_engine_real_check PRIVATE vpn_core Qt6::Network)
 
+# ---- KIỂM TRA TAY đầu-cuối với ADAPTER THẬT (UAC): DirectVpnSession + helper nâng quyền + ping/curl của HĐH: directvpn_real_e2e ----
+add_executable(directvpn_real_e2e EXCLUDE_FROM_ALL tests/directvpn_real_e2e.cpp)
+target_link_libraries(directvpn_real_e2e PRIVATE vpn_core Qt6::Network)
+
 # ---- KIỂM TRA TAY: dò đăng nhập FortiGate SSL-VPN THẬT (in nguyên văn phản hồi): forti_login_probe ----
 add_executable(forti_login_probe EXCLUDE_FROM_ALL tests/forti_login_probe.cpp)
 target_link_libraries(forti_login_probe PRIVATE vpn_core Qt6::Network)
