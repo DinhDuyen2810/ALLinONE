@@ -440,7 +440,16 @@ void IkeSession::sendQuick1()
     QList<E> all;
     const quint16 keys[] = {256, 128};
     const quint16 auths[] = {5 /*HMAC-SHA256*/, 2 /*HMAC-SHA1*/};
-    const quint16 encaps[] = {1}; // FortiGate CHỈ nhận Tunnel(1) (encap 3/61443 -> NO-PROPOSAL); bọc UDP do NAT-T Phase 1 lo
+    // Encap ESP: cấu hình được. Sau NAT, FortiClient chào UDP-Encapsulated-Tunnel (draft 61443) nên FortiGate bọc ESP
+    // trong UDP-4500; nếu chỉ chào Tunnel(1) thuần, FortiGate có thể kỳ vọng ESP proto-50 thuần -> không qua được NAT.
+    QList<quint16> encaps;
+    switch (m_cfg.qmEncap)
+    {
+        case 1: encaps = {61443}; break;            // draft UDP-Tunnel (FortiOS cũ)
+        case 2: encaps = {3}; break;                // RFC 3947 UDP-Encapsulated-Tunnel
+        case 3: encaps = {61443, 3, 1}; break;      // đa transform, để gateway tự chọn
+        default: encaps = {1}; break;               // Tunnel thuần (cũ)
+    }
     for (quint16 k : keys)
         for (quint16 au : auths)
             for (quint16 en : encaps)
@@ -466,8 +475,13 @@ void IkeSession::sendQuick1()
     m_espEnc = "aes-256-cbc";
     m_espHmac = "sha256";
 
-    // Proxy-ID: FortiGate dialup mặc định selector 0.0.0.0/0 ↔ 0.0.0.0/0; IDci/IDcr lệch -> NO-PROPOSAL.
-    const QByteArray idci = idPayload(ID_IPV4_SUBNET, 0, 0, be32b(0) + be32b(0)); // 0.0.0.0/0
+    // Proxy-ID. FortiClient dialup gửi IDci = IP ảo được cấp (ID_IPV4_ADDR, host đơn), IDcr = 0.0.0.0/0.
+    // Nếu không có IP cấp hoặc tắt cờ thì lùi về 0.0.0.0/0 ↔ 0.0.0.0/0.
+    QByteArray idci;
+    if (m_cfg.qmIdAssigned && m_result.assignedIp != 0)
+        idci = idPayload(ID_IPV4_ADDR, 0, 0, be32b(m_result.assignedIp)); // IP ảo/32 kiểu FortiClient
+    else
+        idci = idPayload(ID_IPV4_SUBNET, 0, 0, be32b(0) + be32b(0)); // 0.0.0.0/0
     const QByteArray idcr = idPayload(ID_IPV4_SUBNET, 0, 0, be32b(0) + be32b(0)); // 0.0.0.0/0
 
     // Thứ tự Quick Mode: SA, Ni, [KE nếu PFS], IDci, IDcr.
@@ -495,6 +509,28 @@ void IkeSession::onQuick2(const Isakmp::Message& m)
     {
         fail("Quick Mode msg2 thiếu SA/Nonce");
         return;
+    }
+    // CHẨN ĐOÁN: selector (IDci/IDcr) gateway trả về = SA thực gateway đã cài. Lệch với traffic ta gửi -> gateway bỏ gói.
+    {
+        int idn = 0;
+        for (const auto& p : m.payloads)
+        {
+            if (p.first != ID) continue;
+            const QByteArray& b = p.second; // body: [idType][proto][port(2)][data...]
+            if (b.size() < 4) continue;
+            const quint8 t = static_cast<quint8>(b[0]);
+            QString desc;
+            if (t == ID_IPV4_ADDR && b.size() >= 8)
+                desc = DirectVpn::ipv4ToString(rd32(b, 4)) + "/32";
+            else if (t == ID_IPV4_SUBNET && b.size() >= 12)
+                desc = DirectVpn::ipv4ToString(rd32(b, 4)) + " mask " + DirectVpn::ipv4ToString(rd32(b, 8));
+            else
+                desc = QString("idType=%1 (%2 byte)").arg(t).arg(b.size());
+            emit log(QString("IKE: QM2 %1 = %2").arg(idn == 0 ? "IDci(nguồn)" : "IDcr(đích)", desc));
+            ++idn;
+        }
+        if (idn == 0)
+            emit log("IKE: QM2 KHÔNG có ID payload (gateway không echo selector).");
     }
     // SPI của máy chủ nằm trong proposal: skip DOI(4)+Sit(4) + prop hdr(4) + prop fixed(4)=16, spiSize ở byte 8+4+2.
     if (sa.size() >= 16 + 4)
@@ -618,13 +654,71 @@ void IkeSession::onInformational(const Isakmp::Message& m)
             emit log("IKE: trả lời DPD (R-U-THERE-ACK).");
             return;
         }
-        if (type == 36137) return; // ACK của DPD ta gửi (nếu có) - bỏ qua
+        if (type == 36137) { emit log("IKE: nhận R-U-THERE-ACK (gateway CÒN công nhận IKE SA của ta)"); return; }
         // 14 = NO-PROPOSAL-CHOSEN, 24 = AUTHENTICATION-FAILED...
         if (type == 14) fail("máy chủ từ chối đề xuất (NO-PROPOSAL-CHOSEN) - thử nhóm DH/thuật toán khác");
         else if (type == 24) fail("máy chủ báo xác thực thất bại (PSK?)");
     }
-    if (!m.payload(DELETE).isEmpty())
-        fail("máy chủ gửi DELETE (đóng phiên)");
+    const QByteArray del = m.payload(DELETE);
+    if (!del.isEmpty())
+    {
+        // DELETE body: [DOI(4)][proto(1)][spiSize(1)][#spi(2)][spis...]. proto 1=ISAKMP(phase1), 3=ESP(phase2).
+        // CHỈ đóng phiên nếu DELETE tham chiếu ĐÚNG SA hiện tại. Gateway hay gửi DELETE dọn SA CŨ (SPI khác) -
+        // không được tự sập vì những DELETE đó (đó chính là lỗi khiến đường encap=3 bị bỏ oan).
+        if (del.size() >= 8)
+        {
+            const quint8 proto = static_cast<quint8>(del[4]);
+            const quint8 spiSize = static_cast<quint8>(del[5]);
+            const quint16 nspi = rd16(del, 6);
+            bool mine = false;
+            if (proto == 3 && spiSize == 4)
+            {
+                for (int i = 0; i + 4 <= del.size() - 8; i += 4)
+                {
+                    const quint32 s = rd32(del, 8 + i);
+                    if (s == m_spiOut || s == m_spiIn) { mine = true; break; }
+                }
+                if (mine)
+                    fail(QString("máy chủ gửi DELETE ESP/phase2 cho SA HIỆN TẠI (SPI=%1)").arg(rd32(del, 8), 0, 16));
+                else
+                    emit log(QString("IKE: bỏ qua DELETE ESP cho SA cũ (SPI=%1, không phải SA của ta ra=%2 vào=%3)")
+                                 .arg(rd32(del, 8), 0, 16).arg(m_spiOut, 0, 16).arg(m_spiIn, 0, 16));
+            }
+            else if (proto == 1)
+            {
+                // ISAKMP/phase1 DELETE: SPI = cặp cookie (16 byte). Chỉ sập nếu khớp cookie của ta.
+                const QByteArray spi = del.mid(8, spiSize);
+                if (spi == (m_ckyI + m_ckyR) || spiSize == 0)
+                    fail("máy chủ gửi DELETE ISAKMP/phase1 (đóng phiên)");
+                else
+                    emit log("IKE: bỏ qua DELETE ISAKMP cho phiên khác (cookie không khớp)");
+            }
+            else
+                emit log(QString("IKE: bỏ qua DELETE proto=%1 lạ").arg(proto));
+        }
+    }
+}
+
+void IkeSession::sendDpd()
+{
+    if (m_state != State::Up)
+        return;
+    static quint32 seq = 0x10000001u;
+    QByteArray seqData;
+    seqData.append(static_cast<char>((seq >> 24) & 0xff));
+    seqData.append(static_cast<char>((seq >> 16) & 0xff));
+    seqData.append(static_cast<char>((seq >> 8) & 0xff));
+    seqData.append(static_cast<char>(seq & 0xff));
+    const QByteArray ruthere = notifyPayload(1 /*ISAKMP*/, m_ckyI + m_ckyR, 36136, seqData);
+    const quint32 mid = newMsgId();
+    const QByteArray hash = IkeKeys::genericHash(m_cfg.hash, m_sk.a, mid, chain({{NOTIFY, ruthere}}));
+    Isakmp::Message r;
+    r.exchange = Informational;
+    r.messageId = mid;
+    r.payloads = {{HASH, hash}, {NOTIFY, ruthere}};
+    send(r, true);
+    emit log(QString("IKE: gửi DPD R-U-THERE seq=0x%1").arg(seq, 0, 16));
+    ++seq;
 }
 
 void IkeSession::onDatagram(const QByteArray& raw)

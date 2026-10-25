@@ -145,7 +145,15 @@ public:
             std::printf("  Subnet (split): %d (full tunnel neu 0)\n", r.subnetsBase.size());
             std::printf("  ESP: %s/%s, SPI ra=%08x vao=%08x\n", r.esp.encAlgo.toUtf8().constData(),
                         r.esp.hmacAlgo.toUtf8().constData(), r.esp.spiOut, r.esp.spiIn);
-            startEspTest(r);
+            if (m_espDelayMs > 0)
+            {
+                m_pendingRes = r;
+                m_upAt = m_start.elapsed();
+                m_waitEsp = true;
+                std::printf("  [cho %d s (chi DPD, CHUA gui ESP) de xem gateway co tu gui DELETE khong]\n", m_espDelayMs / 1000);
+            }
+            else
+                startEspTest(r);
         });
 
         // Điểm cuối cục bộ (cho NAT-D): dùng socket UDP "connect" để biết IP nguồn tuyến tới gateway.
@@ -217,8 +225,21 @@ private:
     {
         static qint64 lastRe = 0;
         const qint64 t = m_start.elapsed();
+        if (m_waitEsp)
+        {
+            static qint64 lastDpdW = -1;
+            if (lastDpdW < 0 || t - lastDpdW >= 5000) { lastDpdW = t; m_ike->sendDpd(); }
+            if (t - m_upAt >= m_espDelayMs) { m_waitEsp = false; std::printf("  [het cho - bat dau gui ESP]\n"); startEspTest(m_pendingRes); }
+            return;
+        }
         if (m_espMode)
         {
+            // NAT-T keepalive (1 byte 0xFF) mỗi 20s như app/FortiClient - giữ ánh xạ NAT.
+            static qint64 lastKa = 0;
+            if (t - lastKa >= 20000) { lastKa = t; m_sock->writeDatagram(QByteArray(1, '\xFF'), QHostAddress(m_gw), 4500); }
+            // DPD R-U-THERE mỗi 5s: nếu gateway ACK -> IKE SA còn sống (lỗi ở SA/khóa ESP); nếu im -> gateway bỏ phiên.
+            static qint64 lastDpd = -1;
+            if (lastDpd < 0 || t - lastDpd >= 5000) { lastDpd = t; m_ike->sendDpd(); }
             if (t - m_espSentMs >= 2000) { m_espSentMs = t; sendEspPings(); } // gửi lại ping
             if (t - m_espStartMs >= 75000)
             {
@@ -245,6 +266,27 @@ private:
         const QByteArray e2 = c->seal(icmp, 4);
         if (!e2.isEmpty()) m_sock->writeDatagram(e2, QHostAddress(m_gw), 4500);
         std::printf("  -> vong %d: gui ESP (SYN+ICMP 172.16.6.25) bang bien the '%s'\n", m_round, m_vnames[i].toUtf8().constData());
+
+        // Dò ĐÍCH CHẮC CHẮN TRẢ LỜI bằng biến thể khóa ĐÚNG CHUẨN (index 0 = 'PFS'): máy chủ DNS gateway cấp.
+        // DNS server sẽ đáp truy vấn hợp lệ -> nếu tầng dữ liệu chạy thì ta phải thấy gói ESP về.
+        {
+            GpEspCrypto* c0 = m_variants[0];
+            // Danh sách đích dò bằng khóa CHUẨN: DNS gateway cấp + 8.8.8.8/1.1.1.1 (DNS công cộng, CHẮC CHẮN đáp qua full-tunnel).
+            QList<quint32> dnsTargets;
+            if (!m_res.dns.isEmpty()) dnsTargets << m_res.dns[0];
+            dnsTargets << 0x08080808u << 0x01010101u; // 8.8.8.8, 1.1.1.1
+            for (quint32 dns : dnsTargets)
+            {
+                const QByteArray q = buildDnsQuery(m_res.assignedIp, dns);
+                const QByteArray eq = c0->seal(q, 4);
+                if (!eq.isEmpty()) m_sock->writeDatagram(eq, QHostAddress(m_gw), 4500);
+                const QByteArray ip2 = buildIcmpEcho(m_res.assignedIp, dns, 0x4f42, static_cast<quint16>(m_round));
+                const QByteArray eip = c0->seal(ip2, 4);
+                if (!eip.isEmpty()) m_sock->writeDatagram(eip, QHostAddress(m_gw), 4500);
+            }
+            if (m_round <= 2)
+                std::printf("     + dò DNS/ICMP toi DNS-cap + 8.8.8.8 + 1.1.1.1 (khóa chuẩn 'PFS')\n");
+        }
     }
 
     // KEYMAT linh hoạt: hash prf, g^xy đầu/cuối/không.
@@ -285,14 +327,17 @@ private:
         const QByteArray g = r.kmGxy;
         using H = IkeCrypto::Hash;
         QList<QPair<QString, Opt>> vs;
-        vs << qMakePair(QString("PFS"), Opt{g});
-        vs << qMakePair(QString("PFS-SHA1prf"), Opt{g, false, false, false, false, H::Sha1});
-        vs << qMakePair(QString("PFS-gxyEnd"), Opt{g, false, false, false, true, H::Sha256});
-        vs << qMakePair(QString("PFS-authFirst"), Opt{g, false, false, true, false, H::Sha256});
-        vs << qMakePair(QString("PFS-swapN"), Opt{g, true});
-        vs << qMakePair(QString("PFS-swapSPI"), Opt{g, false, true});
-        vs << qMakePair(QString("noPFS"), Opt{QByteArray()});
-        vs << qMakePair(QString("noPFS-SHA1prf"), Opt{QByteArray(), false, false, false, false, H::Sha1});
+        vs << qMakePair(QString("PFS"), Opt{g}); // biến thể ĐÚNG CHUẨN RFC (luôn ở index 0)
+        if (!m_clean)
+        {
+            vs << qMakePair(QString("PFS-SHA1prf"), Opt{g, false, false, false, false, H::Sha1});
+            vs << qMakePair(QString("PFS-gxyEnd"), Opt{g, false, false, false, true, H::Sha256});
+            vs << qMakePair(QString("PFS-authFirst"), Opt{g, false, false, true, false, H::Sha256});
+            vs << qMakePair(QString("PFS-swapN"), Opt{g, true});
+            vs << qMakePair(QString("PFS-swapSPI"), Opt{g, false, true});
+            vs << qMakePair(QString("noPFS"), Opt{QByteArray()});
+            vs << qMakePair(QString("noPFS-SHA1prf"), Opt{QByteArray(), false, false, false, false, H::Sha1});
+        }
         for (const auto& v : vs)
         {
             auto* c = new GpEspCrypto();
@@ -300,9 +345,12 @@ private:
             if (c->init(cfgFor(v.second), &err)) { m_variants << c; m_vnames << v.first; }
             else { std::printf("  bien the %s loi: %s\n", v.first.toUtf8().constData(), err.toUtf8().constData()); delete c; }
         }
-        std::printf("  Thu %d bien the KEYMAT. Gui TCP SYN + ICMP toi 172.16.6.25 moi vong...\n", m_variants.size());
+        std::printf("  %s%d bien the KEYMAT. Gui TCP SYN + ICMP toi 172.16.6.25 moi vong...\n",
+                    m_clean ? "CLEAN mode (chi bien the chuan, khong SPI gia): " : "Thu ", m_variants.size());
         // Chẩn đoán: gửi ESP với SPI GIẢ -> nếu gateway tra INVALID-SPI (notify) thi SA that DA cai (loi khoa);
         // neu im ca voi SPI gia thi gateway khong bao loi (hoac khong nhan duoc goi ta).
+        // CLEAN mode: KHÔNG gửi SPI giả (tránh gateway tra DELETE/INVALID-SPI lam sap SA).
+        if (!m_clean)
         {
             QByteArray bogus; bogus.append("\xde\xad\xbe\xef", 4); bogus.append("\x00\x00\x00\x01", 4);
             bogus.append(QByteArray(80, 'x'));
@@ -331,6 +379,12 @@ private:
     qint64 m_espStartMs = 0;
     qint64 m_espSentMs = 0;
     int m_espReplies = 0;
+    bool m_waitEsp = false;
+    qint64 m_upAt = 0;
+    IkeSession::Result m_pendingRes;
+public:
+    bool m_clean = false; ///< chỉ gửi biến thể khóa ĐÚNG + không gửi SPI giả (tránh làm gateway sập SA)
+    int m_espDelayMs = 0; ///< trễ trước khi gửi ESP (chỉ DPD) - để phân biệt DELETE tự phát vs do ESP
 };
 
 int main(int argc, char** argv)
@@ -351,8 +405,15 @@ int main(int argc, char** argv)
     c.hash = IkeCrypto::Hash::Sha256;
     c.natT = true;
     c.pfs = (argc >= 6) ? (QString::fromLatin1(argv[5]).toInt() != 0) : true; // arg5: 1=PFS, 0=khong
+    c.qmIdAssigned = (argc >= 7) ? (QString::fromLatin1(argv[6]).toInt() != 0) : true; // arg6: 1=IDci IP cap/32 (FortiClient), 0=0.0.0.0/0
+    c.qmEncap = (argc >= 8) ? QString::fromLatin1(argv[7]).toInt() : 0; // arg7: 0=Tunnel(1), 1=61443, 2=3, 3=da-transform
 
-    std::printf("== Bat tay IKEv1 THAT toi %s (user %s, PFS=%d) ==\n", argv[1], argv[2], c.pfs ? 1 : 0);
+    const bool clean = (argc >= 9) ? (QString::fromLatin1(argv[8]).toInt() != 0) : false; // arg8: 1=clean (chi khoa dung, khong SPI gia)
+    std::printf("== Bat tay IKEv1 THAT toi %s (user %s, PFS=%d, IDci=%s, encap=%d, clean=%d) ==\n", argv[1], argv[2],
+                c.pfs ? 1 : 0, c.qmIdAssigned ? "IPcap/32" : "0.0.0.0/0", c.qmEncap, clean ? 1 : 0);
+    const int espDelay = (argc >= 10) ? QString::fromLatin1(argv[9]).toInt() : 0; // arg9: tre N giay moi gui ESP (chi DPD truoc)
     Driver d(gw, c);
+    d.m_clean = clean;
+    d.m_espDelayMs = espDelay * 1000;
     return app.exec();
 }

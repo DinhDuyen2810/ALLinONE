@@ -37,6 +37,8 @@ public:
         IkeCrypto::Hash hash{IkeCrypto::Hash::Sha256}; ///< prf + hash Phase 1
         bool natT{true};        ///< ép đóng gói UDP-4500 (cần khi sau NAT - gần như luôn đúng ở máy người dùng)
         bool pfs{true};         ///< Perfect Forward Secrecy ở Quick Mode (trao KE riêng, cùng nhóm Phase 1)
+        bool qmIdAssigned{true}; ///< Quick Mode IDci = IP được cấp/32 (kiểu FortiClient dialup); false => 0.0.0.0/0
+        int qmEncap{0};          ///< encap ESP chào: 0={1 Tunnel}, 1={61443 draft UDP}, 2={3 RFC UDP}, 3={61443,3,1 đa transform}
     };
 
     struct Result
@@ -65,6 +67,7 @@ public:
     void start();                        ///< gửi Aggressive msg1
     void onDatagram(const QByteArray& isakmp); ///< nạp một bản tin ISAKMP đã bóc dấu non-ESP
     void onRetransmit();                 ///< gọi định kỳ: gửi lại bản tin cuối nếu chưa có hồi đáp
+    void sendDpd();                      ///< gửi DPD R-U-THERE (chỉ khi Up) - keepalive + kiểm IKE SA còn sống
     void stop();
 
 signals:
