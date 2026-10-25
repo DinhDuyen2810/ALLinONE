@@ -186,6 +186,13 @@ struct FakeGateway
                 a += attributeVar(INTERNAL_IP4_ADDRESS, be32b(assignIp));
                 a += attributeVar(INTERNAL_IP4_NETMASK, be32b(assignMask));
                 a += attributeVar(INTERNAL_IP4_DNS, be32b(dns));
+                // Chia tuyến như FortiGate: INTERNAL_IP4_SUBNET (172.16.0.0/16) + UNITY_SPLIT_INCLUDE (mục 14 byte: địa chỉ,
+                // mặt nạ, giao thức, cổng nguồn, cổng đích) liệt kê lại 172.16.0.0/16 và thêm 172.17.0.0/16.
+                a += attributeVar(INTERNAL_IP4_SUBNET, be32b(0xAC100000u) + be32b(0xFFFF0000u));
+                QByteArray split;
+                for (quint32 net : {0xAC100000u, 0xAC110000u})
+                    split += be32b(net) + be32b(0xFFFF0000u) + QByteArray(6, '\0');
+                a += attributeVar(UNITY_SPLIT_INCLUDE, split);
                 QByteArray rcp = configPayload(CFG_REPLY, id, a);
                 QByteArray hash = IkeKeys::genericHash(H, sk.a, m.messageId, chain({{CP, rcp}}));
                 Message r; r.exchange = Transaction; r.messageId = m.messageId; r.payloads = {{HASH, hash}, {CP, rcp}};
@@ -281,6 +288,10 @@ int main(int argc, char** argv)
     CHECK(estab);
     CHECK(result.assignedIp == gw.assignIp);
     CHECK(result.dns.size() == 1 && result.dns[0] == gw.dns);
+    // Chia tuyến: 172.16.0.0/16 xuất hiện ở hai thuộc tính nhưng chỉ giữ MỘT; thêm 172.17.0.0/16 từ split-include.
+    CHECK(result.subnetsBase.size() == 2 && result.subnetsMask.size() == 2);
+    CHECK(result.subnetsBase.value(0) == 0xAC100000u && result.subnetsMask.value(0) == 0xFFFF0000u);
+    CHECK(result.subnetsBase.value(1) == 0xAC110000u && result.subnetsMask.value(1) == 0xFFFF0000u);
     CHECK(result.esp.present && result.esp.spiOut == gw.spiServer && result.esp.spiIn == gw.spiClient);
 
     // Khóa ESP: client dẫn xuất phải khớp keymat tính độc lập từ các giá trị đã trao đổi.

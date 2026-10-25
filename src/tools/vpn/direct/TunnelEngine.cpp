@@ -170,6 +170,9 @@ void TunnelEngine::beginIke(quint32 gatewayIp)
     c.encKeyBits = 256;               // chào nhiều transform; transform gateway chọn được đọc lại trong msg2
     c.hash = IkeCrypto::Hash::Sha256;
     c.natT = true;
+    // Xin Mode-config như FortiClient (APPLICATION_VERSION, IPv4/IPv6 subnet, UNITY_SPLIT_INCLUDE, UNITY_PFS...): gateway
+    // chỉ đẩy cấu hình chia tuyến (các mạng nội bộ) khi được hỏi như vậy; không thì app sẽ chuyển TOÀN BỘ internet qua VPN.
+    c.cfgFortiClient = true;
     c.forceNatT = true; // luôn khai NAT-D lệch -> gateway luôn dùng ESP bọc UDP-4500 (socket UDP không gửi được ESP thô)
     m_ike->configure(c);
     m_ike->setLocalEndpoint(localIp, m_ikeSock->localPort());

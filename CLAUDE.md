@@ -94,7 +94,7 @@ bắt tay trọn vẹn offline với responder giả). Hai target
 `vpn_direct_real_probe` (gọi máy chủ VPN thật, không đăng nhập), `ike_real_probe` (gửi IKEv1 msg1 tới gateway
 FortiGate IPsec thật để xem nhóm DH/thuật toán gateway chấp nhận, không đăng nhập) và `ike_real_connect <ip> <user>
 <pass> <psk> [pfs]` (chạy ĐÚNG lớp IkeSession với tài khoản thật để kiểm bắt tay IKEv1 đầu-cuối + thử ESP, không tạo
-adapter nên không cần Admin; bí mật truyền qua tham số, không ghi tệp/log; in nội dung gói ESP trả về - ICMP/DNS/TCP - nên chứng minh được lưu lượng hai chiều; tham số/biến môi trường `IKE_*` xem đầu `tests/ike_real_connect.cpp`) là công cụ KIỂM TRA TAY - không chạy như test tự động
+adapter nên không cần Admin; bí mật truyền qua tham số, không ghi tệp/log; in nội dung gói ESP trả về - ICMP/DNS/TCP - nên chứng minh được lưu lượng hai chiều; tham số/biến môi trường `IKE_*` xem đầu `tests/ike_real_connect.cpp`), `tunnel_engine_real_check <ip> <user> <pass> <psk> [giây]` (chạy CHÍNH `TunnelEngine` ở chế độ `noAdapterForTest`: không adapter/Admin, bơm ICMP/DNS/TCP SYN rồi đọc gói trả về - kiểm đường dữ liệu của chính app) là công cụ KIỂM TRA TAY - không chạy như test tự động
 (quy tắc 5). Rà giao diện: `ui_snapshot <thư mục ảnh> [công cụ,...]` chụp PNG mọi tab; đặt `UI_SNAPSHOT_NATIVE=1` để
 vẽ đúng kiểu gốc Windows (không hiện cửa sổ) - nền offscreen không vẽ được ô tích kiểu gốc.
 

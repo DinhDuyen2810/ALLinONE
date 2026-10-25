@@ -401,14 +401,34 @@ void IkeSession::onTransaction(const Isakmp::Message& m)
     if ((cfgType == CFG_REPLY || cfgType == CFG_SET) && hasIp)
     {
         // Mode-config: nhận IP/DNS/subnet.
+        QStringList seen; // loại(độ dài) từng thuộc tính nhận được - chẩn đoán (không in giá trị)
         Isakmp::forEachAttribute(attrs, [&](quint16 t, bool var, quint32 val, const QByteArray& v) {
             (void)val;
+            seen << QString("%1(%2)").arg(t).arg(var ? v.size() : 0);
             if (!var) return;
             if (t == INTERNAL_IP4_ADDRESS && v.size() == 4) m_result.assignedIp = rd32(v, 0);
             else if (t == INTERNAL_IP4_NETMASK && v.size() == 4) m_result.assignedMask = rd32(v, 0);
             else if (t == INTERNAL_IP4_DNS && v.size() == 4) m_result.dns.append(rd32(v, 0));
             else if (t == INTERNAL_IP4_SUBNET && v.size() == 8) { m_result.subnetsBase.append(rd32(v, 0)); m_result.subnetsMask.append(rd32(v, 4)); }
+            else if (t == UNITY_SPLIT_INCLUDE)
+            {
+                // Cisco Unity split-include: mỗi mục 14 byte = địa chỉ(4) mặt nạ(4) giao thức(2) cổng nguồn(2) cổng đích(2).
+                for (int i = 0; i + 14 <= v.size(); i += 14)
+                {
+                    m_result.subnetsBase.append(rd32(v, i));
+                    m_result.subnetsMask.append(rd32(v, i + 4));
+                }
+            }
         });
+        emit log(QString("IKE: Mode-config thuộc tính nhận được: %1").arg(seen.join(' ')));
+        // INTERNAL_IP4_SUBNET và UNITY_SPLIT_INCLUDE thường liệt kê cùng các mạng -> bỏ trùng (giữ thứ tự).
+        for (int i = 0; i < m_result.subnetsBase.size(); ++i)
+            for (int j = m_result.subnetsBase.size() - 1; j > i; --j)
+                if (m_result.subnetsBase[j] == m_result.subnetsBase[i] && m_result.subnetsMask[j] == m_result.subnetsMask[i])
+                {
+                    m_result.subnetsBase.removeAt(j);
+                    m_result.subnetsMask.removeAt(j);
+                }
         if (cfgType == CFG_SET)
         {
             // ACK lại CFG_SET.
@@ -443,9 +463,9 @@ void IkeSession::sendModeCfgRequest()
         attrs += attributeVar(11, QByteArray());                   // INTERNAL_IP6_NBNS
         attrs += attributeVar(INTERNAL_IP4_SUBNET, QByteArray());  // 13
         attrs += attributeVar(15, QByteArray());                   // INTERNAL_IP6_SUBNET
-        attrs += attributeVar(28674, QByteArray());                // UNITY_DEF_DOMAIN
-        attrs += attributeVar(28676, QByteArray());                // UNITY_SPLIT_INCLUDE
-        attrs += attributeVar(28679, QByteArray());                // UNITY_PFS
+        attrs += attributeVar(UNITY_DEF_DOMAIN, QByteArray());
+        attrs += attributeVar(UNITY_SPLIT_INCLUDE, QByteArray());
+        attrs += attributeVar(UNITY_PFS, QByteArray());
     }
     const QByteArray cfg = configPayload(CFG_REQUEST, 1, attrs);
     const quint32 mid = newMsgId();

@@ -426,6 +426,10 @@ target_link_libraries(ike_real_probe PRIVATE vpn_core Qt6::Network)
 add_executable(ike_real_connect EXCLUDE_FROM_ALL tests/ike_real_connect.cpp)
 target_link_libraries(ike_real_connect PRIVATE vpn_core Qt6::Network)
 
+# ---- KIỂM TRA TAY: chạy CHÍNH TunnelEngine (FortiGate IPsec) với gateway THẬT, chế độ noAdapterForTest (không Admin): tunnel_engine_real_check ----
+add_executable(tunnel_engine_real_check EXCLUDE_FROM_ALL tests/tunnel_engine_real_check.cpp)
+target_link_libraries(tunnel_engine_real_check PRIVATE vpn_core Qt6::Network)
+
 # ---- KIỂM TRA TAY: dò đăng nhập FortiGate SSL-VPN THẬT (in nguyên văn phản hồi): forti_login_probe ----
 add_executable(forti_login_probe EXCLUDE_FROM_ALL tests/forti_login_probe.cpp)
 target_link_libraries(forti_login_probe PRIVATE vpn_core Qt6::Network)
