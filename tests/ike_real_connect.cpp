@@ -10,6 +10,7 @@
 
 #include <QCoreApplication>
 #include <QElapsedTimer>
+#include <QFile>
 #include <QHostAddress>
 #include <QTimer>
 #include <QUdpSocket>
@@ -26,6 +27,118 @@ static quint16 inetChecksum(const QByteArray& b)
 }
 static void put16(QByteArray& b, quint16 v) { b.append(char(v >> 8)); b.append(char(v & 0xFF)); }
 static void put32(QByteArray& b, quint32 v) { b.append(char(v >> 24)); b.append(char(v >> 16)); b.append(char(v >> 8)); b.append(char(v)); }
+
+static void dissectPhase1(const char* tag, const QByteArray& q);
+
+// In tiêu đề ISAKMP (exch/cờ/msgid/độ dài) để đối chiếu từng bản tin với bản ghi FortiClient thật.
+static void printHdr(const char* dir, const QByteArray& q)
+{
+    if (q.size() < 28) { std::printf("  %s (%d byte, ngan)\n", dir, static_cast<int>(q.size())); return; }
+    const unsigned ex = static_cast<quint8>(q[18]), fl = static_cast<quint8>(q[19]);
+    const quint32 mid = (quint32(quint8(q[20])) << 24) | (quint32(quint8(q[21])) << 16) | (quint32(quint8(q[22])) << 8) | quint8(q[23]);
+    std::printf("  %s exch=%u flags=0x%02x msgid=%08x len=%d\n", dir, ex, fl, mid, static_cast<int>(q.size()));
+    if (ex == 4 && mid == 0) dissectPhase1(dir, q);
+}
+
+// Bóc chuỗi payload của một bản tin Phase 1 KHÔNG mã hóa (msg1/msg2 Aggressive): loại + độ dài; VID/ID in nội dung;
+// SA in số proposal/transform và thuộc tính. KHÔNG in HASH/KE/Nonce (chỉ độ dài) nên không lộ bí mật.
+static void dissectPhase1(const char* tag, const QByteArray& q)
+{
+    if (q.size() < 28 || (static_cast<quint8>(q[19]) & 1)) return; // chỉ bản tin không mã hóa
+    static const char* names[] = {"NONE", "SA", "P", "T", "KE", "ID", "CERT", "CR", "HASH", "SIG", "NONCE", "N", "D", "VID", "CP"};
+    int nxt = static_cast<quint8>(q[16]);
+    int off = 28;
+    QString line = QString("  %1 payloads:").arg(tag);
+    while (nxt != 0 && off + 4 <= q.size())
+    {
+        const int len = (static_cast<quint8>(q[off + 2]) << 8) | static_cast<quint8>(q[off + 3]);
+        if (len < 4 || off + len > q.size()) break;
+        const QByteArray body = q.mid(off + 4, len - 4);
+        QString nm = nxt < 15 ? QString::fromLatin1(names[nxt]) : QString("T%1").arg(nxt);
+        QString extra;
+        if (nxt == 13) extra = " " + QString::fromLatin1(body.toHex());
+        else if (nxt == 5 && body.size() >= 4)
+            extra = QString(" idtype=%1 data=%2").arg(static_cast<quint8>(body[0])).arg(QString::fromLatin1(body.mid(4).toHex()));
+        else if (nxt == 1 && body.size() >= 8)
+        {
+            int props = 0, trans = 0;
+            int p = 8;
+            QString attrs;
+            while (p + 8 <= body.size())
+            {
+                const int pl = (static_cast<quint8>(body[p + 2]) << 8) | static_cast<quint8>(body[p + 3]);
+                if (pl < 8) break;
+                ++props;
+                const int ntr = static_cast<quint8>(body[p + 7]);
+                int t = p + 8 + static_cast<quint8>(body[p + 6]);
+                for (int i = 0; i < ntr && t + 8 <= p + pl; ++i)
+                {
+                    const int tl = (static_cast<quint8>(body[t + 2]) << 8) | static_cast<quint8>(body[t + 3]);
+                    if (tl < 8) break;
+                    ++trans;
+                    QString a;
+                    for (int ap = t + 8; ap + 4 <= t + tl;)
+                    {
+                        const quint16 at = (static_cast<quint8>(body[ap]) << 8) | static_cast<quint8>(body[ap + 1]);
+                        const quint16 v = (static_cast<quint8>(body[ap + 2]) << 8) | static_cast<quint8>(body[ap + 3]);
+                        a += QString("%1=%2,").arg(at & 0x7fff).arg(v);
+                        ap += (at & 0x8000) ? 4 : 4 + v;
+                    }
+                    attrs += QString("\n      T%1[%2]").arg(static_cast<quint8>(body[t + 4])).arg(a);
+                    t += tl;
+                }
+                p += pl;
+            }
+            extra = QString(" props=%1 trans=%2%3").arg(props).arg(trans).arg(attrs);
+        }
+        line += QString("\n    %1(len=%2)%3").arg(nm).arg(len).arg(extra);
+        nxt = static_cast<quint8>(q[off]);
+        off += len;
+    }
+    std::printf("%s\n", line.toUtf8().constData());
+}
+
+// Mô tả ngắn một gói IPv4 đã giải mã (ICMP/UDP-DNS/TCP) để có bằng chứng lưu lượng thật qua đường hầm.
+static QString describeIp(const QByteArray& ip)
+{
+    if (ip.size() < 20 || (static_cast<quint8>(ip[0]) >> 4) != 4) return QStringLiteral("(khong phai IPv4)");
+    auto u8 = [&](int i) { return static_cast<quint8>(ip[i]); };
+    auto be16 = [&](int i) { return (u8(i) << 8) | u8(i + 1); };
+    auto addr = [&](int i) { return QString("%1.%2.%3.%4").arg(u8(i)).arg(u8(i + 1)).arg(u8(i + 2)).arg(u8(i + 3)); };
+    const int ihl = (u8(0) & 15) * 4, proto = u8(9);
+    QString s = addr(12) + " -> " + addr(16) + " ";
+    if (proto == 1 && ip.size() >= ihl + 8)
+        return s + QString("ICMP type=%1 (%2)").arg(u8(ihl)).arg(u8(ihl) == 0 ? "echo reply" : "khac");
+    if (proto == 6 && ip.size() >= ihl + 14)
+    {
+        const int fl = u8(ihl + 13);
+        return s + QString("TCP %1->%2 flags=0x%3%4").arg(be16(ihl)).arg(be16(ihl + 2)).arg(fl, 2, 16, QChar('0'))
+                       .arg((fl & 0x12) == 0x12 ? " (SYN-ACK: may chu dang lang nghe)" : "");
+    }
+    if (proto == 17 && ip.size() >= ihl + 12)
+    {
+        s += QString("UDP %1->%2").arg(be16(ihl)).arg(be16(ihl + 2));
+        if (be16(ihl) == 53 && ip.size() >= ihl + 8 + 12)
+        {
+            const int d = ihl + 8;
+            const int an = be16(d + 6);
+            int p = d + 12;
+            while (p < ip.size() && u8(p) != 0) p += u8(p) + 1; // qname
+            p += 1 + 4;                                         // 0 + qtype + qclass
+            QStringList ips;
+            for (int i = 0; i < an && p + 12 <= ip.size(); ++i)
+            {
+                p += ((u8(p) & 0xC0) == 0xC0) ? 2 : 0;
+                const int type = be16(p), rdl = be16(p + 8);
+                if (type == 1 && rdl == 4 && p + 14 <= ip.size()) ips << addr(p + 10);
+                p += 10 + rdl;
+            }
+            s += QString(" DNS tra loi %1 ban ghi: %2").arg(an).arg(ips.join(','));
+        }
+        return s;
+    }
+    return s + QString("proto=%1").arg(proto);
+}
 
 // Gói IPv4 + ICMP echo request (src->dst).
 static QByteArray buildIcmpEcho(quint32 src, quint32 dst, quint16 id, quint16 seq)
@@ -57,9 +170,11 @@ static QByteArray buildTcpSyn(quint32 src, quint32 dst, quint16 sport, quint16 d
     put16(tcp, sport); put16(tcp, dport);
     put32(tcp, 0x12345678);           // seq
     put32(tcp, 0);                     // ack
-    tcp.append(char(0x50)); tcp.append(char(0x02)); // data offset=5, flags=SYN
-    put16(tcp, 0xFAF0);                // window
+    tcp.append(char(0x80)); tcp.append(char(0x02)); // data offset=8 (có tùy chọn), flags=SYN
+    put16(tcp, 64240);                 // window (như Windows)
     put16(tcp, 0); put16(tcp, 0);      // checksum (sau), urgent
+    // Tùy chọn như SYN của Windows: MSS 1360, NOP+WS(8), NOP+NOP+SACK-permitted.
+    tcp.append("\x02\x04\x05\x50\x01\x03\x03\x08\x01\x01\x04\x02", 12);
     QByteArray pseudo;
     put32(pseudo, src); put32(pseudo, dst);
     pseudo.append(char(0)); pseudo.append(char(6)); put16(pseudo, static_cast<quint16>(tcp.size()));
@@ -119,17 +234,35 @@ class Driver : public QObject
 public:
     Driver(quint32 gw, const IkeSession::Config& cfg) : m_gw(gw)
     {
+        // ĐÚNG như FortiClient (bắt gói thật 2026-10-25): Phase 1 msg1/msg2 trên cổng 500 (IKE thuần),
+        // RỒI MỚI float sang 4500 (có dấu NONESP) cho msg3+/ESP. Phải có bước float 500->4500 thì FortiGate
+        // mới đánh dấu SA phase2 là UDP-encapsulated -> mới nhận ESP bọc UDP-4500. 2 socket: 500 và 4500.
+        // IKE_ONE_SOCKET=1: MỘT socket cổng tạm cho cả cổng 500 lẫn 4500 (đúng mô hình TunnelEngine của sản phẩm).
+        const bool oneSocket = qEnvironmentVariableIntValue("IKE_ONE_SOCKET") != 0;
+        if (!oneSocket)
+        {
+            m_sock500 = new QUdpSocket(this);
+            if (!m_sock500->bind(QHostAddress(QHostAddress::AnyIPv4), 500))
+            {
+                m_sock500->bind(QHostAddress(QHostAddress::AnyIPv4), 0); // IKEEXT giữ 500? dùng cổng tạm
+                std::printf("  (canh bao: khong bind duoc UDP 500, dung cong tam %u)\n", m_sock500->localPort());
+            }
+            connect(m_sock500, &QUdpSocket::readyRead, this, &Driver::onRx);
+        }
         m_sock = new QUdpSocket(this);
-        // FortiClient làm TOÀN BỘ IKE+ESP trên UDP 4500<->4500 từ cổng nguồn 4500 (0 gói cổng 500). Bắt chước:
-        // bind cổng 4500 + ép NAT-T ngay từ msg1 (có dấu NONESP). Cổng tạm -> NAT/gateway không đưa ESP về.
-        if (!m_sock->bind(QHostAddress(QHostAddress::AnyIPv4), 4500))
-            std::printf("  (canh bao: khong bind duoc UDP 4500, dung cong tam)\n");
+        if (oneSocket) m_sock500 = m_sock;
+        // Cổng cục bộ cho IKE-sau-float + ESP: dùng cổng TẠM. Windows chặn ESP-in-UDP đến cổng cục bộ 4500 (tầng IPsec của HĐH
+        // nhận trước, không tới socket) nên bind 4500 làm mất mọi gói ESP trả về; sau NAT, cổng cục bộ không ảnh hưởng gateway
+        // (nó trả về địa chỉ:cổng đã quan sát). IKE_LOCAL_PORT=4500 để thử lại hành vi cũ.
+        const quint16 localPort = static_cast<quint16>(qEnvironmentVariableIntValue("IKE_LOCAL_PORT"));
+        if (!m_sock->bind(QHostAddress(QHostAddress::AnyIPv4), localPort))
+            std::printf("  (canh bao: khong bind duoc UDP %u)\n", localPort);
         connect(m_sock, &QUdpSocket::readyRead, this, &Driver::onRx);
 
         m_ike = new IkeSession(this);
         m_ike->configure(cfg);
-        m_ike->setNatActive(true); // 4500 ngay tu dau
-        m_natT = true;
+        // KHÔNG ép NAT-T: để IkeSession bắt đầu natActive=false (gửi msg1 tới cổng 500) rồi tự float sau msg2.
+        m_natT = false;
         connect(m_ike, &IkeSession::sendDatagram, this, &Driver::onSend);
         connect(m_ike, &IkeSession::switchToNatT, this, [this]() { m_natT = true; std::printf("  [NAT-T: chuyen UDP 4500]\n"); });
         connect(m_ike, &IkeSession::log, this, [](const QString& m) { std::printf("  %s\n", m.toUtf8().constData()); });
@@ -162,8 +295,9 @@ public:
             probe.connectToHost(QHostAddress(m_gw), 500);
             probe.waitForConnected(500);
             const quint32 localIp = probe.localAddress().toIPv4Address();
-            m_ike->setLocalEndpoint(localIp, m_sock->localPort());
-            std::printf("  Local endpoint (NAT-D): %s:%u\n", DirectVpn::ipv4ToString(localIp).toUtf8().constData(), m_sock->localPort());
+            // RFC 3947: NAT-D tính theo cổng của trao đổi ban đầu (500), không phải cổng sau khi float (4500).
+            m_ike->setLocalEndpoint(localIp, m_sock500->localPort());
+            std::printf("  Local endpoint (NAT-D): %s:%u\n", DirectVpn::ipv4ToString(localIp).toUtf8().constData(), m_sock500->localPort());
         }
 
         m_tick = new QTimer(this);
@@ -177,18 +311,20 @@ public:
 private:
     void onSend(QByteArray dg, bool natT)
     {
+        printHdr("TX", dg);
         QByteArray out = dg;
-        quint16 port = natT ? 4500 : 500;
-        if (natT) out.prepend(QByteArray(4, '\0'));
-        m_sock->writeDatagram(out, QHostAddress(m_gw), port);
+        if (natT) { out.prepend(QByteArray(4, '\0')); m_sock->writeDatagram(out, QHostAddress(m_gw), 4500); }
+        else m_sock500->writeDatagram(out, QHostAddress(m_gw), 500); // Phase 1 trên cổng 500 (socket local 500)
     }
     void onRx()
     {
-        while (m_sock->hasPendingDatagrams())
+        QUdpSocket* s = qobject_cast<QUdpSocket*>(sender());
+        if (!s) s = m_sock;
+        while (s->hasPendingDatagrams())
         {
-            QByteArray dg; dg.resize(static_cast<int>(m_sock->pendingDatagramSize()));
+            QByteArray dg; dg.resize(static_cast<int>(s->pendingDatagramSize()));
             QHostAddress from; quint16 fp = 0;
-            m_sock->readDatagram(dg.data(), dg.size(), &from, &fp);
+            s->readDatagram(dg.data(), dg.size(), &from, &fp);
             if (dg.size() < 4) continue;
             std::printf("  [rx %d byte tu %s:%u]\n", dg.size(), from.toString().toUtf8().constData(), fp);
             if (fp == 4500 && !m_natT) // gateway đã chuyển NAT-T -> ta cũng gửi qua 4500
@@ -196,6 +332,10 @@ private:
                 m_natT = true;
                 m_ike->setNatActive(true);
                 std::printf("  [gateway chuyen 4500 -> NAT-T]\n");
+            }
+            {
+                const bool mk = dg.size() > 4 && !dg[0] && !dg[1] && !dg[2] && !dg[3];
+                if (mk || fp == 500) printHdr("RX", mk ? dg.mid(4) : dg);
             }
             const bool marker = static_cast<quint8>(dg[0]) == 0 && static_cast<quint8>(dg[1]) == 0 &&
                                 static_cast<quint8>(dg[2]) == 0 && static_cast<quint8>(dg[3]) == 0;
@@ -212,9 +352,13 @@ private:
                             dg.size(), fp, spi, hit >= 0 ? m_vnames[hit].toUtf8().constData() : "KHONG BIEN THE NAO");
                 if (hit >= 0)
                 {
-                    std::printf("\n== TIM RA KEYMAT DUNG: '%s'. gateway giai ma + tra loi duoc goi cua ta! ==\n",
-                                m_vnames[hit].toUtf8().constData());
-                    QCoreApplication::exit(0);
+                    std::printf("     goi tra ve: %s\n", describeIp(ip).toUtf8().constData());
+                    if (++m_hits == 1)
+                    {
+                        m_firstHitMs = m_start.elapsed();
+                        std::printf("\n== THANH CONG: gateway giai ma + tra loi goi cua ta (bien the KEYMAT '%s'). Thu them vai giay... ==\n",
+                                    m_vnames[hit].toUtf8().constData());
+                    }
                 }
             }
             else if (fp != 4500 && !m_natT)
@@ -240,10 +384,15 @@ private:
             // DPD R-U-THERE mỗi 5s: nếu gateway ACK -> IKE SA còn sống (lỗi ở SA/khóa ESP); nếu im -> gateway bỏ phiên.
             static qint64 lastDpd = -1;
             if (lastDpd < 0 || t - lastDpd >= 5000) { lastDpd = t; m_ike->sendDpd(); }
-            if (t - m_espSentMs >= 2000) { m_espSentMs = t; sendEspPings(); } // gửi lại ping
-            if (t - m_espStartMs >= 75000)
+            if (m_hits > 0 && t - m_firstHitMs >= 6000)
             {
-                std::printf("\n== BAT TAY OK nhung ESP KHONG co goi du lieu ve trong 75s. ==\n");
+                std::printf("\n== KET QUA: %d goi ESP tra ve mo duoc - DU LIEU TRAO DOI 2 CHIEU QUA IPSEC/ESP THANH CONG. ==\n", m_hits);
+                QCoreApplication::exit(0);
+            }
+            if (t - m_espSentMs >= 2000) { m_espSentMs = t; sendEspPings(); } // gửi lại ping
+            if (t - m_espStartMs >= m_espWaitMs)
+            {
+                std::printf("\n== BAT TAY OK nhung ESP KHONG co goi du lieu ve trong %d s. ==\n", m_espWaitMs / 1000);
                 QCoreApplication::exit(0);
             }
             return;
@@ -259,9 +408,15 @@ private:
         const int i = m_round % m_variants.size();
         ++m_round;
         GpEspCrypto* c = m_variants[i];
-        const QByteArray syn = buildTcpSyn(m_res.assignedIp, 0xAC100619u, static_cast<quint16>(50001 + i), 443);
-        const QByteArray e1 = c->seal(syn, 4);
-        if (!e1.isEmpty()) m_sock->writeDatagram(e1, QHostAddress(m_gw), 4500);
+        // SYN tới 172.16.6.25 cổng 443 (HTTPS) và 80 (HTTP): SYN-ACK hoặc RST về đều chứng minh TCP đi qua được.
+        // Thêm DNS qua TCP (96.45.45.45:53): máy DNS chắc chắn trả SYN-ACK -> phân biệt "TCP không qua" với "chính sách riêng".
+        struct Dst { quint32 ip; quint16 port; };
+        for (const Dst& d : {Dst{0xAC100619u, 443}, Dst{0xAC100619u, 80}, Dst{0x602D2D2Du, 53}})
+        {
+            const QByteArray syn = buildTcpSyn(m_res.assignedIp, d.ip, static_cast<quint16>(50001 + i + d.port), d.port);
+            const QByteArray e1 = c->seal(syn, 4);
+            if (!e1.isEmpty()) m_sock->writeDatagram(e1, QHostAddress(m_gw), 4500);
+        }
         const QByteArray icmp = buildIcmpEcho(m_res.assignedIp, 0xAC100619u, 0x4f41, static_cast<quint16>(i + 1));
         const QByteArray e2 = c->seal(icmp, 4);
         if (!e2.isEmpty()) m_sock->writeDatagram(e2, QHostAddress(m_gw), 4500);
@@ -345,6 +500,34 @@ private:
             if (c->init(cfgFor(v.second), &err)) { m_variants << c; m_vnames << v.first; }
             else { std::printf("  bien the %s loi: %s\n", v.first.toUtf8().constData(), err.toUtf8().constData()); delete c; }
         }
+        // Xuất khóa PHIÊN TẠM + một gói ESP mẫu để kiểm độc lập bằng OpenSSL/Python (IKE_ESP_DUMP=<tệp>).
+        // Khóa này chỉ sống trong phiên thử (hết hạn sau vài phút), không chứa PSK/mật khẩu.
+        if (!m_variants.isEmpty() && qEnvironmentVariableIsSet("IKE_ESP_DUMP"))
+        {
+            const auto ec = cfgFor(Opt{g});
+            const QByteArray inner = buildIcmpEcho(m_res.assignedIp, 0xAC100619u, 0x4f41, 1);
+            auto* dumpC = new GpEspCrypto();
+            QString err2;
+            QByteArray sealed;
+            if (dumpC->init(ec, &err2)) sealed = dumpC->seal(inner, 4);
+            QFile f(qEnvironmentVariable("IKE_ESP_DUMP"));
+            if (f.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text))
+            {
+                auto line = [&](const char* k, const QByteArray& v) { f.write(QByteArray(k) + "=" + v.toHex() + "\n"); };
+                f.write(QByteArray("spiOut=") + QByteArray::number(m_res.esp.spiOut, 16) + "\n");
+                f.write(QByteArray("spiIn=") + QByteArray::number(m_res.esp.spiIn, 16) + "\n");
+                f.write(QByteArray("encLen=") + QByteArray::number(m_res.kmEncLen) + "\nhmacLen=" + QByteArray::number(m_res.kmHmacLen) + "\n");
+                f.write(QByteArray("prf=") + (m_res.kmHash == IkeCrypto::Hash::Sha256 ? "sha256" : "sha1") + "\n");
+                line("skeyid_d", m_res.kmSkeyidD); line("gxy", m_res.kmGxy); line("ni", m_res.kmNi); line("nr", m_res.kmNr);
+                line("encKeyOut", ec.encKeyOut); line("hmacKeyOut", ec.hmacKeyOut);
+                line("encKeyIn", ec.encKeyIn); line("hmacKeyIn", ec.hmacKeyIn);
+                line("inner", inner); line("pkt", sealed);
+                line("syn", buildTcpSyn(m_res.assignedIp, 0xAC100619u, 50001, 443));
+                f.close();
+                std::printf("  [IKE_ESP_DUMP: da ghi %s]\n", qUtf8Printable(f.fileName()));
+            }
+            delete dumpC;
+        }
         std::printf("  %s%d bien the KEYMAT. Gui TCP SYN + ICMP toi 172.16.6.25 moi vong...\n",
                     m_clean ? "CLEAN mode (chi bien the chuan, khong SPI gia): " : "Thu ", m_variants.size());
         // Chẩn đoán: gửi ESP với SPI GIẢ -> nếu gateway tra INVALID-SPI (notify) thi SA that DA cai (loi khoa);
@@ -364,7 +547,8 @@ private:
     }
 
     quint32 m_gw;
-    QUdpSocket* m_sock;
+    QUdpSocket* m_sock;      // local 4500 (sau float + ESP)
+    QUdpSocket* m_sock500;   // local 500 (Phase 1 ban đầu)
     IkeSession* m_ike;
     QTimer* m_tick;
     QElapsedTimer m_start;
@@ -379,16 +563,20 @@ private:
     qint64 m_espStartMs = 0;
     qint64 m_espSentMs = 0;
     int m_espReplies = 0;
+    int m_hits = 0;            // số gói ESP trả về mở được
+    qint64 m_firstHitMs = 0;
     bool m_waitEsp = false;
     qint64 m_upAt = 0;
     IkeSession::Result m_pendingRes;
 public:
     bool m_clean = false; ///< chỉ gửi biến thể khóa ĐÚNG + không gửi SPI giả (tránh làm gateway sập SA)
     int m_espDelayMs = 0; ///< trễ trước khi gửi ESP (chỉ DPD) - để phân biệt DELETE tự phát vs do ESP
+    int m_espWaitMs = 75000; ///< thời gian chờ gói ESP về trước khi kết luận im lặng
 };
 
 int main(int argc, char** argv)
 {
+    std::setvbuf(stdout, nullptr, _IONBF, 0); // in ngay (không đệm khối) để đọc được khi chuyển hướng/dừng sớm
     QCoreApplication app(argc, argv);
     if (argc < 5) { std::printf("Dung: ike_real_connect <gatewayIp> <user> <pass> <psk>\n"); return 1; }
     quint32 gw = 0;
@@ -408,6 +596,11 @@ int main(int argc, char** argv)
     c.qmIdAssigned = (argc >= 7) ? (QString::fromLatin1(argv[6]).toInt() != 0) : true; // arg6: 1=IDci IP cap/32 (FortiClient), 0=0.0.0.0/0
     c.qmEncap = (argc >= 8) ? QString::fromLatin1(argv[7]).toInt() : 0; // arg7: 0=Tunnel(1), 1=61443, 2=3, 3=da-transform
 
+    c.forceNatT = qEnvironmentVariableIntValue("IKE_FORCE_NATT") != 0;     // IKE_FORCE_NATT=1: NAT-D lech co y
+    c.encMsg3 = qEnvironmentVariableIntValue("IKE_ENC_MSG3") != 0;       // IKE_ENC_MSG3=1: msg3 ma hoa nhu FortiClient
+    c.initialContact = qEnvironmentVariableIntValue("IKE_INIT_CONTACT") != 0; // IKE_INIT_CONTACT=1: kem Notify INITIAL-CONTACT
+    c.cfgFortiClient = qEnvironmentVariableIntValue("IKE_CFG_FCT") != 0; // IKE_CFG_FCT=1: Mode-config xin bo thuoc tinh kieu FortiClient
+    c.vidMask = (argc >= 11) ? QString::fromLatin1(argv[10]).toUInt(nullptr, 0) : 0; // arg10: bitmask VID kieu FortiClient (vd 0x1ff)
     const bool clean = (argc >= 9) ? (QString::fromLatin1(argv[8]).toInt() != 0) : false; // arg8: 1=clean (chi khoa dung, khong SPI gia)
     std::printf("== Bat tay IKEv1 THAT toi %s (user %s, PFS=%d, IDci=%s, encap=%d, clean=%d) ==\n", argv[1], argv[2],
                 c.pfs ? 1 : 0, c.qmIdAssigned ? "IPcap/32" : "0.0.0.0/0", c.qmEncap, clean ? 1 : 0);
@@ -415,5 +608,6 @@ int main(int argc, char** argv)
     Driver d(gw, c);
     d.m_clean = clean;
     d.m_espDelayMs = espDelay * 1000;
+    if (argc >= 12) d.m_espWaitMs = QString::fromLatin1(argv[11]).toInt() * 1000; // arg11: giay cho ESP ve (mac dinh 75)
     return app.exec();
 }

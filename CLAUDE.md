@@ -94,7 +94,7 @@ bắt tay trọn vẹn offline với responder giả). Hai target
 `vpn_direct_real_probe` (gọi máy chủ VPN thật, không đăng nhập), `ike_real_probe` (gửi IKEv1 msg1 tới gateway
 FortiGate IPsec thật để xem nhóm DH/thuật toán gateway chấp nhận, không đăng nhập) và `ike_real_connect <ip> <user>
 <pass> <psk> [pfs]` (chạy ĐÚNG lớp IkeSession với tài khoản thật để kiểm bắt tay IKEv1 đầu-cuối + thử ESP, không tạo
-adapter nên không cần Admin; bí mật truyền qua tham số, không ghi tệp/log) là công cụ KIỂM TRA TAY - không chạy như test tự động
+adapter nên không cần Admin; bí mật truyền qua tham số, không ghi tệp/log; in nội dung gói ESP trả về - ICMP/DNS/TCP - nên chứng minh được lưu lượng hai chiều; tham số/biến môi trường `IKE_*` xem đầu `tests/ike_real_connect.cpp`) là công cụ KIỂM TRA TAY - không chạy như test tự động
 (quy tắc 5). Rà giao diện: `ui_snapshot <thư mục ảnh> [công cụ,...]` chụp PNG mọi tab; đặt `UI_SNAPSHOT_NATIVE=1` để
 vẽ đúng kiểu gốc Windows (không hiện cửa sổ) - nền offscreen không vẽ được ô tích kiểu gốc.
 
@@ -117,3 +117,4 @@ thoại lỗi lên màn hình người dùng và treo).
 - Chuỗi không tự kiểm soát đưa vào script PowerShell phải qua `PowerShellRunner::quoteLiteral()`. Tiến
   trình hệ thống gọi bằng đường dẫn tuyệt đối (`AppPaths::systemExecutable`).
 - Cờ hủy dùng chung giữa hai luồng là `std::atomic_bool` và phải được đặt lại mỗi lần bắt đầu thao tác mới.
+- IKE/ESP của FortiGate IPsec (`TunnelEngine`): KHÔNG bind cổng UDP cục bộ 4500 - Windows chặn ESP-in-UDP đến cổng đó nên app mất mọi gói trả về (đã gây lỗi "kết nối được nhưng không truy cập được" v1.19.39-42). Dùng một socket cổng tạm cho cả IKE lẫn ESP. Khi một giao thức "im lặng", bắt gói tầng NIC bằng Npcap (`AdminOnly=0`, không cần Admin) để xem gói có VÀO máy không.

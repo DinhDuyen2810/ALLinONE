@@ -138,11 +138,12 @@ void TunnelEngine::beginIke(quint32 gatewayIp)
         fail(QStringLiteral("Hồ sơ IPsec cần khóa chia sẻ trước (PSK) - chưa nhập."));
         return;
     }
-    // FortiClient làm TOÀN BỘ IKE+ESP trên UDP 4500<->4500 (0 gói cổng 500). Bắt chước: ưu tiên bind cổng 4500
-    // (nếu bận thì dùng cổng tạm) + ép NAT-T ngay từ msg1. Giúp NAT/gateway đưa đúng ESP về.
+    // MỘT socket UDP ở CỔNG TẠM cho cả IKE lẫn ESP. KHÔNG bind cổng cục bộ 4500: Windows chặn ESP-in-UDP đến cổng
+    // cục bộ 4500 (tầng IPsec của HĐH nhận trước, không tới socket) nên mọi gói ESP gateway trả về bị mất - đó là
+    // nguyên nhân gốc "kết nối được nhưng không truy cập được" ở v1.19.39-41. Sau NAT, cổng cục bộ không ảnh hưởng gateway
+    // (nó trả về địa chỉ:cổng đã quan sát). Luồng chuẩn như FortiClient: msg1/msg2 tới cổng 500, rồi chuyển sang 4500.
     m_ikeSock = new QUdpSocket(this);
-    bool bound4500 = m_ikeSock->bind(QHostAddress(QHostAddress::AnyIPv4), 4500);
-    if (!bound4500 && !m_ikeSock->bind(QHostAddress(QHostAddress::AnyIPv4), 0))
+    if (!m_ikeSock->bind(QHostAddress(QHostAddress::AnyIPv4), 0))
     {
         fail(QStringLiteral("Không mở được socket UDP cho IKE: %1").arg(m_ikeSock->errorString()));
         return;
@@ -169,13 +170,9 @@ void TunnelEngine::beginIke(quint32 gatewayIp)
     c.encKeyBits = 256;               // chào nhiều transform; transform gateway chọn được đọc lại trong msg2
     c.hash = IkeCrypto::Hash::Sha256;
     c.natT = true;
+    c.forceNatT = true; // luôn khai NAT-D lệch -> gateway luôn dùng ESP bọc UDP-4500 (socket UDP không gửi được ESP thô)
     m_ike->configure(c);
     m_ike->setLocalEndpoint(localIp, m_ikeSock->localPort());
-    if (bound4500) // đã có cổng 4500 -> ép NAT-T ngay từ đầu như FortiClient
-    {
-        m_ikeNatT = true;
-        m_ike->setNatActive(true);
-    }
     connect(m_ike, &IkeSession::sendDatagram, this, &TunnelEngine::sendIkeDatagram);
     connect(m_ike, &IkeSession::switchToNatT, this, [this]() { m_ikeNatT = true; log(QStringLiteral("IKE: chuyển NAT-T (UDP 4500).")); });
     connect(m_ike, &IkeSession::established, this, &TunnelEngine::onIkeEstablished);

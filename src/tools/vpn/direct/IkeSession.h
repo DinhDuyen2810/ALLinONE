@@ -39,6 +39,11 @@ public:
         bool pfs{true};         ///< Perfect Forward Secrecy ở Quick Mode (trao KE riêng, cùng nhóm Phase 1)
         bool qmIdAssigned{true}; ///< Quick Mode IDci = IP được cấp/32 (kiểu FortiClient dialup); false => 0.0.0.0/0
         int qmEncap{0};          ///< encap ESP chào: 0={1 Tunnel}, 1={61443 draft UDP}, 2={3 RFC UDP}, 3={61443,3,1 đa transform}
+        bool forceNatT{false};      ///< luôn khai NAT-D lệch để gateway dùng ESP bọc UDP (cả khi máy có IP công cộng)
+        bool encMsg3{false};        ///< msg3 Aggressive mã hóa (FortiClient làm vậy)
+        bool initialContact{false}; ///< gửi kèm Notify INITIAL-CONTACT ở msg3
+        bool cfgFortiClient{false}; ///< Mode-config xin bộ thuộc tính kiểu FortiClient (APPLICATION_VERSION, IPv6, UNITY_*)
+        quint32 vidMask{0};      ///< Vendor ID kiểu FortiClient gửi kèm msg1 (bit: 1 NAT-T drafts, 2 XAUTH, 4 DPD, 8 Unity, 0x10 Frag, 0x20 FCC, 0x40 FEC, 0x80 "FortiClient v4", 0x100 EAP ext)
     };
 
     struct Result

@@ -773,8 +773,8 @@ SERVICE_NAME: WireGuardTunnel$NL-Proton
             // v1.19.31: đúng loại kết nối trực tiếp theo phần mềm/kiểu tunnel.
             if (p.clientName == "FortiClient")
                 CHECK(p.direct == DirectProtocol::FortinetSsl);
-            else if (p.clientName == "FortiClient (IPsec)")
-                CHECK(p.direct == DirectProtocol::None && !p.canConnectDirectly());
+            else if (p.clientName == "FortiClient (IPsec)") // từ v1.19.36: client IKEv1 tự viết
+                CHECK(p.direct == DirectProtocol::FortinetIpsec && p.canConnectDirectly());
             else if (p.clientName == "GlobalProtect" && !p.server.isEmpty())
                 CHECK(p.direct == DirectProtocol::GlobalProtect && p.canConnectDirectly());
             else if (p.clientName == "OpenVPN" || p.clientName == "Cisco Secure Client")

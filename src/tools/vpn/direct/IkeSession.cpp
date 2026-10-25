@@ -2,6 +2,8 @@
 
 #include "DirectVpnTypes.h"
 
+#include <QCryptographicHash>
+
 namespace
 {
 using namespace Isakmp;
@@ -31,6 +33,28 @@ quint32 msgIdOf(const QByteArray& raw) { return raw.size() >= 24 ? rd32(raw, 20)
 
 // VID NAT-T RFC 3947 = MD5("RFC 3947").
 const QByteArray kNatTVid = QByteArray::fromHex("4a131c81070358455c5728f20e95452f");
+
+// Vendor ID kiểu FortiClient. FortiClient (ipsec.exe) tính VID = MD5(chuỗi) - bảng chuỗi đọc từ chính tệp cài đặt:
+// "draft-ietf-ipsec-nat-t-ike-0x", "RFC 3947", "draft-ietf-ipsra-isakmp-xauth-06.txt" (chỉ 8 byte đầu), "CISCO-UNITY"
+// (14 byte đầu + 0100), "FRAGMENTATION", DPD (hằng số RFC 3706), và VID riêng Fortinet: "forticlient connect license" (FCC),
+// "Fortinet Endpoint Control" (FEC), "FortiClient v4", "Forticlient EAP Extension". FortiGate dùng các VID này để nhận ra
+// FortiClient; gateway trả lời VID "FORTIGATE" (12 byte đầu MD5 + 4 byte).
+QByteArray md5Vid(const char* s) { return QCryptographicHash::hash(QByteArray(s), QCryptographicHash::Md5); }
+
+QList<QByteArray> fortiClientVids(quint32 mask)
+{
+    QList<QByteArray> v;
+    if (mask & 0x001) v << md5Vid("draft-ietf-ipsec-nat-t-ike-03") << md5Vid("draft-ietf-ipsec-nat-t-ike-02\n");
+    if (mask & 0x002) v << md5Vid("draft-ietf-ipsra-isakmp-xauth-06.txt").left(8);
+    if (mask & 0x004) v << QByteArray::fromHex("afcad71368a1f1c96b8696fc77570100"); // DPD (RFC 3706)
+    if (mask & 0x008) v << md5Vid("CISCO-UNITY").left(14) + QByteArray::fromHex("0100");
+    if (mask & 0x010) v << md5Vid("FRAGMENTATION");
+    if (mask & 0x020) v << md5Vid("forticlient connect license"); // FCC
+    if (mask & 0x040) v << md5Vid("Fortinet Endpoint Control");    // FEC
+    if (mask & 0x080) v << md5Vid("FortiClient v4");
+    if (mask & 0x100) v << md5Vid("Forticlient EAP Extension");
+    return v;
+}
 
 int hmacKeyBytes(IkeCrypto::Hash h)
 {
@@ -228,6 +252,8 @@ void IkeSession::sendAggr1()
     m.exchange = Aggressive;
     m.messageId = 0;
     m.payloads = {{SA, m_saiB}, {KE, m_gxi}, {NONCE, m_ni}, {ID, m_idiiB}, {VID, kNatTVid}};
+    for (const QByteArray& vid : fortiClientVids(m_cfg.vidMask))
+        m.payloads.append({VID, vid});
     send(m, false);
     m_state = State::Aggr1Sent;
     emit log(QString("IKE: gửi Aggressive msg1 (DH group %1, %2 payload)").arg(static_cast<int>(m_cfg.dhGroup)).arg(m.payloads.size()));
@@ -297,9 +323,16 @@ void IkeSession::sendAggr3()
             return IkeCrypto::hash(m_cfg.hash, m_ckyI + m_ckyR + be32b(ip) + be16b(port));
         };
         m.payloads.append({NATD, natd(m_cfg.gatewayIp, 500)}); // địa chỉ gateway (remote)
-        m.payloads.append({NATD, natd(m_localIp, m_localPort)}); // địa chỉ ta (local)
+        // forceNatT: cố ý khai địa chỉ ta LỆCH (xor 1) để gateway luôn thấy NAT-D không khớp -> luôn dùng ESP bọc UDP-4500.
+        // Cần khi máy có IP công cộng trực tiếp: socket UDP không gửi/nhận được ESP thô (IP proto 50).
+        m.payloads.append({NATD, natd(m_cfg.forceNatT ? (m_localIp ^ 1u) : m_localIp, m_localPort)}); // địa chỉ ta (local)
     }
-    send(m, false); // msg3 (HASH_I + NAT-D) trong Aggressive KHÔNG mã hóa (đã float -> gửi trên 4500 có dấu)
+    // FortiClient gửi msg3 MÃ HÓA (cờ 0x01) và kèm Notify INITIAL-CONTACT (bắt gói thật: 172 byte = HASH + 2 NAT-D + Notify).
+    if (m_cfg.initialContact)
+        m.payloads.append({NOTIFY, notifyPayload(1 /*ISAKMP*/, m_ckyI + m_ckyR, 24578 /*INITIAL-CONTACT*/, QByteArray())});
+    send(m, m_cfg.encMsg3); // mặc định KHÔNG mã hóa (đã float -> gửi trên 4500 có dấu)
+    if (m_cfg.encMsg3)
+        m_phase1Iv = ivFor(0); // chuỗi IV Phase 2 nối tiếp từ KHỐI MÃ CUỐI của msg3 (cả hai phía làm vậy)
     m_state = State::Phase1Done;
     emit log(QString("IKE: gửi msg3 (HASH_I%1). Chờ XAuth.").arg(m.payloads.size() > 1 ? " + NAT-D" : ""));
 }
@@ -400,6 +433,20 @@ void IkeSession::sendModeCfgRequest()
     attrs += attributeVar(INTERNAL_IP4_NETMASK, QByteArray());
     attrs += attributeVar(INTERNAL_IP4_DNS, QByteArray());
     attrs += attributeVar(INTERNAL_IP4_NBNS, QByteArray());
+    if (m_cfg.cfgFortiClient)
+    {
+        // Bộ thuộc tính FortiClient xin trong Mode-config (đọc từ chuỗi "mode-cfg request ..." của ipsec.exe):
+        // APPLICATION_VERSION, IP4 subnet, IPv6 address/DNS/NBNS/subnet, UNITY_DEF_DOMAIN, UNITY_SPLIT_INCLUDE, UNITY_PFS.
+        attrs += attributeVar(7, QByteArray("FortiClient 7.4.3"));  // APPLICATION_VERSION
+        attrs += attributeVar(8, QByteArray());                    // INTERNAL_IP6_ADDRESS
+        attrs += attributeVar(10, QByteArray());                   // INTERNAL_IP6_DNS
+        attrs += attributeVar(11, QByteArray());                   // INTERNAL_IP6_NBNS
+        attrs += attributeVar(INTERNAL_IP4_SUBNET, QByteArray());  // 13
+        attrs += attributeVar(15, QByteArray());                   // INTERNAL_IP6_SUBNET
+        attrs += attributeVar(28674, QByteArray());                // UNITY_DEF_DOMAIN
+        attrs += attributeVar(28676, QByteArray());                // UNITY_SPLIT_INCLUDE
+        attrs += attributeVar(28679, QByteArray());                // UNITY_PFS
+    }
     const QByteArray cfg = configPayload(CFG_REQUEST, 1, attrs);
     const quint32 mid = newMsgId();
     const QByteArray after = chain({{CP, cfg}});
@@ -726,7 +773,10 @@ void IkeSession::onDatagram(const QByteArray& raw)
     if (m_state == State::Failed || raw.size() < 28)
         return;
     const quint8 ex = exchangeOf(raw);
-    const bool enc = (flagsOf(raw) & 0x01) != 0;
+    const quint8 rawFlags = flagsOf(raw);
+    const bool enc = (rawFlags & 0x01) != 0;
+    if (ex == QuickMode)
+        emit log(QString("IKE: QM2 flags=0x%1 (bit1 COMMIT=%2)").arg(rawFlags, 2, 16, QChar('0')).arg((rawFlags & 0x02) ? "CÓ" : "không"));
 
     if (ex == Aggressive)
     {
