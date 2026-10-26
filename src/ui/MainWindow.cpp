@@ -133,7 +133,10 @@ void MainWindow::setupUi()
     // Left Sidebar
     auto* sidebarFrame = new QFrame(this);
     sidebarFrame->setFixedWidth(270);
-    sidebarFrame->setStyleSheet("QFrame { background-color: #f0f2f5; border-right: 1px solid #d0d7de; }");
+    // Bộ chọn THEO TÊN: luật "QFrame {...}" khớp cả QLabel con (QLabel là QFrame) nên từng nhãn thương hiệu/phụ đề/phiên bản
+    // bị kẻ thêm một vạch đứng bên phải.
+    sidebarFrame->setObjectName("sidebarFrame");
+    sidebarFrame->setStyleSheet("#sidebarFrame { background-color: #f0f2f5; border-right: 1px solid #d0d7de; }");
 
     auto* sidebarLayout = new QVBoxLayout(sidebarFrame);
     sidebarLayout->setContentsMargins(14, 18, 14, 18);
@@ -196,8 +199,9 @@ void MainWindow::setupUi()
 
     // Modern Rounded Floating Card
     auto* cardFrame = new QFrame(this);
+    cardFrame->setObjectName("cardFrame");
     cardFrame->setStyleSheet(
-        "QFrame { background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 18px; }"
+        "#cardFrame { background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 18px; }"
     );
     auto* cardLayout = new QVBoxLayout(cardFrame);
     cardLayout->setContentsMargins(36, 36, 36, 36);

@@ -21,7 +21,7 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Multimedia Svg Network)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Multimedia Svg Network Test)
 
 # ---- Quét/dừng cây tiến trình Windows (dùng chung cho ScrcpyLauncher + YtDlpDownloadWorker - cả hai
 # đều khởi chạy một tiến trình ngoài tự sinh thêm tiến trình con riêng, xem WinProcessTree.h) - lib RIÊNG
@@ -72,6 +72,8 @@ target_link_libraries(input_core PUBLIC Qt6::Core user32)
 # ModernMenu (style + icon dùng chung cho context menu chuột phải), DurationInput (ô nhập thời gian:
 # số + đơn vị ms/giây/phút/giờ, thay cho QSpinBox-ms thô kèm nút mũi tên - xem PROJECT_OVERVIEW.md v1.19.7).
 add_library(ui_widgets STATIC
+    src/ui/AppTheme.h
+    src/ui/AppTheme.cpp
     src/ui/widgets/FlowLayout.h
     src/ui/widgets/FlowLayout.cpp
     src/ui/widgets/ModernMenu.h
@@ -451,7 +453,7 @@ target_link_libraries(vpn_direct_real_probe PRIVATE vpn_core)
 
 # ---- KIỂM TRA TAY giao diện: chụp ảnh PNG mọi tab của các cửa sổ công cụ trên nền offscreen (không hiện lên
 # màn hình), dữ liệu ở thư mục tạm: cmake --build build --target ui_snapshot ----
-add_executable(ui_snapshot EXCLUDE_FROM_ALL tests/ui_snapshot.cpp src/core/ToolManager.cpp)
+add_executable(ui_snapshot EXCLUDE_FROM_ALL tests/ui_snapshot.cpp src/core/ToolManager.cpp assets/ui_theme.qrc)
 target_include_directories(ui_snapshot PRIVATE src tests ${CMAKE_BINARY_DIR}/generated)
 target_link_libraries(ui_snapshot PRIVATE qr_ui wifi_ui connect_ui diskcleanup_ui android_ui security_ui downloader_ui vpn_ui
                       update_core input_core core_shared ui_widgets Qt6::Widgets)
@@ -482,6 +484,11 @@ add_library(vpn_ui STATIC
 )
 target_include_directories(vpn_ui PUBLIC src)
 target_link_libraries(vpn_ui PUBLIC vpn_core Qt6::Widgets)
+
+# ---- Kiểm thử giao diện chung AppTheme (Fusion, con trỏ tay, hover/pressed, ô tích SVG; nền offscreen): cmake --build build --target ui_theme_tests ----
+add_executable(ui_theme_tests EXCLUDE_FROM_ALL tests/ui_theme_tests.cpp assets/ui_theme.qrc)
+target_include_directories(ui_theme_tests PRIVATE src tests)
+target_link_libraries(ui_theme_tests PRIVATE ui_widgets Qt6::Widgets Qt6::Test)
 
 # ---- Kiểm thử "khói" UI VPN: cmake --build build --target vpn_ui_tests ----
 # WireGuardTab.cpp gọi ToolManager::instance() (chặn "chạy lại với quyền Admin" nếu tool khác đang bận
@@ -682,6 +689,7 @@ set(SOURCES
     src/tools/autoclick/widgets/ActionEditorWidget.h
     src/tools/autoclick/widgets/ActionEditorWidget.cpp
     assets/resources.qrc
+    assets/ui_theme.qrc
     assets/app_icon.rc
 )
 

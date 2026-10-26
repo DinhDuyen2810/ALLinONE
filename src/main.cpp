@@ -1,5 +1,6 @@
 #include <QApplication>
 #include <cstring>
+#include "ui/AppTheme.h"
 #include "ui/MainWindow.h"
 #include "core/Logger.h"
 #include "core/Version.h"
@@ -33,6 +34,7 @@ int main(int argc, char* argv[])
     app.setApplicationName("OneForAll");
     app.setApplicationVersion(APP_VERSION);
     app.setOrganizationName("OneForAll");
+    AppTheme::apply(app); // kiểu Fusion + bảng màu sáng + stylesheet toàn ứng dụng (hover/nhấn/focus, bo góc, con trỏ tay)
 
     Logger::instance().info("Application", QString("Khởi động One for ALL v%1 (C++20, Qt6)").arg(APP_VERSION));
 

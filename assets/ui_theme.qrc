@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/ui">
+        <file alias="check.svg">ui/check.svg</file>
+        <file alias="dash.svg">ui/dash.svg</file>
+        <file alias="radio-dot.svg">ui/radio-dot.svg</file>
+    </qresource>
+</RCC>

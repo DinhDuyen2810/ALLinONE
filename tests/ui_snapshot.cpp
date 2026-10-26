@@ -7,6 +7,7 @@
 #include "TestDataDir.h"
 
 #include "core/AppPaths.h"
+#include "ui/AppTheme.h"
 #include "tools/android/AndroidControlWindow.h"
 #include "tools/connect/ConnectWindow.h"
 #include "tools/diskcleanup/DiskCleanupWindow.h"
@@ -88,9 +89,11 @@ int main(int argc, char** argv)
         qputenv("QT_QPA_FONTDIR", (qEnvironmentVariable("WINDIR", "C:/Windows") + "/Fonts").toLocal8Bit());
     QApplication app(argc, argv);
     QApplication::setFont(QFont(QStringLiteral("Segoe UI"), 9));
-    // Dùng ĐÚNG kiểu giao diện của ứng dụng thật trên Windows 10 (offscreen mặc định Fusion - vẽ ô tích/mũi tên
-    // khác, dễ nhầm lỗi bố cục với khác biệt kiểu vẽ).
-    if (argc > 3)
+    // Dùng ĐÚNG giao diện của ứng dụng thật: theme chung (Fusion + bảng màu sáng + stylesheet toàn ứng dụng).
+    // UI_SNAPSHOT_OLD=1: chụp kiểu CŨ (kiểu gốc Windows, không theme) để so sánh trước/sau.
+    if (qEnvironmentVariableIsEmpty("UI_SNAPSHOT_OLD"))
+        AppTheme::apply(app);
+    else if (argc > 3)
         QApplication::setStyle(QString::fromLocal8Bit(argv[3]));
     else if (!native)
         QApplication::setStyle(QStringLiteral("fusion")); // offscreen không vẽ được kiểu gốc Windows

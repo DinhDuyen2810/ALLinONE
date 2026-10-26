@@ -150,7 +150,7 @@ int main(int argc, char** argv)
         CHECK(true);
 
         auto* tabs = win.findChild<QTabWidget*>();
-        CHECK(tabs != nullptr && tabs->count() == 3);
+        CHECK(tabs != nullptr && tabs->count() == 4); // Mạng xung quanh, Hồ sơ đã lưu, Đo tốc độ mạng, Cài đặt (từ v1.19.24)
         if (tabs)
         {
             tabs->setCurrentIndex(1);
