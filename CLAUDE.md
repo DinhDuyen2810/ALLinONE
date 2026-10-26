@@ -81,6 +81,10 @@ set "PATH=D:\Qt\Tools\mingw1310_64\bin;D:\Qt\Tools\CMake_64\bin;D:\Qt\Tools\Ninj
 cmake --build build --target connect_tests connect_ui_tests
 build\connect_tests.exe
 
+:: Dọn .exe thừa - CHỈ GIỮ MỘT bản chạy thật OneForAll_Release\OneForAll.exe (yêu cầu người dùng): xóa exe test/công cụ trong build\,
+:: bản sao công cụ bên thứ ba trong build\, thư mục tạm MSI; thêm /dist để xóa cả bộ cài trong dist\ (đã có trên GitHub Release)
+clean_exes.bat
+
 :: Đủ 4 file phát hành
 build_installer.bat /nopause
 ```
