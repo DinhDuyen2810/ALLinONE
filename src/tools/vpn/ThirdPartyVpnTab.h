@@ -14,6 +14,8 @@ class DirectVpnSession;
 /// GlobalProtect, OpenVPN, Cisco Secure Client). Hồ sơ FortiClient SSL-VPN và GlobalProtect KẾT NỐI TRỰC TIẾP
 /// được ngay trong ứng dụng (nhập tài khoản ở đây, không cần mở phần mềm của họ - xem direct/); mọi hồ sơ
 /// vẫn "Mở phần mềm" được. Chỉ đọc tên + địa chỉ máy chủ, KHÔNG đọc/giải mã mật khẩu đã lưu của phần mềm đó.
+/// Ngoài ra liệt kê cả hồ sơ NGƯỜI DÙNG TỰ THÊM ở chế độ GlobalProtect/FortiClient của hộp thoại "Thêm hồ sơ VPN"
+/// (kho engine/DirectProfileStore.h) - đánh dấu "tự thêm", xóa được tại đây.
 class ThirdPartyVpnTab : public QWidget
 {
     Q_OBJECT
@@ -24,6 +26,8 @@ public:
 
     /// Đang có phiên kết nối trực tiếp (đang nối hoặc đã nối).
     bool isDirectActive() const;
+    /// Quét lại rồi chọn hồ sơ TỰ THÊM (chế độ GlobalProtect/FortiClient của hộp thoại "Thêm hồ sơ VPN") có tên + giao thức này.
+    void reloadAndSelect(const QString& name, int protocol);
     /// Ngắt phiên trực tiếp và chờ tiến trình phụ gỡ tuyến/adapter (đóng cửa sổ/thoát ứng dụng).
     void shutdownDirect(int waitMs);
 
@@ -33,6 +37,7 @@ private slots:
     void onDirectConnectClicked();
     void onDirectDisconnectClicked();
     void onForgetCredentialsClicked();
+    void onRemoveCustomClicked();
     void onRowSelectionChanged();
 
 private:
@@ -49,6 +54,7 @@ private:
     QPushButton* m_directBtn{nullptr};
     QPushButton* m_directStopBtn{nullptr};
     QPushButton* m_forgetBtn{nullptr};
+    QPushButton* m_removeCustomBtn{nullptr}; ///< xóa hồ sơ tự thêm (chỉ hiện khi dòng chọn là hồ sơ tự thêm)
     QLabel* m_statusLabel{nullptr};
     QLabel* m_directLabel{nullptr};
 

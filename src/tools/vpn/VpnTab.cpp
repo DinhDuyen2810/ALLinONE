@@ -2,6 +2,7 @@
 
 #include "AddVpnProfileDialog.h"
 #include "VpnUiStyle.h"
+#include "engine/DirectProfileStore.h"
 #include "engine/VpnConnector.h"
 
 #include <QColor>
@@ -285,6 +286,23 @@ void VpnTab::onAddClicked()
     AddVpnProfileDialog dlg(this);
     if (dlg.exec() != QDialog::Accepted)
         return;
+
+    // Chế độ GlobalProtect/FortiClient: không phải kết nối VPN của Windows - lưu vào kho hồ sơ riêng của ứng dụng, hiện ở
+    // tab "VPN đã cài sẵn" (kết nối trực tiếp, tài khoản hỏi lúc kết nối).
+    if (dlg.mode() != AddVpnProfileDialog::Mode::Normal)
+    {
+        const DirectVpnProfile direct = dlg.directProfile();
+        QString error;
+        if (!DirectProfileStore::add(direct, &error))
+        {
+            QMessageBox::warning(this, "Không thêm được", error);
+            return;
+        }
+        m_statusLabel->setText(QString("✓ Đã thêm hồ sơ \"%1\" (%2). Xem và kết nối ở tab \"VPN đã cài sẵn\".")
+                                   .arg(direct.name, DirectProfileStore::clientName(direct.protocol)));
+        emit directProfileAdded(direct.name, static_cast<int>(direct.protocol));
+        return;
+    }
 
     const VpnProfile profile = dlg.profile();
     if (profile.name.isEmpty() || profile.serverAddress.isEmpty())

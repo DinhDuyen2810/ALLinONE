@@ -362,6 +362,9 @@ add_library(vpn_core STATIC
     src/tools/vpn/engine/ConnectivityTester.h
     src/tools/vpn/engine/ConnectivityTester.cpp
     src/tools/vpn/model/ThirdPartyVpnProfile.h
+    src/tools/vpn/model/DirectVpnProfile.h
+    src/tools/vpn/engine/DirectProfileStore.h
+    src/tools/vpn/engine/DirectProfileStore.cpp
     src/tools/vpn/engine/ThirdPartyVpnScanner.h
     src/tools/vpn/engine/ThirdPartyVpnScanner.cpp
     # Kết nối TRỰC TIẾP tới FortiGate SSL-VPN / GlobalProtect (client giao thức tự viết + adapter wintun.dll,

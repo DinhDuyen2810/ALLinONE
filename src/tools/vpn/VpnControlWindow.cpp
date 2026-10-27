@@ -113,6 +113,12 @@ void VpnControlWindow::buildUi()
     m_tabs->addTab(m_thirdPartyTab, "🏢  VPN đã cài sẵn");
     root->addWidget(m_tabs, 1);
 
+    // Thêm hồ sơ chế độ GlobalProtect/FortiClient ở tab "VPN hệ thống" -> chuyển sang tab "VPN đã cài sẵn" và chọn hồ sơ đó.
+    connect(m_vpnTab, &VpnTab::directProfileAdded, this, [this](QString name, int protocol) {
+        m_thirdPartyTab->reloadAndSelect(name, protocol);
+        m_tabs->setCurrentWidget(m_thirdPartyTab);
+    });
+
     // Bấm "Kiểm tra kết nối" ở tab VPN Gate -> chuyển sang tab Kiểm tra kết nối với địa chỉ điền sẵn.
     connect(m_vpnGateTab, &VpnGateTab::checkConnectivityRequested, this, [this](QString host, quint16 port) {
         m_connectivityTab->setTarget(host, port);

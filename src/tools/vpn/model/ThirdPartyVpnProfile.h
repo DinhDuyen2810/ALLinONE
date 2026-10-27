@@ -20,6 +20,9 @@ struct ThirdPartyVpnProfile
     QString launchArg;   // tham số khi mở (vd OpenVPN: "--connect <tên>.ovpn"); rỗng = chỉ mở client
     /// Giao thức ứng dụng tự kết nối được (None = chỉ "Mở phần mềm": FortiClient IPsec, OpenVPN, Cisco).
     DirectProtocol direct{DirectProtocol::None};
+    /// true = hồ sơ do NGƯỜI DÙNG tự thêm trong ứng dụng (chế độ GlobalProtect/FortiClient của hộp thoại "Thêm hồ sơ VPN"),
+    /// không phải do phần mềm bên thứ ba cấu hình - xóa được ngay trong ứng dụng, không có chương trình client để "Mở".
+    bool custom{false};
 
     bool canLaunch() const { return !exePath.isEmpty(); }
     bool canConnectDirectly() const { return direct != DirectProtocol::None && !server.trimmed().isEmpty(); }

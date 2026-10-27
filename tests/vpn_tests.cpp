@@ -9,6 +9,7 @@
 
 #include "core/AppPaths.h"
 #include "core/PowerShellRunner.h"
+#include "tools/vpn/engine/DirectProfileStore.h"
 #include "tools/vpn/engine/PublicIpChecker.h"
 #include "tools/vpn/engine/VpnConnector.h"
 #include "tools/vpn/engine/VpnController.h"
@@ -798,6 +799,74 @@ SERVICE_NAME: WireGuardTunnel$NL-Proton
         CHECK(host(QString(64, 'a')).isEmpty());                      // > 63 ký tự
         CHECK(host(QString(63, 'a')) == QString(63, 'a') + ".opengw.net");
         CHECK(host(QString::fromUtf8("vpn\xc3\xa9")).isEmpty());       // ký tự ngoài ASCII
+    }
+
+    // ---- DirectProfileStore: hồ sơ GlobalProtect/FortiClient người dùng tự thêm (chế độ của hộp thoại "Thêm hồ sơ VPN") ----
+    {
+        using namespace DirectProfileStore;
+        CHECK(clientName(DirectProtocol::GlobalProtect) == "GlobalProtect");
+        CHECK(clientName(DirectProtocol::FortinetSsl) == "FortiClient");
+        CHECK(clientName(DirectProtocol::FortinetIpsec) == "FortiClient (IPsec)");
+        CHECK(clientName(DirectProtocol::None).isEmpty());
+
+        // Chuẩn hóa địa chỉ nhập tay.
+        CHECK(normalizeServer("  https://VPN.Congty.vn/global-protect/portal ") == "vpn.congty.vn");
+        CHECK(normalizeServer("vpn.cty.vn:10443/remote/login") == "vpn.cty.vn:10443");
+        CHECK(normalizeServer("119.17.206.59") == "119.17.206.59");
+        CHECK(normalizeServer("  vpn cong ty ") == "vpn cong ty"); // sai định dạng: giữ nguyên (đã cắt) để validate báo lỗi
+
+        // Kiểm định.
+        QString err;
+        CHECK(validate({"VPN cty", "vpn.cty.vn", DirectProtocol::GlobalProtect}, &err));
+        CHECK(validate({"VPN cty", "vpn.cty.vn:10443", DirectProtocol::FortinetSsl}, &err));
+        CHECK(validate({"VPN_CVTLT", "119.17.206.59", DirectProtocol::FortinetIpsec}, &err));
+        CHECK(!validate({"", "vpn.cty.vn", DirectProtocol::GlobalProtect}, &err) && !err.isEmpty());           // thiếu tên
+        CHECK(!validate({QString(81, 'a'), "vpn.cty.vn", DirectProtocol::GlobalProtect}, &err));                // tên quá dài
+        CHECK(!validate({"x", "vpn.cty.vn", DirectProtocol::None}, &err));                                      // không phải loại trực tiếp
+        CHECK(!validate({"x", "", DirectProtocol::FortinetSsl}, &err));                                         // thiếu máy chủ
+        CHECK(!validate({"x", "vpn cty", DirectProtocol::FortinetSsl}, &err));                                  // có khoảng trắng
+        CHECK(!validate({"x", "vpn.cty.vn:99999", DirectProtocol::FortinetSsl}, &err));                         // cổng sai
+        CHECK(!validate({"x", "vpn;calc.exe", DirectProtocol::GlobalProtect}, &err));                           // ký tự lạ
+        CHECK(!validate({"x", "119.17.206.59:500", DirectProtocol::FortinetIpsec}, &err));                      // IPsec không nhận cổng
+
+        // JSON: khứ hồi + bỏ mục sai/hỏng.
+        const QList<DirectVpnProfile> sample{{"A", "gp.a.vn", DirectProtocol::GlobalProtect},
+                                             {"B", "ft.b.vn:8443", DirectProtocol::FortinetSsl},
+                                             {"C", "1.2.3.4", DirectProtocol::FortinetIpsec}};
+        CHECK(internal::parse(internal::serialize(sample)) == sample);
+        CHECK(internal::parse("rác không phải JSON").isEmpty());
+        CHECK(internal::parse("{\"a\":1}").isEmpty()); // không phải mảng
+        const QByteArray mixed =
+            R"([{"name":"Tot","server":"ok.vn","protocol":"globalprotect"},
+                {"name":"Sai giao thuc","server":"ok.vn","protocol":"cisco"},
+                {"name":"","server":"ok.vn","protocol":"fortigate-ssl"},
+                {"name":"Sai may chu","server":"vpn cty","protocol":"fortigate-ssl"},
+                42, "chuoi"])";
+        const auto parsed = internal::parse(mixed);
+        CHECK(parsed.size() == 1 && parsed[0].name == "Tot");
+
+        // Lưu/đọc/trùng/xóa thật (vào thư mục dữ liệu TẠM của test).
+        CHECK(load().isEmpty());
+        QString addErr;
+        CHECK(add({" VPN GP ", "https://GP.Congty.vn/portal", DirectProtocol::GlobalProtect}, &addErr));
+        auto loaded = load();
+        CHECK(loaded.size() == 1 && loaded[0].name == "VPN GP" && loaded[0].server == "gp.congty.vn");   // đã cắt + chuẩn hóa
+        CHECK(!add({"vpn gp", "khac.vn", DirectProtocol::GlobalProtect}, &addErr) && addErr.contains("Đã có")); // trùng tên (không phân biệt hoa/thường)
+        CHECK(add({"VPN GP", "ft.congty.vn", DirectProtocol::FortinetSsl}, &addErr));                    // cùng tên, khác giao thức: được
+        CHECK(add({"VPN_CVTLT", "119.17.206.59", DirectProtocol::FortinetIpsec}, &addErr));
+        CHECK(!add({"", "x.vn", DirectProtocol::GlobalProtect}, &addErr));                               // không hợp lệ: không lưu
+        CHECK(load().size() == 3);
+
+        // Chuyển sang dạng danh sách chung.
+        const ThirdPartyVpnProfile tp = toThirdParty(load().last());
+        CHECK(tp.custom && tp.clientName == "FortiClient (IPsec)" && tp.name == "VPN_CVTLT" && tp.server == "119.17.206.59");
+        CHECK(tp.canConnectDirectly() && !tp.canLaunch() && tp.direct == DirectProtocol::FortinetIpsec);
+
+        CHECK(remove(DirectProtocol::GlobalProtect, "VPN GP"));
+        CHECK(!remove(DirectProtocol::GlobalProtect, "VPN GP")); // đã xóa
+        CHECK(load().size() == 2);
+        CHECK(remove(DirectProtocol::FortinetSsl, "VPN GP") && remove(DirectProtocol::FortinetIpsec, "VPN_CVTLT"));
+        CHECK(load().isEmpty());
     }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);

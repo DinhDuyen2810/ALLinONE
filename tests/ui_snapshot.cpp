@@ -14,10 +14,12 @@
 #include "tools/downloader/DownloaderWindow.h"
 #include "tools/qr/QRWindow.h"
 #include "tools/security/SecurityGatewayWindow.h"
+#include "tools/vpn/AddVpnProfileDialog.h"
 #include "tools/vpn/VpnControlWindow.h"
 #include "tools/wifi/WifiWindow.h"
 
 #include <QApplication>
+#include <QComboBox>
 #include <QDir>
 #include <QEventLoop>
 #include <QFile>
@@ -121,6 +123,34 @@ int main(int argc, char** argv)
         {"qr", [] { return new QRWindow(); }},
         {"connect", [] { return new ConnectWindow(); }},
     };
+    // Hộp thoại "Thêm hồ sơ VPN" ở cả 3 chế độ (Thường / GlobalProtect / FortiClient; FortiClient cả SSL-VPN lẫn IPsec).
+    if (want("vpn_dialog"))
+    {
+        AddVpnProfileDialog dlg;
+        dlg.setAttribute(Qt::WA_DontShowOnScreen, true);
+        dlg.show();
+        settle(300);
+        auto* mode = dlg.findChild<QComboBox*>("modeCombo");
+        auto* forti = dlg.findChild<QComboBox*>("fortiTypeCombo");
+        for (int m = 0; mode && m < mode->count(); ++m)
+        {
+            mode->setCurrentIndex(m);
+            settle(300);
+            const QString file = QString("%1/vpn_dialog_mode%2.png").arg(outDir).arg(m);
+            dlg.grab().save(file);
+            std::printf("%s  (hop thoai che do %d)\n", qPrintable(file), m);
+        }
+        if (mode && forti)
+        {
+            mode->setCurrentIndex(2);
+            forti->setCurrentIndex(1);
+            settle(300);
+            const QString file = QString("%1/vpn_dialog_mode2_ipsec.png").arg(outDir);
+            dlg.grab().save(file);
+            std::printf("%s  (hop thoai FortiClient IPsec)\n", qPrintable(file));
+        }
+        dlg.close();
+    }
     for (const Item& it : items)
     {
         if (!want(it.name))

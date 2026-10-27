@@ -5,6 +5,7 @@
 #include "direct/CredentialStore.h"
 #include "direct/DirectVpnSession.h"
 #include "direct/WintunAdapter.h"
+#include "engine/DirectProfileStore.h"
 #include "engine/ThirdPartyVpnScanner.h"
 
 #include <QCheckBox>
@@ -168,7 +169,8 @@ void ThirdPartyVpnTab::buildUi()
     root->setSpacing(10);
 
     auto* hint = new QLabel(
-        "Các kết nối VPN đã cấu hình sẵn trên máy (FortiClient, GlobalProtect, OpenVPN, Cisco). Hồ sơ FortiClient "
+        "Các kết nối VPN đã cấu hình sẵn trên máy (FortiClient, GlobalProtect, OpenVPN, Cisco) và các hồ sơ bạn TỰ THÊM ở tab "
+        "\"VPN hệ thống\" (nút \"Thêm hồ sơ\" → chế độ GlobalProtect/FortiClient). Hồ sơ FortiClient "
         "SSL-VPN, FortiClient IPsec và GlobalProtect KẾT NỐI TRỰC TIẾP được ngay tại đây bằng tài khoản cơ quan (có thể lưu tài khoản - mã "
         "hóa bởi Windows - để lần sau chỉ bấm Kết nối; cần bấm Yes ở hộp thoại Administrator). Hồ sơ khác: bấm \"Mở "
         "phần mềm\". Ứng dụng không đọc mật khẩu đã lưu của các phần mềm đó.",
@@ -204,6 +206,14 @@ void ThirdPartyVpnTab::buildUi()
     m_forgetBtn->setToolTip("Xóa tên đăng nhập + mật khẩu đã lưu (Windows Credential Manager) của hồ sơ đang chọn.");
     connect(m_forgetBtn, &QPushButton::clicked, this, &ThirdPartyVpnTab::onForgetCredentialsClicked);
     topRow->addWidget(m_forgetBtn);
+
+    m_removeCustomBtn = new QPushButton("🗑 Xóa hồ sơ tự thêm", this);
+    m_removeCustomBtn->setStyleSheet(VpnUi::dangerButtonStyle());
+    m_removeCustomBtn->setCursor(Qt::PointingHandCursor);
+    m_removeCustomBtn->setToolTip("Xóa hồ sơ do bạn tự thêm trong ứng dụng (không ảnh hưởng FortiClient/GlobalProtect trên máy).");
+    m_removeCustomBtn->setVisible(false);
+    connect(m_removeCustomBtn, &QPushButton::clicked, this, &ThirdPartyVpnTab::onRemoveCustomClicked);
+    topRow->addWidget(m_removeCustomBtn);
 
     m_openBtn = new QPushButton("▶ Mở phần mềm", this);
     m_openBtn->setStyleSheet(VpnUi::buttonStyle());
@@ -244,6 +254,9 @@ void ThirdPartyVpnTab::reload()
     const ThirdPartyVpnProfile* before = selected();
     const QString keepKey = before ? before->clientName + '|' + before->name : QString();
     m_profiles = ThirdPartyVpnScanner::scan();
+    // Hồ sơ người dùng tự thêm (chế độ GlobalProtect/FortiClient của hộp thoại "Thêm hồ sơ VPN") nằm cuối danh sách.
+    for (const DirectVpnProfile& custom : DirectProfileStore::load())
+        m_profiles.append(DirectProfileStore::toThirdParty(custom));
     m_table->setRowCount(m_profiles.size());
     for (int i = 0; i < m_profiles.size(); ++i)
     {
@@ -254,7 +267,9 @@ void ThirdPartyVpnTab::reload()
                 item->setToolTip(tip);
             m_table->setItem(i, col, item);
         };
-        set(0, p.clientName, p.canLaunch() ? p.exePath : "Không tìm thấy chương trình để mở");
+        set(0, p.custom ? p.clientName + QStringLiteral(" · tự thêm") : p.clientName,
+            p.custom ? QStringLiteral("Hồ sơ do bạn tự thêm trong ứng dụng (xóa được bằng nút \"Xóa hồ sơ tự thêm\").")
+                     : (p.canLaunch() ? p.exePath : QStringLiteral("Không tìm thấy chương trình để mở")));
         set(1, p.name);
         set(2, p.server.isEmpty() ? "(không rõ)" : p.server, p.source);
         set(3, p.canConnectDirectly() ? "✓ " + DirectVpn::protocolName(p.direct) +
@@ -266,7 +281,8 @@ void ThirdPartyVpnTab::reload()
     }
     if (m_profiles.isEmpty())
         m_statusLabel->setText("Không tìm thấy hồ sơ VPN nào từ FortiClient/GlobalProtect/OpenVPN/Cisco trên máy này. "
-                               "Nếu bạn đã cài một trong số đó và đã cấu hình kết nối, hãy bấm \"Quét lại\".");
+                               "Nếu bạn đã cài một trong số đó và đã cấu hình kết nối, hãy bấm \"Quét lại\". Hoặc tự thêm hồ sơ "
+                               "GlobalProtect/FortiClient ở tab \"VPN hệ thống\" (nút \"Thêm hồ sơ\").");
     else
         m_statusLabel->setText(QString("Tìm thấy %1 hồ sơ. Chọn một dòng rồi bấm \"Kết nối trực tiếp\" (nếu hỗ trợ) hoặc "
                                        "\"Mở phần mềm\".")
@@ -305,6 +321,52 @@ void ThirdPartyVpnTab::updateButtons()
     m_refreshBtn->setEnabled(!active);
     m_forgetBtn->setVisible(p != nullptr && p->canConnectDirectly() && CredentialStore::has(p->server));
     m_forgetBtn->setEnabled(!active);
+    m_removeCustomBtn->setVisible(p != nullptr && p->custom);
+    m_removeCustomBtn->setEnabled(!active);
+}
+
+void ThirdPartyVpnTab::reloadAndSelect(const QString& name, int protocol)
+{
+    reload();
+    for (int i = 0; i < m_profiles.size(); ++i)
+        if (m_profiles[i].custom && m_profiles[i].name == name && static_cast<int>(m_profiles[i].direct) == protocol)
+        {
+            m_table->selectRow(i);
+            m_directLabel->setText(QStringLiteral("Đã thêm hồ sơ \"%1\". Chọn dòng này rồi bấm \"Kết nối trực tiếp\".").arg(name));
+            break;
+        }
+}
+
+void ThirdPartyVpnTab::onRemoveCustomClicked()
+{
+    const ThirdPartyVpnProfile* p = selected();
+    if (!p || !p->custom || isDirectActive())
+        return;
+    const ThirdPartyVpnProfile profile = *p; // bản sao: danh sách sẽ được nạp lại
+    if (QMessageBox::question(this, QStringLiteral("Xóa hồ sơ"),
+                              QStringLiteral("Xóa hồ sơ \"%1\" (%2)?\n\nChỉ xóa hồ sơ bạn tự thêm trong ứng dụng; FortiClient/"
+                                             "GlobalProtect cài trên máy không bị ảnh hưởng.")
+                                  .arg(profile.name, profile.clientName),
+                              QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+        return;
+    if (!DirectProfileStore::remove(profile.direct, profile.name))
+    {
+        QMessageBox::warning(this, QStringLiteral("Không xóa được"), QStringLiteral("Không tìm thấy hồ sơ để xóa (có thể đã bị xóa)."));
+        reload();
+        return;
+    }
+    // Tài khoản đã lưu theo máy chủ chỉ xóa khi KHÔNG còn hồ sơ nào khác (quét được hay tự thêm) dùng cùng máy chủ.
+    bool shared = false;
+    for (const ThirdPartyVpnProfile& other : m_profiles)
+        if (!(other.custom && other.direct == profile.direct && other.name == profile.name) && other.server == profile.server)
+            shared = true;
+    if (!shared)
+    {
+        CredentialStore::remove(profile.server);
+        CredentialStore::remove(profile.server + QStringLiteral("|psk"));
+    }
+    m_directLabel->setText(QStringLiteral("Đã xóa hồ sơ \"%1\".").arg(profile.name));
+    reload();
 }
 
 void ThirdPartyVpnTab::onRowSelectionChanged()

@@ -49,6 +49,11 @@ public:
     /// thoát NGAY cho một hành động khác, vd chạy lại với quyền Admin) tới 45 giây chờ phiên RAS vô ích.
     void requestCancelNoWait();
 
+signals:
+    /// Người dùng vừa thêm một hồ sơ chế độ GlobalProtect/FortiClient (kết nối trực tiếp, lưu trong ứng dụng) - cửa sổ chuyển
+    /// sang tab "VPN đã cài sẵn" và chọn hồ sơ đó. `protocol` là DirectProtocol dạng số nguyên.
+    void directProfileAdded(QString name, int protocol);
+
 private slots:
     void onRefreshClicked();
     void onAddClicked();
