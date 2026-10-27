@@ -14,6 +14,7 @@
 #include "tools/android/engine/AdbController.h"
 #include "tools/android/engine/AdbDeviceLister.h"
 #include "tools/android/engine/AdbPairer.h"
+#include "tools/android/engine/ControlPrefs.h"
 #include "tools/android/engine/ScrcpyLauncher.h"
 
 static int g_fail = 0, g_pass = 0;
@@ -414,6 +415,50 @@ int main(int argc, char** argv)
             CHECK(connector.connectDevice("192.168.1.23:5555"));
             CHECK(calls == 3 && !lastOk && lastError.contains("adb.exe"));
         }
+    }
+
+    // ---- ControlPrefs: nhớ tùy chọn "tắt màn hình điện thoại lúc điều khiển" giữa các lần mở ----
+    {
+        // Chưa có tệp -> mặc định: giữ sáng BẬT, tắt màn hình điện thoại TẮT.
+        const ControlPrefs def = ControlPrefs::load();
+        CHECK(def.stayAwake && !def.turnScreenOff);
+
+        // Khứ hồi JSON; khóa thiếu / sai kiểu giữ mặc định.
+        ControlPrefs p;
+        p.stayAwake = false;
+        p.turnScreenOff = true;
+        const ControlPrefs back = ControlPrefs::fromJson(p.toJson());
+        CHECK(!back.stayAwake && back.turnScreenOff);
+        const ControlPrefs partial = ControlPrefs::fromJson(QJsonObject{{"turnScreenOff", true}});
+        CHECK(partial.stayAwake && partial.turnScreenOff);
+        const ControlPrefs wrongType = ControlPrefs::fromJson(QJsonObject{{"stayAwake", "no"}, {"turnScreenOff", 1}});
+        CHECK(wrongType.stayAwake && !wrongType.turnScreenOff);
+
+        // Ghi/đọc thật vào thư mục dữ liệu tạm (TestDataDir).
+        CHECK(p.save());
+        const ControlPrefs loaded = ControlPrefs::load();
+        CHECK(!loaded.stayAwake && loaded.turnScreenOff);
+        p.turnScreenOff = false;
+        CHECK(p.save());
+        CHECK(!ControlPrefs::load().turnScreenOff);
+
+        // Tệp hỏng -> mặc định, không crash.
+        QFile bad(AppPaths::profileFile("android_control_prefs.json"));
+        CHECK(bad.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        bad.write("{ khong phai json");
+        bad.close();
+        const ControlPrefs fromBad = ControlPrefs::load();
+        CHECK(fromBad.stayAwake && !fromBad.turnScreenOff);
+
+        // Cờ dòng lệnh đi theo lựa chọn: bật -> có --turn-screen-off, tắt -> không có.
+        ScrcpyOptions on;
+        on.turnScreenOff = true;
+        CHECK(ScrcpyLauncherInternal::buildArguments(on).contains("--turn-screen-off"));
+        ScrcpyOptions off;
+        off.turnScreenOff = false;
+        CHECK(!ScrcpyLauncherInternal::buildArguments(off).contains("--turn-screen-off"));
+        // Mặc định của scrcpy đánh thức máy đang tắt màn hình: KHÔNG truyền --no-power-on.
+        CHECK(!ScrcpyLauncherInternal::buildArguments(on).contains("--no-power-on"));
     }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);

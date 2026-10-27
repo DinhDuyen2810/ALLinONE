@@ -314,6 +314,8 @@ add_library(android_core STATIC
     src/tools/android/engine/AdbPairer.cpp
     src/tools/android/engine/ScrcpyLauncher.h
     src/tools/android/engine/ScrcpyLauncher.cpp
+    src/tools/android/engine/ControlPrefs.h
+    src/tools/android/engine/ControlPrefs.cpp
 )
 target_include_directories(android_core PUBLIC src)
 target_link_libraries(android_core PUBLIC Qt6::Core winprocess_core core_shared)

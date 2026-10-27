@@ -25,6 +25,7 @@
 #include "tools/android/engine/AdbController.h"
 #include "tools/android/engine/AdbDeviceLister.h"
 #include "tools/android/engine/AdbPairer.h"
+#include "tools/android/engine/ControlPrefs.h"
 
 static int g_fail = 0, g_pass = 0;
 #define CHECK(cond)                                                            \
@@ -156,6 +157,51 @@ int main(int argc, char** argv)
             CHECK(selectedSerial().isEmpty());
             emit lister->listed({}, QString());
             CHECK(table->rowCount() == 0);
+        }
+    }
+
+    // Hộp "Tắt màn hình điện thoại lúc điều khiển": mặc định BỎ chọn, có tooltip, và lựa chọn được NHỚ - tick xong
+    // thì tệp tùy chọn ghi ngay, tab dựng lại sau đó thấy ô đã tick; bỏ tick thì lần sau cũng bỏ tick.
+    if (devicesTab)
+    {
+        const auto findCheck = [](QWidget* parent, const QString& part) -> QCheckBox* {
+            for (QCheckBox* c : parent->findChildren<QCheckBox*>())
+                if (c->text().contains(part))
+                    return c;
+            return nullptr;
+        };
+        const QString key = QString::fromUtf8("Tắt màn hình điện thoại");
+        QCheckBox* screenOff = findCheck(devicesTab, key);
+        CHECK(screenOff != nullptr);
+        if (screenOff)
+        {
+            CHECK(!screenOff->isChecked());
+            CHECK(!screenOff->toolTip().isEmpty());
+            screenOff->setChecked(true);
+            CHECK(ControlPrefs::load().turnScreenOff);
+
+            DevicesTab again;
+            QCheckBox* screenOff2 = findCheck(&again, key);
+            CHECK(screenOff2 && screenOff2->isChecked());
+            QCheckBox* stayAwake2 = findCheck(&again, QString::fromUtf8("Giữ màn hình điện thoại sáng"));
+            CHECK(stayAwake2 && stayAwake2->isChecked());
+            if (stayAwake2)
+            {
+                stayAwake2->setChecked(false);
+                CHECK(!ControlPrefs::load().stayAwake && ControlPrefs::load().turnScreenOff);
+            }
+            DevicesTab third;
+            QCheckBox* stayAwake3 = findCheck(&third, QString::fromUtf8("Giữ màn hình điện thoại sáng"));
+            CHECK(stayAwake3 && !stayAwake3->isChecked());
+
+            // Trả lại mặc định (dữ liệu tạm, nhưng giữ test sau sạch).
+            // (Mỗi DevicesTab dựng thêm ghi ĐÚNG trạng thái của nó, nên đặt lại ở cả ba.)
+            for (DevicesTab* t : {devicesTab, &again, &third})
+            {
+                findCheck(t, key)->setChecked(false);
+                findCheck(t, QString::fromUtf8("Giữ màn hình điện thoại sáng"))->setChecked(true);
+            }
+            CHECK(!ControlPrefs::load().turnScreenOff && ControlPrefs::load().stayAwake);
         }
     }
 

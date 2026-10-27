@@ -6,6 +6,7 @@
 #include "engine/AdbController.h"
 #include "engine/AdbDeviceLister.h"
 #include "engine/AdbPairer.h"
+#include "engine/ControlPrefs.h"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -251,12 +252,27 @@ void DevicesTab::buildUi()
     m_maxFpsCombo->addItem("15 fps", 15);
     optsLayout->addRow("Khung hình tối đa:", m_maxFpsCombo);
 
+    // Hai tùy chọn màn hình điện thoại được NHỚ giữa các lần mở (ControlPrefs).
+    const ControlPrefs prefs = ControlPrefs::load();
     m_stayAwakeCheck = new QCheckBox("Giữ màn hình điện thoại sáng khi đang cắm USB", this);
-    m_stayAwakeCheck->setChecked(true);
+    m_stayAwakeCheck->setChecked(prefs.stayAwake);
     optsLayout->addRow(m_stayAwakeCheck);
 
     m_turnScreenOffCheck = new QCheckBox("Tắt màn hình điện thoại lúc điều khiển (riêng tư + tiết kiệm pin)", this);
+    m_turnScreenOffCheck->setChecked(prefs.turnScreenOff);
+    m_turnScreenOffCheck->setToolTip(
+        "Màn hình thật của điện thoại tối đen trong lúc điều khiển, nhưng hình trên máy tính vẫn sáng và bạn vẫn\n"
+        "bấm/vuốt/gõ bình thường. Điện thoại đang tắt màn hình sẽ được đánh thức rồi tắt phần hiển thị.\n"
+        "Bỏ chọn nếu muốn nhìn màn hình điện thoại khi điều khiển. Lựa chọn được nhớ cho lần sau.");
     optsLayout->addRow(m_turnScreenOffCheck);
+    const auto savePrefs = [this] {
+        ControlPrefs p;
+        p.stayAwake = m_stayAwakeCheck->isChecked();
+        p.turnScreenOff = m_turnScreenOffCheck->isChecked();
+        p.save();
+    };
+    connect(m_stayAwakeCheck, &QCheckBox::toggled, this, savePrefs);
+    connect(m_turnScreenOffCheck, &QCheckBox::toggled, this, savePrefs);
 
     m_alwaysOnTopCheck = new QCheckBox("Luôn nổi lên trên các cửa sổ khác", this);
     optsLayout->addRow(m_alwaysOnTopCheck);
