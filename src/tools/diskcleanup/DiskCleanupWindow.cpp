@@ -18,7 +18,7 @@ DiskCleanupWindow::DiskCleanupWindow(QWidget* parent)
 {
     setWindowTitle("One for ALL - Disk Cleanup");
     setWindowIcon(IconHelper::makeBadgedIcon(":/icons/cleaner.png", 48, 10, 4));
-    resize(920, 620);
+    resize(980, 720); // tab "Quản lý phân vùng" có thêm sơ đồ đĩa; các tab khác vẫn dùng vừa vặn
     setMinimumSize(760, 480);
     setStyleSheet(
         "QWidget { background-color: #f6f8fa; color: #1f2328; font-family: 'Segoe UI', sans-serif; }"

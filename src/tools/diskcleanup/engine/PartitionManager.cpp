@@ -50,6 +50,23 @@ QList<PartitionInfo> listPartitions(QString* error)
     return result;
 }
 
+QList<DiskInfo> listDisks(QString* error)
+{
+    bool ok = false;
+    QString runErr;
+    const QByteArray json = runPowerShell(internal::buildListDisksScript(), &ok, &runErr);
+    if (!ok)
+    {
+        if (error) *error = runErr;
+        return {};
+    }
+    QString parseErr;
+    const auto result = internal::parseDisksJson(json, &parseErr);
+    if (!parseErr.isEmpty() && error)
+        *error = parseErr;
+    return result;
+}
+
 SupportedSizeRange querySupportedSize(int diskNumber, int partitionNumber, QString* error)
 {
     bool ok = false;
@@ -105,6 +122,7 @@ QString buildListPartitionsScript()
         "      DriveLetter = ([string]$p.DriveLetter).Trim([char]0)\n"
         "      Type = [string]$p.Type\n"
         "      Size = [int64]$p.Size\n"
+        "      Offset = [int64]$p.Offset\n"
         "      IsBoot = [bool]$p.IsBoot\n"
         "      IsSystem = [bool]$p.IsSystem\n"
         "      IsActive = [bool]$p.IsActive\n"
@@ -118,6 +136,30 @@ QString buildListPartitionsScript()
         // [Console]::Error ghi thẳng ra luồng lỗi .NET, KHÔNG qua pipeline đối tượng của PowerShell -
         // Write-Error thì có, và khi stderr bị redirect (luôn đúng khi QProcess gọi), PowerShell tự
         // serialize nó thành CLIXML (XML thô kèm _x000D__x000A_...) thay vì văn bản đọc được.
+        "  [Console]::Error.WriteLine($_.Exception.Message)\n"
+        "  exit 1\n"
+        "}\n");
+}
+
+QString buildListDisksScript()
+{
+    // Chỉ ĐỌC (Get-Disk). PartitionStyle là enum -> ép về chuỗi ("GPT"/"MBR"/"RAW") cho phía C++ dễ xử lý.
+    return QStringLiteral(
+        "$ErrorActionPreference = 'Stop'\n"
+        "$ProgressPreference = 'SilentlyContinue'\n"
+        "try {\n"
+        "  $result = @(Get-Disk | ForEach-Object {\n"
+        "    [PSCustomObject]@{\n"
+        "      Number = $_.Number\n"
+        "      FriendlyName = [string]$_.FriendlyName\n"
+        "      Size = [int64]$_.Size\n"
+        "      PartitionStyle = [string]$_.PartitionStyle\n"
+        "      IsOffline = [bool]$_.IsOffline\n"
+        "      IsReadOnly = [bool]$_.IsReadOnly\n"
+        "    }\n"
+        "  })\n"
+        "  $result | ConvertTo-Json -Compress -Depth 3\n"
+        "} catch {\n"
         "  [Console]::Error.WriteLine($_.Exception.Message)\n"
         "  exit 1\n"
         "}\n");
@@ -179,6 +221,7 @@ PartitionInfo partitionFromJsonObject(const QJsonObject& o)
     p.driveLetter = o.value("DriveLetter").toString();
     p.type = o.value("Type").toString();
     p.sizeBytes = saturatedInt64(o.value("Size").toDouble(0));
+    p.offsetBytes = saturatedInt64(o.value("Offset").toDouble(-1));
     p.isBoot = o.value("IsBoot").toBool(false);
     p.isSystem = o.value("IsSystem").toBool(false);
     p.isActive = o.value("IsActive").toBool(false);
@@ -187,6 +230,18 @@ PartitionInfo partitionFromJsonObject(const QJsonObject& o)
     const qint64 remaining = saturatedInt64(o.value("SizeRemaining").toDouble(-1));
     p.freeBytes = remaining;
     return p;
+}
+
+DiskInfo diskFromJsonObject(const QJsonObject& o)
+{
+    DiskInfo d;
+    d.number = o.value("Number").toInt(-1);
+    d.name = o.value("FriendlyName").toString();
+    d.sizeBytes = saturatedInt64(o.value("Size").toDouble(0));
+    d.partitionStyle = o.value("PartitionStyle").toString();
+    d.isOffline = o.value("IsOffline").toBool(false);
+    d.isReadOnly = o.value("IsReadOnly").toBool(false);
+    return d;
 }
 } // namespace
 
@@ -218,6 +273,37 @@ QList<PartitionInfo> parsePartitionsJson(const QByteArray& json, QString* error)
     else if (error)
     {
         *error = "Định dạng dữ liệu phân vùng không nhận ra được";
+    }
+    return result;
+}
+
+QList<DiskInfo> parseDisksJson(const QByteArray& json, QString* error)
+{
+    QList<DiskInfo> result;
+    if (json.trimmed().isEmpty())
+        return result;
+
+    QJsonParseError parseError;
+    const QJsonDocument doc = QJsonDocument::fromJson(json, &parseError);
+    if (parseError.error != QJsonParseError::NoError)
+    {
+        if (error) *error = "Không đọc được dữ liệu đĩa (JSON lỗi): " + parseError.errorString();
+        return result;
+    }
+
+    if (doc.isArray())
+    {
+        for (const QJsonValue& v : doc.array())
+            if (v.isObject())
+                result << diskFromJsonObject(v.toObject());
+    }
+    else if (doc.isObject())
+    {
+        result << diskFromJsonObject(doc.object()); // PowerShell 5.1: 1 phần tử -> object đơn, không bọc mảng
+    }
+    else if (error)
+    {
+        *error = "Định dạng dữ liệu đĩa không nhận ra được";
     }
     return result;
 }

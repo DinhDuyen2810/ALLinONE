@@ -71,6 +71,8 @@
 | `src/tools/diskcleanup/LargeFilesTab.*` | Tab "Tìm tệp lớn": chọn thư mục/ổ, ngưỡng kích thước, quét và xóa/mở thư mục chứa |
 | `src/tools/diskcleanup/DuplicateFilesTab.*` | Tab "Tìm tệp trùng lặp": quét 1 thư mục, hiển thị theo nhóm (cây), xóa các bản thừa vào Thùng rác |
 | `src/tools/diskcleanup/PartitionTab.*` | Tab "Quản lý phân vùng": liệt kê phân vùng, đổi kích thước có xác nhận gõ lại tên ổ đĩa |
+| `src/tools/diskcleanup/DiskMapWidget.*` | Sơ đồ đĩa kiểu Disk Management (vẽ khối phân vùng/vùng chưa phân bổ, tay nắm kéo mép phải, khóa hướng); CHỈ vẽ + thu thập chuột/phím, không đụng đĩa |
+| `src/tools/diskcleanup/engine/DiskLayout.*` | Lõi THUẦN của sơ đồ đĩa: dựng đoạn theo `Offset`, dự báo bố cục sau đổi kích thước, độ rộng khối, luật hướng, mô tả thay đổi |
 | `src/tools/diskcleanup/DiskCleanupWindow.*` | Cửa sổ Disk Cleanup, ghép 4 tab trên |
 | `src/tools/diskcleanup/DiskCleanupTool.*` | `ITool` của Disk Cleanup (một cửa sổ duy nhất) |
 | `src/tools/wifi/WifiTool.*` | `ITool` của WiFi (một cửa sổ duy nhất) |
@@ -326,6 +328,9 @@ cảnh báo không thể hoàn tác).
   CHỈ bật sau khi gõ đúng tên ổ đĩa (hoặc `DISKx-PARTy` nếu không có tên ổ) vào ô xác nhận riêng, cộng
   thêm 1 hộp thoại cảnh báo Yes/No nữa trước khi thực sự chạy `Resize-Partition` qua `PartitionResizer`
   (QThread riêng, không chặn UI, co giãn ổ lớn có thể mất vài phút).
+  **Từ v1.22.0**: thêm sơ đồ đĩa kiểu Disk Management (`DiskMapWidget`, xem mục 4zz), kéo tay nắm ở mép phải
+  khối để đổi kích thước xem trước (trái = thu nhỏ, phải = mở rộng) và hàng khóa hướng; đường đổi THẬT
+  (xác nhận gõ tên ổ + `PartitionResizer`) không đổi.
 
 **Hiệu năng/phản hồi khi quét ổ lớn:** người dùng báo quét ổ C: 120GB bị "Không phản hồi" (Windows
 đánh dấu cửa sổ treo). Đo thật bằng cách bấm Quét rồi theo dõi vòng lặp sự kiện của luồng giao diện
@@ -2986,6 +2991,36 @@ Không viết lại - chỉ bổ sung phần thiếu:
 - Test: `android_tests` 165/0 (ControlPrefs + cờ dòng lệnh), `android_ui_tests` 37/0 (ô, tooltip, ghi ngay, dựng lại tab thấy đúng trạng thái; mỗi `DevicesTab` dựng thêm ghi
   ĐÚNG trạng thái của nó nên test đặt lại ở mọi thể hiện). CHƯA kiểm chứng trên điện thoại THẬT (không có điện thoại Android ở máy build); cờ `--power-off-on-close` chưa thêm.
 
+## 4zz. Quản lý phân vùng: sơ đồ đĩa kiểu Disk Management + kéo tay nắm + khóa hướng (2026-11-06, v1.22.0)
+
+Yêu cầu người dùng (kèm ảnh tab "Quản lý phân vùng" đặt cạnh Disk Management của Windows): muốn tab có giao diện như Disk Management, và muốn **kiểm soát việc
+thay đổi là kéo về bên trái hay phải**.
+
+**Ràng buộc gốc của Windows quyết định thiết kế.** `Resize-Partition` (cùng cơ chế "Shrink/Extend Volume") chỉ dịch **mép PHẢI** (điểm kết thúc) của phân vùng;
+mép TRÁI (vị trí bắt đầu) luôn đứng yên. Hệ quả: thu nhỏ = kéo mép phải sang TRÁI, phần giải phóng nằm BÊN PHẢI phân vùng; mở rộng = kéo sang PHẢI, chỉ lấy được từ
+vùng chưa phân bổ LIỀN KỀ bên phải. **Không có "kéo mép trái"**: lấy chỗ trống nằm bên TRÁI, hay dồn dung lượng từ D: sang C: (C: nằm trước D:), cần *di chuyển* dữ liệu
+phân vùng - việc mà `PartitionManager.h` đã cấm từ đầu ("không tự viết thao tác đĩa mức thấp"). Giao diện ghi rõ điều này (`partitionEdgeNote`) thay vì giả vờ làm được.
+
+- **Dữ liệu**: `Get-Partition` thêm `Offset` (`PartitionInfo::offsetBytes`, thiếu = -1); `listDisks()` mới (`Get-Disk` -> `DiskInfo`: số, tên, dung lượng, GPT/MBR/RAW,
+  ngoại tuyến/chỉ đọc; chỉ ĐỌC). Lỗi `Get-Disk` KHÔNG chặn tab: sơ đồ rơi về dựng từ riêng các phân vùng (dung lượng đĩa = điểm kết thúc phân vùng cuối).
+- **`engine/DiskLayout.{h,cpp}`** (lõi thuần, trong `diskcleanup_core`): `build()` sắp phân vùng theo `Offset`, chèn `Unallocated` cho khe >= `kMinGapBytes` (4 MiB: khe căn lề 1 MiB và
+  vùng đệm bảng GPT cuối đĩa KHÔNG tính), chống chồng lấn, thiếu Offset thì xếp tuần tự + `approximate`; `freeBytesAfter/Before`; `projectResize()` (thu nhỏ: nối vào/tạo vùng chưa phân bổ
+  phía sau; mở rộng: kẹp bằng vùng trống liền kề, không bao giờ nuốt phân vùng khác); `computeBlockWidths()` (tỉ lệ dung lượng, khối < 36 px nâng lên 36 và các khối còn lại co bù, tổng đúng
+  bằng độ rộng) + `bytesPerPixel()`; `boundsForDirection()` (giao của khoảng Windows cho phép và hướng khóa), `directionBlockReason()` (so ở đúng độ chính xác 2 chữ số GB của ô nhập,
+  cùng quy tắc `isSameSizeAtInputPrecision`), `describeResize()`.
+- **`DiskMapWidget`** (`diskcleanup_ui`): tự vẽ bằng `QPainter`; hit-test tính lại hình học mỗi lần (rẻ). Tay nắm chỉ có sau `setResizeContext()` (tức SAU khi tra khoảng cho phép);
+  kéo đổi `byte = byteLúcBấm + dx * bytesPerPixelLúcBấm` (làm tròn xuống 1 MiB, kẹp theo `bounds()`), phát `previewSizeChanged`; `setPreviewSize()` (ô nhập gọi sang) KHÔNG phát tín hiệu nên không vòng lặp.
+  Xem trước: sọc cam = sẽ giải phóng (bên phải), sọc xanh = sẽ lấy thêm, vạch đứt = mép phải cũ, thẻ kích thước dưới khối; mũi tên ◀ ▶ xám khi hết đường theo hướng đó.
+- **`PartitionTab`**: sơ đồ nằm trên, **bảng chuyển xuống cuối** (ô điều khiển nằm sát sơ đồ); toàn bộ nội dung đặt trong `QScrollArea` (cửa sổ tối thiểu 760x480 không còn cắt ô xác nhận);
+  `onMapPartitionClicked` chọn đúng dòng bảng (đã chọn rồi thì KHÔNG reset kết quả tra); `effectiveNewSizeBytes()` coi giá trị ô nhập chưa sửa (ở độ chính xác 0,01 GB) đúng bằng kích thước
+  hiện tại - nếu không, preview ban đầu lệch vài MB và mô tả báo "thu nhỏ 4 MB"; hàng "Hướng thay đổi" (`partitionDirShrink/Free/Grow`) khóa khoảng của ô nhập + tay nắm, giữ lựa chọn
+  khi đổi phân vùng; `resizeRequestBlockReason()` thêm lớp chặn theo hướng; `onNewSizeChanged` đánh giá lại nút "Đổi kích thước" mỗi lần giá trị đổi; hộp xác nhận thêm câu mô tả thay đổi + hướng.
+  Sơ đồ + hàng hướng bị khóa trong lúc tải/đang đổi kích thước. **Đường đổi THẬT không đổi** (xác nhận gõ tên ổ + hộp Yes/No + `PartitionResizer` đọc lại và đối chiếu trước `Resize-Partition`).
+- **Test**: `diskcleanup_tests` 533/0, `diskcleanup_ui_tests` 118/0 (chi tiết ở dòng changelog README v1.22.0). Test dùng bố cục GIẢ giống ảnh Disk Management + dữ liệu đĩa THẬT chỉ để đọc;
+  KHÔNG bấm "Đổi kích thước" (quy tắc 5). Ảnh chụp: `DISKCLEANUP_UI_SHOTS=<thư mục>` xuất `diskmap_{idle,shrink,grow}.png` và `partitions_resize.png`.
+- **CHƯA kiểm chứng**: đổi kích thước THẬT bằng tay nắm (cần UAC + dữ liệu thử), máy nhiều đĩa/đĩa động/BitLocker/VHD, và chạy với quyền Administrator (máy build không elevated nên
+  `Get-PartitionSupportedSize` chưa gọi thật; khoảng 45,29-117,19 GB trong ảnh chụp là SỐ LẤY TỪ ẢNH của người dùng).
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
@@ -3169,6 +3204,7 @@ Quy tắc đứng nằm ở `CLAUDE.md` (gốc dự án). Tóm tắt - mỗi l�
 | 2026-10-22 | VPN: bỏ OpenVPN -> SSTP; sửa lỗi gốc quay số RAS; kết nối trực tiếp FortiGate/GlobalProtect (v1.19.31) | Mục 4zq. OpenVPN treo vì lời nhắc `ENTER PASSWORD:` không bị xóa khỏi bộ đệm (không gửi `hold release`) + rò `openvpn.exe` nâng quyền khi hết giờ -> gỡ hẳn. VPN Gate nối SSTP (RAS gốc, `<HostName>.opengw.net` khớp chứng chỉ Let's Encrypt). Lỗi gốc `VpnConnector`: mã 6 TẠM THỜI của `RasGetConnectStatusW` ở +16ms bị coi là thất bại -> mọi lần quay số qua app hỏng (cả "Lỗi 6" người dùng gặp từ đầu); `dwNotifierType` sửa lại 1 (v1.19.27 đổi nhầm 2). Đã đổi IP THẬT bằng code của app (VN -> Tokyo). Kết nối trực tiếp FortiGate SSL-VPN/GlobalProtect: client giao thức tự viết (PPP/LCP/IPCP, đăng nhập/OTP/cấu hình), adapter wintun.dll + iphlpapi, tiến trình phụ nâng quyền `--vpn-helper` (pipe + mã một lần, tự dọn khi pipe đóng), ghim vân tay chứng chỉ tự ký. `vpn_tests` 219/0, `vpn_ui_tests` 7/0, `vpn_direct_tests` 150/0 (mới; máy chủ FortiGate/GP giả đầu-cuối). Đã chạy thật: adapter wintun Admin 10/10, thăm dò 3/3 máy chủ thật (không đăng nhập). CHƯA kiểm chứng: đăng nhập + đường hầm bằng tài khoản cơ quan thật. Chỉ push code, KHÔNG tag/Release. |
 | 2026-10-22 | Lấy IP chậm sau khi nối VPN + rà giao diện bằng ảnh chụp thật (v1.19.32) | Mục 4zr. Kết nối HTTPS keep-alive cũ kẹt sau khi tuyến đổi -> 8 s rồi hủy; `clearConnectionCache()` + thử lại 1 lần -> 1093 ms. Công cụ `ui_snapshot` (offscreen hoặc kiểu gốc không hiện màn hình) rà 8 công cụ: sửa cắt chữ hàng điều khiển VPN Gate (2 hàng, NAT chỉ khi L2TP), ô Cổng, nút Android, nhóm ghép đôi Connect bị ép. Nhật ký chẩn đoán kết nối trực tiếp. vpn 219/7, vpn_direct 150, android 153/30, connect_ui 17. Chỉ push code, KHÔNG tag/Release. |
 | 2026-10-23..24 | Kết nối trực tiếp FortiClient IPsec: client IKEv1 tự viết (v1.19.33→39) | Mục 4zs-4zv. v1.19.33: kết nối trực tiếp CHẠY THẬT với FortiGate người dùng + lưu tài khoản + sửa DNS nội bộ. v1.19.34: GlobalProtect nộp HIP (sửa rớt ~60s). v1.19.35: GlobalProtect kênh ESP (gateway bắt buộc). **v1.19.36**: hồ sơ FortiClient IPsec (VPN_CVTLT) nối trực tiếp bằng client **IKEv1 tự viết** (`IkeCrypto`+`IsakmpMessage`+`IkeKeys`+`IkeSession`, dựa BCrypt): Aggressive+PSK+XAuth+Mode-config+Quick Mode+ESP; IKE+ESP chung socket UDP (NAT-T 4500). Test `ike_crypto_check` 47/0, `ike_session_check` 24/0 (bắt tay TRỌN VẸN offline với responder giả, khớp khóa ESP hai bên), `vpn_direct_tests` 357/0. **v1.19.37**: dò thật gateway (`ike_real_probe`, không đăng nhập) xác nhận gateway dùng **nhóm 20 ECP-384 + AES-256 + SHA-256 + XAUTHPSK + NAT-T** → thêm ECDH (nhóm 19/20/21) vào IkeCrypto, IkeSession chào nhiều transform + đọc transform gateway chọn; `ike_crypto_check` 59/0. **v1.19.38**: với PSK + tài khoản thật, `ike_real_connect` hoàn tất **bắt tay IKEv1 đầu-cuối THẬT** (Phase 1→XAuth→Mode-config cấp IP→Quick Mode→khóa ESP). Sửa: mã thuộc tính XAuth (STATUS=16527/MESSAGE=16524), PFS nhóm 20, nhiều transform ESP + đọc transform gateway chọn (AES-256-CBC+SHA1), đóng gói Tunnel(1) (FortiGate từ chối UDP-Tunnel 3/61443), proxy 0/0, ESP seq=1. **v1.19.39**: bắt gói (`pktmon`) so với FortiClient -> client+app nay khớp FortiClient trên dây (UDP 4500↔4500 từ cổng 4500, NAT-T từ msg1, NAT-D). Tầng DỮ LIỆU ESP VẪN CHẶN: gói ESP ra đúng (giống FortiClient) mà gateway im (thử 5 biến thể KEYMAT); SA đã cài; cần nhật ký phía FortiGate. Chỉ push code, KHÔNG tag/Release. |
+| 2026-11-06 | Disk Cleanup > Quản lý phân vùng: sơ đồ đĩa kiểu Disk Management + kéo tay nắm + khóa hướng (v1.22.0) | Mục 4zz. `DiskMapWidget` + lõi `DiskLayout` + `Get-Disk`/`Offset`; kéo mép phải: TRÁI = thu nhỏ, PHẢI = mở rộng; nút khóa "Chỉ thu nhỏ/Chỉ mở rộng/Cả hai"; ghi rõ Windows chỉ đổi bằng mép phải (không có kéo mép trái). Đường đổi thật không đổi. `diskcleanup_tests` 533/0, `diskcleanup_ui_tests` 118/0. CHƯA kiểm chứng đổi kích thước THẬT bằng tay nắm. |
 | 2026-10-27 | Android: ô "Tắt màn hình điện thoại lúc điều khiển" được nhớ + tooltip (v1.21.1) | Mục 4zy. Tính năng `--turn-screen-off` + checkbox đã có sẵn; thêm `ControlPrefs` (tệp `android_control_prefs.json`) nhớ hai ô màn hình (tắt màn hình điện thoại, giữ sáng khi cắm USB) giữa các lần mở + tooltip. `android_tests` 165/0, `android_ui_tests` 37/0. CHƯA kiểm chứng trên điện thoại thật. Chỉ push, KHÔNG tag/Release. |
 | 2026-10-27 | Thêm hồ sơ VPN có 3 chế độ: Thường / GlobalProtect / FortiClient (v1.21.0) | Mục 4zx. Hộp thoại "Thêm hồ sơ VPN" có ô Chế độ; hai chế độ GlobalProtect/FortiClient (SSL-VPN hoặc IPsec) lưu hồ sơ riêng `vpn_direct_profiles.json` (kho `DirectProfileStore`, không bí mật), hiện ở tab "VPN đã cài sẵn" ("· tự thêm"), kết nối trực tiếp, thêm xong tự chuyển tab + chọn hồ sơ, có nút xóa hồ sơ tự thêm. `vpn_tests` 258/0, `vpn_ui_tests` 40/0. CHƯA kiểm chứng: kết nối thật bằng hồ sơ tự thêm qua giao diện. Chỉ push code, KHÔNG tag/Release (người dùng dặn giữ cho tới khi cho phép). |
 | 2026-10-26 | Làm lại giao diện chung `AppTheme`: Fusion + bảng màu sáng + QSS toàn ứng dụng + con trỏ tay (v1.20.0) | Mục 4zw. Người dùng báo giao diện "vuông", nút không phản hồi khi rê. Một module dùng chung thay vì sửa từng màn hình: nút/tab/ô nhập/ô tích(cả trong bảng)/bảng/thanh cuộn/hộp thoại có bo góc + hover/nhấn/focus/vô hiệu; con trỏ ngón tay trỏ tự gán; QSS riêng của widget vẫn ưu tiên; giữ combo/ô số ẩn mũi tên. Sửa vạch đứng thừa ở thanh bên (luật QFrame khớp QLabel) + kỳ vọng lỗi thời `wifi_ui_tests`. Bộ mới `ui_theme_tests` 26/0 (pixel thật: hover/nhấn/con trỏ/dấu tích SVG); toàn bộ 22 bộ test đạt. Hạn chế: chưa có hiệu ứng chuyển mượt (QSS không hỗ trợ), icon vẫn emoji, thanh tiêu đề vẫn kiểu Windows. Có tag + Release v1.20.0. |

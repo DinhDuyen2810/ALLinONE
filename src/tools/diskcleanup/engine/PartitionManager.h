@@ -26,11 +26,23 @@ struct PartitionInfo
     QString fileSystem;   // rỗng nếu không đọc được (phân vùng không có hệ thống tệp Windows hiểu)
     qint64 sizeBytes{0};
     qint64 freeBytes{-1};  // -1 = không xác định
+    qint64 offsetBytes{-1}; // vị trí bắt đầu trên đĩa (Get-Partition .Offset); -1 = không đọc được. Dùng dựng sơ đồ đĩa + vùng chưa phân bổ
     bool isBoot{false};
     bool isSystem{false};
     bool isActive{false};
 
     bool hasFileSystem() const { return !fileSystem.isEmpty(); }
+};
+
+/// Một đĩa vật lý/ảo (Get-Disk) - chỉ để vẽ sơ đồ đĩa (tổng dung lượng, kiểu bảng phân vùng, trạng thái).
+struct DiskInfo
+{
+    int number{-1};
+    QString name;            // FriendlyName, vd "Samsung SSD 980"
+    qint64 sizeBytes{0};
+    QString partitionStyle;  // "GPT" | "MBR" | "RAW" (đĩa chưa khởi tạo)
+    bool isOffline{false};
+    bool isReadOnly{false};
 };
 
 struct SupportedSizeRange
@@ -54,6 +66,10 @@ bool relaunchElevated(QString* error = nullptr);
 /// Danh sách phân vùng thật trên máy (chỉ đọc, an toàn, không cần quyền Administrator).
 QList<PartitionInfo> listPartitions(QString* error = nullptr);
 
+/// Danh sách đĩa thật trên máy (Get-Disk) - chỉ đọc. Dùng cùng listPartitions() để vẽ sơ đồ đĩa; lỗi ở đây
+/// KHÔNG chặn việc dùng tab (sơ đồ rơi về dựng từ riêng các phân vùng).
+QList<DiskInfo> listDisks(QString* error = nullptr);
+
 /// Kích thước nhỏ nhất/lớn nhất Windows cho phép đổi tới với phân vùng này - đây CHÍNH LÀ phép
 /// tính an toàn (tính tới vị trí dữ liệu, vùng hệ thống không thể di chuyển...) mà Disk Management
 /// dùng; chỉ đọc, không thay đổi gì, nhưng thường cần quyền Administrator để đọc được.
@@ -70,6 +86,7 @@ bool resizePartition(int diskNumber, int partitionNumber, qint64 newSizeBytes, Q
 namespace internal
 {
 QString buildListPartitionsScript();
+QString buildListDisksScript();
 QString buildSupportedSizeScript(int diskNumber, int partitionNumber);
 QString buildResizeScript(int diskNumber, int partitionNumber, qint64 newSizeBytes);
 
@@ -77,6 +94,7 @@ QString buildResizeScript(int diskNumber, int partitionNumber, qint64 newSizeByt
 /// khi chỉ có 1 phân vùng, kết quả là một OBJECT JSON đơn, không phải mảng 1 phần tử - hàm này
 /// chuẩn hóa cả hai trường hợp về cùng một danh sách.
 QList<PartitionInfo> parsePartitionsJson(const QByteArray& json, QString* error);
+QList<DiskInfo> parseDisksJson(const QByteArray& json, QString* error); // cùng quy tắc "1 phần tử = object đơn"
 SupportedSizeRange parseSupportedSizeJson(const QByteArray& json, QString* error);
 
 /// Đổi giá trị GB người dùng nhập sang byte rồi KẸP vào [minBytes, maxBytes]. Ô nhập chỉ có 2 chữ số

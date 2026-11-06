@@ -1,6 +1,7 @@
 #include "PartitionTab.h"
 
 #include "DiskCleanupWindow.h"
+#include "DiskMapWidget.h"
 #include "DiskUiStyle.h"
 #include "engine/PartitionResizer.h"
 #include "core/ToolManager.h"
@@ -14,12 +15,15 @@
 #include <QMessageBox>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QScrollArea>
+#include <QSignalBlocker>
 #include <QStringList>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QThread>
 #include <QVBoxLayout>
 
+#include <cmath>
 #include <memory>
 
 namespace
@@ -69,7 +73,22 @@ bool PartitionTab::isResizingNow() const
 
 void PartitionTab::buildUi()
 {
-    auto* root = new QVBoxLayout(this);
+    // Nội dung tab dài hơn (sơ đồ đĩa + hàng hướng + mô tả thay đổi): đặt trong vùng cuộn để cửa sổ nhỏ (tối
+    // thiểu 760x480) không cắt mất ô xác nhận/nút "Đổi kích thước" - Qt sẽ không co các widget dưới kích thước tối thiểu.
+    auto* outer = new QVBoxLayout(this);
+    outer->setContentsMargins(0, 0, 0, 0);
+    auto* scroll = new QScrollArea(this);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setStyleSheet("QScrollArea { background: transparent; border: none; }");
+    scroll->viewport()->setAutoFillBackground(false);
+    auto* content = new QWidget();
+    content->setObjectName("partitionTabContent");
+    content->setStyleSheet("#partitionTabContent { background: transparent; }");
+    scroll->setWidget(content);
+    outer->addWidget(scroll);
+
+    auto* root = new QVBoxLayout(content);
     root->setContentsMargins(10, 10, 10, 10);
     root->setSpacing(10);
 
@@ -102,22 +121,25 @@ void PartitionTab::buildUi()
     topRow->addStretch();
     root->addLayout(topRow);
 
-    m_table = new QTableWidget(0, 7, this);
-    m_table->setHorizontalHeaderLabels({"Ổ đĩa", "Loại", "Hệ thống tệp", "Nhãn", "Dung lượng", "Còn trống", "Ghi chú"});
-    m_table->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    m_table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
-    m_table->verticalHeader()->setVisible(false);
-    m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
-    m_table->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    m_table->setShowGrid(false);
-    m_table->setStyleSheet(DiskUi::tableStyle());
-    connect(m_table, &QTableWidget::itemSelectionChanged, this, &PartitionTab::onRowSelectionChanged);
-    root->addWidget(m_table, 1);
+    // Sơ đồ đĩa kiểu Disk Management: bấm khối để chọn; sau khi tra kích thước thì kéo tay nắm ở mép phải khối.
+    m_diskMap = new DiskMapWidget(this);
+    m_diskMap->setObjectName("partitionDiskMap");
+    connect(m_diskMap, &DiskMapWidget::partitionClicked, this, &PartitionTab::onMapPartitionClicked);
+    connect(m_diskMap, &DiskMapWidget::previewSizeChanged, this, &PartitionTab::onMapPreviewChanged);
+    root->addWidget(m_diskMap);
+
+    auto* mapHint = new QLabel(
+        "💡 Bấm một khối trên sơ đồ (hoặc dòng trong bảng) để chọn phân vùng, bấm \"Tra kích thước có thể đổi tới...\", "
+        "rồi KÉO tay nắm ở mép phải khối: sang TRÁI = thu nhỏ, sang PHẢI = mở rộng.",
+        this);
+    mapHint->setWordWrap(true);
+    mapHint->setStyleSheet("color: #57606a; font-size: 11px;");
+    root->addWidget(mapHint);
 
     m_statusLabel = new QLabel(this);
     m_statusLabel->setStyleSheet("color: #57606a; font-size: 12px;");
     root->addWidget(m_statusLabel);
+
 
     // ---- Khu vực đổi kích thước (ẩn cho tới khi chọn 1 phân vùng) ----
     m_detailLabel = new QLabel(this);
@@ -140,6 +162,41 @@ void PartitionTab::buildUi()
     m_warningLabel->setVisible(false);
     root->addWidget(m_warningLabel);
 
+    // ---- Hàng "Hướng thay đổi": KHÓA hướng để không kéo/nhập nhầm (chỉ hiện sau khi tra được khoảng cho phép) ----
+    m_directionRow = new QWidget(this);
+    m_directionRow->setVisible(false);
+    auto* dirLayout = new QHBoxLayout(m_directionRow);
+    dirLayout->setContentsMargins(0, 0, 0, 0);
+    auto* dirLabel = new QLabel("Hướng thay đổi:", m_directionRow);
+    dirLabel->setStyleSheet("color: #1f2328; font-weight: bold; font-size: 12px;");
+    dirLayout->addWidget(dirLabel);
+    const QString toggleStyle =
+        DiskUi::buttonStyle() +
+        "QPushButton:checked { background-color: #0969da; color: #ffffff; border-color: #0969da; font-weight: bold; }"
+        "QPushButton:checked:hover { background-color: #0854b0; color: #ffffff; }";
+    auto makeDirButton = [&](const QString& text, const QString& name, const QString& tip, DiskLayout::ResizeDirection dir) {
+        auto* b = new QPushButton(text, m_directionRow);
+        b->setCheckable(true);
+        b->setStyleSheet(toggleStyle);
+        b->setCursor(Qt::PointingHandCursor);
+        b->setObjectName(name);
+        b->setToolTip(tip);
+        connect(b, &QPushButton::clicked, this, [this, dir]() { onDirectionButtonClicked(dir); });
+        dirLayout->addWidget(b);
+        return b;
+    };
+    m_dirShrinkBtn = makeDirButton("◀ Chỉ thu nhỏ", "partitionDirShrink",
+                                   "Chỉ cho phép THU NHỎ: kéo mép phải sang TRÁI. Phần giải phóng nằm bên phải phân vùng.",
+                                   DiskLayout::ResizeDirection::ShrinkOnly);
+    m_dirFreeBtn = makeDirButton("◀ ▶ Cả hai hướng", "partitionDirFree",
+                                 "Cho phép cả thu nhỏ (kéo trái) lẫn mở rộng (kéo phải).", DiskLayout::ResizeDirection::Free);
+    m_dirGrowBtn = makeDirButton("Chỉ mở rộng ▶", "partitionDirGrow",
+                                 "Chỉ cho phép MỞ RỘNG: kéo mép phải sang PHẢI, lấy từ vùng chưa phân bổ liền kề bên phải.",
+                                 DiskLayout::ResizeDirection::GrowOnly);
+    m_dirFreeBtn->setChecked(true);
+    dirLayout->addStretch();
+    root->addWidget(m_directionRow);
+
     auto* resizeRow = new QHBoxLayout();
     m_sizeLabel = new QLabel("Kích thước mới:", this);
     m_sizeLabel->setStyleSheet("color: #1f2328; font-weight: bold; font-size: 12px;");
@@ -155,6 +212,25 @@ void PartitionTab::buildUi()
     resizeRow->addWidget(m_newSizeSpin);
     resizeRow->addStretch();
     root->addLayout(resizeRow);
+    connect(m_newSizeSpin, &QDoubleSpinBox::valueChanged, this, &PartitionTab::onNewSizeChanged);
+
+    m_changeLabel = new QLabel(this);
+    m_changeLabel->setWordWrap(true);
+    m_changeLabel->setStyleSheet("color: #1f2328; font-size: 12px;");
+    m_changeLabel->setObjectName("partitionChangeLabel");
+    m_changeLabel->setVisible(false);
+    root->addWidget(m_changeLabel);
+
+    m_edgeNoteLabel = new QLabel(
+        "ℹ Windows chỉ đổi kích thước bằng MÉP PHẢI: mép TRÁI (vị trí bắt đầu) của phân vùng luôn đứng yên. Muốn lấy "
+        "chỗ trống nằm BÊN TRÁI một phân vùng, hoặc dồn dung lượng từ ổ này sang ổ nằm TRƯỚC nó, cần công cụ di "
+        "chuyển phân vùng (vd GParted, MiniTool) - ứng dụng này không tự làm vì rủi ro mất dữ liệu rất cao.",
+        this);
+    m_edgeNoteLabel->setWordWrap(true);
+    m_edgeNoteLabel->setStyleSheet(DiskUi::bannerStyle("info"));
+    m_edgeNoteLabel->setObjectName("partitionEdgeNote");
+    m_edgeNoteLabel->setVisible(false);
+    root->addWidget(m_edgeNoteLabel);
 
     m_confirmHintLabel = new QLabel(this);
     m_confirmHintLabel->setStyleSheet("color: #57606a; font-size: 11px;");
@@ -188,6 +264,22 @@ void PartitionTab::buildUi()
         "QProgressBar { background-color: #eaeef2; border-radius: 3px; }"
         "QProgressBar::chunk { background-color: #cf222e; border-radius: 3px; }");
     root->addWidget(m_progressBar);
+
+    // Bảng chỉ là danh sách phụ (sơ đồ ở trên đã chọn được phân vùng): đặt CUỐI để ô điều khiển đổi kích thước nằm sát
+    // sơ đồ, không phải cuộn xuống dưới bảng mới thấy.
+    m_table = new QTableWidget(0, 7, this);
+    m_table->setMinimumHeight(130); // vùng cuộn lo phần còn lại, bảng không bị ép về 0 dòng khi cửa sổ thấp
+    m_table->setHorizontalHeaderLabels({"Ổ đĩa", "Loại", "Hệ thống tệp", "Nhãn", "Dung lượng", "Còn trống", "Ghi chú"});
+    m_table->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    m_table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
+    m_table->verticalHeader()->setVisible(false);
+    m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_table->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_table->setShowGrid(false);
+    m_table->setStyleSheet(DiskUi::tableStyle());
+    connect(m_table, &QTableWidget::itemSelectionChanged, this, &PartitionTab::onRowSelectionChanged);
+    root->addWidget(m_table, 1);
 }
 
 void PartitionTab::updateElevationBanner()
@@ -247,6 +339,7 @@ void PartitionTab::setLoading(bool loading, const QString& statusText)
     // của lần hỏi trước chưa về (kết quả sẽ được gắn cho phân vùng đang chọn lúc BẮT ĐẦU hỏi).
     m_refreshBtn->setEnabled(!loading);
     m_table->setEnabled(!loading);
+    m_diskMap->setEnabled(!loading);
     m_queryBtn->setEnabled(!loading);
     if (loading && !statusText.isEmpty())
         m_statusLabel->setText(statusText);
@@ -281,19 +374,29 @@ void PartitionTab::reloadPartitions()
     showSelectionControls(false);
 
     auto partitions = std::make_shared<QList<PartitionManager::PartitionInfo>>();
+    auto disks = std::make_shared<QList<PartitionManager::DiskInfo>>();
     auto error = std::make_shared<QString>();
     runInBackground(
         "⏳ Đang đọc danh sách phân vùng...",
-        [partitions, error]() { *partitions = PartitionManager::listPartitions(error.get()); },
-        [this, partitions, error]() { populatePartitions(*partitions, *error); });
+        [partitions, disks, error]() {
+            *partitions = PartitionManager::listPartitions(error.get());
+            // Get-Disk chỉ để vẽ sơ đồ (dung lượng/kiểu đĩa): lỗi ở đây KHÔNG được báo như lỗi đọc phân vùng - sơ
+            // đồ tự rơi về dựng từ riêng các phân vùng.
+            QString diskError;
+            *disks = PartitionManager::listDisks(&diskError);
+        },
+        [this, partitions, disks, error]() { populatePartitions(*partitions, *disks, *error); });
 }
 
-void PartitionTab::populatePartitions(const QList<PartitionManager::PartitionInfo>& partitions, const QString& error)
+void PartitionTab::populatePartitions(const QList<PartitionManager::PartitionInfo>& partitions,
+                                      const QList<PartitionManager::DiskInfo>& disks, const QString& error)
 {
     m_table->clearSelection();
     resetResizeState();
     showSelectionControls(false);
     m_partitions = partitions;
+    m_disks = disks;
+    m_diskMap->setData(m_disks, m_partitions);
 
     m_table->setRowCount(m_partitions.size());
     for (int i = 0; i < m_partitions.size(); ++i)
@@ -355,7 +458,11 @@ void PartitionTab::resetResizeState()
     m_queriedPartition = -1;
     m_queriedSizeBytes = -1;
 
+    m_diskMap->clearResizeContext();
     m_warningLabel->setVisible(false);
+    m_directionRow->setVisible(false);
+    m_changeLabel->setVisible(false);
+    m_edgeNoteLabel->setVisible(false);
     m_newSizeSpin->setVisible(false);
     m_sizeLabel->setVisible(false);
     m_confirmHintLabel->setVisible(false);
@@ -371,6 +478,7 @@ void PartitionTab::onRowSelectionChanged()
     resetResizeState();
     const auto* p = selectedPartition();
     showSelectionControls(p != nullptr);
+    m_diskMap->setSelection(p ? p->diskNumber : -1, p ? p->partitionNumber : -1);
     if (!p)
         return;
 
@@ -434,10 +542,15 @@ void PartitionTab::applySupportedRange(int disk, int partition, qint64 sizeBytes
     m_warningLabel->setText(warn);
     m_warningLabel->setVisible(true);
 
-    m_newSizeSpin->setRange(m_supportedRange.minBytes / GB, m_supportedRange.maxBytes / GB);
-    m_newSizeSpin->setValue(qBound<double>(m_newSizeSpin->minimum(), p->sizeBytes / GB, m_newSizeSpin->maximum()));
+    // Bật tay nắm kéo trên sơ đồ cho đúng phân vùng này rồi áp hướng đã khóa lên khoảng giá trị của ô nhập.
+    m_diskMap->setResizeContext(disk, partition, m_supportedRange, m_direction);
+    applyDirectionBounds(true);
+    m_directionRow->setVisible(true);
     m_newSizeSpin->setVisible(true);
     m_sizeLabel->setVisible(true);
+    m_changeLabel->setVisible(true);
+    m_edgeNoteLabel->setVisible(true);
+    updateChangePreview();
 
     m_confirmHintLabel->setText(QString("Gõ \"%1\" vào ô dưới để xác nhận:").arg(confirmToken(*p)));
     m_confirmHintLabel->setVisible(true);
@@ -454,6 +567,110 @@ void PartitionTab::applySupportedRangeForTest(const PartitionManager::SupportedS
         applySupportedRange(p->diskNumber, p->partitionNumber, p->sizeBytes, range, QString());
 }
 
+QString PartitionTab::selectedDisplayName() const
+{
+    const auto* p = selectedPartition();
+    if (!p)
+        return {};
+    return p->driveLetter.isEmpty() ? confirmToken(*p) : (p->driveLetter + ":");
+}
+
+qint64 PartitionTab::effectiveNewSizeBytes(const PartitionManager::PartitionInfo& p) const
+{
+    // Ô nhập làm tròn 2 chữ số thập phân GB: giá trị CHƯA được sửa phải được coi đúng là kích thước hiện tại (không
+    // phải một lần đổi vài MB do làm tròn) - cùng quy tắc isSameSizeAtInputPrecision mà nút "Đổi kích thước" dùng.
+    const double value = m_newSizeSpin->value();
+    if (PartitionManager::internal::isSameSizeAtInputPrecision(value, p.sizeBytes))
+        return p.sizeBytes;
+    return PartitionManager::internal::clampResizeBytes(value, m_supportedRange);
+}
+
+void PartitionTab::applyDirectionBounds(bool resetToCurrent)
+{
+    const auto* p = selectedPartition();
+    if (!p || !m_supportedRange.ok)
+        return;
+    const auto bounds = DiskLayout::boundsForDirection(p->sizeBytes, m_supportedRange, m_direction);
+    {
+        // Đổi khoảng/giá trị ô nhập ở đây là cập nhật theo HƯỚNG, không phải người dùng gõ: chặn tín hiệu rồi tự đồng bộ bên dưới.
+        QSignalBlocker blocker(m_newSizeSpin);
+        m_newSizeSpin->setRange(bounds.minBytes / GB, bounds.maxBytes / GB);
+        const double base = resetToCurrent ? p->sizeBytes / GB : m_newSizeSpin->value();
+        m_newSizeSpin->setValue(qBound(m_newSizeSpin->minimum(), base, m_newSizeSpin->maximum()));
+    }
+    m_dirShrinkBtn->setChecked(m_direction == DiskLayout::ResizeDirection::ShrinkOnly);
+    m_dirFreeBtn->setChecked(m_direction == DiskLayout::ResizeDirection::Free);
+    m_dirGrowBtn->setChecked(m_direction == DiskLayout::ResizeDirection::GrowOnly);
+    m_diskMap->setDirection(m_direction);
+    m_diskMap->setPreviewSize(effectiveNewSizeBytes(*p));
+}
+
+void PartitionTab::updateChangePreview()
+{
+    const auto* p = selectedPartition();
+    if (!p || !m_supportedRange.ok || m_queriedDisk < 0)
+    {
+        m_changeLabel->clear();
+        return;
+    }
+    QString text = DiskLayout::describeResize(selectedDisplayName(), p->sizeBytes, effectiveNewSizeBytes(*p),
+                                              m_diskMap->freeBytesAfterResizeTarget(), m_diskMap->freeBytesBeforeResizeTarget());
+    const QString directionReason = DiskLayout::directionBlockReason(m_newSizeSpin->value(), p->sizeBytes, m_direction);
+    if (!directionReason.isEmpty())
+        text += "\n⛔ " + directionReason;
+    m_changeLabel->setText(text);
+}
+
+void PartitionTab::onMapPartitionClicked(int diskNumber, int partitionNumber)
+{
+    if (m_loading || isResizingNow())
+        return;
+    for (int i = 0; i < m_partitions.size(); ++i)
+    {
+        if (m_partitions[i].diskNumber == diskNumber && m_partitions[i].partitionNumber == partitionNumber)
+        {
+            m_table->selectRow(i); // đã chọn đúng dòng này thì không có tín hiệu -> giữ nguyên kết quả tra kích thước
+            return;
+        }
+    }
+}
+
+void PartitionTab::onMapPreviewChanged(qint64 bytes)
+{
+    // Người dùng kéo tay nắm/bấm phím trên sơ đồ -> đưa vào ô nhập (ô làm tròn 0,01 GB rồi tự đồng bộ ngược sang sơ đồ).
+    m_newSizeSpin->setValue(static_cast<double>(bytes) / GB);
+}
+
+void PartitionTab::onNewSizeChanged(double)
+{
+    const auto* p = selectedPartition();
+    if (!p || !m_supportedRange.ok || m_queriedDisk < 0)
+        return;
+    m_diskMap->setPreviewSize(effectiveNewSizeBytes(*p));
+    updateChangePreview();
+    // Nút "Đổi kích thước" phải đánh giá lại: hướng đã khóa là một điều kiện chặn (xem resizeRequestBlockReason).
+    m_resizeBtn->setEnabled(!m_loading && !isResizingNow() && resizeRequestBlockReason().isEmpty());
+}
+
+void PartitionTab::onDirectionButtonClicked(DiskLayout::ResizeDirection direction)
+{
+    m_direction = direction;
+    const auto* p = selectedPartition();
+    if (p && m_supportedRange.ok && m_queriedDisk >= 0)
+    {
+        applyDirectionBounds(false);
+        updateChangePreview();
+        m_resizeBtn->setEnabled(!m_loading && !isResizingNow() && resizeRequestBlockReason().isEmpty());
+    }
+    else
+    {
+        // Chưa tra kích thước: chỉ ghi nhớ lựa chọn (và giữ trạng thái chọn của nút nhất quán).
+        m_dirShrinkBtn->setChecked(direction == DiskLayout::ResizeDirection::ShrinkOnly);
+        m_dirFreeBtn->setChecked(direction == DiskLayout::ResizeDirection::Free);
+        m_dirGrowBtn->setChecked(direction == DiskLayout::ResizeDirection::GrowOnly);
+    }
+}
+
 QString PartitionTab::resizeRequestBlockReason() const
 {
     const auto* p = selectedPartition();
@@ -467,7 +684,8 @@ QString PartitionTab::resizeRequestBlockReason() const
         return "Phân vùng đang chọn không phải phân vùng đã tra kích thước - hãy tra lại cho phân vùng này.";
     if (m_confirmEdit->text() != confirmToken(*p))
         return QString("Chưa gõ đúng \"%1\" để xác nhận.").arg(confirmToken(*p));
-    return {};
+    // Hướng đã khóa (chỉ thu nhỏ/chỉ mở rộng) là lớp chặn cuối cho trường hợp kích thước nhập trái hướng.
+    return DiskLayout::directionBlockReason(m_newSizeSpin->value(), p->sizeBytes, m_direction);
 }
 
 void PartitionTab::onConfirmTextChanged(const QString&)
@@ -526,16 +744,22 @@ void PartitionTab::onResizeClicked()
         return;
     }
     const QString name = p->driveLetter.isEmpty() ? confirmToken(*p) : (p->driveLetter + ":");
+    // Nói rõ thu nhỏ hay mở rộng, vùng giải phóng/lấy thêm nằm phía nào - để người dùng xác nhận ĐÚNG điều sắp xảy ra.
+    const QString change = DiskLayout::describeResize(name, p->sizeBytes, newSizeBytes, m_diskMap->freeBytesAfterResizeTarget(),
+                                                      m_diskMap->freeBytesBeforeResizeTarget());
 
     const auto answer = QMessageBox::warning(
         this, "Xác nhận đổi kích thước phân vùng",
         QString("Sắp đổi kích thước ổ %1 (đĩa %4, phân vùng %5) từ %2 thành %3.\n\n"
+                "%6\n"
+                "Hướng đã chọn: %7.\n\n"
                 "Đây là thao tác đĩa THẬT, không có \"hoàn tác\" dễ dàng nếu có sự cố giữa chừng. "
                 "Hãy chắc chắn bạn đã sao lưu dữ liệu quan trọng.\n\n"
                 "Tiếp tục?")
             .arg(name, DiskUi::formatBytes(p->sizeBytes), DiskUi::formatBytes(newSizeBytes))
             .arg(p->diskNumber)
-            .arg(p->partitionNumber),
+            .arg(p->partitionNumber)
+            .arg(change, DiskLayout::directionName(m_direction)),
         QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
     if (answer != QMessageBox::Yes)
         return;
@@ -547,6 +771,8 @@ void PartitionTab::onResizeClicked()
 
     m_refreshBtn->setEnabled(false);
     m_table->setEnabled(false);
+    m_diskMap->setEnabled(false);
+    m_directionRow->setEnabled(false);
     m_queryBtn->setEnabled(false);
     m_resizeBtn->setEnabled(false);
     m_confirmEdit->setEnabled(false);
@@ -564,6 +790,8 @@ void PartitionTab::onResizeFinished(bool success, QString error)
 {
     m_refreshBtn->setEnabled(true);
     m_table->setEnabled(true);
+    m_diskMap->setEnabled(true);
+    m_directionRow->setEnabled(true);
     m_queryBtn->setEnabled(true);
     m_confirmEdit->setEnabled(true);
     m_newSizeSpin->setEnabled(true);

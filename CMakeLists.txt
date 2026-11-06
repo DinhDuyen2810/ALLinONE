@@ -270,6 +270,8 @@ add_library(diskcleanup_core STATIC
     src/tools/diskcleanup/engine/PartitionManager.cpp
     src/tools/diskcleanup/engine/PartitionResizer.h
     src/tools/diskcleanup/engine/PartitionResizer.cpp
+    src/tools/diskcleanup/engine/DiskLayout.h
+    src/tools/diskcleanup/engine/DiskLayout.cpp
     src/tools/diskcleanup/engine/FsSafety.h
     src/tools/diskcleanup/engine/FsSafety.cpp
 )
@@ -289,6 +291,8 @@ add_library(diskcleanup_ui STATIC
     src/tools/diskcleanup/LargeFilesTab.cpp
     src/tools/diskcleanup/DuplicateFilesTab.h
     src/tools/diskcleanup/DuplicateFilesTab.cpp
+    src/tools/diskcleanup/DiskMapWidget.h
+    src/tools/diskcleanup/DiskMapWidget.cpp
     src/tools/diskcleanup/PartitionTab.h
     src/tools/diskcleanup/PartitionTab.cpp
     src/tools/diskcleanup/DiskCleanupWindow.h

@@ -22,6 +22,7 @@
 #include "tools/diskcleanup/engine/CategoryRegistry.h"
 #include "tools/diskcleanup/engine/CleanupExecutor.h"
 #include "tools/diskcleanup/engine/CleanupScanner.h"
+#include "tools/diskcleanup/engine/DiskLayout.h"
 #include "tools/diskcleanup/engine/DiskSpaceInfo.h"
 #include "tools/diskcleanup/engine/DuplicateFinder.h"
 #include "tools/diskcleanup/engine/FsSafety.h"
@@ -1406,6 +1407,206 @@ int main(int argc, char** argv)
         CHECK(!internal::isSameSizeAtInputPrecision(465.77, 500107862016LL));
         CHECK(!internal::isSameSizeAtInputPrecision(465.75, 500107862016LL));
         CHECK(!internal::isSameSizeAtInputPrecision(nan, 500107862016LL));
+    }
+
+    // ---- Sơ đồ đĩa kiểu Disk Management (DiskLayout + đọc Offset/Get-Disk): THUẦN, không chạy PowerShell/không đụng đĩa ----
+    {
+        using namespace PartitionManager;
+        constexpr qint64 MiB = 1024LL * 1024, GiB = 1024 * MiB;
+        auto part = [](int num, const char* type, qint64 offsetMiB, qint64 sizeMiB, const char* letter = "", const char* fs = "NTFS") {
+            PartitionInfo p;
+            p.diskNumber = 0;
+            p.partitionNumber = num;
+            p.type = type;
+            p.driveLetter = letter;
+            p.fileSystem = fs;
+            p.offsetBytes = offsetMiB * MiB;
+            p.sizeBytes = sizeMiB * MiB;
+            return p;
+        };
+        DiskInfo disk0;
+        disk0.number = 0;
+        disk0.sizeBytes = 256060514304LL;
+        disk0.partitionStyle = "GPT";
+        // Bố cục THẬT của máy dựng ra ảnh Disk Management: EFI, MSR, C:, D:, ~67 GB chưa phân bổ, Recovery.
+        const QList<PartitionInfo> parts = {part(1, "System", 1, 100, "", "FAT32"), part(2, "Reserved", 101, 16, "", ""),
+                                            part(3, "Basic", 117, 123557, "C"), part(4, "Basic", 123675, 51394, "D"),
+                                            part(5, "Recovery", 243675, 522)};
+        const auto rows = DiskLayout::build({disk0}, parts);
+        CHECK(rows.size() == 1 && !rows[0].approximate);
+        const auto& segs = rows[0].segments;
+        CHECK(segs.size() == 6); // khe 1 MiB giữa C: và D: và 1 MiB cuối đĩa nhỏ hơn kMinGapBytes nên KHÔNG thành vùng chưa phân bổ
+        CHECK(segs.size() == 6 && segs[4].kind == DiskLayout::SegmentKind::Unallocated);
+        CHECK(segs.size() == 6 && segs[4].offsetBytes == (123675 + 51394) * MiB && segs[4].sizeBytes == (243675 - 123675 - 51394) * MiB);
+        CHECK(segs.size() == 6 && segs[3].kind == DiskLayout::SegmentKind::Partition && segs[3].partitionIndex == 3); // D: = phần tử số 3 của danh sách
+        CHECK(DiskLayout::freeBytesAfter(segs, 3) == (243675 - 123675 - 51394) * MiB); // D: có vùng trống liền kề BÊN PHẢI
+        CHECK(DiskLayout::freeBytesAfter(segs, 2) == 0);                                // C: sát D: -> không mở rộng được
+        CHECK(DiskLayout::freeBytesBefore(segs, 4) == DiskLayout::freeBytesAfter(segs, 3)); // Recovery: vùng trống nằm bên TRÁI nó
+        CHECK(DiskLayout::freeBytesBefore(segs, 3) == 0 && DiskLayout::freeBytesAfter(segs, 99) == 0);
+
+        qint64 total = 0;
+        for (const auto& s : segs) total += s.sizeBytes;
+
+        // Thu nhỏ D: 20 GiB -> phần giải phóng NỐI VÀO vùng chưa phân bổ ngay sau (mép phải dịch sang trái, mép trái giữ nguyên)
+        {
+            const auto after = DiskLayout::projectResize(segs, 3, segs[3].sizeBytes - 20 * GiB);
+            CHECK(after.size() == 6);
+            CHECK(after[3].offsetBytes == segs[3].offsetBytes); // mép TRÁI đứng yên
+            CHECK(after[3].sizeBytes == segs[3].sizeBytes - 20 * GiB);
+            CHECK(after[4].kind == DiskLayout::SegmentKind::Unallocated && after[4].sizeBytes == segs[4].sizeBytes + 20 * GiB);
+            CHECK(after[4].offsetBytes == segs[4].offsetBytes - 20 * GiB); // vùng trống mở rộng NGƯỢC về phía trái, vẫn liền kề D:
+            qint64 t2 = 0;
+            for (const auto& s : after) t2 += s.sizeBytes;
+            CHECK(t2 == total); // tổng dung lượng bảo toàn
+        }
+        // Mở rộng D: 30 GiB (< vùng trống) -> lấy từ vùng chưa phân bổ liền kề bên phải
+        {
+            const auto after = DiskLayout::projectResize(segs, 3, segs[3].sizeBytes + 30 * GiB);
+            CHECK(after.size() == 6 && after[3].sizeBytes == segs[3].sizeBytes + 30 * GiB);
+            CHECK(after[4].sizeBytes == segs[4].sizeBytes - 30 * GiB && after[4].offsetBytes == segs[4].offsetBytes + 30 * GiB);
+        }
+        // Mở rộng quá vùng trống -> KẸP bằng đúng vùng trống, vùng đó biến mất, KHÔNG nuốt Recovery
+        {
+            const auto after = DiskLayout::projectResize(segs, 3, segs[3].sizeBytes + 500 * GiB);
+            CHECK(after.size() == 5 && after[3].sizeBytes == segs[3].sizeBytes + segs[4].sizeBytes);
+            CHECK(after[4].kind == DiskLayout::SegmentKind::Partition && after[4].sizeBytes == 522 * MiB);
+        }
+        // C: không có vùng trống liền kề -> mở rộng không đổi được gì; kích thước bằng nhau -> không đổi
+        CHECK(DiskLayout::projectResize(segs, 2, segs[2].sizeBytes + GiB)[2].sizeBytes == segs[2].sizeBytes);
+        CHECK(DiskLayout::projectResize(segs, 3, segs[3].sizeBytes).size() == segs.size());
+        CHECK(DiskLayout::projectResize(segs, 99, GiB).size() == segs.size()); // chỉ số lạ -> nguyên trạng
+        // Thu nhỏ phân vùng KHÔNG có vùng trống sau nó (Recovery, cuối đĩa) -> tạo mới một vùng chưa phân bổ phía sau
+        {
+            const auto after = DiskLayout::projectResize(segs, 4, 400 * MiB);
+            CHECK(after.size() == 7 && after[5].sizeBytes == 400 * MiB && after[6].kind == DiskLayout::SegmentKind::Unallocated);
+            CHECK(after.size() == 7 && after[6].sizeBytes == 122 * MiB && after[6].offsetBytes == 243675 * MiB + 400 * MiB);
+        }
+
+        // Thiếu Offset -> xếp tuần tự theo số phân vùng, báo gần đúng, KHÔNG bịa vùng chưa phân bổ
+        {
+            QList<PartitionInfo> noOffset = {part(2, "Basic", 0, 500, "D"), part(1, "Basic", 0, 300, "C")};
+            for (auto& p : noOffset) p.offsetBytes = -1;
+            const auto r = DiskLayout::build({}, noOffset); // cũng không có thông tin đĩa (Get-Disk lỗi)
+            CHECK(r.size() == 1 && r[0].approximate && r[0].segments.size() == 2);
+            CHECK(r.size() == 1 && r[0].segments.size() == 2 && r[0].segments[0].partitionIndex == 1 && r[0].segments[1].offsetBytes == 300 * MiB);
+            CHECK(r.size() == 1 && r[0].disk.sizeBytes == 800 * MiB); // dung lượng đĩa suy từ phân vùng
+        }
+        // Đĩa trống/chưa khởi tạo -> một vùng chưa phân bổ duy nhất; phân vùng chồng lấn không tạo khoảng âm
+        {
+            DiskInfo blank;
+            blank.number = 3;
+            blank.sizeBytes = 1000 * GiB;
+            blank.partitionStyle = "RAW";
+            const auto r = DiskLayout::build({blank}, {});
+            CHECK(r.size() == 1 && r[0].segments.size() == 1 && r[0].segments[0].kind == DiskLayout::SegmentKind::Unallocated);
+            CHECK(r.size() == 1 && r[0].segments.size() == 1 && r[0].segments[0].sizeBytes == 1000 * GiB);
+
+            const auto overlap = DiskLayout::build({}, {part(1, "Basic", 1, 100, "C"), part(2, "Basic", 50, 100, "D")});
+            CHECK(overlap.size() == 1 && overlap[0].segments.size() == 2 && overlap[0].segments[1].offsetBytes == 101 * MiB);
+        }
+        // Hai đĩa -> hai hàng theo thứ tự số đĩa
+        {
+            DiskInfo d1; d1.number = 1; d1.sizeBytes = 100 * GiB;
+            PartitionInfo usb = part(1, "Basic", 1, 1000, "E");
+            usb.diskNumber = 1;
+            const auto r = DiskLayout::build({d1, disk0}, parts + QList<PartitionInfo>{usb});
+            CHECK(r.size() == 2 && r[0].disk.number == 0 && r[1].disk.number == 1);
+            CHECK(r.size() == 2 && r[1].segments.size() == 2 && r[1].segments[1].kind == DiskLayout::SegmentKind::Unallocated);
+        }
+
+        // Độ rộng khối: tổng chính xác, khối nhỏ (EFI 100 MB) vẫn thấy được, tỉ lệ đúng với khối lớn
+        {
+            QList<qint64> sizes;
+            for (const auto& s : segs) sizes << s.sizeBytes;
+            for (const int totalPx : {420, 700, 900, 1500})
+            {
+                const auto w = DiskLayout::computeBlockWidths(sizes, totalPx, 36);
+                int sum = 0;
+                bool allMin = true;
+                for (const int v : w) { sum += v; allMin = allMin && v >= 36; }
+                CHECK(sum == totalPx && w.size() == sizes.size() && allMin);
+            }
+            const auto w = DiskLayout::computeBlockWidths(sizes, 900, 36);
+            CHECK(w[0] == 36 && w[1] == 36 && w[5] == 36);          // EFI, MSR, Recovery được nâng lên tối thiểu
+            CHECK(w[2] > w[4] && w[4] > w[3]);                       // C: (120 GB) > vùng chưa phân bổ (67 GB) > D: (50 GB)
+            const double bpp = DiskLayout::bytesPerPixel(sizes, w, 36);
+            CHECK(bpp > 0.0 && std::abs(bpp * w[3] - double(sizes[3])) < double(sizes[3]) * 0.02); // đổi pixel -> byte ở khối lớn sai < 2%
+            CHECK(DiskLayout::computeBlockWidths({}, 900, 36).isEmpty());
+            CHECK(DiskLayout::computeBlockWidths({5 * GiB}, 300, 36) == QList<int>{300});
+            const auto tooNarrow = DiskLayout::computeBlockWidths({GiB, GiB, GiB}, 60, 36); // không đủ chỗ cho 3 khối tối thiểu
+            CHECK(tooNarrow.size() == 3 && tooNarrow[0] + tooNarrow[1] + tooNarrow[2] == 60);
+            const auto zeroSizes = DiskLayout::computeBlockWidths({0, 0}, 100, 36);
+            CHECK(zeroSizes.size() == 2 && zeroSizes[0] + zeroSizes[1] == 100);
+        }
+
+        // Hướng thay đổi: khoảng kéo được = giao của khoảng Windows cho phép và hướng đã khóa
+        {
+            SupportedSizeRange range;
+            range.ok = true;
+            range.minBytes = qint64(45.29 * GiB);
+            range.maxBytes = qint64(117.19 * GiB);
+            const qint64 cur = qint64(50.19 * GiB);
+            using DiskLayout::ResizeDirection;
+            auto both = DiskLayout::boundsForDirection(cur, range, ResizeDirection::Free);
+            auto shrink = DiskLayout::boundsForDirection(cur, range, ResizeDirection::ShrinkOnly);
+            auto grow = DiskLayout::boundsForDirection(cur, range, ResizeDirection::GrowOnly);
+            CHECK(both.minBytes == range.minBytes && both.maxBytes == range.maxBytes);
+            CHECK(shrink.minBytes == range.minBytes && shrink.maxBytes == cur); // kéo TRÁI: không vượt quá hiện tại
+            CHECK(grow.minBytes == cur && grow.maxBytes == range.maxBytes);     // kéo PHẢI: không nhỏ hơn hiện tại
+            CHECK(DiskLayout::boundsForDirection(cur, SupportedSizeRange{}, ResizeDirection::Free).maxBytes == 0);
+            CHECK(DiskLayout::boundsForDirection(10 * GiB, range, ResizeDirection::GrowOnly).minBytes == range.minBytes); // hiện tại ngoài khoảng -> kẹp
+            CHECK(DiskLayout::boundsForDirection(999 * GiB, range, ResizeDirection::ShrinkOnly).maxBytes == range.maxBytes);
+
+            const double nan = std::numeric_limits<double>::quiet_NaN();
+            CHECK(DiskLayout::directionBlockReason(80.0, cur, ResizeDirection::Free).isEmpty());
+            CHECK(!DiskLayout::directionBlockReason(80.0, cur, ResizeDirection::ShrinkOnly).isEmpty()); // lớn hơn mà chỉ cho thu nhỏ
+            CHECK(DiskLayout::directionBlockReason(46.0, cur, ResizeDirection::ShrinkOnly).isEmpty());
+            CHECK(!DiskLayout::directionBlockReason(46.0, cur, ResizeDirection::GrowOnly).isEmpty());   // nhỏ hơn mà chỉ cho mở rộng
+            CHECK(DiskLayout::directionBlockReason(80.0, cur, ResizeDirection::GrowOnly).isEmpty());
+            CHECK(DiskLayout::directionBlockReason(50.19, cur, ResizeDirection::ShrinkOnly).isEmpty()); // chưa đổi (đúng độ chính xác ô nhập)
+            CHECK(DiskLayout::directionBlockReason(50.19, cur, ResizeDirection::GrowOnly).isEmpty());
+            CHECK(!DiskLayout::directionBlockReason(nan, cur, ResizeDirection::ShrinkOnly).isEmpty());
+            CHECK(!DiskLayout::directionBlockReason(std::numeric_limits<double>::infinity(), cur, ResizeDirection::GrowOnly).isEmpty());
+            CHECK(DiskLayout::directionName(ResizeDirection::ShrinkOnly).contains("trái"));
+            CHECK(DiskLayout::directionName(ResizeDirection::GrowOnly).contains("phải"));
+        }
+
+        // Mô tả thay đổi: nói rõ thu nhỏ/mở rộng, phía giải phóng/lấy thêm, và cảnh báo khi không có vùng trống bên phải
+        {
+            const qint64 cur = 50 * GiB;
+            const QString shrinkText = DiskLayout::describeResize("D:", cur, 30 * GiB, 67 * GiB, 0);
+            CHECK(shrinkText.contains("THU NHỎ") && shrinkText.contains("BÊN PHẢI") && shrinkText.contains("TRÁI giữ nguyên"));
+            CHECK(shrinkText.contains("20.00 GB"));
+            const QString growText = DiskLayout::describeResize("D:", cur, 70 * GiB, 67 * GiB, 0);
+            CHECK(growText.contains("MỞ RỘNG") && growText.contains("LIỀN KỀ BÊN PHẢI") && !growText.contains("⚠"));
+            const QString noFree = DiskLayout::describeResize("C:", cur, 60 * GiB, 0, 10 * GiB);
+            CHECK(noFree.contains("⚠") && noFree.contains("KHÔNG có vùng chưa phân bổ liền kề bên phải") && noFree.contains("BÊN TRÁI"));
+            const QString tooMuch = DiskLayout::describeResize("D:", cur, 150 * GiB, 20 * GiB, 0);
+            CHECK(tooMuch.contains("Vượt quá"));
+            CHECK(DiskLayout::describeResize("D:", cur, cur + 1000, 5 * GiB, 0).contains("Chưa thay đổi")); // < 1 MiB = coi như chưa đổi
+            CHECK(DiskLayout::formatSize(100 * MiB) == "100.0 MB" && DiskLayout::formatSize(3 * GiB / 2) == "1.50 GB");
+        }
+
+        // Đọc JSON: Offset (thiếu -> -1) và Get-Disk (mảng / object đơn / rỗng / hỏng)
+        {
+            QString err;
+            const auto withOffset = internal::parsePartitionsJson(R"([{"DiskNumber":0,"PartitionNumber":1,"Size":104857600,"Offset":1048576},{"DiskNumber":0,"PartitionNumber":2,"Size":5}])", &err);
+            CHECK(withOffset.size() == 2 && withOffset[0].offsetBytes == 1048576 && withOffset[1].offsetBytes == -1);
+            const auto disks = internal::parseDisksJson(R"([{"Number":0,"FriendlyName":"SAMSUNG","Size":256060514304,"PartitionStyle":"GPT","IsOffline":false,"IsReadOnly":false},{"Number":1,"FriendlyName":"USB","Size":8000000000,"PartitionStyle":"RAW","IsOffline":true,"IsReadOnly":true}])", &err);
+            CHECK(disks.size() == 2 && disks[0].number == 0 && disks[0].sizeBytes == 256060514304LL && disks[0].partitionStyle == "GPT");
+            CHECK(disks.size() == 2 && disks[1].isOffline && disks[1].isReadOnly && disks[1].partitionStyle == "RAW");
+            const auto single = internal::parseDisksJson(R"({"Number":4,"FriendlyName":"X","Size":10,"PartitionStyle":"MBR"})", &err);
+            CHECK(single.size() == 1 && single[0].number == 4 && single[0].partitionStyle == "MBR");
+            QString emptyErr, badErr;
+            CHECK(internal::parseDisksJson("", &emptyErr).isEmpty() && emptyErr.isEmpty());
+            CHECK(internal::parseDisksJson("{khong phai json", &badErr).isEmpty() && !badErr.isEmpty());
+            CHECK(internal::parseDisksJson(R"({"Number":0,"Size":1e300})", &err)[0].sizeBytes == std::numeric_limits<qint64>::max()); // tràn số bị bão hòa
+            // Kịch bản đọc đĩa chỉ ĐỌC: không có lệnh nào đổi đĩa
+            const QString diskScript = internal::buildListDisksScript();
+            CHECK(diskScript.contains("Get-Disk") && !diskScript.contains("Resize-Partition") && !diskScript.contains("Set-") &&
+                  !diskScript.contains("Remove-") && !diskScript.contains("Clear-") && !diskScript.contains("New-Partition"));
+            CHECK(internal::buildListPartitionsScript().contains("Offset"));
+        }
     }
 
     // ---- Hồi quy: junction trỏ vào thư mục ĐƯỢC BẢO VỆ phải bị nhận ra theo danh tính vật lý ----
