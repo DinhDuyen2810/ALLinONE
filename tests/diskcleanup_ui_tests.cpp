@@ -47,6 +47,7 @@
 #include "tools/diskcleanup/FolderTreeTab.h"
 #include "tools/diskcleanup/LargeFilesTab.h"
 #include "tools/diskcleanup/PartitionTab.h"
+#include "tools/diskcleanup/engine/PartitionMover.h"
 #include "tools/diskcleanup/ProcessTab.h"
 #include "tools/diskcleanup/ProcessTableModel.h"
 
@@ -426,6 +427,379 @@ int main(int argc, char** argv)
             map.grab().save(dir + "/diskmap_shrink.png");
             map.setPreviewSize(dSize + 30 * GiB);
             map.grab().save(dir + "/diskmap_grow.png");
+        }
+    }
+
+    // ---- Sơ đồ đĩa: chế độ DỜI (tay nắm mép trái, kéo cả khối, đổi thứ tự) trên dữ liệu GIẢ - KHÔNG PowerShell, KHÔNG đụng đĩa ----
+    // Bố cục: EFI | C: 100 GiB | [20 GiB trống] | D: 40 GiB | [30 GiB trống] | E: 10 GiB
+    const qint64 cEnd2 = (101 + 100 * 1024) * MiB;
+    const qint64 d2Start = cEnd2 + 20 * GiB, d2Size = 40 * GiB, d2End = d2Start + d2Size, e2Start = d2End + 30 * GiB;
+    PartitionManager::DiskInfo moveDisk;
+    moveDisk.number = 0;
+    moveDisk.sizeBytes = e2Start + 10 * GiB + 2 * MiB;
+    moveDisk.partitionStyle = "GPT";
+    const QList<PartitionManager::PartitionInfo> moveParts = {
+        fakePart(1, "System", 1, 100, "", "", "FAT32"), fakePart(2, "Basic", 101, 100 * 1024, "C", "Windows", "NTFS"),
+        fakePart(3, "Basic", d2Start / MiB, d2Size / MiB, "D", "Data", "NTFS"), fakePart(4, "Basic", e2Start / MiB, 10 * 1024, "E", "Extra", "NTFS")};
+    PartitionManager::SupportedSizeRange moveRange; // Windows cho D: co 10 GiB .. 40 + 30 (vùng trống bên phải) GiB
+    moveRange.ok = true;
+    moveRange.minBytes = 10 * GiB;
+    moveRange.maxBytes = 70 * GiB;
+    {
+        DiskMapWidget map;
+        map.setData({moveDisk}, moveParts);
+        map.resize(1000, map.sizeHint().height());
+        auto mouse = [&](QEvent::Type type, QPoint p, Qt::MouseButton button, Qt::MouseButtons buttons) {
+            QMouseEvent e(type, p, map.mapToGlobal(p), button, buttons, Qt::NoModifier);
+            QApplication::sendEvent(&map, &e);
+        };
+        auto press = [&](QPoint p) { mouse(QEvent::MouseButtonPress, p, Qt::LeftButton, Qt::LeftButton); };
+        auto move = [&](QPoint p) { mouse(QEvent::MouseMove, p, Qt::NoButton, Qt::LeftButton); };
+        auto release = [&](QPoint p) { mouse(QEvent::MouseButtonRelease, p, Qt::LeftButton, Qt::NoButton); };
+
+        map.setResizeContext(0, 3, moveRange, DiskLayout::ResizeDirection::Free);
+        CHECK(map.isResizeActive() && map.currentStart() == d2Start && map.previewStart() == d2Start && !map.isMoveEnabled());
+        CHECK(map.leftHandleRectForTest().isNull()); // chưa bật dời: CHỈ có tay nắm mép phải
+        int geoSignals = 0, sizeSignals = 0;
+        qint64 lastStart = -1, lastSize = -1;
+        QObject::connect(&map, &DiskMapWidget::previewGeometryChanged, [&](qint64 st, qint64 sz) { ++geoSignals; lastStart = st; lastSize = sz; });
+        QObject::connect(&map, &DiskMapWidget::previewSizeChanged, [&](qint64) { ++sizeSignals; });
+
+        // Kéo mép phải khi chưa dời: tín hiệu hình học phát kèm vị trí hiện tại (đường cũ không đổi hành vi).
+        {
+            const QRect rh = map.handleRectForTest();
+            press(rh.center());
+            move(rh.center() + QPoint(-15, 0));
+            release(rh.center() + QPoint(-15, 0));
+            CHECK(map.previewSize() < d2Size && map.previewStart() == d2Start && geoSignals >= 1 && lastStart == d2Start && lastSize == map.previewSize() && sizeSignals >= 1);
+            map.setPreviewSize(d2Size);
+            geoSignals = sizeSignals = 0;
+        }
+
+        map.setMoveEnabled(true);
+        CHECK(map.isMoveEnabled());
+        const QRect dBlock = map.blockRectForTest(0, 3);
+        QRect lh = map.leftHandleRectForTest();
+        CHECK(!lh.isNull() && std::abs(lh.center().x() - dBlock.left()) <= 1); // tay nắm nằm ở MÉP TRÁI của D:
+        CHECK(map.diskSizeOfTarget() == moveDisk.sizeBytes);
+        const auto span = map.targetSpan();
+        CHECK(span.lo == cEnd2 && span.hi == e2Start); // chỗ cũ + 20 GiB trống bên trái + 30 GiB trống bên phải
+
+        // --- Kéo mép TRÁI sang TRÁI: mở rộng về bên trái, mép phải giữ nguyên, kẹp ở mép phải của C: ---
+        press(lh.center());
+        move(lh.center() + QPoint(-20, 0));
+        CHECK(map.previewStart() < d2Start && map.previewStart() >= cEnd2 && map.previewStart() + map.previewSize() == d2End);
+        CHECK(map.previewStart() % MiB == 0 && geoSignals >= 1 && lastStart == map.previewStart() && lastSize == map.previewSize());
+        CHECK(map.previewSize() > d2Size);
+        move(lh.center() + QPoint(-1000, 0));
+        CHECK(map.previewStart() == cEnd2 && map.previewSize() == d2End - cEnd2); // hết vùng trống bên trái
+        move(lh.center() + QPoint(1000, 0)); // kéo quá bên phải: kích thước không nhỏ hơn mức tối thiểu của Windows
+        CHECK(map.previewSize() == moveRange.minBytes && map.previewStart() == d2End - moveRange.minBytes);
+        move(lh.center());                  // về đúng chỗ cũ = chưa đổi (giữ nguyên giá trị cũ)
+        CHECK(map.previewStart() == d2Start && map.previewSize() == d2Size);
+        release(lh.center());
+        const int sigAfter = geoSignals;
+        move(lh.center() + QPoint(-100, 0)); // đã nhả chuột
+        CHECK(geoSignals == sigAfter && map.previewStart() == d2Start);
+
+        // --- Khóa hướng: chỉ thu nhỏ -> mép trái chỉ đi sang PHẢI; chỉ mở rộng -> mép trái chỉ đi sang TRÁI ---
+        map.setDirection(DiskLayout::ResizeDirection::ShrinkOnly);
+        lh = map.leftHandleRectForTest();
+        press(lh.center());
+        move(lh.center() + QPoint(-200, 0));
+        CHECK(map.previewStart() == d2Start && map.previewSize() == d2Size); // sang trái bị chặn
+        move(lh.center() + QPoint(40, 0));
+        CHECK(map.previewStart() > d2Start && map.previewStart() + map.previewSize() == d2End && map.previewSize() < d2Size);
+        release(lh.center());
+        map.setPreviewGeometry(d2Start, d2Size);
+        map.setDirection(DiskLayout::ResizeDirection::GrowOnly);
+        lh = map.leftHandleRectForTest();
+        press(lh.center());
+        move(lh.center() + QPoint(200, 0));
+        CHECK(map.previewStart() == d2Start && map.previewSize() == d2Size); // sang phải bị chặn
+        move(lh.center() + QPoint(-30, 0));
+        CHECK(map.previewStart() < d2Start && map.previewSize() > d2Size);
+        release(lh.center());
+        map.setDirection(DiskLayout::ResizeDirection::Free);
+        map.setPreviewGeometry(d2Start, d2Size);
+        CHECK(map.previewStart() == d2Start && map.previewSize() == d2Size);
+
+        // --- Kéo CẢ KHỐI: dời giữ nguyên kích thước, kẹp trong vùng trống liền kề hai bên ---
+        {
+            const QRect body = map.blockRectForTest(0, 3);
+            press(body.center());
+            move(body.center() + QPoint(15, 0));
+            CHECK(map.previewStart() > d2Start && map.previewSize() == d2Size && map.previewStart() % MiB == 0);
+            move(body.center() + QPoint(2000, 0));
+            CHECK(map.previewStart() == e2Start - d2Size && map.previewSize() == d2Size); // sát E: (kẹp ở cuối vùng trống bên phải)
+            move(body.center() + QPoint(-2000, 0));
+            CHECK(map.previewStart() == cEnd2 && map.previewSize() == d2Size);            // sát C: (kẹp ở đầu vùng trống bên trái)
+            move(body.center());
+            CHECK(map.previewStart() == d2Start);                                         // về chỗ cũ
+            release(body.center());
+        }
+        // Kéo khối KHÔNG xảy ra khi đã đổi kích thước (preview != hiện tại) hoặc khi khóa hướng.
+        {
+            map.setPreviewSize(d2Size - 5 * GiB);
+            const QRect body = map.blockRectForTest(0, 3);
+            press(body.center());
+            move(body.center() + QPoint(40, 0));
+            release(body.center());
+            CHECK(map.previewStart() == d2Start);
+            map.setPreviewSize(d2Size);
+            map.setDirection(DiskLayout::ResizeDirection::ShrinkOnly);
+            press(map.blockRectForTest(0, 3).center());
+            move(map.blockRectForTest(0, 3).center() + QPoint(40, 0));
+            release(map.blockRectForTest(0, 3).center());
+            CHECK(map.previewStart() == d2Start);
+            map.setDirection(DiskLayout::ResizeDirection::Free);
+        }
+
+        // --- Dời xong rồi kéo mép PHẢI: giới hạn là hết vùng trống của khe (không còn là mức Windows cho vị trí cũ) ---
+        map.setPreviewGeometry(cEnd2, d2Size); // D: sát C:
+        CHECK(map.previewStart() == cEnd2 && map.previewSize() == d2Size);
+        {
+            const QRect rh = map.handleRectForTest();
+            press(rh.center());
+            move(rh.center() + QPoint(5000, 0));
+            release(rh.center());
+            CHECK(map.previewStart() == cEnd2 && map.previewSize() == e2Start - cEnd2); // lấn hết cả hai vùng trống tới E:
+        }
+        map.setPreviewGeometry(d2Start, d2Size);
+
+        // --- setPreviewGeometry: đặt KHÔNG phát tín hiệu; hình học sai (chồng phân vùng khác, ngoài đĩa, không căn lề) bị bỏ ---
+        geoSignals = 0;
+        map.setPreviewGeometry(d2Start + 5 * GiB, d2Size);
+        CHECK(map.previewStart() == d2Start + 5 * GiB && geoSignals == 0);
+        map.setPreviewGeometry(cEnd2 - GiB, d2Size); // lấn vào C:
+        CHECK(map.previewStart() == d2Start + 5 * GiB);
+        map.setPreviewGeometry(d2Start + 5 * GiB + 4096, d2Size); // lệch căn lề 1 MiB
+        CHECK(map.previewStart() == d2Start + 5 * GiB);
+        map.setPreviewGeometry(moveDisk.sizeBytes, d2Size); // ngoài đĩa
+        CHECK(map.previewStart() == d2Start + 5 * GiB);
+        map.setPreviewGeometry(d2Start, d2Size);
+        CHECK(map.previewStart() == d2Start);
+
+        // --- Tắt chế độ dời giữa lúc kéo: kéo dừng, tay nắm trái biến mất, kéo khối không còn ---
+        lh = map.leftHandleRectForTest();
+        press(lh.center());
+        map.setMoveEnabled(false, "thử");
+        move(lh.center() + QPoint(-30, 0));
+        CHECK(map.previewStart() == d2Start && map.leftHandleRectForTest().isNull());
+        release(lh.center());
+
+        // --- Có ảnh chụp khi cần xem ---
+        if (qEnvironmentVariableIsSet("DISKCLEANUP_UI_SHOTS"))
+        {
+            const QString dir = qEnvironmentVariable("DISKCLEANUP_UI_SHOTS");
+            map.setSelection(0, 3);
+            map.setMoveEnabled(true);
+            map.setPreviewGeometry(cEnd2, d2End - cEnd2);
+            map.grab().save(dir + "/diskmap_left_grow.png");
+            map.setPreviewGeometry(d2Start + 20 * GiB, d2Size);
+            map.grab().save(dir + "/diskmap_move_right.png");
+        }
+    }
+
+    // ---- Đổi THỨ TỰ: kéo khối sang một vùng chưa phân bổ KHÁC (không liền kề) ----
+    // Bố cục: A 10 GiB | [5 GiB trống] | B 20 GiB | [30 GiB trống]
+    {
+        PartitionManager::DiskInfo d3;
+        d3.number = 0;
+        d3.partitionStyle = "GPT";
+        const qint64 aStart = 1 * MiB, aSize = 10 * GiB, bStart = aStart + aSize + 5 * GiB, bSize = 20 * GiB, free2 = bStart + bSize;
+        d3.sizeBytes = free2 + 30 * GiB + 2 * MiB;
+        const QList<PartitionManager::PartitionInfo> parts3 = {fakePart(1, "Basic", aStart / MiB, aSize / MiB, "A", "A", "NTFS"),
+                                                              fakePart(2, "Basic", bStart / MiB, bSize / MiB, "B", "B", "NTFS")};
+        PartitionManager::SupportedSizeRange r3;
+        r3.ok = true;
+        r3.minBytes = 1 * GiB;
+        r3.maxBytes = aSize + 5 * GiB;
+        DiskMapWidget map;
+        map.setData({d3}, parts3);
+        map.resize(1000, map.sizeHint().height());
+        auto mouse = [&](QEvent::Type type, QPoint p, Qt::MouseButton button, Qt::MouseButtons buttons) {
+            QMouseEvent e(type, p, map.mapToGlobal(p), button, buttons, Qt::NoModifier);
+            QApplication::sendEvent(&map, &e);
+        };
+        map.setResizeContext(0, 1, r3, DiskLayout::ResizeDirection::Free);
+        map.setMoveEnabled(true);
+        const QRect aBlock = map.blockRectForTest(0, 1);
+        const QRect free2Rect = map.unallocatedRectForTest(0, 1); // vùng trống thứ 2 (30 GiB, sau B)
+        CHECK(!aBlock.isNull() && !free2Rect.isNull() && free2Rect.left() > map.blockRectForTest(0, 2).right());
+        mouse(QEvent::MouseButtonPress, aBlock.center(), Qt::LeftButton, Qt::LeftButton);
+        mouse(QEvent::MouseMove, QPoint(free2Rect.center().x(), aBlock.center().y()), Qt::NoButton, Qt::LeftButton);
+        CHECK(map.previewStart() >= free2 && map.previewStart() + aSize <= d3.sizeBytes && map.previewSize() == aSize);
+        CHECK(map.previewStart() > bStart); // A: nhảy qua B: sang vùng trống sau B: = đổi thứ tự
+        mouse(QEvent::MouseMove, QPoint(free2Rect.right() + 400, aBlock.center().y()), Qt::NoButton, Qt::LeftButton);
+        CHECK(map.previewStart() + aSize <= d3.sizeBytes - MiB); // kẹp trong đĩa (chừa 1 MiB cuối)
+        mouse(QEvent::MouseButtonRelease, aBlock.center(), Qt::LeftButton, Qt::NoButton);
+        // Bố cục xem trước đúng: A: nằm sau B:.
+        const QRect aAfter = map.blockRectForTest(0, 1), bAfter = map.blockRectForTest(0, 2);
+        CHECK(aAfter.left() > bAfter.right());
+        // B: (20 GiB) KHÔNG vừa vùng trống 5 GiB: kéo vào đó không làm B: nhảy sang chỗ không đủ chỗ.
+        map.setData({d3}, parts3);
+        map.setResizeContext(0, 2, PartitionManager::SupportedSizeRange{1 * GiB, 20 * GiB + 30 * GiB, true, QString()}, DiskLayout::ResizeDirection::Free);
+        map.setMoveEnabled(true);
+        const QRect bBlock = map.blockRectForTest(0, 2), free1 = map.unallocatedRectForTest(0, 0);
+        mouse(QEvent::MouseButtonPress, bBlock.center(), Qt::LeftButton, Qt::LeftButton);
+        mouse(QEvent::MouseMove, QPoint(free1.center().x(), bBlock.center().y()), Qt::NoButton, Qt::LeftButton);
+        CHECK(map.previewSize() == bSize && map.previewStart() >= aStart + aSize + MiB - MiB); // vẫn là một vị trí hợp lệ (không chồng A:)
+        CHECK(map.previewStart() >= aStart + aSize); // không bao giờ chồng lên A:
+        mouse(QEvent::MouseButtonRelease, bBlock.center(), Qt::LeftButton, Qt::NoButton);
+    }
+
+    // ---- PartitionTab với dữ liệu GIẢ: ô vị trí, kế hoạch, chặn khi không dời được, banner nhật ký ----
+    if (partTab && !partTab->isLoading())
+    {
+        partTab->setDataForTest({moveDisk}, moveParts);
+        app.processEvents();
+        auto* table = partTab->findChild<QTableWidget*>();
+        auto* sizeSpin = partTab->findChild<QDoubleSpinBox*>("partitionNewSizeSpin");
+        auto* startSpin = partTab->findChild<QDoubleSpinBox*>("partitionNewStartSpin");
+        auto* confirm = partTab->findChild<QLineEdit*>("partitionConfirmEdit");
+        auto* resizeBtn = partTab->findChild<QPushButton*>("partitionResizeButton");
+        auto* change = partTab->findChild<QLabel*>("partitionChangeLabel");
+        auto* edgeNote = partTab->findChild<QLabel*>("partitionEdgeNote");
+        auto* pending = partTab->findChild<QLabel*>("partitionPendingBanner");
+        auto* resumeBtn = partTab->findChild<QPushButton*>("partitionResumeButton");
+        auto* abandonBtn = partTab->findChild<QPushButton*>("partitionAbandonButton");
+        auto* pauseBtn = partTab->findChild<QPushButton*>("partitionPauseButton");
+        DiskMapWidget* tmap = partTab->diskMap();
+        CHECK(table && sizeSpin && startSpin && confirm && resizeBtn && change && edgeNote && pending && resumeBtn && abandonBtn && pauseBtn && tmap);
+        if (table && sizeSpin && startSpin && confirm && resizeBtn && change && edgeNote && pending && resumeBtn && abandonBtn && pauseBtn && tmap)
+        {
+            CHECK(table->rowCount() == 4 && !pending->isVisibleTo(partTab) && !partTab->hasPendingJournal());
+            CHECK(!pauseBtn->isVisibleTo(partTab) && !startSpin->isVisibleTo(partTab));
+            table->selectRow(2); // D:
+            app.processEvents();
+            partTab->applySupportedRangeForTest(moveRange);
+            app.processEvents();
+            // THỬ NGHIỆM: mặc định TẮT - phải tích ô xác nhận mới dời được; chưa tích thì ghi rõ lý do, ô vị trí ẩn, chỉ kéo mép phải.
+            auto* experimental = partTab->findChild<QCheckBox*>("partitionMoveExperimentalCheck");
+            CHECK(experimental != nullptr && !experimental->isChecked());
+            CHECK(partTab->moveSupportReason().contains("THỬ NGHIỆM") && !tmap->isMoveEnabled() && !startSpin->isVisibleTo(partTab));
+            CHECK(edgeNote->text().contains("THỬ NGHIỆM") && tmap->leftHandleRectForTest().isNull());
+            if (experimental)
+                experimental->setChecked(true);
+            app.processEvents();
+            // Đã tích nhưng không phải Administrator (test không chạy với quyền cao): KHÔNG dời được, ghi rõ lý do.
+            if (!PartitionManager::isElevated())
+            {
+                CHECK(!partTab->moveSupportReason().isEmpty() && !tmap->isMoveEnabled() && !startSpin->isVisibleTo(partTab));
+                CHECK(edgeNote->text().contains("Administrator") && tmap->leftHandleRectForTest().isNull());
+            }
+            partTab->setMoveSupportForTest(true);
+            app.processEvents();
+            CHECK(partTab->moveSupportReason().isEmpty() && tmap->isMoveEnabled() && startSpin->isVisibleTo(partTab));
+            CHECK(edgeNote->text().contains("DỜI được") && !tmap->leftHandleRectForTest().isNull());
+            CHECK(std::abs(startSpin->value() - static_cast<double>(d2Start) / GiB) < 0.006);
+            // Kế hoạch ban đầu: chưa đổi gì.
+            auto g = partTab->plannedGeometry();
+            CHECK(g.start == d2Start && g.size == d2Size && !partTab->currentPlan().blockReason.isEmpty());
+            // Kéo mép trái hết vùng trống bên trái -> ô nhập đồng bộ ĐÚNG số byte của sơ đồ + mô tả "MỞ RỘNG ... về bên TRÁI" + 2 bước.
+            {
+                const QRect lh = tmap->leftHandleRectForTest();
+                QMouseEvent pr(QEvent::MouseButtonPress, lh.center(), tmap->mapToGlobal(lh.center()), Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                QApplication::sendEvent(tmap, &pr);
+                QMouseEvent mv(QEvent::MouseMove, lh.center() + QPoint(-3000, 0), tmap->mapToGlobal(lh.center()), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+                QApplication::sendEvent(tmap, &mv);
+                QMouseEvent rl(QEvent::MouseButtonRelease, lh.center(), tmap->mapToGlobal(lh.center()), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+                QApplication::sendEvent(tmap, &rl);
+            }
+            g = partTab->plannedGeometry();
+            CHECK(g.start == cEnd2 && g.size == d2End - cEnd2);
+            CHECK(std::abs(startSpin->value() - static_cast<double>(cEnd2) / GiB) < 0.006 && std::abs(sizeSpin->value() - static_cast<double>(d2End - cEnd2) / GiB) < 0.006);
+            const auto plan = partTab->currentPlan();
+            CHECK(plan.blockReason.isEmpty() && plan.steps.size() == 2 && plan.steps[0].kind == DiskLayout::StepKind::MoveData && plan.steps[1].kind == DiskLayout::StepKind::GrowRight);
+            CHECK(change->text().contains("MỞ RỘNG") && change->text().contains("CHÉP") && change->text().contains("TRÁI"));
+            CHECK(!resizeBtn->isEnabled()); // chưa gõ xác nhận
+            CHECK(partTab->resizeRequestBlockReason().contains("xác nhận"));
+            confirm->setText(confirm->placeholderText());
+            CHECK(partTab->resizeRequestBlockReason().isEmpty() && resizeBtn->isEnabled());
+            // Gõ ô vị trí: dời giữ nguyên kích thước; vị trí chồng lên C: bị bỏ và ô được đưa về giá trị sơ đồ chấp nhận.
+            startSpin->setValue(static_cast<double>(d2Start + 5 * GiB) / GiB); // ô nhập làm tròn 0,01 GB -> vị trí lệch tối đa vài MiB, luôn căn 1 MiB
+            const qint64 typedStart = tmap->previewStart();
+            CHECK(std::llabs(typedStart - (d2Start + 5 * GiB)) < 8 * MiB && typedStart % MiB == 0 && tmap->previewSize() == d2End - cEnd2);
+            startSpin->setValue(static_cast<double>(cEnd2 - 10 * GiB) / GiB); // lấn vào C:
+            CHECK(tmap->previewStart() == typedStart);
+            CHECK(std::abs(startSpin->value() - static_cast<double>(typedStart) / GiB) < 0.006);
+            // Về đúng vị trí hiện tại ở độ chính xác của ô nhập = KHÔNG dời (đường chỉ-đổi-mép-phải như cũ).
+            startSpin->setValue(std::round(static_cast<double>(d2Start) / GiB * 100.0) / 100.0);
+            CHECK(tmap->previewStart() == d2Start);
+            // Thay đổi vị trí rồi đổi hướng khóa/chọn dòng khác: mọi thứ reset sạch (không "rò" vị trí cũ sang phân vùng khác).
+            startSpin->setValue(static_cast<double>(d2Start + 3 * GiB) / GiB);
+            CHECK(std::llabs(tmap->previewStart() - (d2Start + 3 * GiB)) < 8 * MiB);
+            table->selectRow(3); // E:
+            app.processEvents();
+            CHECK(!startSpin->isVisibleTo(partTab) && !resizeBtn->isVisibleTo(partTab) && !tmap->isMoveEnabled() && !tmap->isResizeActive());
+            partTab->applySupportedRangeForTest(moveRange);
+            CHECK(tmap->isResizeActive() && tmap->previewStart() == e2Start && tmap->currentStart() == e2Start);
+
+            // Banner nhật ký dở dang: ghi tệp nhật ký THẬT (nhưng trong thư mục dữ liệu tạm của test) -> banner + nút theo canAbandon + chặn mọi thao tác.
+            PartitionMove::JournalState j;
+            j.diskNumber = 0;
+            j.partitionNumber = 3;
+            j.srcOffset = d2Start;
+            j.dstOffset = d2Start - 5 * GiB;
+            j.length = d2Size;
+            j.unitBytes = 16 * MiB;
+            j.doneBytes = 10 * 16 * MiB;
+            j.sectorBytes = 512;
+            {
+                QFile f(PartitionMover::journalPath());
+                CHECK(f.open(QIODevice::WriteOnly));
+                f.write(j.toJson());
+            }
+            partTab->refreshPendingJournalForTest();
+            app.processEvents();
+            CHECK(partTab->hasPendingJournal() && pending->isVisibleTo(partTab) && resumeBtn->isVisibleTo(partTab));
+            CHECK(!abandonBtn->isVisibleTo(partTab)); // chồng lấn + đã ghi -> chỉ "Tiếp tục"
+            CHECK(pending->text().contains("DỞ DANG") && pending->text().contains("Đĩa 0"));
+            table->selectRow(2);
+            app.processEvents();
+            partTab->applySupportedRangeForTest(moveRange);
+            confirm->setText(confirm->placeholderText());
+            CHECK(partTab->resizeRequestBlockReason().contains("dở dang") && !resizeBtn->isEnabled());
+            CHECK(!tmap->isMoveEnabled() || partTab->moveSupportReason().isEmpty()); // (đang ép dời cho test)
+            // Nhật ký chưa ghi gì -> hủy bỏ được.
+            j.doneBytes = 0;
+            {
+                QFile f(PartitionMover::journalPath());
+                CHECK(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+                f.write(j.toJson());
+            }
+            partTab->refreshPendingJournalForTest();
+            CHECK(abandonBtn->isVisibleTo(partTab));
+            // Nhật ký hỏng: banner báo lỗi, KHÔNG có nút Tiếp tục/Hủy, KHÔNG tự xóa tệp.
+            {
+                QFile f(PartitionMover::journalPath());
+                CHECK(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+                f.write("{khong hop le");
+            }
+            partTab->refreshPendingJournalForTest();
+            CHECK(partTab->hasPendingJournal() && pending->isVisibleTo(partTab) && !resumeBtn->isVisibleTo(partTab) && !abandonBtn->isVisibleTo(partTab));
+            CHECK(pending->text().contains("hỏng") && QFile::exists(PartitionMover::journalPath()));
+            // Xóa nhật ký: mọi thứ trở lại bình thường.
+            PartitionMover::discardJournal();
+            partTab->refreshPendingJournalForTest();
+            CHECK(!partTab->hasPendingJournal() && !pending->isVisibleTo(partTab) && !resumeBtn->isVisibleTo(partTab));
+            partTab->setMoveSupportForTest(false);
+            // Tắt ô THỬ NGHIỆM giữa lúc đã kéo: xem trước về hình học hiện tại, ô vị trí ẩn.
+            if (experimental)
+            {
+                partTab->setMoveSupportForTest(true);
+                table->selectRow(2);
+                app.processEvents();
+                partTab->applySupportedRangeForTest(moveRange);
+                tmap->setPreviewGeometry(d2Start + 4 * GiB, d2Size);
+                CHECK(tmap->previewStart() == d2Start + 4 * GiB);
+                partTab->setMoveSupportForTest(false);
+                experimental->setChecked(false);
+                app.processEvents();
+                CHECK(tmap->previewStart() == d2Start && !tmap->isMoveEnabled() && !startSpin->isVisibleTo(partTab));
+                CHECK(partTab->moveSupportReason().contains("THỬ NGHIỆM"));
+            }
         }
     }
 

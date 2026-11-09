@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
+#include <vector>
 
 namespace DiskLayout
 {
@@ -299,13 +301,288 @@ QString describeResize(const QString& name, qint64 currentBytes, qint64 newBytes
     {
         text += " ⚠ Hiện KHÔNG có vùng chưa phân bổ liền kề bên phải";
         text += freeBeforeBytes > 0
-                    ? QString(" (có %1 trống BÊN TRÁI nhưng Windows chỉ đổi kích thước bằng mép phải nên không dùng được).")
+                    ? QString(" (có %1 trống BÊN TRÁI: Windows chỉ đổi bằng mép phải, nhưng với phân vùng dữ liệu NTFS có thể dùng chỗ đó bằng cách KÉO MÉP TRÁI hoặc DỜI phân vùng - xem ghi chú bên dưới).")
                           .arg(formatSize(freeBeforeBytes))
                     : QString(".");
     }
     else if (diff > freeAfterBytes + kNoChangeBytes)
     {
         text += QString(" ⚠ Vượt quá vùng trống liền kề bên phải (chỉ có %1).").arg(formatSize(freeAfterBytes));
+    }
+    return text;
+}
+
+// ---- Dời phân vùng / đổi mép TRÁI ----
+
+namespace
+{
+qint64 alignUp(qint64 v, qint64 a) { return a > 0 ? ((v + a - 1) / a) * a : v; }
+bool sameSegments(const QList<Segment>& a, const QList<Segment>& b)
+{
+    if (a.size() != b.size())
+        return false;
+    for (int k = 0; k < a.size(); ++k)
+        if (a[k].kind != b[k].kind || a[k].offsetBytes != b[k].offsetBytes || a[k].sizeBytes != b[k].sizeBytes || a[k].partitionIndex != b[k].partitionIndex)
+            return false;
+    return true;
+}
+qint64 alignDown(qint64 v, qint64 a) { return a > 0 ? (v / a) * a : v; }
+} // namespace
+
+Span adjacentSpan(const QList<Segment>& segments, int partitionIndex)
+{
+    const int i = indexOfPartition(segments, partitionIndex);
+    if (i < 0)
+        return {};
+    Span sp{segments[i].offsetBytes, segments[i].offsetBytes + segments[i].sizeBytes};
+    if (isFreeSegment(segments, i - 1))
+        sp.lo = segments[i - 1].offsetBytes;
+    if (isFreeSegment(segments, i + 1))
+        sp.hi = segments[i + 1].offsetBytes + segments[i + 1].sizeBytes;
+    return sp;
+}
+
+QList<Segment> projectGeometry(const QList<Segment>& segments, int partitionIndex, qint64 newStart, qint64 newSize)
+{
+    const int i = indexOfPartition(segments, partitionIndex);
+    if (i < 0 || newSize <= 0 || newStart < 0)
+        return segments;
+    const Span sp = adjacentSpan(segments, partitionIndex);
+    const int first = isFreeSegment(segments, i - 1) ? i - 1 : i;
+    const int last = isFreeSegment(segments, i + 1) ? i + 1 : i;
+
+    // 1) Gỡ phân vùng ra: chỗ cũ + vùng trống liền kề thành MỘT vùng trống.
+    QList<Segment> tmp;
+    for (int k = 0; k < first; ++k)
+        tmp << segments[k];
+    tmp << Segment{SegmentKind::Unallocated, sp.lo, sp.hi - sp.lo, -1};
+    for (int k = last + 1; k < segments.size(); ++k)
+        tmp << segments[k];
+
+    // 2) Tìm vùng trống chứa hình học mới rồi cắt ra.
+    const qint64 newEnd = newStart + newSize;
+    for (int k = 0; k < tmp.size(); ++k)
+    {
+        const Segment& f = tmp[k];
+        if (f.kind != SegmentKind::Unallocated || newStart < f.offsetBytes || newEnd > f.offsetBytes + f.sizeBytes)
+            continue;
+        QList<Segment> out;
+        for (int m = 0; m < k; ++m)
+            out << tmp[m];
+        auto addFree = [&](qint64 offset, qint64 size) {
+            if (size >= kMinGapBytes)
+                out << Segment{SegmentKind::Unallocated, offset, size, -1};
+        };
+        addFree(f.offsetBytes, newStart - f.offsetBytes);
+        out << Segment{SegmentKind::Partition, newStart, newSize, partitionIndex};
+        addFree(newEnd, f.offsetBytes + f.sizeBytes - newEnd);
+        for (int m = k + 1; m < tmp.size(); ++m)
+            out << tmp[m];
+        return out;
+    }
+    return segments; // không nằm gọn trong vùng trống nào
+}
+
+qint64 snapMoveStart(const QList<Segment>& segments, int partitionIndex, qint64 desiredStart, qint64 diskSize, qint64 alignBytes)
+{
+    const int i = indexOfPartition(segments, partitionIndex);
+    if (i < 0)
+        return -1;
+    const qint64 size = segments[i].sizeBytes;
+    const qint64 ownStart = segments[i].offsetBytes;
+    const Span own = adjacentSpan(segments, partitionIndex);
+    const qint64 usableLo = std::max<qint64>(alignBytes, 0);
+    const qint64 usableHi = diskSize > 0 ? alignDown(diskSize - alignBytes, alignBytes) : std::numeric_limits<qint64>::max() / 4;
+
+    std::vector<std::pair<qint64, qint64>> spans; // (không đặt tên slots: là macro của Qt)
+    spans.emplace_back(own.lo, own.hi);
+    for (int k = 0; k < segments.size(); ++k)
+    {
+        if (segments[k].kind != SegmentKind::Unallocated)
+            continue;
+        if (k == i - 1 || k == i + 1) // đã nằm trong khe của chính nó
+            continue;
+        spans.emplace_back(segments[k].offsetBytes, segments[k].offsetBytes + segments[k].sizeBytes);
+    }
+
+    qint64 best = -1;
+    qint64 bestDist = std::numeric_limits<qint64>::max();
+    for (size_t s = 0; s < spans.size(); ++s)
+    {
+        const qint64 lo = std::max(spans[s].first, usableLo);
+        const qint64 hi = std::min(spans[s].second, usableHi);
+        const qint64 low = alignUp(lo, alignBytes);
+        const qint64 high = alignDown(hi - size, alignBytes);
+        const bool isOwn = (s == 0);
+        // Gần chỗ cũ trong khe của chính nó = không đổi gì (kể cả khi chỗ cũ không căn lề 1 MiB).
+        if (isOwn && std::llabs(desiredStart - ownStart) < alignBytes / 2 && ownStart >= own.lo && ownStart + size <= own.hi)
+            return ownStart;
+        if (high < low)
+            continue;
+        const qint64 nearest = alignBytes > 0 ? ((desiredStart + alignBytes / 2) / alignBytes) * alignBytes : desiredStart;
+        const qint64 cand = std::clamp(nearest, low, high);
+        const qint64 dist = std::llabs(cand - desiredStart);
+        if (dist < bestDist)
+        {
+            bestDist = dist;
+            best = cand;
+        }
+    }
+    return best;
+}
+
+bool ChangePlan::needsMove() const
+{
+    for (const PlanStep& s : steps)
+        if (s.kind == StepKind::MoveData)
+            return true;
+    return false;
+}
+
+qint64 ChangePlan::copyBytes() const
+{
+    for (const PlanStep& s : steps)
+        if (s.kind == StepKind::MoveData)
+            return s.after.size;
+    return 0;
+}
+
+ChangePlan planChange(const QList<Segment>& segments, int partitionIndex, qint64 newStart, qint64 newSize, qint64 minSizeBytes, qint64 diskSize,
+                      qint64 alignBytes)
+{
+    ChangePlan plan;
+    const int i = indexOfPartition(segments, partitionIndex);
+    if (i < 0)
+    {
+        plan.blockReason = QStringLiteral("Không tìm thấy phân vùng trong sơ đồ.");
+        return plan;
+    }
+    const Geometry cur{segments[i].offsetBytes, segments[i].sizeBytes};
+    plan.before = cur;
+    plan.target = Geometry{newStart, newSize};
+    if (newSize <= 0 || newStart < 0)
+    {
+        plan.blockReason = QStringLiteral("Vị trí/kích thước mới không hợp lệ.");
+        return plan;
+    }
+    const qint64 newEnd = newStart + newSize;
+    const bool moved = newStart != cur.start;
+    if (!moved && newSize == cur.size)
+    {
+        plan.blockReason = QStringLiteral("Vị trí và kích thước mới trùng hiện tại - không có gì để đổi.");
+        return plan;
+    }
+    if (diskSize > 0 && newEnd > diskSize - alignBytes)
+    {
+        plan.blockReason = QStringLiteral("Vượt quá cuối đĩa (phải chừa lại %1 cuối đĩa cho bảng phân vùng).").arg(formatSize(alignBytes));
+        return plan;
+    }
+    if (moved)
+    {
+        if (newStart < alignBytes)
+        {
+            plan.blockReason = QStringLiteral("Vị trí bắt đầu mới quá sát đầu đĩa (phải từ %1 trở đi).").arg(formatSize(alignBytes));
+            return plan;
+        }
+        if (newStart % alignBytes != 0 || (newSize != cur.size && newEnd % alignBytes != 0))
+        {
+            plan.blockReason = QStringLiteral("Vị trí/kích thước mới phải căn theo bội số của %1.").arg(formatSize(alignBytes));
+            return plan;
+        }
+    }
+    // Không được chồng lên phân vùng khác (vùng trống có thể ở bất kỳ phía nào - nhưng phải thật sự trống).
+    for (int k = 0; k < segments.size(); ++k)
+    {
+        if (k == i || segments[k].kind != SegmentKind::Partition)
+            continue;
+        if (newStart < segments[k].offsetBytes + segments[k].sizeBytes && newEnd > segments[k].offsetBytes)
+        {
+            plan.blockReason = QStringLiteral("Vị trí mới chồng lên một phân vùng khác - chỉ dùng được vùng CHƯA PHÂN BỔ.");
+            return plan;
+        }
+    }
+    // Phải nằm gọn trong (chỗ cũ ∪ vùng trống): chặn cả trường hợp vùng bị bỏ qua vì khe hở nhỏ (< kMinGapBytes).
+    if (sameSegments(projectGeometry(segments, partitionIndex, newStart, newSize), segments))
+    {
+        plan.blockReason = QStringLiteral("Vị trí mới không nằm gọn trong một vùng chưa phân bổ.");
+        return plan;
+    }
+    if (newSize < cur.size && minSizeBytes > 0 && newSize < minSizeBytes)
+    {
+        plan.blockReason = QStringLiteral("Nhỏ hơn mức Windows cho phép thu nhỏ (%1).").arg(formatSize(minSizeBytes));
+        return plan;
+    }
+
+    if (!moved)
+    {
+        plan.steps << PlanStep{newSize < cur.size ? StepKind::ShrinkRight : StepKind::GrowRight, Geometry{cur.start, newSize}};
+        return plan;
+    }
+    if (newSize < cur.size)
+    {
+        plan.steps << PlanStep{StepKind::ShrinkRight, Geometry{cur.start, newSize}};
+        plan.steps << PlanStep{StepKind::MoveData, Geometry{newStart, newSize}};
+    }
+    else if (newSize == cur.size)
+    {
+        plan.steps << PlanStep{StepKind::MoveData, Geometry{newStart, newSize}};
+    }
+    else
+    {
+        plan.steps << PlanStep{StepKind::MoveData, Geometry{newStart, cur.size}};
+        plan.steps << PlanStep{StepKind::GrowRight, Geometry{newStart, newSize}};
+    }
+    return plan;
+}
+
+QString describePlan(const QString& name, const ChangePlan& plan)
+{
+    if (!plan.blockReason.isEmpty())
+        return QStringLiteral("⛔ ") + plan.blockReason;
+    if (plan.steps.isEmpty())
+        return {};
+    const qint64 shift = plan.target.start - plan.before.start;
+    if (!plan.needsMove())
+    {
+        const qint64 diff = plan.target.size - plan.before.size;
+        return diff < 0 ? QStringLiteral("◀ THU NHỎ %1 xuống %2 (giảm %3) - chỉ đổi mép phải, không phải chép dữ liệu.")
+                              .arg(name, formatSize(plan.target.size), formatSize(-diff))
+                        : QStringLiteral("MỞ RỘNG %1 lên %2 (tăng %3) ▶ - chỉ đổi mép phải, không phải chép dữ liệu.")
+                              .arg(name, formatSize(plan.target.size), formatSize(diff));
+    }
+    QString text;
+    const QString dir = shift < 0 ? QStringLiteral("TRÁI") : QStringLiteral("PHẢI");
+    const qint64 sizeDiff = plan.target.size - plan.before.size;
+    if (sizeDiff == 0)
+        text = QStringLiteral("↔ DỜI %1 sang %2 %3 (từ %4 tới %5), giữ nguyên kích thước %6.")
+                   .arg(name, dir, formatSize(std::llabs(shift)), formatSize(plan.before.start), formatSize(plan.target.start), formatSize(plan.before.size));
+    else if (sizeDiff > 0)
+        text = QStringLiteral("MỞ RỘNG %1 về bên %2: mép trái dịch sang %3 %4 (từ %5 tới %6), kích thước %7 → %8.")
+                   .arg(name, dir, shift < 0 ? QStringLiteral("trái") : QStringLiteral("phải"), formatSize(std::llabs(shift)),
+                        formatSize(plan.before.start), formatSize(plan.target.start), formatSize(plan.before.size), formatSize(plan.target.size));
+    else
+        text = QStringLiteral("THU NHỎ %1 từ bên trái: mép trái dịch sang phải %2 (từ %3 tới %4), kích thước %5 → %6.")
+                   .arg(name, formatSize(std::llabs(shift)), formatSize(plan.before.start), formatSize(plan.target.start), formatSize(plan.before.size),
+                        formatSize(plan.target.size));
+    text += QStringLiteral("\nCác bước (chạy lần lượt, dừng ngay nếu một bước lỗi):");
+    int n = 1;
+    for (const PlanStep& s : plan.steps)
+    {
+        switch (s.kind)
+        {
+        case StepKind::ShrinkRight:
+            text += QStringLiteral("\n  %1. Thu nhỏ %2 xuống %3 (Windows, mép phải).").arg(n).arg(name, formatSize(s.after.size));
+            break;
+        case StepKind::MoveData:
+            text += QStringLiteral("\n  %1. CHÉP %2 dữ liệu của %3 sang vị trí mới rồi đổi bảng phân vùng (chậm: phụ thuộc tốc độ đĩa).")
+                        .arg(n)
+                        .arg(formatSize(s.after.size), name);
+            break;
+        case StepKind::GrowRight:
+            text += QStringLiteral("\n  %1. Mở rộng %2 lên %3 (Windows, mép phải).").arg(n).arg(name, formatSize(s.after.size));
+            break;
+        }
+        ++n;
     }
     return text;
 }

@@ -20,6 +20,7 @@
 #include <functional>
 #include <limits>
 #include <map>
+#include <random>
 #include <string>
 #include <thread>
 #include <vector>
@@ -2133,6 +2134,307 @@ int main(int argc, char** argv)
             }
             CHECK(finished >= 10 && stopped + finished == 30);
             CHECK(last && last->root && last->root->fileCount == 1000 && last->root->folderCount == 40);
+        }
+    }
+
+    // =====================================================================================
+    // Dời phân vùng / đổi mép TRÁI: kế hoạch + bố cục xem trước (DiskLayout::planChange/projectGeometry/snapMoveStart). THUẦN.
+    // =====================================================================================
+    {
+        using namespace PartitionManager;
+        using DiskLayout::Segment;
+        using DiskLayout::SegmentKind;
+        using DiskLayout::StepKind;
+        constexpr qint64 MiB = 1024LL * 1024, GiB = 1024 * MiB;
+        auto part = [](int num, const char* type, qint64 offsetMiB, qint64 sizeMiB, const char* letter = "") {
+            PartitionInfo p;
+            p.diskNumber = 0;
+            p.partitionNumber = num;
+            p.type = type;
+            p.driveLetter = letter;
+            p.fileSystem = "NTFS";
+            p.offsetBytes = offsetMiB * MiB;
+            p.sizeBytes = sizeMiB * MiB;
+            return p;
+        };
+        DiskInfo disk0;
+        disk0.number = 0;
+        disk0.sizeBytes = 256060514304LL;
+        disk0.partitionStyle = "GPT";
+        const qint64 diskSize = disk0.sizeBytes;
+
+        // Bố cục máy dựng ra ảnh Disk Management: EFI, MSR, C:, D:, ~67 GB chưa phân bổ, Recovery.
+        const QList<PartitionInfo> parts = {part(1, "System", 1, 100), part(2, "Reserved", 101, 16), part(3, "Basic", 117, 123557, "C"),
+                                            part(4, "Basic", 123675, 51394, "D"), part(5, "Recovery", 243675, 522)};
+        const auto segs = DiskLayout::build({disk0}, parts)[0].segments;
+        CHECK(segs.size() == 6);
+        const qint64 dStart = 123675 * MiB, dSize = 51394 * MiB, freeStart = dStart + dSize, recStart = 243675 * MiB;
+        const int D = 3; // chỉ số trong danh sách phân vùng
+
+        // ---- Chỉ đổi mép phải (như trước v1.25): không có bước chép ----
+        {
+            auto p = DiskLayout::planChange(segs, D, dStart, dSize - 10 * GiB, 0, diskSize);
+            CHECK(p.blockReason.isEmpty() && p.steps.size() == 1 && p.steps[0].kind == StepKind::ShrinkRight && !p.needsMove() && p.copyBytes() == 0);
+            p = DiskLayout::planChange(segs, D, dStart, dSize + 20 * GiB, 0, diskSize);
+            CHECK(p.blockReason.isEmpty() && p.steps.size() == 1 && p.steps[0].kind == StepKind::GrowRight && !p.needsMove());
+            p = DiskLayout::planChange(segs, D, dStart, dSize + 80 * GiB, 0, diskSize); // quá vùng trống
+            CHECK(!p.blockReason.isEmpty() && p.steps.isEmpty());
+            p = DiskLayout::planChange(segs, D, dStart, dSize, 0, diskSize); // không đổi gì
+            CHECK(!p.blockReason.isEmpty());
+            // Nhỏ hơn mức Windows cho phép khi thu nhỏ.
+            p = DiskLayout::planChange(segs, D, dStart, dSize - 40 * GiB, dSize - 20 * GiB, diskSize);
+            CHECK(!p.blockReason.isEmpty() && p.blockReason.contains("Windows"));
+            p = DiskLayout::planChange(segs, D, dStart, dSize - 10 * GiB, dSize - 20 * GiB, diskSize);
+            CHECK(p.blockReason.isEmpty());
+        }
+
+        // ---- Dời giữ kích thước ----
+        {
+            auto p = DiskLayout::planChange(segs, D, dStart + 10 * GiB, dSize, 0, diskSize); // sang PHẢI 10 GiB (vùng trống bên phải)
+            CHECK(p.blockReason.isEmpty() && p.steps.size() == 1 && p.steps[0].kind == StepKind::MoveData && p.needsMove() && p.copyBytes() == dSize);
+            CHECK(p.steps[0].after.start == dStart + 10 * GiB && p.steps[0].after.size == dSize);
+            // Sát tận Recovery (còn đúng vừa) được; lấn thêm 1 MiB thì chồng Recovery -> chặn.
+            p = DiskLayout::planChange(segs, D, recStart - dSize, dSize, 0, diskSize);
+            CHECK(p.blockReason.isEmpty() && p.needsMove());
+            p = DiskLayout::planChange(segs, D, recStart - dSize + MiB, dSize, 0, diskSize);
+            CHECK(!p.blockReason.isEmpty() && p.blockReason.contains("chồng"));
+            // Sang TRÁI: C: nằm sát nên chồng lên C: -> chặn.
+            p = DiskLayout::planChange(segs, D, dStart - 10 * GiB, dSize, 0, diskSize);
+            CHECK(!p.blockReason.isEmpty());
+            // Lệch căn lề 1 MiB -> chặn; sát đầu đĩa -> chặn.
+            p = DiskLayout::planChange(segs, D, dStart + 10 * GiB + 4096, dSize, 0, diskSize);
+            CHECK(!p.blockReason.isEmpty() && p.blockReason.contains("căn"));
+            p = DiskLayout::planChange(segs, D, 0, dSize, 0, diskSize);
+            CHECK(!p.blockReason.isEmpty());
+            // Phân vùng không tồn tại.
+            p = DiskLayout::planChange(segs, 99, dStart, dSize, 0, diskSize);
+            CHECK(!p.blockReason.isEmpty() && p.steps.isEmpty());
+            p = DiskLayout::planChange(segs, D, -5, dSize, 0, diskSize);
+            CHECK(!p.blockReason.isEmpty());
+            p = DiskLayout::planChange(segs, D, dStart, 0, 0, diskSize);
+            CHECK(!p.blockReason.isEmpty());
+        }
+
+        // ---- Mép TRÁI: bố cục có vùng trống bên TRÁI của D: ----
+        // EFI, C:, [20 GiB trống], D:, [30 GiB trống], E:
+        const QList<PartitionInfo> parts2 = {part(1, "System", 1, 100), part(2, "Basic", 101, 100 * 1024, "C"),
+                                             part(3, "Basic", 101 + 100 * 1024 + 20 * 1024, 40 * 1024, "D"),
+                                             part(4, "Basic", 101 + 100 * 1024 + 20 * 1024 + 40 * 1024 + 30 * 1024, 10 * 1024, "E")};
+        DiskInfo disk2 = disk0;
+        disk2.sizeBytes = (101 + 100 * 1024 + 20 * 1024 + 40 * 1024 + 30 * 1024 + 10 * 1024 + 2) * MiB; // đuôi 2 MiB < khe tối thiểu: không thành vùng trống
+        const auto segs2 = DiskLayout::build({disk2}, parts2)[0].segments;
+        CHECK(segs2.size() == 6 && segs2[2].kind == SegmentKind::Unallocated && segs2[4].kind == SegmentKind::Unallocated);
+        const qint64 cEnd = (101 + 100 * 1024) * MiB;
+        const qint64 d2Start = cEnd + 20 * GiB, d2Size = 40 * GiB, d2End = d2Start + d2Size;
+        const int D2 = 2;
+        {
+            // Kéo mép trái sang TRÁI hết vùng trống: dời trái rồi mở rộng mép phải về chỗ cũ.
+            auto p = DiskLayout::planChange(segs2, D2, cEnd, d2End - cEnd, 0, disk2.sizeBytes);
+            CHECK(p.blockReason.isEmpty() && p.steps.size() == 2 && p.steps[0].kind == StepKind::MoveData && p.steps[1].kind == StepKind::GrowRight);
+            CHECK(p.steps[0].after.start == cEnd && p.steps[0].after.size == d2Size); // chép nguyên kích thước CŨ
+            CHECK(p.steps[1].after.start == cEnd && p.steps[1].after.size == d2End - cEnd);
+            CHECK(p.copyBytes() == d2Size && p.needsMove());
+            CHECK(DiskLayout::describePlan("D:", p).contains("MỞ RỘNG") && DiskLayout::describePlan("D:", p).contains("CHÉP"));
+            // Lấn quá C: -> chặn.
+            p = DiskLayout::planChange(segs2, D2, cEnd - MiB, d2End - cEnd + MiB, 0, disk2.sizeBytes);
+            CHECK(!p.blockReason.isEmpty());
+            // Kéo mép trái sang PHẢI 10 GiB: thu nhỏ mép phải rồi dời phải.
+            p = DiskLayout::planChange(segs2, D2, d2Start + 10 * GiB, d2Size - 10 * GiB, 0, disk2.sizeBytes);
+            CHECK(p.blockReason.isEmpty() && p.steps.size() == 2 && p.steps[0].kind == StepKind::ShrinkRight && p.steps[1].kind == StepKind::MoveData);
+            CHECK(p.steps[0].after.start == d2Start && p.steps[0].after.size == d2Size - 10 * GiB);
+            CHECK(p.steps[1].after.start == d2Start + 10 * GiB && p.steps[1].after.size == d2Size - 10 * GiB && p.copyBytes() == d2Size - 10 * GiB);
+            CHECK(DiskLayout::describePlan("D:", p).contains("THU NHỎ") && DiskLayout::describePlan("D:", p).contains("từ bên trái"));
+            // Dời cả khối sang trái (giữ kích thước) - dùng hết 20 GiB trống bên trái.
+            p = DiskLayout::planChange(segs2, D2, cEnd, d2Size, 0, disk2.sizeBytes);
+            CHECK(p.blockReason.isEmpty() && p.steps.size() == 1 && p.steps[0].kind == StepKind::MoveData);
+            CHECK(DiskLayout::describePlan("D:", p).contains("DỜI") && DiskLayout::describePlan("D:", p).contains("TRÁI"));
+            // Vừa dời trái vừa thu nhỏ mép phải (ns < s, NS < S): thu nhỏ trước, chép sau.
+            p = DiskLayout::planChange(segs2, D2, cEnd + 5 * GiB, d2Size - 5 * GiB, 0, disk2.sizeBytes);
+            CHECK(p.blockReason.isEmpty() && p.steps.size() == 2 && p.steps[0].kind == StepKind::ShrinkRight && p.steps[1].kind == StepKind::MoveData);
+            // Phân vùng sát vùng trống 30 GiB bên phải: dời phải tối đa 30 GiB.
+            p = DiskLayout::planChange(segs2, D2, d2Start + 30 * GiB, d2Size, 0, disk2.sizeBytes);
+            CHECK(p.blockReason.isEmpty());
+            p = DiskLayout::planChange(segs2, D2, d2Start + 31 * GiB, d2Size, 0, disk2.sizeBytes);
+            CHECK(!p.blockReason.isEmpty());
+            // Cuối đĩa: phải chừa 1 MiB.
+            const qint64 lastEnd = disk2.sizeBytes;
+            auto q = DiskLayout::planChange(segs2, 3, (101 + 100 * 1024 + 20 * 1024 + 40 * 1024 + 30 * 1024) * MiB, lastEnd - (101 + 100 * 1024 + 20 * 1024 + 40 * 1024 + 30 * 1024) * MiB, 0, disk2.sizeBytes);
+            CHECK(!q.blockReason.isEmpty()); // kéo dài tới tận cuối đĩa -> không chừa chỗ bảng GPT phụ
+        }
+
+        // ---- projectGeometry ----
+        {
+            auto sorted = [](const QList<Segment>& s) {
+                qint64 cursor = -1;
+                for (const auto& x : s)
+                {
+                    if (x.offsetBytes < cursor || x.sizeBytes <= 0)
+                        return false;
+                    cursor = x.offsetBytes + x.sizeBytes;
+                }
+                return true;
+            };
+            // Dời D: sang phải 10 GiB: chỗ cũ thành vùng trống bên TRÁI D: (gộp với trống phải còn lại).
+            auto after = DiskLayout::projectGeometry(segs, D, dStart + 10 * GiB, dSize);
+            CHECK(after.size() == 7 && sorted(after));
+            CHECK(after.size() == 7 && after[3].kind == SegmentKind::Unallocated && after[3].offsetBytes == dStart && after[3].sizeBytes == 10 * GiB);
+            CHECK(after.size() == 7 && after[4].kind == SegmentKind::Partition && after[4].partitionIndex == D && after[4].offsetBytes == dStart + 10 * GiB && after[4].sizeBytes == dSize);
+            CHECK(after.size() == 7 && after[5].kind == SegmentKind::Unallocated && after[5].offsetBytes == dStart + 10 * GiB + dSize);
+            // Vị trí/kích thước y hệt hiện tại -> bố cục giống hệt.
+            const auto same = DiskLayout::projectGeometry(segs, D, dStart, dSize);
+            CHECK(same.size() == segs.size() && sorted(same));
+            for (int i = 0; i < same.size() && i < segs.size(); ++i)
+                CHECK(same[i].kind == segs[i].kind && same[i].offsetBytes == segs[i].offsetBytes && same[i].sizeBytes == segs[i].sizeBytes);
+            // Không nằm gọn trong vùng trống -> trả về nguyên bố cục cũ.
+            const auto bad = DiskLayout::projectGeometry(segs, D, dStart - GiB, dSize);
+            CHECK(bad.size() == segs.size());
+            // Mở rộng sang TRÁI: vùng trống bên trái biến mất (D: lấp đầy).
+            const auto grown = DiskLayout::projectGeometry(segs2, D2, cEnd, d2End - cEnd);
+            CHECK(grown.size() == 5 && sorted(grown) && grown[2].kind == SegmentKind::Partition && grown[2].offsetBytes == cEnd && grown[2].sizeBytes == d2End - cEnd);
+            // Tổng dung lượng bảo toàn (không có khe nhỏ bị bỏ).
+            qint64 total1 = 0, total2 = 0;
+            for (const auto& s : segs2) total1 += s.sizeBytes;
+            for (const auto& s : grown) total2 += s.sizeBytes;
+            CHECK(total1 == total2);
+        }
+
+        // ---- snapMoveStart ----
+        {
+            // Gần chỗ cũ = không đổi (kể cả chưa căn lề).
+            CHECK(DiskLayout::snapMoveStart(segs, D, dStart + 100 * 1024, diskSize) == dStart);
+            // Kéo sang phải 10 GiB + lẻ: làm tròn tới bội số 1 MiB gần nhất.
+            const qint64 desired = dStart + 10 * GiB + 300 * 1024;
+            CHECK(DiskLayout::snapMoveStart(segs, D, desired, diskSize) == dStart + 10 * GiB);
+            CHECK(DiskLayout::snapMoveStart(segs, D, dStart + 10 * GiB + 700 * 1024, diskSize) == dStart + 10 * GiB + MiB);
+            // Kéo quá xa bên phải: kẹp ở Recovery. Kéo quá bên trái: kẹp ở mép phải của C: (khe của chính nó bắt đầu từ D:, vì C: sát).
+            CHECK(DiskLayout::snapMoveStart(segs, D, recStart + 5 * GiB, diskSize) == recStart - dSize);
+            CHECK(DiskLayout::snapMoveStart(segs, D, 0, diskSize) == dStart);
+            CHECK(DiskLayout::snapMoveStart(segs, 99, 0, diskSize) == -1);
+            // Có khe riêng KHÁC đủ lớn: nhảy sang đó (đổi thứ tự). Bố cục: A(10G) [5G trống] B(20G) [30G trống]
+            const QList<PartitionInfo> p3 = {part(1, "Basic", 1, 10 * 1024, "A"), part(2, "Basic", 1 + 10 * 1024 + 5 * 1024, 20 * 1024, "B")};
+            DiskInfo d3 = disk0;
+            d3.sizeBytes = (1 + 10 * 1024 + 5 * 1024 + 20 * 1024 + 30 * 1024 + 2) * MiB;
+            const auto segs3 = DiskLayout::build({d3}, p3)[0].segments;
+            CHECK(segs3.size() == 4);
+            const qint64 aSize = 10 * GiB, free2Start = (1 + 10 * 1024 + 5 * 1024 + 20 * 1024) * MiB;
+            // A muốn tới giữa vùng trống thứ 2 (30G): chọn đúng vị trí đó.
+            CHECK(DiskLayout::snapMoveStart(segs3, 0, free2Start + 8 * GiB, d3.sizeBytes) == free2Start + 8 * GiB);
+            // B (20G) KHÔNG vừa vùng trống 5G: dù kéo tới đó vẫn ở trong khe của chính nó/khe đủ lớn.
+            const qint64 b = DiskLayout::snapMoveStart(segs3, 1, 1 * GiB, d3.sizeBytes);
+            CHECK(b >= 0 && b >= 10 * GiB + MiB && b + 20 * GiB <= d3.sizeBytes);
+            // Lập kế hoạch nhảy A sang vùng trống 2: chỉ có bước chép; bố cục xem trước hợp lệ.
+            const auto plan = DiskLayout::planChange(segs3, 0, free2Start + 8 * GiB, aSize, 0, d3.sizeBytes);
+            CHECK(plan.blockReason.isEmpty() && plan.steps.size() == 1 && plan.steps[0].kind == StepKind::MoveData);
+            const auto proj = DiskLayout::projectGeometry(segs3, 0, free2Start + 8 * GiB, aSize);
+            CHECK(proj.size() == 5 && proj[0].kind == SegmentKind::Unallocated && proj[0].offsetBytes == MiB); // chỗ cũ của A + trống 5G gộp
+            CHECK(proj.size() == 5 && proj[0].sizeBytes == 15 * GiB && proj[1].kind == SegmentKind::Partition && proj[1].partitionIndex == 1);
+            // Đĩa quá nhỏ cho phân vùng: không có khe -> -1 (ngoại trừ chính chỗ cũ).
+            DiskInfo tiny = d3;
+            tiny.sizeBytes = (1 + 10 * 1024 + 5 * 1024 + 20 * 1024 + 2) * MiB; // hết vùng trống 30G
+            const auto segs4 = DiskLayout::build({tiny}, p3)[0].segments;
+            CHECK(DiskLayout::snapMoveStart(segs4, 1, 50 * GiB, tiny.sizeBytes) >= 0); // vẫn có khe của chính B (có 5G trống bên trái)
+        }
+
+        // ---- Thuộc tính: với bố cục/đích NGẪU NHIÊN, kế hoạch OK <=> hình học mới hợp lệ theo đáp án độc lập; bố cục xem trước luôn hợp lệ ----
+        {
+            std::mt19937_64 rng(20261109);
+            long long trials = 0, accepted = 0, rejected = 0, bad = 0;
+            for (int t = 0; t < 4000; ++t)
+            {
+                // Dựng bố cục: n phân vùng, khe giữa chúng 0 hoặc >= 8 MiB (tránh khe nhỏ vô hình), kích thước bội 1 MiB.
+                const int n = 1 + static_cast<int>(rng() % 5);
+                QList<PartitionInfo> ps;
+                qint64 cursorMiB = 1; // như đĩa thật: phân vùng đầu ở 1 MiB (khe nhỏ < 4 MiB trước nó không hiện ra nên không thử ở đây)
+                for (int i = 0; i < n; ++i)
+                {
+                    const qint64 gap = (rng() % 3 == 0) ? 8 + static_cast<qint64>(rng() % 200) : 0;
+                    const qint64 size = 20 + static_cast<qint64>(rng() % 300);
+                    ps << part(i + 1, "Basic", cursorMiB + gap, size, "X");
+                    cursorMiB += gap + size;
+                }
+                const qint64 tail = (rng() % 2) ? 0 : 8 + static_cast<qint64>(rng() % 300);
+                DiskInfo d;
+                d.number = 0;
+                d.sizeBytes = (cursorMiB + tail + 1) * MiB;
+                d.partitionStyle = "GPT";
+                const auto s = DiskLayout::build({d}, ps)[0].segments;
+                const int target = static_cast<int>(rng() % n);
+                qint64 curStart = 0, curSize = 0;
+                for (const auto& x : s)
+                    if (x.kind == SegmentKind::Partition && x.partitionIndex == target)
+                    {
+                        curStart = x.offsetBytes;
+                        curSize = x.sizeBytes;
+                    }
+                // Đích ngẫu nhiên quanh/trong đĩa, căn 1 MiB (đôi khi lệch hoặc âm để thử chặn).
+                qint64 ns = curStart + (static_cast<qint64>(rng() % 801) - 400) * MiB;
+                qint64 nsz = curSize + (static_cast<qint64>(rng() % 401) - 200) * MiB;
+                if (rng() % 10 == 0)
+                    ns += 4096; // lệch căn lề
+                if (rng() % 15 == 0)
+                    nsz = 0;
+                const auto plan = DiskLayout::planChange(s, target, ns, nsz, 0, d.sizeBytes);
+                ++trials;
+
+                // Đáp án độc lập.
+                bool expectOk = nsz > 0 && ns >= 0 && !(ns == curStart && nsz == curSize);
+                if (expectOk && ns + nsz > d.sizeBytes - MiB)
+                    expectOk = false;
+                if (expectOk && ns != curStart && (ns < MiB || ns % MiB != 0 || (nsz != curSize && (ns + nsz) % MiB != 0)))
+                    expectOk = false;
+                if (expectOk)
+                    for (const auto& x : s)
+                        if (x.kind == SegmentKind::Partition && x.partitionIndex != target && ns < x.offsetBytes + x.sizeBytes && ns + nsz > x.offsetBytes)
+                            expectOk = false;
+                const bool gotOk = plan.blockReason.isEmpty();
+                if (gotOk != expectOk)
+                {
+                    ++bad;
+                    if (bad <= 5)
+                        std::printf("  LECH ke hoach: target=%d cur=[%lld,+%lld] new=[%lld,+%lld] mong doi %d nhan %d (%s)\n", target,
+                                    static_cast<long long>(curStart / MiB), static_cast<long long>(curSize / MiB), static_cast<long long>(ns / MiB),
+                                    static_cast<long long>(nsz / MiB), expectOk, gotOk, qPrintable(plan.blockReason));
+                    continue;
+                }
+                if (!gotOk)
+                {
+                    ++rejected;
+                    CHECK(plan.steps.isEmpty());
+                    continue;
+                }
+                ++accepted;
+                // Bố cục xem trước: có đúng phân vùng ở đúng chỗ, đã sắp, không chồng, các phân vùng khác KHÔNG đổi.
+                const auto proj = DiskLayout::projectGeometry(s, target, ns, nsz);
+                bool ok = true;
+                qint64 cursor = -1;
+                int found = 0;
+                for (const auto& x : proj)
+                {
+                    ok = ok && x.sizeBytes > 0 && x.offsetBytes >= cursor;
+                    cursor = x.offsetBytes + x.sizeBytes;
+                    if (x.kind == SegmentKind::Partition && x.partitionIndex == target)
+                    {
+                        ++found;
+                        ok = ok && x.offsetBytes == ns && x.sizeBytes == nsz;
+                    }
+                }
+                ok = ok && found == 1;
+                for (const auto& x : s)
+                {
+                    if (x.kind != SegmentKind::Partition || x.partitionIndex == target)
+                        continue;
+                    bool same = false;
+                    for (const auto& y : proj)
+                        same = same || (y.kind == SegmentKind::Partition && y.partitionIndex == x.partitionIndex && y.offsetBytes == x.offsetBytes && y.sizeBytes == x.sizeBytes);
+                    ok = ok && same;
+                }
+                // Các bước: kết thúc đúng hình học đích; chép có độ dài = kích thước tại thời điểm chép.
+                const auto& last = plan.steps.last();
+                ok = ok && last.after.start == ns && last.after.size == nsz;
+                bad += ok ? 0 : 1;
+            }
+            std::printf("Ke hoach doi phan vung ngau nhien: %lld lan thu, %lld chap nhan, %lld tu choi, %lld sai\n", trials, accepted, rejected, bad);
+            CHECK(bad == 0 && accepted > 300 && rejected > 300);
         }
     }
 

@@ -3,10 +3,13 @@
 #include "DiskCleanupWindow.h"
 #include "DiskMapWidget.h"
 #include "DiskUiStyle.h"
+#include "engine/PartitionMover.h"
 #include "engine/PartitionResizer.h"
 #include "core/ToolManager.h"
 
 #include <QApplication>
+#include <QDir>
+#include <QCheckBox>
 #include <QDoubleSpinBox>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -23,6 +26,7 @@
 #include <QThread>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <cmath>
 #include <memory>
 
@@ -48,7 +52,17 @@ PartitionTab::PartitionTab(QWidget* parent)
     m_resizer = new PartitionResizer(this);
     connect(m_resizer, &PartitionResizer::resizeFinished, this, &PartitionTab::onResizeFinished);
 
+    m_plan = new PartitionMover::PlanWorker(this);
+    connect(m_plan, &PartitionMover::PlanWorker::progress, this, &PartitionTab::onPlanProgress, Qt::QueuedConnection);
+    connect(m_plan, &PartitionMover::PlanWorker::planFinished, this, &PartitionTab::onPlanFinished, Qt::QueuedConnection);
+    m_resumeWorker = new PartitionMover::MoveWorker(this);
+    connect(m_resumeWorker, &PartitionMover::MoveWorker::progress, this,
+            [this](qint64 d, qint64 t, QString phase) { onPlanProgress(0, 1, d, t, phase); }, Qt::QueuedConnection);
+    connect(m_resumeWorker, &PartitionMover::MoveWorker::moveFinished, this,
+            [this](bool ok, bool resumable, QString message) { onPlanFinished(ok, resumable, message, ok ? -1 : 0); }, Qt::QueuedConnection);
+
     updateElevationBanner();
+    checkPendingJournal();
     reloadPartitions();
 }
 
@@ -61,6 +75,11 @@ PartitionTab::~PartitionTab()
     // đang đổi kích thước, đây chỉ là lưới an toàn cuối cùng (vd nếu widget bị hủy theo đường khác).
     if (m_resizer && m_resizer->isRunning())
         m_resizer->wait();
+    // Tương tự cho việc dời/chép dữ liệu: KHÔNG hủy giữa chừng nhưng cũng không để QThread bị hủy khi còn chạy. (Cửa sổ đã chặn đóng khi đang chạy.)
+    if (m_plan && m_plan->isRunning())
+        m_plan->wait();
+    if (m_resumeWorker && m_resumeWorker->isRunning())
+        m_resumeWorker->wait();
     // Luồng nền đang hỏi Windows (chỉ đọc, tối đa ~20 giây) cũng phải thoát hẳn trước khi bị hủy.
     if (m_queryThread)
         m_queryThread->wait();
@@ -68,7 +87,7 @@ PartitionTab::~PartitionTab()
 
 bool PartitionTab::isResizingNow() const
 {
-    return m_resizer && m_resizer->isRunning();
+    return (m_resizer && m_resizer->isRunning()) || (m_plan && m_plan->isRunning()) || (m_resumeWorker && m_resumeWorker->isRunning()) || m_planActive;
 }
 
 void PartitionTab::buildUi()
@@ -104,6 +123,31 @@ void PartitionTab::buildUi()
     connect(m_relaunchBtn, &QPushButton::clicked, this, &PartitionTab::onRelaunchElevatedClicked);
     root->addWidget(m_relaunchBtn);
 
+    // Banner "có lần dời dở dang" (từ nhật ký phục hồi) - hiện đầu tab, kèm Tiếp tục / Hủy bỏ.
+    m_pendingBanner = new QLabel(this);
+    m_pendingBanner->setObjectName("partitionPendingBanner");
+    m_pendingBanner->setWordWrap(true);
+    m_pendingBanner->setStyleSheet(DiskUi::bannerStyle("danger"));
+    m_pendingBanner->setVisible(false);
+    root->addWidget(m_pendingBanner);
+    auto* pendingRow = new QHBoxLayout();
+    m_resumeBtn = new QPushButton("▶ Tiếp tục lần dời dở dang", this);
+    m_resumeBtn->setObjectName("partitionResumeButton");
+    m_resumeBtn->setStyleSheet(DiskUi::primaryButtonStyle());
+    m_resumeBtn->setCursor(Qt::PointingHandCursor);
+    m_resumeBtn->setVisible(false);
+    connect(m_resumeBtn, &QPushButton::clicked, this, &PartitionTab::onResumeClicked);
+    pendingRow->addWidget(m_resumeBtn);
+    m_abandonBtn = new QPushButton("Hủy bỏ lần dời này", this);
+    m_abandonBtn->setObjectName("partitionAbandonButton");
+    m_abandonBtn->setStyleSheet(DiskUi::buttonStyle());
+    m_abandonBtn->setCursor(Qt::PointingHandCursor);
+    m_abandonBtn->setVisible(false);
+    connect(m_abandonBtn, &QPushButton::clicked, this, &PartitionTab::onAbandonClicked);
+    pendingRow->addWidget(m_abandonBtn);
+    pendingRow->addStretch();
+    root->addLayout(pendingRow);
+
     auto* dangerBanner = new QLabel(
         "⚠ Đổi kích thước phân vùng là thao tác đĩa THẬT. Hãy sao lưu dữ liệu quan trọng trước khi "
         "tiếp tục, và không tắt máy/rút nguồn trong lúc đang xử lý.",
@@ -111,6 +155,18 @@ void PartitionTab::buildUi()
     dangerBanner->setWordWrap(true);
     dangerBanner->setStyleSheet(DiskUi::bannerStyle("danger"));
     root->addWidget(dangerBanner);
+
+    // Dời phân vùng/kéo mép trái là tính năng MỚI ghi thẳng xuống đĩa: mặc định TẮT, người dùng phải chủ động tích (không lưu giữa các lần mở).
+    m_experimentalCheck = new QCheckBox("🧪 Bật dời phân vùng / kéo mép trái (THỬ NGHIỆM - ghi thẳng xuống đĩa, chưa kiểm chứng trên mọi loại đĩa; tôi hiểu có rủi ro mất dữ liệu và đã sao lưu)", this);
+    m_experimentalCheck->setObjectName("partitionMoveExperimentalCheck");
+    m_experimentalCheck->setStyleSheet("color: #9a6700; font-weight: 600; font-size: 12px;");
+    m_experimentalCheck->setCursor(Qt::PointingHandCursor);
+    connect(m_experimentalCheck, &QCheckBox::toggled, this, [this](bool) {
+        updateMoveSupport();
+        updateChangePreview();
+        m_resizeBtn->setEnabled(!m_loading && !isResizingNow() && resizeRequestBlockReason().isEmpty());
+    });
+    root->addWidget(m_experimentalCheck);
 
     auto* topRow = new QHBoxLayout();
     m_refreshBtn = new QPushButton("🔄 Làm mới", this);
@@ -125,12 +181,13 @@ void PartitionTab::buildUi()
     m_diskMap = new DiskMapWidget(this);
     m_diskMap->setObjectName("partitionDiskMap");
     connect(m_diskMap, &DiskMapWidget::partitionClicked, this, &PartitionTab::onMapPartitionClicked);
-    connect(m_diskMap, &DiskMapWidget::previewSizeChanged, this, &PartitionTab::onMapPreviewChanged);
+    connect(m_diskMap, &DiskMapWidget::previewGeometryChanged, this, &PartitionTab::onMapGeometryChanged);
     root->addWidget(m_diskMap);
 
     auto* mapHint = new QLabel(
         "💡 Bấm một khối trên sơ đồ (hoặc dòng trong bảng) để chọn phân vùng, bấm \"Tra kích thước có thể đổi tới...\", "
-        "rồi KÉO tay nắm ở mép phải khối: sang TRÁI = thu nhỏ, sang PHẢI = mở rộng.",
+        "rồi KÉO tay nắm ở mép phải khối: sang TRÁI = thu nhỏ, sang PHẢI = mở rộng. Với phân vùng dữ liệu NTFS còn kéo được MÉP TRÁI "
+        "và kéo CẢ KHỐI để dời (kể cả sang vùng chưa phân bổ khác để đổi thứ tự) - ứng dụng sẽ chép dữ liệu sang vị trí mới.",
         this);
     mapHint->setWordWrap(true);
     mapHint->setStyleSheet("color: #57606a; font-size: 11px;");
@@ -210,9 +267,24 @@ void PartitionTab::buildUi()
     m_sizeLabel->setVisible(false);
     resizeRow->addWidget(m_sizeLabel);
     resizeRow->addWidget(m_newSizeSpin);
+    m_startLabel = new QLabel("Vị trí bắt đầu mới:", this);
+    m_startLabel->setStyleSheet("color: #1f2328; font-weight: bold; font-size: 12px;");
+    m_startLabel->setVisible(false);
+    m_startSpin = new QDoubleSpinBox(this);
+    m_startSpin->setStyleSheet(DiskUi::inputStyle());
+    m_startSpin->setButtonSymbols(QAbstractSpinBox::NoButtons);
+    m_startSpin->setSuffix(" GB");
+    m_startSpin->setDecimals(2);
+    m_startSpin->setRange(0.0, 1.0e6);
+    m_startSpin->setVisible(false);
+    m_startSpin->setObjectName("partitionNewStartSpin");
+    m_startSpin->setToolTip("Vị trí bắt đầu của phân vùng tính từ đầu đĩa (GB). Đổi giá trị này (hoặc kéo mép trái/khối trên sơ đồ) để dời phân vùng.");
+    resizeRow->addWidget(m_startLabel);
+    resizeRow->addWidget(m_startSpin);
     resizeRow->addStretch();
     root->addLayout(resizeRow);
     connect(m_newSizeSpin, &QDoubleSpinBox::valueChanged, this, &PartitionTab::onNewSizeChanged);
+    connect(m_startSpin, &QDoubleSpinBox::valueChanged, this, &PartitionTab::onNewStartChanged);
 
     m_changeLabel = new QLabel(this);
     m_changeLabel->setWordWrap(true);
@@ -221,11 +293,7 @@ void PartitionTab::buildUi()
     m_changeLabel->setVisible(false);
     root->addWidget(m_changeLabel);
 
-    m_edgeNoteLabel = new QLabel(
-        "ℹ Windows chỉ đổi kích thước bằng MÉP PHẢI: mép TRÁI (vị trí bắt đầu) của phân vùng luôn đứng yên. Muốn lấy "
-        "chỗ trống nằm BÊN TRÁI một phân vùng, hoặc dồn dung lượng từ ổ này sang ổ nằm TRƯỚC nó, cần công cụ di "
-        "chuyển phân vùng (vd GParted, MiniTool) - ứng dụng này không tự làm vì rủi ro mất dữ liệu rất cao.",
-        this);
+    m_edgeNoteLabel = new QLabel(this);
     m_edgeNoteLabel->setWordWrap(true);
     m_edgeNoteLabel->setStyleSheet(DiskUi::bannerStyle("info"));
     m_edgeNoteLabel->setObjectName("partitionEdgeNote");
@@ -264,6 +332,20 @@ void PartitionTab::buildUi()
         "QProgressBar { background-color: #eaeef2; border-radius: 3px; }"
         "QProgressBar::chunk { background-color: #cf222e; border-radius: 3px; }");
     root->addWidget(m_progressBar);
+    m_progressLabel = new QLabel(this);
+    m_progressLabel->setObjectName("partitionProgressLabel");
+    m_progressLabel->setStyleSheet("color: #1f2328; font-size: 12px;");
+    m_progressLabel->setWordWrap(true);
+    m_progressLabel->setTextFormat(Qt::PlainText);
+    m_progressLabel->setVisible(false);
+    root->addWidget(m_progressLabel);
+    m_pauseBtn = new QPushButton("⏸ Tạm dừng (chạy tiếp được)", this);
+    m_pauseBtn->setObjectName("partitionPauseButton");
+    m_pauseBtn->setStyleSheet(DiskUi::buttonStyle());
+    m_pauseBtn->setCursor(Qt::PointingHandCursor);
+    m_pauseBtn->setVisible(false);
+    connect(m_pauseBtn, &QPushButton::clicked, this, &PartitionTab::onPauseClicked);
+    root->addWidget(m_pauseBtn);
 
     // Bảng chỉ là danh sách phụ (sơ đồ ở trên đã chọn được phân vùng): đặt CUỐI để ô điều khiển đổi kích thước nằm sát
     // sơ đồ, không phải cuộn xuống dưới bảng mới thấy.
@@ -430,6 +512,11 @@ void PartitionTab::populatePartitions(const QList<PartitionManager::PartitionInf
     m_statusAfterReload.clear();
 }
 
+void PartitionTab::setDataForTest(const QList<PartitionManager::DiskInfo>& disks, const QList<PartitionManager::PartitionInfo>& partitions)
+{
+    populatePartitions(partitions, disks, QString());
+}
+
 const PartitionManager::PartitionInfo* PartitionTab::selectedPartition() const
 {
     const auto rows = m_table->selectionModel() ? m_table->selectionModel()->selectedRows() : QModelIndexList();
@@ -459,6 +546,10 @@ void PartitionTab::resetResizeState()
     m_queriedSizeBytes = -1;
 
     m_diskMap->clearResizeContext();
+    m_diskMap->setMoveEnabled(false);
+    m_queriedStartBytes = -1;
+    m_startLabel->setVisible(false);
+    m_startSpin->setVisible(false);
     m_warningLabel->setVisible(false);
     m_directionRow->setVisible(false);
     m_changeLabel->setVisible(false);
@@ -534,6 +625,7 @@ void PartitionTab::applySupportedRange(int disk, int partition, qint64 sizeBytes
     m_queriedDisk = disk;
     m_queriedPartition = partition;
     m_queriedSizeBytes = sizeBytes;
+    m_queriedStartBytes = p->offsetBytes;
 
     QString warn = QString("Windows cho phép đổi kích thước phân vùng này trong khoảng %1 - %2.")
                        .arg(DiskUi::formatBytes(m_supportedRange.minBytes), DiskUi::formatBytes(m_supportedRange.maxBytes));
@@ -550,6 +642,7 @@ void PartitionTab::applySupportedRange(int disk, int partition, qint64 sizeBytes
     m_sizeLabel->setVisible(true);
     m_changeLabel->setVisible(true);
     m_edgeNoteLabel->setVisible(true);
+    updateMoveSupport();
     updateChangePreview();
 
     m_confirmHintLabel->setText(QString("Gõ \"%1\" vào ô dưới để xác nhận:").arg(confirmToken(*p)));
@@ -579,10 +672,89 @@ qint64 PartitionTab::effectiveNewSizeBytes(const PartitionManager::PartitionInfo
 {
     // Ô nhập làm tròn 2 chữ số thập phân GB: giá trị CHƯA được sửa phải được coi đúng là kích thước hiện tại (không
     // phải một lần đổi vài MB do làm tròn) - cùng quy tắc isSameSizeAtInputPrecision mà nút "Đổi kích thước" dùng.
+    if (m_diskMap->isMoveEnabled() && m_diskMap->isResizeActive() && p.offsetBytes >= 0 && m_diskMap->previewStart() != p.offsetBytes)
+        return m_diskMap->previewSize(); // đã dời mép trái: kích thước CHÍNH XÁC (byte) lấy từ sơ đồ, không qua ô nhập làm tròn/kẹp theo mức Windows
     const double value = m_newSizeSpin->value();
     if (PartitionManager::internal::isSameSizeAtInputPrecision(value, p.sizeBytes))
         return p.sizeBytes;
     return PartitionManager::internal::clampResizeBytes(value, m_supportedRange);
+}
+
+DiskLayout::Geometry PartitionTab::plannedGeometry() const
+{
+    const auto* p = selectedPartition();
+    if (!p || !m_supportedRange.ok || m_queriedDisk < 0)
+        return {-1, -1};
+    if (m_diskMap->isMoveEnabled() && m_diskMap->isResizeActive() && p->offsetBytes >= 0 && m_diskMap->previewStart() != p->offsetBytes)
+        return {m_diskMap->previewStart(), m_diskMap->previewSize()};
+    return {p->offsetBytes, effectiveNewSizeBytes(*p)};
+}
+
+DiskLayout::ChangePlan PartitionTab::currentPlan() const
+{
+    DiskLayout::ChangePlan none;
+    const auto* p = selectedPartition();
+    const auto g = plannedGeometry();
+    if (!p || g.size < 0 || p->offsetBytes < 0)
+    {
+        none.blockReason = "Chưa chọn/tra phân vùng.";
+        return none;
+    }
+    const auto rows = DiskLayout::build(m_disks, m_partitions);
+    int index = -1;
+    for (int i = 0; i < m_partitions.size(); ++i)
+        if (m_partitions[i].diskNumber == p->diskNumber && m_partitions[i].partitionNumber == p->partitionNumber)
+            index = i;
+    for (const auto& row : rows)
+        if (row.disk.number == p->diskNumber)
+            return DiskLayout::planChange(row.segments, index, g.start, g.size, m_supportedRange.minBytes, row.disk.sizeBytes);
+    none.blockReason = "Không dựng được sơ đồ đĩa.";
+    return none;
+}
+
+QString PartitionTab::moveSupportReason() const
+{
+    const auto* p = selectedPartition();
+    if (!p)
+        return "chưa chọn phân vùng";
+    if (m_moveForcedForTest)
+        return {};
+    if (!m_experimentalCheck || !m_experimentalCheck->isChecked())
+        return "tính năng đang ở chế độ THỬ NGHIỆM - tích ô \"Bật dời phân vùng / kéo mép trái (THỬ NGHIỆM)\" ở đầu tab để dùng";
+    if (!PartitionManager::isElevated())
+        return "cần chạy ứng dụng với quyền Administrator";
+    if (m_pendingJournal)
+        return "đang có một lần dời dở dang - hãy tiếp tục hoặc hủy bỏ nó trước";
+    return PartitionMover::notMovableReason(*p);
+}
+
+void PartitionTab::updateMoveSupport()
+{
+    const auto* p = selectedPartition();
+    const QString why = moveSupportReason();
+    const bool ok = p && why.isEmpty() && m_supportedRange.ok && m_queriedDisk >= 0 && p->offsetBytes >= 0;
+    m_diskMap->setMoveEnabled(ok, why);
+    if (!ok && p && m_diskMap->isResizeActive() && m_diskMap->previewStart() != m_diskMap->currentStart())
+    {
+        m_diskMap->setPreviewGeometry(m_diskMap->currentStart(), m_diskMap->currentSize()); // tắt dời giữa lúc đã kéo: về hình học hiện tại
+        QSignalBlocker blocker(m_newSizeSpin);
+        m_newSizeSpin->setValue(static_cast<double>(m_diskMap->previewSize()) / GB);
+    }
+    m_startLabel->setVisible(ok);
+    m_startSpin->setVisible(ok);
+    if (ok)
+    {
+        QSignalBlocker blocker(m_startSpin);
+        m_startSpin->setValue(static_cast<double>(m_diskMap->previewStart()) / GB);
+        m_edgeNoteLabel->setText(
+            "ℹ Phân vùng này DỜI được: kéo MÉP TRÁI (sang trái = mở rộng về bên trái, sang phải = thu nhỏ từ bên trái) hoặc kéo CẢ KHỐI trên sơ đồ "
+            "(kể cả sang một vùng chưa phân bổ khác để đổi thứ tự). Windows không làm được việc này nên ứng dụng tự CHÉP dữ liệu sang vị trí mới - "
+            "chậm (phụ thuộc tốc độ đĩa), ổ bị khóa trong lúc chép, có nhật ký để chạy tiếp nếu mất điện. HÃY SAO LƯU trước.");
+    }
+    else
+    {
+        m_edgeNoteLabel->setText("ℹ Windows chỉ đổi kích thước bằng MÉP PHẢI. Không kéo mép trái/dời được phân vùng này: " + why + ".");
+    }
 }
 
 void PartitionTab::applyDirectionBounds(bool resetToCurrent)
@@ -590,7 +762,13 @@ void PartitionTab::applyDirectionBounds(bool resetToCurrent)
     const auto* p = selectedPartition();
     if (!p || !m_supportedRange.ok)
         return;
-    const auto bounds = DiskLayout::boundsForDirection(p->sizeBytes, m_supportedRange, m_direction);
+    auto bounds = DiskLayout::boundsForDirection(p->sizeBytes, m_supportedRange, m_direction);
+    if (m_diskMap->isMoveEnabled() && m_direction != DiskLayout::ResizeDirection::ShrinkOnly)
+    {
+        // Dời được: kích thước tối đa là cả khe (chỗ cũ + vùng trống liền kề hai bên), không chỉ mức Windows báo cho vị trí hiện tại.
+        const DiskLayout::Span sp = m_diskMap->targetSpan();
+        bounds.maxBytes = std::max(bounds.maxBytes, sp.hi - sp.lo);
+    }
     {
         // Đổi khoảng/giá trị ô nhập ở đây là cập nhật theo HƯỚNG, không phải người dùng gõ: chặn tín hiệu rồi tự đồng bộ bên dưới.
         QSignalBlocker blocker(m_newSizeSpin);
@@ -611,6 +789,17 @@ void PartitionTab::updateChangePreview()
     if (!p || !m_supportedRange.ok || m_queriedDisk < 0)
     {
         m_changeLabel->clear();
+        return;
+    }
+    const auto g = plannedGeometry();
+    if (m_diskMap->isMoveEnabled() && p->offsetBytes >= 0 && g.start != p->offsetBytes)
+    {
+        const auto plan = currentPlan();
+        QString planText = DiskLayout::describePlan(selectedDisplayName(), plan);
+        const QString dirReason = DiskLayout::directionBlockReason(m_newSizeSpin->value(), p->sizeBytes, m_direction);
+        if (!dirReason.isEmpty())
+            planText += "\n⛔ " + dirReason;
+        m_changeLabel->setText(planText);
         return;
     }
     QString text = DiskLayout::describeResize(selectedDisplayName(), p->sizeBytes, effectiveNewSizeBytes(*p),
@@ -641,12 +830,66 @@ void PartitionTab::onMapPreviewChanged(qint64 bytes)
     m_newSizeSpin->setValue(static_cast<double>(bytes) / GB);
 }
 
-void PartitionTab::onNewSizeChanged(double)
+void PartitionTab::onMapGeometryChanged(qint64 startBytes, qint64 sizeBytes)
+{
+    const auto* p = selectedPartition();
+    if (!p || p->offsetBytes < 0 || startBytes == p->offsetBytes)
+    {
+        // Chưa dời mép trái: đúng đường cũ (chỉ kích thước) - ô nhập làm tròn rồi tự đồng bộ ngược sang sơ đồ.
+        if (p && m_startSpin->isVisible())
+        {
+            QSignalBlocker blocker(m_startSpin);
+            m_startSpin->setValue(static_cast<double>(startBytes) / GB);
+        }
+        onMapPreviewChanged(sizeBytes);
+        return;
+    }
+    // Đã dời: giữ NGUYÊN số byte của sơ đồ (không cho ô nhập làm tròn/kẹp rồi ghi ngược).
+    {
+        QSignalBlocker b1(m_newSizeSpin);
+        QSignalBlocker b2(m_startSpin);
+        m_newSizeSpin->setValue(static_cast<double>(sizeBytes) / GB);
+        m_startSpin->setValue(static_cast<double>(startBytes) / GB);
+    }
+    updateChangePreview();
+    m_resizeBtn->setEnabled(!m_loading && !isResizingNow() && resizeRequestBlockReason().isEmpty());
+}
+
+void PartitionTab::onNewStartChanged(double startGb)
+{
+    const auto* p = selectedPartition();
+    if (!p || !m_supportedRange.ok || m_queriedDisk < 0 || p->offsetBytes < 0 || !m_diskMap->isMoveEnabled())
+        return;
+    constexpr qint64 kMiBBytes = 1024LL * 1024;
+    qint64 start = static_cast<qint64>(std::llround(startGb * GB / static_cast<double>(kMiBBytes))) * kMiBBytes;
+    if (PartitionManager::internal::isSameSizeAtInputPrecision(startGb, p->offsetBytes))
+        start = p->offsetBytes; // chưa sửa gì ở độ chính xác của ô nhập
+    // Giữ nguyên KÍCH THƯỚC xem trước hiện tại (ô này chỉ dời); sơ đồ tự kiểm tra hình học (không chồng, đủ chỗ...) và bỏ nếu sai.
+    m_diskMap->setPreviewGeometry(start, m_diskMap->previewSize());
+    {
+        QSignalBlocker blocker(m_startSpin);
+        m_startSpin->setValue(static_cast<double>(m_diskMap->previewStart()) / GB); // đưa về giá trị sơ đồ thật sự chấp nhận
+    }
+    updateChangePreview();
+    m_resizeBtn->setEnabled(!m_loading && !isResizingNow() && resizeRequestBlockReason().isEmpty());
+}
+
+void PartitionTab::onNewSizeChanged(double sizeGb)
 {
     const auto* p = selectedPartition();
     if (!p || !m_supportedRange.ok || m_queriedDisk < 0)
         return;
-    m_diskMap->setPreviewSize(effectiveNewSizeBytes(*p));
+    if (m_diskMap->isMoveEnabled() && p->offsetBytes >= 0 && m_diskMap->previewStart() != p->offsetBytes)
+    {
+        // Đã dời mép trái: đổi kích thước giữ NGUYÊN vị trí bắt đầu mới; sơ đồ kiểm tra hình học và bỏ nếu không hợp lệ.
+        constexpr qint64 kMiBBytes = 1024LL * 1024;
+        const qint64 bytes = static_cast<qint64>(std::llround(sizeGb * GB / static_cast<double>(kMiBBytes))) * kMiBBytes;
+        m_diskMap->setPreviewGeometry(m_diskMap->previewStart(), bytes);
+        QSignalBlocker blocker(m_newSizeSpin);
+        m_newSizeSpin->setValue(static_cast<double>(m_diskMap->previewSize()) / GB);
+    }
+    else
+        m_diskMap->setPreviewSize(effectiveNewSizeBytes(*p));
     updateChangePreview();
     // Nút "Đổi kích thước" phải đánh giá lại: hướng đã khóa là một điều kiện chặn (xem resizeRequestBlockReason).
     m_resizeBtn->setEnabled(!m_loading && !isResizingNow() && resizeRequestBlockReason().isEmpty());
@@ -684,6 +927,18 @@ QString PartitionTab::resizeRequestBlockReason() const
         return "Phân vùng đang chọn không phải phân vùng đã tra kích thước - hãy tra lại cho phân vùng này.";
     if (m_confirmEdit->text() != confirmToken(*p))
         return QString("Chưa gõ đúng \"%1\" để xác nhận.").arg(confirmToken(*p));
+    if (m_pendingJournal)
+        return "Có một lần dời dở dang (xem banner đầu tab) - tiếp tục hoặc hủy bỏ nó trước khi làm việc khác.";
+    if (m_diskMap->isMoveEnabled() && p->offsetBytes >= 0 && m_diskMap->previewStart() != p->offsetBytes)
+    {
+        if (p->offsetBytes != m_queriedStartBytes)
+            return "Vị trí phân vùng đã đổi kể từ lúc tra - hãy tra lại.";
+        if (const QString why = moveSupportReason(); !why.isEmpty())
+            return "Không dời được phân vùng này: " + why + ".";
+        const auto plan = currentPlan();
+        if (!plan.blockReason.isEmpty())
+            return plan.blockReason;
+    }
     // Hướng đã khóa (chỉ thu nhỏ/chỉ mở rộng) là lớp chặn cuối cho trường hợp kích thước nhập trái hướng.
     return DiskLayout::directionBlockReason(m_newSizeSpin->value(), p->sizeBytes, m_direction);
 }
@@ -731,6 +986,41 @@ void PartitionTab::onResizeClicked()
                 "trên cùng ổ đĩa trong lúc đổi kích thước, rồi thử lại.");
             return;
         }
+    }
+
+    // ---- Dời / đổi mép trái: kế hoạch nhiều bước (Windows lo mép phải, ứng dụng chép dữ liệu) ----
+    if (m_diskMap->isMoveEnabled() && p->offsetBytes >= 0 && m_diskMap->previewStart() != p->offsetBytes)
+    {
+        const auto plan = currentPlan();
+        if (!plan.blockReason.isEmpty() || !plan.needsMove())
+        {
+            QMessageBox::warning(this, "Chưa thể dời", plan.blockReason.isEmpty() ? QString("Không có gì để dời.") : plan.blockReason);
+            return;
+        }
+        const QString moveName = p->driveLetter.isEmpty() ? confirmToken(*p) : (p->driveLetter + ":");
+        const double copyGb = static_cast<double>(plan.copyBytes()) / GB;
+        const auto answer = QMessageBox::warning(
+            this, "Xác nhận dời phân vùng",
+            QString("Sắp DỜI/đổi mép trái ổ %1 (đĩa %2, phân vùng %3).\n\n%4\n\n"
+                    "• Ứng dụng sẽ CHÉP %5 GB dữ liệu của ổ này sang vị trí mới - có thể mất vài phút tới hàng chục phút.\n"
+                    "• Trong lúc chép, ổ %1 bị KHÓA và THÁO (các chương trình đang mở tệp trên ổ sẽ báo lỗi) - hãy đóng chúng trước. Nếu không khóa được, thao tác bị từ chối trước khi ghi gì.\n"
+                    "• KHÔNG tắt máy/rút nguồn/rút cáp. Nếu lỡ mất điện: mở lại ứng dụng, tab này sẽ hiện nút \"Tiếp tục\" theo nhật ký phục hồi; "
+                    "TRONG LÚC DANG DỞ KHÔNG định dạng hay dùng ổ này.\n"
+                    "• Đây là thao tác ghi thẳng xuống đĩa. Hãy SAO LƯU dữ liệu quan trọng trước. Chưa được kiểm chứng trên mọi loại đĩa.\n\n"
+                    "Tiếp tục?")
+                .arg(moveName)
+                .arg(p->diskNumber)
+                .arg(p->partitionNumber)
+                .arg(DiskLayout::describePlan(moveName, plan))
+                .arg(QString::number(copyGb, 'f', 2)),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (answer != QMessageBox::Yes)
+            return;
+        p = selectedPartition();
+        if (!p || !resizeRequestBlockReason().isEmpty() || m_loading || isResizingNow())
+            return;
+        startPlan(plan, moveName, p->diskNumber, p->partitionNumber, p->driveLetter);
+        return;
     }
 
     // Kẹp theo BYTE vào đúng khoảng Windows trả về (ô nhập làm tròn 2 chữ số thập phân GB).
@@ -808,4 +1098,186 @@ void PartitionTab::onResizeFinished(bool success, QString error)
         QMessageBox::critical(this, "Lỗi", "Không đổi được kích thước:\n" + error);
     }
     reloadPartitions(); // làm mới danh sách + ẩn khu vực đổi kích thước, dù thành công hay thất bại
+}
+
+// ------------------------------------------------------------------------------------------------ dời phân vùng
+
+void PartitionTab::setOperationUi(bool running)
+{
+    m_refreshBtn->setEnabled(!running);
+    m_table->setEnabled(!running);
+    m_diskMap->setEnabled(!running);
+    m_directionRow->setEnabled(!running);
+    m_queryBtn->setEnabled(!running);
+    m_confirmEdit->setEnabled(!running);
+    m_newSizeSpin->setEnabled(!running);
+    m_startSpin->setEnabled(!running);
+    if (running)
+        m_resizeBtn->setEnabled(false);
+    m_resumeBtn->setEnabled(!running);
+    m_abandonBtn->setEnabled(!running);
+    m_progressBar->setVisible(running);
+    m_pauseBtn->setVisible(running);
+    m_pauseBtn->setEnabled(running);
+    m_progressLabel->setVisible(running || !m_progressLabel->text().isEmpty());
+}
+
+void PartitionTab::startPlan(const DiskLayout::ChangePlan& plan, const QString& name, int disk, int partition, const QString& letter)
+{
+    m_planName = name;
+    m_planLetter = letter;
+    m_planActive = true;
+    m_copyTimer.invalidate();
+    m_copyBaseBytes = 0;
+    m_progressBar->setRange(0, 0);
+    m_progressLabel->clear();
+    setOperationUi(true);
+    m_pauseBtn->setVisible(plan.needsMove());
+    m_statusLabel->setText("⏳ Đang đổi vị trí/kích thước - KHÔNG tắt máy/rút nguồn/rút cáp...");
+    m_plan->setPlan(disk, partition, plan.steps, letter);
+    m_plan->start();
+}
+
+void PartitionTab::onPlanProgress(int stepIndex, int stepCount, qint64 doneBytes, qint64 totalBytes, QString phase)
+{
+    if (totalBytes <= 0)
+    {
+        m_progressBar->setRange(0, 0);
+        m_progressLabel->setText(phase);
+        m_copyTimer.invalidate();
+        return;
+    }
+    if (!m_copyTimer.isValid())
+    {
+        m_copyTimer.start();
+        m_copyBaseBytes = doneBytes;
+    }
+    m_progressBar->setRange(0, 1000);
+    m_progressBar->setValue(static_cast<int>(1000.0 * static_cast<double>(doneBytes) / static_cast<double>(totalBytes)));
+    QString text = QString("Bước %1/%2 · %3 · %4 / %5 (%6%)")
+                       .arg(stepIndex + 1)
+                       .arg(stepCount)
+                       .arg(phase, DiskUi::formatBytes(doneBytes), DiskUi::formatBytes(totalBytes))
+                       .arg(QString::number(100.0 * static_cast<double>(doneBytes) / static_cast<double>(totalBytes), 'f', 1));
+    const qint64 ms = m_copyTimer.elapsed();
+    if (ms > 3000 && doneBytes > m_copyBaseBytes)
+    {
+        const double rate = static_cast<double>(doneBytes - m_copyBaseBytes) / (static_cast<double>(ms) / 1000.0);
+        const double left = static_cast<double>(totalBytes - doneBytes) / rate;
+        text += QString(" · %1/giây · còn khoảng %2 phút").arg(DiskUi::formatBytes(static_cast<qint64>(rate)), QString::number(std::max(1.0, left / 60.0), 'f', 0));
+    }
+    m_progressLabel->setText(text);
+}
+
+void PartitionTab::onPlanFinished(bool ok, bool resumable, QString message, int failedStep)
+{
+    m_planActive = false;
+    setOperationUi(false);
+    m_progressBar->setVisible(false);
+    m_pauseBtn->setVisible(false);
+    m_progressLabel->setText(message);
+    m_progressLabel->setVisible(true);
+    checkPendingJournal();
+    if (ok)
+    {
+        m_statusAfterReload = "✓ " + message;
+        QMessageBox::information(this, "Hoàn tất", message);
+    }
+    else
+    {
+        m_statusAfterReload = QString("⚠ %1%2").arg(failedStep >= 0 ? QString("(bước %1) ").arg(failedStep + 1) : QString(), message.left(300));
+        if (resumable)
+            QMessageBox::warning(this, "Đã dừng giữa chừng", message);
+        else
+            QMessageBox::critical(this, "Lỗi", message);
+    }
+    reloadPartitions();
+}
+
+void PartitionTab::onPauseClicked()
+{
+    m_pauseBtn->setEnabled(false);
+    m_progressLabel->setText("Đang dừng ở ranh giới an toàn tiếp theo...");
+    if (m_plan)
+        m_plan->requestPause();
+    if (m_resumeWorker)
+        m_resumeWorker->requestPause();
+}
+
+void PartitionTab::checkPendingJournal()
+{
+    PartitionMove::JournalState j;
+    QString err;
+    const bool have = PartitionMover::loadJournal(&j, &err);
+    m_pendingJournal = have || !err.isEmpty();
+    m_pendingBanner->setVisible(m_pendingJournal);
+    m_resumeBtn->setVisible(have);
+    m_abandonBtn->setVisible(have && PartitionMover::canAbandon(j));
+    if (have)
+    {
+        m_pendingBanner->setText("⚠ CÓ MỘT LẦN DỜI PHÂN VÙNG DỞ DANG (có thể do mất điện/đóng giữa chừng): " + PartitionMover::describeJournal(j) +
+                                 "\n KHÔNG định dạng hay dùng ổ này cho tới khi bấm \"Tiếp tục\" (cần quyền Administrator) để hoàn tất"
+                                 + (PartitionMover::canAbandon(j) ? ", hoặc \"Hủy bỏ\" (an toàn: dữ liệu gốc còn nguyên)." : ". Dữ liệu gốc đã bị ghi đè một phần nên CHỈ có thể tiếp tục."));
+    }
+    else if (!err.isEmpty())
+    {
+        m_pendingBanner->setText("⚠ Tệp nhật ký dời phân vùng bị hỏng nên không dùng được: " + err + "\n(" + QDir::toNativeSeparators(PartitionMover::journalPath()) +
+                                 ") - KHÔNG xóa/sửa tệp này; nhờ người có kinh nghiệm xem xét trước khi dùng ổ liên quan.");
+    }
+}
+
+void PartitionTab::onResumeClicked()
+{
+    PartitionMove::JournalState j;
+    QString err;
+    if (!PartitionMover::loadJournal(&j, &err))
+    {
+        QMessageBox::warning(this, "Tiếp tục", "Không đọc được nhật ký: " + err);
+        checkPendingJournal();
+        return;
+    }
+    if (!PartitionManager::isElevated())
+    {
+        QMessageBox::warning(this, "Cần quyền Administrator", "Hãy bấm \"Chạy lại với quyền Quản trị\" rồi thử lại.");
+        return;
+    }
+    if (isResizingNow() || m_loading)
+        return;
+    const auto answer = QMessageBox::question(this, "Tiếp tục lần dời dở dang",
+                                              QString("%1\n\nTiếp tục chép từ chỗ đã dừng? KHÔNG tắt máy/rút nguồn trong lúc chạy.").arg(PartitionMover::describeJournal(j)),
+                                              QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (answer != QMessageBox::Yes)
+        return;
+    QString letter;
+    for (const auto& pp : m_partitions)
+        if (pp.diskNumber == j.diskNumber && pp.partitionNumber == j.partitionNumber)
+            letter = pp.driveLetter;
+    m_planActive = true;
+    m_copyTimer.invalidate();
+    m_progressBar->setRange(0, 0);
+    m_progressLabel->clear();
+    setOperationUi(true);
+    m_statusLabel->setText("⏳ Đang chạy tiếp lần dời - KHÔNG tắt máy/rút nguồn/rút cáp...");
+    m_resumeWorker->setResume(j, letter);
+    m_resumeWorker->start();
+}
+
+void PartitionTab::onAbandonClicked()
+{
+    PartitionMove::JournalState j;
+    if (!PartitionMover::loadJournal(&j) || !PartitionMover::canAbandon(j))
+    {
+        QMessageBox::warning(this, "Hủy bỏ", "Lần dời này không hủy bỏ an toàn được (dữ liệu gốc đã bị ghi đè một phần) - chỉ có thể \"Tiếp tục\".");
+        checkPendingJournal();
+        return;
+    }
+    const auto answer = QMessageBox::question(this, "Hủy bỏ lần dời",
+                                              QString("%1\n\nHủy bỏ: xóa nhật ký, ổ giữ nguyên ở vị trí cũ (dữ liệu gốc còn nguyên). Phần đã chép sang vị trí mới chỉ là bản nháp và sẽ bị bỏ.\n\nHủy bỏ?")
+                                                  .arg(PartitionMover::describeJournal(j)),
+                                              QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (answer != QMessageBox::Yes)
+        return;
+    PartitionMover::discardJournal();
+    checkPendingJournal();
+    m_statusLabel->setText("Đã hủy bỏ lần dời dở dang.");
 }

@@ -2,6 +2,8 @@
 
 #include <QWidget>
 
+#include <QElapsedTimer>
+
 #include <functional>
 
 #include "engine/DiskLayout.h"
@@ -9,7 +11,14 @@
 
 class QThread;
 
+namespace PartitionMover
+{
+class MoveWorker;
+class PlanWorker;
+}
+
 class QDoubleSpinBox;
+class QCheckBox;
 class QLabel;
 class QLineEdit;
 class QProgressBar;
@@ -18,6 +27,10 @@ class QTableWidget;
 class DiskMapWidget;
 class PartitionResizer;
 
+/// Từ v1.25.0 tab còn DỜI phân vùng và kéo MÉP TRÁI (Windows không có API cho việc này nên ứng dụng tự chép dữ liệu - PartitionMover): chỉ phân vùng dữ liệu
+/// NTFS (không hệ thống/khởi động/ổ Windows), ổ phải khóa được. Kế hoạch (DiskLayout::planChange) hiện ngay dưới sơ đồ; thao tác thật vẫn phải gõ lại tên
+/// ổ + xác nhận, có nhật ký phục hồi nếu mất điện giữa chừng (banner "Tiếp tục" ở đầu tab).
+///
 /// Tab "Quản lý phân vùng": liệt kê phân vùng đĩa thật, đổi kích thước qua Resize-Partition - CÙNG
 /// cơ chế an toàn mà "Shrink Volume"/"Extend Volume" của Disk Management (Windows) dùng, xem
 /// PartitionManager.h. Đây là THAO TÁC ĐĨA THẬT, có rủi ro mất dữ liệu thật nếu có sự cố giữa chừng
@@ -39,6 +52,21 @@ public:
     /// Đang đổi kích thước phân vùng THẬT - KHÔNG an toàn để hủy giữa chừng (có thể làm hỏng hệ thống
     /// tệp), khác hẳn các thao tác khác trong ứng dụng (quét/dọn dẹp/kết nối VPN) vốn hủy được an toàn.
     bool isResizingNow() const;
+
+    /// Hình học (vị trí + kích thước, byte) mà thay đổi hiện tại sẽ đưa phân vùng đang chọn tới; {-1,-1} nếu chưa chọn/chưa tra.
+    DiskLayout::Geometry plannedGeometry() const;
+    /// Kế hoạch cho hình học hiện tại (chỉ đọc). blockReason không rỗng = chưa thực hiện được.
+    DiskLayout::ChangePlan currentPlan() const;
+    /// Rỗng nếu phân vùng đang chọn dời được (Admin, NTFS dữ liệu, không hệ thống...); ngược lại là lý do. Dùng cho giao diện + test.
+    QString moveSupportReason() const;
+    /// Có nhật ký dời dở dang (banner "Tiếp tục") không.
+    bool hasPendingJournal() const { return m_pendingJournal; }
+    /// CHỈ cho test UI: ép coi mọi phân vùng đã tra là dời được (bỏ qua Admin/loại phân vùng) - KHÔNG bao giờ chạy thật (nút Áp dụng vẫn kiểm Admin).
+    void setMoveSupportForTest(bool forced) { m_moveForcedForTest = forced; updateMoveSupport(); }
+    /// CHỈ cho test UI: nạp dữ liệu đĩa/phân vùng GIẢ vào bảng + sơ đồ (không PowerShell, không đụng đĩa).
+    void setDataForTest(const QList<PartitionManager::DiskInfo>& disks, const QList<PartitionManager::PartitionInfo>& partitions);
+    /// CHỈ cho test UI: đọc lại nhật ký dời dở dang (banner) sau khi test tự ghi/xóa tệp nhật ký.
+    void refreshPendingJournalForTest() { checkPendingJournal(); updateMoveSupport(); }
 
     /// Đang chờ Windows trả lời một truy vấn CHỈ ĐỌC (liệt kê phân vùng/tra khoảng kích thước) trên luồng
     /// nền - bảng và các nút bị khóa trong lúc đó.
@@ -68,10 +96,21 @@ private slots:
     void onMapPartitionClicked(int diskNumber, int partitionNumber);
     void onMapPreviewChanged(qint64 bytes);
     void onNewSizeChanged(double sizeGb);
+    void onMapGeometryChanged(qint64 startBytes, qint64 sizeBytes);
+    void onNewStartChanged(double startGb);
+    void onPlanProgress(int stepIndex, int stepCount, qint64 doneBytes, qint64 totalBytes, QString phase);
+    void onPlanFinished(bool ok, bool resumable, QString message, int failedStep);
+    void onPauseClicked();
+    void onResumeClicked();
+    void onAbandonClicked();
 
 private:
     void onDirectionButtonClicked(DiskLayout::ResizeDirection direction); // gọi từ lambda của 3 nút hướng
     void buildUi();
+    void updateMoveSupport();
+    void checkPendingJournal();
+    void setOperationUi(bool running);
+    void startPlan(const DiskLayout::ChangePlan& plan, const QString& name, int disk, int partition, const QString& letter);
     void reloadPartitions();
     void populatePartitions(const QList<PartitionManager::PartitionInfo>& partitions,
                             const QList<PartitionManager::DiskInfo>& disks, const QString& error);
@@ -114,6 +153,14 @@ private:
     QLineEdit* m_confirmEdit{nullptr};
     QPushButton* m_resizeBtn{nullptr};
     QProgressBar* m_progressBar{nullptr};
+    QLabel* m_startLabel{nullptr};
+    QDoubleSpinBox* m_startSpin{nullptr}; // vị trí bắt đầu mới (GB từ đầu đĩa) - chỉ hiện khi dời được
+    QCheckBox* m_experimentalCheck{nullptr}; // ô xác nhận THỬ NGHIỆM: dời/kéo mép trái chỉ bật khi tích (mặc định tắt)
+    QLabel* m_pendingBanner{nullptr};
+    QPushButton* m_resumeBtn{nullptr};
+    QPushButton* m_abandonBtn{nullptr};
+    QPushButton* m_pauseBtn{nullptr};
+    QLabel* m_progressLabel{nullptr};
 
     QList<PartitionManager::PartitionInfo> m_partitions;
     QList<PartitionManager::DiskInfo> m_disks;
@@ -127,4 +174,14 @@ private:
     QThread* m_queryThread{nullptr};
     QString m_statusAfterReload;
     PartitionResizer* m_resizer{nullptr};
+    PartitionMover::PlanWorker* m_plan{nullptr};
+    PartitionMover::MoveWorker* m_resumeWorker{nullptr};
+    bool m_planActive{false};
+    bool m_pendingJournal{false};
+    bool m_moveForcedForTest{false};
+    qint64 m_queriedStartBytes{-1};
+    QElapsedTimer m_copyTimer;
+    qint64 m_copyBaseBytes{0};
+    QString m_planName;
+    QString m_planLetter;
 };

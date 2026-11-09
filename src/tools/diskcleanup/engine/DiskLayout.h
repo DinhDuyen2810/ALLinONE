@@ -96,4 +96,73 @@ QString directionName(ResizeDirection direction);
 
 /// "120.66 GB", "522.0 MB"... (cùng cách ghi với DiskUi::formatBytes, đặt ở đây để lõi không phụ thuộc giao diện).
 QString formatSize(qint64 bytes);
+
+// ---- Dời phân vùng / đổi mép TRÁI (từ v1.25.0) ----
+//
+// Windows (Resize-Partition) chỉ đổi mép PHẢI. Ứng dụng tự làm phần còn lại bằng cách CHÉP dữ liệu sang vị trí mới (PartitionMoveCore):
+//  - kéo mép trái sang TRÁI (mở rộng về bên trái): dời cả phân vùng sang trái, rồi mở rộng mép phải về chỗ cũ;
+//  - kéo mép trái sang PHẢI (thu nhỏ từ bên trái): thu nhỏ mép phải trước (Windows), rồi dời phân vùng sang phải;
+//  - kéo cả khối: dời giữ nguyên kích thước - kể cả sang một vùng chưa phân bổ KHÁC (đổi thứ tự các phân vùng).
+
+/// Khoảng cách tối thiểu tính từ đầu/cuối đĩa (bảng GPT chính/phụ + căn lề 1 MiB).
+constexpr qint64 kAlignBytes = 1024LL * 1024;
+
+/// Hình học (vị trí + kích thước, byte) của một phân vùng.
+struct Geometry
+{
+    qint64 start{0};
+    qint64 size{0};
+    qint64 end() const { return start + size; }
+    bool operator==(const Geometry& o) const { return start == o.start && size == o.size; }
+};
+
+/// Bố cục SAU khi phân vùng 'partitionIndex' có hình học mới (đổi vị trí và/hoặc kích thước). Chỗ cũ trở thành vùng chưa phân bổ (gộp với
+/// vùng trống liền kề); chỗ mới được cắt ra khỏi vùng trống chứa nó. Nếu hình học mới không nằm gọn trong (vùng trống ∪ chỗ cũ) thì trả về
+/// bố cục cũ không đổi. Khe hở < kMinGapBytes không hiện là vùng trống (giống build()).
+QList<Segment> projectGeometry(const QList<Segment>& segments, int partitionIndex, qint64 newStart, qint64 newSize);
+
+/// Chọn vị trí bắt đầu hợp lệ GẦN nhất với 'desiredStart' cho phân vùng (giữ nguyên kích thước) trong các "khe": khe của chính nó (chỗ cũ ∪
+/// vùng trống liền kề hai bên) và mọi vùng chưa phân bổ khác đủ lớn. Kết quả căn lề alignBytes, nằm trong [alignBytes, diskSize - alignBytes].
+/// -1 nếu không có khe nào. 'diskSize' <= 0: không giới hạn cuối đĩa.
+qint64 snapMoveStart(const QList<Segment>& segments, int partitionIndex, qint64 desiredStart, qint64 diskSize, qint64 alignBytes = kAlignBytes);
+
+enum class StepKind
+{
+    ShrinkRight, // Resize-Partition thu nhỏ mép phải (Windows quyết định an toàn)
+    MoveData,    // chép dữ liệu sang vị trí mới (PartitionMoveCore) + đổi bảng phân vùng
+    GrowRight    // Resize-Partition mở rộng mép phải
+};
+
+struct PlanStep
+{
+    StepKind kind{StepKind::MoveData};
+    Geometry after; // hình học của phân vùng SAU bước này
+};
+
+struct ChangePlan
+{
+    Geometry before;
+    Geometry target;
+    QList<PlanStep> steps;
+    QString blockReason; // không rỗng = không thực hiện được (steps rỗng)
+    bool needsMove() const;
+    /// Số byte phải chép (0 nếu chỉ đổi mép phải).
+    qint64 copyBytes() const;
+};
+
+/// Kế hoạch đưa phân vùng từ hình học hiện tại sang (newStart, newSize). minSizeBytes = nhỏ nhất Windows cho phép khi THU NHỎ (0 = chưa biết).
+/// Chặn: chồng lên phân vùng khác, ra ngoài đĩa, sai căn lề, nhỏ hơn mức Windows cho phép, không có gì thay đổi.
+ChangePlan planChange(const QList<Segment>& segments, int partitionIndex, qint64 newStart, qint64 newSize, qint64 minSizeBytes, qint64 diskSize,
+                      qint64 alignBytes = kAlignBytes);
+
+/// Mô tả dễ hiểu kế hoạch (tiếng Việt): hướng dời, số GB phải chép, các bước. 'name' vd "D:".
+QString describePlan(const QString& name, const ChangePlan& plan);
+
+/// Vùng cho phép của mép trái / vị trí dời: [lo, hi) = chỗ cũ ∪ vùng chưa phân bổ liền kề hai bên.
+struct Span
+{
+    qint64 lo{0};
+    qint64 hi{0};
+};
+Span adjacentSpan(const QList<Segment>& segments, int partitionIndex);
 } // namespace DiskLayout

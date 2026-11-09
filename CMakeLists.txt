@@ -280,6 +280,10 @@ add_library(diskcleanup_core STATIC
     src/tools/diskcleanup/engine/FolderTreeEdit.cpp
     src/tools/diskcleanup/engine/TreeDeleteGuard.h
     src/tools/diskcleanup/engine/TreeDeleteGuard.cpp
+    src/tools/diskcleanup/engine/PartitionMoveCore.h
+    src/tools/diskcleanup/engine/PartitionMoveCore.cpp
+    src/tools/diskcleanup/engine/PartitionMover.h
+    src/tools/diskcleanup/engine/PartitionMover.cpp
     src/tools/diskcleanup/engine/ProcessMonitor.h
     src/tools/diskcleanup/engine/ProcessMonitor.cpp
 )
@@ -289,6 +293,14 @@ target_link_libraries(diskcleanup_core PUBLIC Qt6::Core shell32 advapi32 psapi c
 # ---- Kiểm thử lõi Disk Cleanup: cmake --build build --target diskcleanup_tests ----
 add_executable(diskcleanup_tests EXCLUDE_FROM_ALL tests/diskcleanup_tests.cpp)
 target_link_libraries(diskcleanup_tests PRIVATE diskcleanup_core)
+
+# ---- Kiểm thử lõi DỜI phân vùng (thiết bị khối giả + giả lập sự cố): cmake --build build --target partition_move_tests ----
+add_executable(partition_move_tests EXCLUDE_FROM_ALL tests/partition_move_tests.cpp)
+target_link_libraries(partition_move_tests PRIVATE diskcleanup_core)
+
+# ---- KIỂM TRA TAY (cần Administrator/UAC): dời phân vùng THẬT trên ổ VHDX tạm do chính nó tạo - xem đầu tests/partition_move_real_check.cpp ----
+add_executable(partition_move_real_check EXCLUDE_FROM_ALL tests/partition_move_real_check.cpp)
+target_link_libraries(partition_move_real_check PRIVATE diskcleanup_core)
 
 # ---- Giao diện Disk Cleanup ----
 add_library(diskcleanup_ui STATIC
