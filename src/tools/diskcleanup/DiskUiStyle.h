@@ -54,6 +54,38 @@ inline QString tableStyle()
            "QHeaderView::section { background-color: #f6f8fa; color: #57606a; font-weight: bold; border: none; padding: 6px; border-bottom: 1px solid #d0d7de; }";
 }
 
+/// Cây/bảng dùng mô hình dữ liệu riêng (QTreeView/QTableView - khác tableStyle() chỉ khớp QTableWidget). Có luật riêng
+/// cho thanh cuộn NGANG vì stylesheet của cửa sổ Disk Cleanup ẩn thanh cuộn ngang (height: 0) - bảng nhiều cột như
+/// "Tiến trình & RAM" cần kéo ngang được khi cửa sổ hẹp.
+inline QString viewStyle()
+{
+    return "QTreeView, QTableView { background-color: #ffffff; alternate-background-color: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 10px; outline: 0; }"
+           "QTreeView::item, QTableView::item { padding: 3px 4px; }"
+           "QTreeView::item:hover:!selected, QTableView::item:hover:!selected { background-color: #eef4fc; }"
+           "QTreeView::item:selected, QTableView::item:selected { background-color: #0969da; color: #ffffff; }"
+           "QHeaderView::section { background-color: #f6f8fa; color: #57606a; font-weight: bold; border: none; padding: 6px; border-bottom: 1px solid #d0d7de; }"
+           "QTreeView QScrollBar:horizontal, QTableView QScrollBar:horizontal { height: 10px; background: #f0f2f5; margin: 0px; border-radius: 5px; }"
+           "QTreeView QScrollBar::handle:horizontal, QTableView QScrollBar::handle:horizontal { background: #c0c6cc; min-width: 24px; border-radius: 5px; }"
+           "QTreeView QScrollBar::add-line:horizontal, QTreeView QScrollBar::sub-line:horizontal,"
+           "QTableView QScrollBar::add-line:horizontal, QTableView QScrollBar::sub-line:horizontal { width: 0px; background: none; }";
+}
+
+/// Thanh tiến độ mảnh (không chữ), màu chunk theo trạng thái.
+inline QString thinBarStyle(const QString& chunkColor = "#0969da")
+{
+    return QString("QProgressBar { background-color: #eaeef2; border: none; border-radius: 4px; }"
+                   "QProgressBar::chunk { background-color: %1; border-radius: 4px; }")
+        .arg(chunkColor);
+}
+
+/// Màu theo mức sử dụng (xanh < 70% < vàng < 90% <= đỏ).
+inline QString usageColor(double percent)
+{
+    if (percent >= 90.0) return "#cf222e";
+    if (percent >= 70.0) return "#bf8700";
+    return "#0969da";
+}
+
 inline QString riskColor(const QString& risk)
 {
     if (risk == "Rủi ro cao") return "#cf222e";

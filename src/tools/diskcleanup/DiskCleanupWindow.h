@@ -7,9 +7,11 @@ class CleanupTab;
 class LargeFilesTab;
 class DuplicateFilesTab;
 class PartitionTab;
+class FolderTreeTab;
+class ProcessTab;
 
-/// Cửa sổ Disk Cleanup: dọn dẹp rác hệ thống theo hạng mục, tìm/xóa tệp lớn, tìm tệp trùng lặp, và
-/// quản lý/đổi kích thước phân vùng đĩa.
+/// Cửa sổ Disk Cleanup: dọn dẹp rác hệ thống theo hạng mục, tìm/xóa tệp lớn, tìm tệp trùng lặp,
+/// quản lý/đổi kích thước phân vùng đĩa, xem cây thư mục theo dung lượng và xem tiến trình/RAM đang chạy.
 class DiskCleanupWindow : public QWidget
 {
     Q_OBJECT
@@ -53,4 +55,6 @@ private:
     LargeFilesTab* m_largeFilesTab{nullptr};
     DuplicateFilesTab* m_duplicateFilesTab{nullptr};
     PartitionTab* m_partitionTab{nullptr};
+    FolderTreeTab* m_folderTreeTab{nullptr};
+    ProcessTab* m_processTab{nullptr};
 };

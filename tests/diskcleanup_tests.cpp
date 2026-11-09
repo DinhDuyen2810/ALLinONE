@@ -9,13 +9,22 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
+#include <QSet>
 #include <QTemporaryDir>
 #include <QProcess>
+#include <QThread>
 #include <QTimer>
+#include <atomic>
 #include <cstdio>
 #include <limits>
+#include <map>
+#include <string>
+#include <thread>
+#include <vector>
 
 #include <windows.h>
+#include <psapi.h>
+#include <tlhelp32.h>
 
 #include "core/AppPaths.h"
 
@@ -25,9 +34,11 @@
 #include "tools/diskcleanup/engine/DiskLayout.h"
 #include "tools/diskcleanup/engine/DiskSpaceInfo.h"
 #include "tools/diskcleanup/engine/DuplicateFinder.h"
+#include "tools/diskcleanup/engine/FolderTreeScanner.h"
 #include "tools/diskcleanup/engine/FsSafety.h"
 #include "tools/diskcleanup/engine/LargeFileScanner.h"
 #include "tools/diskcleanup/engine/PartitionManager.h"
+#include "tools/diskcleanup/engine/ProcessMonitor.h"
 #include "tools/diskcleanup/engine/RecycleBinOps.h"
 
 static int g_fail = 0, g_pass = 0;
@@ -1722,6 +1733,668 @@ int main(int argc, char** argv)
         plain.start();
         plain.wait();
         CHECK(!FsSafety::existsNoFollow(fresh));
+    }
+
+    // =====================================================================================
+    // FolderTreeScanner: cây thư mục + dung lượng từng nhánh (tab "Cây thư mục"). Mọi thứ chỉ đụng tới QTemporaryDir.
+    // =====================================================================================
+
+    // ---- FolderTreeInternal::allocatedBytes / needsExactSize (thuần) ----
+    {
+        using namespace FolderTreeInternal;
+        const qint64 cl = 4096;
+        CHECK(allocatedBytes(FILE_ATTRIBUTE_ARCHIVE, 0, cl, -1, 600) == 0);               // tệp rỗng
+        CHECK(allocatedBytes(FILE_ATTRIBUTE_ARCHIVE, 1, cl, -1, 600) == 8);               // nằm gọn trong MFT: làm tròn lên 8 byte
+        CHECK(allocatedBytes(FILE_ATTRIBUTE_ARCHIVE, 100, cl, -1, 600) == 104);
+        CHECK(allocatedBytes(FILE_ATTRIBUTE_ARCHIVE, 600, cl, -1, 600) == 600);           // đúng ngưỡng
+        CHECK(allocatedBytes(FILE_ATTRIBUTE_ARCHIVE, 601, cl, -1, 600) == 4096);          // vượt ngưỡng -> 1 cụm
+        CHECK(allocatedBytes(FILE_ATTRIBUTE_ARCHIVE, 4096, cl, -1, 600) == 4096);
+        CHECK(allocatedBytes(FILE_ATTRIBUTE_ARCHIVE, 4097, cl, -1, 600) == 8192);
+        // Giới hạn "resident" theo độ dài tên: tên dài hơn -> ngưỡng thấp hơn (mỗi ký tự lấy 2 byte của bản ghi MFT).
+        CHECK(residentLimitFor(0) == kResidentBaseBytes && residentLimitFor(10) == kResidentBaseBytes - 20);
+        CHECK(residentLimitFor(1000) == 0 && residentLimitFor(341) == 1 && residentLimitFor(342) == 0); // không bao giờ âm
+        CHECK(allocatedBytes(FILE_ATTRIBUTE_ARCHIVE, 100, cl, -1, 0) == 4096);            // FAT/exFAT: không có tệp "resident"
+        CHECK(allocatedBytes(FILE_ATTRIBUTE_ARCHIVE, 100, 0, -1, 0) == 100);              // không biết cụm -> kích thước thật
+        CHECK(allocatedBytes(FILE_ATTRIBUTE_ARCHIVE, 5000000, 65536, -1, 0) == 5046272);  // cụm lớn (exFAT 64 KiB)
+        // Tệp chỉ có trên đám mây (OneDrive "Files On-Demand"): không chiếm chỗ trên đĩa dù kích thước thật rất lớn.
+        CHECK(allocatedBytes(FILE_ATTRIBUTE_OFFLINE, 9000000, cl, -1, 600) == 0);
+        CHECK(allocatedBytes(0x00400000 /*RECALL_ON_DATA_ACCESS*/, 9000000, cl, -1, 600) == 0);
+        CHECK(allocatedBytes(0x00040000 /*RECALL_ON_OPEN*/, 9000000, cl, -1, 600) == 0);
+        // Tệp nén/thưa: dùng kích thước thật từ GetCompressedFileSizeW khi có.
+        CHECK(allocatedBytes(FILE_ATTRIBUTE_SPARSE_FILE, 50000000, cl, 8192, 600) == 8192);
+        CHECK(allocatedBytes(FILE_ATTRIBUTE_COMPRESSED, 1000000, cl, 400000, 600) == 400000);
+        CHECK(allocatedBytes(FILE_ATTRIBUTE_SPARSE_FILE, 50000000, cl, -1, 600) == 50003968); // không hỏi được -> làm tròn
+        CHECK(needsExactSize(FILE_ATTRIBUTE_SPARSE_FILE, 0));
+        CHECK(needsExactSize(FILE_ATTRIBUTE_COMPRESSED, 0));
+        CHECK(needsExactSize(FILE_ATTRIBUTE_REPARSE_POINT, 0x80000017)); // WOF (CompactOS)
+        CHECK(!needsExactSize(FILE_ATTRIBUTE_REPARSE_POINT, 0x8000001B)); // APPEXECLINK: tệp 0 byte
+        CHECK(!needsExactSize(FILE_ATTRIBUTE_ARCHIVE, 0x80000017));       // không phải reparse point thì bỏ qua tag
+    }
+
+    // ---- Đối chiếu xấp xỉ với dung lượng cấp phát THẬT của NTFS (FileStandardInfo.AllocationSize) ----
+    {
+        QTemporaryDir tmp;
+        CHECK(tmp.isValid());
+        const QString native = QDir::toNativeSeparators(tmp.path());
+        wchar_t volume[MAX_PATH + 1] = {};
+        wchar_t fsName[MAX_PATH + 1] = {};
+        DWORD spc = 0, bps = 0;
+        const bool haveVolume = GetVolumePathNameW(reinterpret_cast<LPCWSTR>(native.utf16()), volume, MAX_PATH) &&
+                                GetDiskFreeSpaceW(volume, &spc, &bps, nullptr, nullptr) &&
+                                GetVolumeInformationW(volume, nullptr, 0, nullptr, nullptr, nullptr, fsName, MAX_PATH);
+        if (haveVolume && std::wstring(fsName) == L"NTFS")
+        {
+            const qint64 cluster = static_cast<qint64>(spc) * bps;
+            int mismatches = 0;
+            // 601..900 là vùng mờ (tùy độ dài tên/ACL tệp có còn nằm trong MFT không) - không đòi chính xác ở đó.
+            for (qint64 size : {0LL, 1LL, 100LL, 400LL, 1500LL, 4096LL, 4097LL, 70000LL, 1000000LL})
+            {
+                const QString p = tmp.path() + "/cal_" + QString::number(size) + ".bin";
+                writeFile(p, size);
+                const HANDLE h = CreateFileW(reinterpret_cast<LPCWSTR>(QDir::toNativeSeparators(p).utf16()), FILE_READ_ATTRIBUTES,
+                                             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+                FILE_STANDARD_INFO info{};
+                const bool got = h != INVALID_HANDLE_VALUE && GetFileInformationByHandleEx(h, FileStandardInfo, &info, sizeof(info));
+                if (h != INVALID_HANDLE_VALUE)
+                    CloseHandle(h);
+                CHECK(got);
+                if (!got)
+                    continue;
+                // Đúng như bộ quét: giới hạn "resident" tính theo độ dài TÊN tệp.
+                const qint64 estimate = FolderTreeInternal::allocatedBytes(
+                    FILE_ATTRIBUTE_ARCHIVE, size, cluster, -1, FolderTreeInternal::residentLimitFor(static_cast<int>(QFileInfo(p).fileName().size())));
+                if (estimate != info.AllocationSize.QuadPart)
+                {
+                    ++mismatches;
+                    std::printf("  lech: tep %lld byte -> uoc tinh %lld, NTFS cap phat %lld (cum %lld)\n", size, estimate,
+                                static_cast<long long>(info.AllocationSize.QuadPart), cluster);
+                }
+            }
+            CHECK(mismatches == 0);
+        }
+        else
+            std::printf("LUU Y: thu muc tam khong nam tren NTFS - bo qua doi chieu AllocationSize\n");
+    }
+
+    {
+        QTemporaryDir tmp;
+        CHECK(tmp.isValid());
+        const QString r = tmp.path();
+        const QString scanRoot = r + "/scan";
+
+        // Kích thước cụm của ổ chứa thư mục tạm.
+        qint64 cluster = 4096;
+        bool isNtfs = false;
+        {
+            const QString native = QDir::toNativeSeparators(r);
+            wchar_t volume[MAX_PATH + 1] = {};
+            wchar_t fsName[MAX_PATH + 1] = {};
+            DWORD spc = 0, bps = 0;
+            if (GetVolumePathNameW(reinterpret_cast<LPCWSTR>(native.utf16()), volume, MAX_PATH) &&
+                GetDiskFreeSpaceW(volume, &spc, &bps, nullptr, nullptr))
+                cluster = static_cast<qint64>(spc) * bps;
+            isNtfs = GetVolumeInformationW(volume, nullptr, 0, nullptr, nullptr, nullptr, fsName, MAX_PATH) && std::wstring(fsName) == L"NTFS";
+        }
+        // Dung lượng chiếm trên đĩa THẬT của từng tệp thử, đọc ĐỘC LẬP bằng FileStandardInfo.AllocationSize (nguồn sự thật);
+        // kích thước các tệp thử đều khác nhau nên tra theo kích thước. Bộ quét phải ra ĐÚNG những con số này.
+        std::map<qint64, qint64> realAlloc;
+        const auto recordTruth = [&](const QString& path, qint64 size) {
+            const HANDLE h = CreateFileW(reinterpret_cast<LPCWSTR>(QDir::toNativeSeparators(path).utf16()), FILE_READ_ATTRIBUTES,
+                                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+            FILE_STANDARD_INFO info{};
+            if (h != INVALID_HANDLE_VALUE && GetFileInformationByHandleEx(h, FileStandardInfo, &info, sizeof(info)))
+                realAlloc[size] = info.AllocationSize.QuadPart;
+            if (h != INVALID_HANDLE_VALUE)
+                CloseHandle(h);
+        };
+        const auto od = [&](qint64 logical) { return realAlloc.count(logical) ? realAlloc.at(logical) : qint64(-1); };
+
+        QDir().mkpath(scanRoot + "/a/deep");
+        QDir().mkpath(scanRoot + "/b");
+        QDir().mkpath(scanRoot + "/empty");
+        QDir().mkpath(scanRoot + "/tiny");
+        QDir().mkpath(scanRoot + "/c/d/e/f");
+        QDir().mkpath(r + "/outside");
+        writeFile(scanRoot + "/a/a1.bin", 3000000);
+        writeFile(scanRoot + "/a/a2.bin", 1500000);
+        writeFile(scanRoot + "/a/deep/x.bin", 2000000);
+        writeFile(scanRoot + "/a/deep/y.bin", 100);
+        writeFile(scanRoot + "/b/b1.bin", 500000);
+        writeFile(scanRoot + "/tiny/t.bin", 10);
+        writeFile(scanRoot + "/c/d/e/f/g.bin", 7000000);
+        writeFile(scanRoot + "/root1.bin", 1000);
+        writeFile(r + "/outside/precious.bin", 9000000);
+        recordTruth(scanRoot + "/a/a1.bin", 3000000);
+        recordTruth(scanRoot + "/a/a2.bin", 1500000);
+        recordTruth(scanRoot + "/a/deep/x.bin", 2000000);
+        recordTruth(scanRoot + "/a/deep/y.bin", 100);
+        recordTruth(scanRoot + "/b/b1.bin", 500000);
+        recordTruth(scanRoot + "/tiny/t.bin", 10);
+        recordTruth(scanRoot + "/c/d/e/f/g.bin", 7000000);
+        recordTruth(scanRoot + "/root1.bin", 1000);
+        CHECK(realAlloc.size() == 8);
+        // Đã xác nhận bằng chạy thật: tệp lớn được cấp phát đúng bội số của cụm (không cấp dư), tệp rất nhỏ nằm trong MFT.
+        CHECK(od(3000000) >= 3000000 && od(3000000) < 3000000 + cluster && od(3000000) % cluster == 0);
+        CHECK(od(100) < cluster && od(10) < cluster);
+        const bool haveJunction = makeJunction(scanRoot + "/jlink", r + "/outside");
+        if (!haveJunction)
+            std::printf("LUU Y: khong tao duoc junction (mklink /J) - bo qua kiem tra junction cua FolderTreeScanner\n");
+
+        const qint64 logicalTotal = 3000000 + 1500000 + 2000000 + 100 + 500000 + 10 + 7000000 + 1000;
+        const qint64 onDiskTotal = od(3000000) + od(1500000) + od(2000000) + od(100) + od(500000) + od(10) + od(7000000) + od(1000);
+
+        bool forceEstimate = false; // true: ép dùng đường ước tính dự phòng (xem FolderTreeScanner::setForceEstimateForTest)
+        const auto scan = [&](const QString& root, qint64 big, qint64 keep, int maxBig) {
+            FolderTreeScanner s;
+            s.setForceEstimateForTest(forceEstimate);
+            std::shared_ptr<FolderTree> result;
+            bool stopped = false;
+            int finished = 0;
+            QObject::connect(&s, &FolderTreeScanner::scanFinished, [&](std::shared_ptr<FolderTree> t) { result = t; ++finished; });
+            QObject::connect(&s, &FolderTreeScanner::scanStopped, [&]() { stopped = true; });
+            s.setRootPath(root);
+            s.setBigFileBytes(big);
+            s.setKeepFolderBytes(keep);
+            s.setMaxBigFilesPerFolder(maxBig);
+            s.startScan();
+            waitUntil([&]() { return result || stopped; }, 30000);
+            s.wait();
+            CHECK(!stopped && finished == 1);
+            return result;
+        };
+
+        // Mặc định (ngưỡng gộp 128 KiB, tệp lớn >= 1 MiB).
+        const auto tree = scan(scanRoot, 1024 * 1024, 128 * 1024, 25);
+        CHECK(tree && tree->root);
+        if (tree && tree->root)
+        {
+            const FolderNode* root = tree->root.get();
+            CHECK(tree->rootPath == QDir::cleanPath(scanRoot));
+            CHECK(root->name == tree->rootPath && root->parent == nullptr);
+            CHECK(root->fileCount == 8 && tree->stats.files == 8);
+            CHECK(root->folderCount == 9 && tree->stats.folders == 9);
+            CHECK(root->logicalBytes == logicalTotal && tree->stats.logicalBytes == logicalTotal);
+            CHECK(root->bytes == onDiskTotal && tree->stats.bytes == onDiskTotal);
+            CHECK(root->ownFileCount == 1 && root->ownBytes == od(1000));
+            CHECK(tree->stats.clusterBytes == cluster);
+            CHECK(tree->stats.unreadableFolders == 0);
+            // Trên NTFS mọi số "chiếm trên đĩa" là số THẬT lấy từ lần liệt kê thư mục - không tệp nào phải ước tính.
+            if (isNtfs)
+                CHECK(tree->stats.estimatedFiles == 0);
+            if (haveJunction)
+                CHECK(tree->stats.skippedLinks == 1); // junction KHÔNG được đi vào: precious.bin không bị cộng
+            // Thư mục con giữ lại: a (~6,5 MB), c (7 MB), b (~0,5 MB >= 128 KiB); "empty" và "tiny" (0 byte) bị gộp.
+            CHECK(root->children.size() == 3);
+            if (root->children.size() == 3)
+            {
+                CHECK(root->children[0]->name == "c" && root->children[1]->name == "a" && root->children[2]->name == "b"); // giảm dần
+                CHECK(root->children[0]->bytes == od(7000000));
+                CHECK(root->children[1]->bytes == od(3000000) + od(1500000) + od(2000000) + od(100));
+                CHECK(root->children[2]->parent == root);
+                CHECK(root->children[2]->path() == QDir::cleanPath(scanRoot) + "/b");
+            }
+            CHECK(root->prunedFolderCount == 2 && root->prunedBytes == od(10)); // "empty" (0) + "tiny" (tệp 10 byte)
+            CHECK(root->bytes == root->ownBytes + root->children[0]->bytes + root->children[1]->bytes + root->children[2]->bytes + root->prunedBytes);
+
+            // Tệp lớn (>= 1 MiB) được giữ riêng, giảm dần; phần còn lại gộp trong own*.
+            const FolderNode* a = root->children.size() > 1 ? root->children[1].get() : nullptr;
+            CHECK(a && a->bigFiles.size() == 2 && a->bigFiles[0].name == "a1.bin" && a->bigFiles[1].name == "a2.bin");
+            if (a && a->bigFiles.size() == 2)
+                CHECK(a->bigFiles[0].bytes == od(3000000) && a->bigFiles[0].logicalBytes == 3000000);
+            const FolderNode* deep = a && !a->children.empty() ? a->children[0].get() : nullptr;
+            CHECK(deep && deep->name == "deep" && deep->bigFiles.size() == 1 && deep->bigFiles[0].name == "x.bin");
+            CHECK(deep && deep->ownFileCount == 2 && deep->ownBytes == od(2000000) + od(100));
+            // Chuỗi thư mục lồng sâu c/d/e/f: tệp g.bin lớn nằm ở đáy, đường dẫn dựng ngược đúng.
+            const FolderNode* f = root->children.size() > 0 ? root->children[0].get() : nullptr;
+            for (const char* step : {"d", "e", "f"})
+            {
+                CHECK(f && !f->children.empty() && f->children[0]->name == step);
+                f = (f && !f->children.empty()) ? f->children[0].get() : nullptr;
+            }
+            CHECK(f && f->bigFiles.size() == 1 && f->bigFiles[0].name == "g.bin");
+            CHECK(f && f->path() == QDir::cleanPath(scanRoot) + "/c/d/e/f");
+        }
+
+        // Đường ƯỚC TÍNH dự phòng (ổ không hỗ trợ FileIdBothDirectoryInfo): cây thử có kích thước dễ đoán nên ra đúng số thật.
+        {
+            forceEstimate = true;
+            const auto est = scan(scanRoot, 1024 * 1024, 128 * 1024, 25);
+            forceEstimate = false;
+            CHECK(est && est->root);
+            if (est && est->root)
+            {
+                CHECK(est->stats.estimatedFiles == 8 && est->stats.files == 8 && est->stats.folders == 9);
+                CHECK(est->stats.logicalBytes == logicalTotal);
+                if (isNtfs)
+                    CHECK(est->stats.bytes == onDiskTotal); // ước tính cụm + "nằm trong MFT" trùng số thật với các tệp này
+                CHECK(est->root->children.size() == 3 && est->root->children[0]->name == "c");
+            }
+        }
+
+        // Không gộp gì (keep = 0): mọi bất biến cộng dồn phải khớp tuyệt đối ở MỌI nút.
+        const auto full = scan(scanRoot, 1, 0, 25);
+        CHECK(full && full->root);
+        if (full && full->root)
+        {
+            CHECK(full->root->children.size() == 5); // a, b, c, empty, tiny - junction KHÔNG phải thư mục con
+            bool ok = true;
+            int nodes = 0;
+            std::vector<const FolderNode*> pending{full->root.get()};
+            while (!pending.empty())
+            {
+                const FolderNode* n = pending.back();
+                pending.pop_back();
+                ++nodes;
+                qint64 kidBytes = 0, kidLogical = 0, kidFiles = 0, kidFolders = 0;
+                for (size_t i = 0; i < n->children.size(); ++i)
+                {
+                    const FolderNode* c = n->children[i].get();
+                    ok = ok && c->parent == n;
+                    ok = ok && (i == 0 || n->children[i - 1]->bytes >= c->bytes); // giảm dần
+                    kidBytes += c->bytes;
+                    kidLogical += c->logicalBytes;
+                    kidFiles += c->fileCount;
+                    kidFolders += 1 + c->folderCount;
+                    pending.push_back(c);
+                }
+                ok = ok && n->prunedFolderCount == 0 && n->prunedBytes == 0;
+                ok = ok && n->bytes == n->ownBytes + kidBytes;
+                ok = ok && n->logicalBytes == n->ownLogicalBytes + kidLogical;
+                ok = ok && n->fileCount == n->ownFileCount + kidFiles;
+                ok = ok && n->folderCount == kidFolders;
+                qint64 big = 0;
+                for (const FolderFile& bf : n->bigFiles)
+                    big += bf.bytes;
+                ok = ok && big <= n->ownBytes;
+            }
+            CHECK(ok);
+            CHECK(nodes == 10); // gốc + 9 thư mục
+            CHECK(full->root->bytes == onDiskTotal);
+        }
+
+        // Giới hạn số tệp lớn giữ lại mỗi thư mục: chỉ giữ các tệp LỚN NHẤT.
+        QDir().mkpath(r + "/many");
+        for (int i = 1; i <= 8; ++i)
+            writeFile(r + "/many/f" + QString::number(i) + ".bin", i * 100000);
+        const auto many = scan(r + "/many", 1, 0, 3);
+        CHECK(many && many->root && many->root->bigFiles.size() == 3);
+        if (many && many->root && many->root->bigFiles.size() == 3)
+        {
+            CHECK(many->root->bigFiles[0].name == "f8.bin" && many->root->bigFiles[1].name == "f7.bin" && many->root->bigFiles[2].name == "f6.bin");
+            CHECK(many->root->fileCount == 8 && many->root->ownBytes >= 3600000); // vẫn tính ĐỦ 8 tệp trong tổng
+        }
+
+        // Gốc không tồn tại / rỗng -> báo "không đọc được", không crash, vẫn kết thúc đúng một lần.
+        const auto missing = scan(r + "/khong_ton_tai", 1, 0, 25);
+        CHECK(missing && missing->root && missing->root->unreadable && missing->stats.unreadableFolders == 1 && missing->stats.files == 0);
+        const auto blank = scan("", 1, 0, 25);
+        CHECK(blank && blank->root && blank->root->unreadable);
+
+        // Tệp THƯA (sparse) 50 MB không có dữ liệu: kích thước thật 50 MB nhưng gần như không chiếm chỗ trên đĩa.
+        QDir().mkpath(r + "/sparse");
+        {
+            const HANDLE h = CreateFileW(reinterpret_cast<LPCWSTR>(QDir::toNativeSeparators(r + "/sparse/s.bin").utf16()),
+                                         GENERIC_READ | GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            bool madeSparse = false;
+            if (h != INVALID_HANDLE_VALUE)
+            {
+                DWORD ret = 0;
+                LARGE_INTEGER size;
+                size.QuadPart = 50LL * 1024 * 1024;
+                madeSparse = DeviceIoControl(h, FSCTL_SET_SPARSE, nullptr, 0, nullptr, 0, &ret, nullptr) &&
+                             SetFilePointerEx(h, size, nullptr, FILE_BEGIN) && SetEndOfFile(h);
+                CloseHandle(h);
+            }
+            if (madeSparse)
+            {
+                const auto sp = scan(r + "/sparse", 1, 0, 25);
+                CHECK(sp && sp->root && sp->root->logicalBytes == 50LL * 1024 * 1024);
+                CHECK(sp && sp->root && sp->root->bytes < 1024 * 1024); // đọc kích thước THẬT qua GetCompressedFileSizeW
+            }
+            else
+                std::printf("LUU Y: khong tao duoc tep thua (sparse) - bo qua kiem tra tep thua\n");
+        }
+
+        // Đường dẫn DÀI hơn 260 ký tự (rất hay gặp trong node_modules/cache): vẫn đếm đủ tệp ở đáy.
+        {
+            QString deepDir = r + "/long";
+            for (int i = 0; i < 100; ++i)
+                deepDir += "/dddddddd"; // 100 x 9 = 900 ký tự
+            if (QDir().mkpath(deepDir) && QFileInfo(deepDir).isDir())
+            {
+                writeFile(deepDir + "/bottom.bin", 5000);
+                const auto lt = scan(r + "/long", 1, 0, 25);
+                CHECK(lt && lt->root && lt->root->fileCount == 1 && lt->root->folderCount == 100);
+                const FolderNode* n = lt && lt->root ? lt->root.get() : nullptr;
+                while (n && !n->children.empty())
+                    n = n->children[0].get();
+                CHECK(n && n->path() == QDir::cleanPath(deepDir)); // path() dựng ngược đúng ở độ sâu 100
+            }
+            else
+                std::printf("LUU Y: khong tao duoc duong dan dai - bo qua kiem tra duong dan dai\n");
+        }
+
+        // Thư mục KHÔNG đọc được (từ chối truy cập): được đánh dấu và đếm, các nhánh khác vẫn quét bình thường.
+        {
+            QDir().mkpath(r + "/denied/locked");
+            writeFile(r + "/denied/locked/secret.bin", 4000);
+            writeFile(r + "/denied/open.bin", 2000);
+            const QString user = qEnvironmentVariable("USERNAME");
+            QProcess icacls;
+            icacls.start(AppPaths::systemExecutable("icacls.exe"),
+                         {QDir::toNativeSeparators(r + "/denied/locked"), "/deny", user + ":(OI)(CI)(RX)"});
+            const bool denied = !user.isEmpty() && icacls.waitForFinished(10000) && icacls.exitCode() == 0;
+            if (denied)
+            {
+                const auto dt = scan(r + "/denied", 1, 0, 25);
+                CHECK(dt && dt->root && dt->stats.unreadableFolders == 1 && dt->root->fileCount == 1);
+                bool flagged = false;
+                if (dt && dt->root)
+                    for (const auto& c : dt->root->children)
+                        if (c->name == "locked" && c->unreadable)
+                            flagged = true;
+                CHECK(flagged);
+                // Khôi phục quyền để QTemporaryDir dọn được.
+                QProcess undo;
+                undo.start(AppPaths::systemExecutable("icacls.exe"),
+                           {QDir::toNativeSeparators(r + "/denied/locked"), "/remove:d", user});
+                undo.waitForFinished(10000);
+            }
+            else
+                std::printf("LUU Y: khong chan duoc quyen doc bang icacls - bo qua kiem tra thu muc khong doc duoc\n");
+        }
+
+        // Dừng giữa chừng / chạy lại liên tục: mỗi lượt kết thúc ĐÚNG MỘT lần (xong HOẶC dừng) và lượt sau vẫn đầy đủ.
+        {
+            for (int d = 0; d < 40; ++d)
+            {
+                QDir().mkpath(r + "/wide/d" + QString::number(d));
+                for (int f = 0; f < 25; ++f)
+                    writeFile(r + "/wide/d" + QString::number(d) + "/f" + QString::number(f) + ".bin", 10);
+            }
+            FolderTreeScanner s;
+            int finished = 0, stopped = 0;
+            std::shared_ptr<FolderTree> last;
+            QObject::connect(&s, &FolderTreeScanner::scanFinished, [&](std::shared_ptr<FolderTree> t) { ++finished; last = t; });
+            QObject::connect(&s, &FolderTreeScanner::scanStopped, [&]() { ++stopped; });
+            s.setRootPath(r + "/wide");
+            for (int round = 0; round < 30; ++round)
+            {
+                s.startScan();
+                if (round % 3 != 0)
+                    s.requestStop();
+                s.wait();
+                QCoreApplication::processEvents();
+                CHECK(finished + stopped == round + 1);
+            }
+            CHECK(finished >= 10 && stopped + finished == 30);
+            CHECK(last && last->root && last->root->fileCount == 1000 && last->root->folderCount == 40);
+        }
+    }
+
+    // =====================================================================================
+    // ProcessMonitor: danh sách tiến trình + RAM/CPU (tab "Tiến trình & RAM"). CHỈ ĐỌC; tiến trình phụ duy nhất là
+    // ping.exe do chính test khởi chạy rồi tự kết thúc.
+    // =====================================================================================
+    {
+        // ---- Thanh RAM: JSON + tên loại ----
+        CHECK(ProcessMonitor::memoryTypeName(26) == "DDR4" && ProcessMonitor::memoryTypeName(34) == "DDR5");
+        CHECK(ProcessMonitor::memoryTypeName(0).isEmpty() && ProcessMonitor::memoryTypeName(999).isEmpty());
+        {
+            QString err;
+            const auto two = ProcessMonitor::internal::parseMemoryModulesJson(
+                R"([{"Slot":"DIMM A","Capacity":8589934592,"Speed":3200,"Configured":2933,"Type":26,"Manufacturer":"Samsung ","Part":"M471A1K43"},)"
+                R"({"Slot":"DIMM B","Capacity":8589934592,"Speed":3200,"Configured":0,"Type":26,"Manufacturer":"","Part":""}])", &err);
+            CHECK(err.isEmpty() && two.size() == 2);
+            if (two.size() == 2)
+            {
+                CHECK(two[0].slot == "DIMM A" && two[0].capacityBytes == 8589934592LL && two[0].speedMHz == 2933); // ưu tiên tốc độ đang chạy
+                CHECK(two[0].type == "DDR4" && two[0].manufacturer == "Samsung" && two[0].partNumber == "M471A1K43");
+                CHECK(two[1].speedMHz == 3200); // Configured = 0 -> rơi về Speed
+            }
+            // Một thanh RAM: ConvertTo-Json trả đối tượng đơn, không bọc mảng.
+            const auto one = ProcessMonitor::internal::parseMemoryModulesJson(
+                R"({"Slot":"ChannelA","Capacity":17179869184,"Speed":4800,"Configured":4800,"Type":34,"Manufacturer":"X","Part":"Y"})", &err);
+            CHECK(one.size() == 1 && one[0].type == "DDR5" && one[0].capacityBytes == 17179869184LL);
+            CHECK(ProcessMonitor::internal::parseMemoryModulesJson("[]", &err).isEmpty() && err.isEmpty());
+            CHECK(ProcessMonitor::internal::parseMemoryModulesJson("", &err).isEmpty() && err.isEmpty());
+            QString bad;
+            CHECK(ProcessMonitor::internal::parseMemoryModulesJson("{khong phai json", &bad).isEmpty() && !bad.isEmpty());
+            // Mục dung lượng 0 / không phải đối tượng bị bỏ qua.
+            CHECK(ProcessMonitor::internal::parseMemoryModulesJson(R"([{"Slot":"A","Capacity":0},5,"x"])", &err).isEmpty());
+        }
+        // ---- describeMemoryModules: một dòng tóm tắt ----
+        {
+            const auto mod = [](qint64 gib, int mhz, const QString& type, const QString& maker) {
+                MemoryModule m;
+                m.slot = "S";
+                m.capacityBytes = gib * 1024 * 1024 * 1024;
+                m.speedMHz = mhz;
+                m.type = type;
+                m.manufacturer = maker;
+                return m;
+            };
+            CHECK(ProcessMonitor::describeMemoryModules({}).isEmpty());
+            CHECK(ProcessMonitor::describeMemoryModules({mod(8, 2933, "DDR4", "Samsung"), mod(8, 2933, "DDR4", "samsung")}) ==
+                  QString::fromUtf8("2 thanh RAM: 8 GB + 8 GB · DDR4 2933 MHz · Samsung (tổng 16 GB)"));
+            CHECK(ProcessMonitor::describeMemoryModules({mod(16, 4800, "DDR5", "")}) == QString::fromUtf8("1 thanh RAM: 16 GB · DDR5 4800 MHz"));
+            // Khác dung lượng/tốc độ/loại: liệt kê giảm dần, tốc độ/loại cách nhau bằng "/".
+            CHECK(ProcessMonitor::describeMemoryModules({mod(4, 2133, "DDR4", ""), mod(8, 2400, "DDR4", "")}) ==
+                  QString::fromUtf8("2 thanh RAM: 8 GB + 4 GB · DDR4 · 2400/2133 MHz (tổng 12 GB)") ||
+                  ProcessMonitor::describeMemoryModules({mod(4, 2133, "DDR4", ""), mod(8, 2400, "DDR4", "")}) ==
+                  QString::fromUtf8("2 thanh RAM: 8 GB + 4 GB · DDR4 · 2133/2400 MHz (tổng 12 GB)"));
+            // Không rõ loại/tốc độ: chỉ dung lượng.
+            CHECK(ProcessMonitor::describeMemoryModules({mod(8, 0, "", "")}) == QString::fromUtf8("1 thanh RAM: 8 GB"));
+        }
+        {
+            QString err;
+            const auto real = ProcessMonitor::memoryModules(&err); // đọc THẬT (chỉ đọc); máy ảo có thể rỗng
+            std::printf("Win32_PhysicalMemory that: %d thanh RAM%s%s\n", static_cast<int>(real.size()), err.isEmpty() ? "" : " (loi: ", err.isEmpty() ? "" : qPrintable(err + ")"));
+            for (const auto& m : real)
+                std::printf("  - %s %lld MB %s %d MHz\n", qPrintable(m.slot), m.capacityBytes / (1024 * 1024), qPrintable(m.type), m.speedMHz);
+            for (const auto& m : real)
+                CHECK(m.capacityBytes > 0);
+        }
+
+        // ---- ProcessSampler: đối chiếu với API gốc của Windows trên CHÍNH tiến trình này ----
+        const quint32 selfPid = GetCurrentProcessId();
+        const auto findPid = [](const SystemSnapshot& s, quint32 pid) -> const ProcessInfo* {
+            for (const ProcessInfo& p : s.processes)
+                if (p.pid == pid)
+                    return &p;
+            return nullptr;
+        };
+
+        // Đốt CPU một luồng + ghi 30 MB ra đĩa trong khoảng giữa hai mẫu để thấy % CPU và tốc độ I/O của chính mình.
+        QTemporaryDir ioTmp;
+        ProcessSampler sampler;
+        SystemSnapshot s1 = sampler.sample();
+        std::atomic_bool spin{true};
+        std::thread burner([&]() {
+            volatile quint64 x = 0;
+            while (spin.load())
+                x = x + 1;
+        });
+        writeFile(ioTmp.path() + "/io.bin", 30 * 1024 * 1024);
+        QThread::msleep(700);
+        const SystemSnapshot s2 = sampler.sample();
+        spin = false;
+        burner.join();
+
+        CHECK(s1.nativeApi && s2.nativeApi);
+        CHECK(s1.processes.size() > 20 && s2.processes.size() > 20);
+        CHECK(s2.logicalProcessors >= 1);
+        const ProcessInfo* me = findPid(s2, selfPid);
+        CHECK(me != nullptr);
+        if (me)
+        {
+            const QString exeName = QFileInfo(QCoreApplication::applicationFilePath()).fileName();
+            CHECK(me->name.compare(exeName, Qt::CaseInsensitive) == 0);
+            CHECK(QDir::fromNativeSeparators(me->path).compare(QDir::fromNativeSeparators(QCoreApplication::applicationFilePath()), Qt::CaseInsensitive) == 0);
+            const QString userName = qEnvironmentVariable("USERNAME");
+            CHECK(!me->user.isEmpty() && me->user.contains(userName, Qt::CaseInsensitive));
+            CHECK(me->startTime.isValid() && me->startTime <= QDateTime::currentDateTime() && me->startTime > QDateTime::currentDateTime().addDays(-30));
+
+            PROCESS_MEMORY_COUNTERS_EX pmc;
+            pmc.cb = sizeof(pmc);
+            CHECK(GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc), sizeof(pmc)));
+            // ("near" là macro rỗng của windows.h nên không dùng làm tên.)
+            const auto closeTo = [](qint64 a, qint64 b, double rel, qint64 slack) { return qAbs(a - b) <= qMax<qint64>(slack, static_cast<qint64>(rel * static_cast<double>(qMax(a, b)))); };
+            CHECK(closeTo(me->workingSetBytes, static_cast<qint64>(pmc.WorkingSetSize), 0.25, 8 * 1024 * 1024));
+            CHECK(closeTo(me->privateBytes, static_cast<qint64>(pmc.PrivateUsage), 0.25, 8 * 1024 * 1024));
+            CHECK(me->privateWorkingSetBytes > 0 && me->privateWorkingSetBytes <= me->workingSetBytes + 4 * 1024 * 1024);
+            CHECK(me->peakWorkingSetBytes >= me->workingSetBytes / 2);
+            DWORD handles = 0;
+            CHECK(GetProcessHandleCount(GetCurrentProcess(), &handles));
+            CHECK(qAbs(static_cast<qint64>(me->handles) - static_cast<qint64>(handles)) <= 100);
+
+            // Số luồng + PID cha so với Toolhelp (nguồn độc lập).
+            quint32 toolhelpThreads = 0, toolhelpParent = 0;
+            const HANDLE ts = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD | TH32CS_SNAPPROCESS, 0);
+            if (ts != INVALID_HANDLE_VALUE)
+            {
+                THREADENTRY32 te;
+                te.dwSize = sizeof(te);
+                if (Thread32First(ts, &te))
+                    do { if (te.th32OwnerProcessID == selfPid) ++toolhelpThreads; } while (Thread32Next(ts, &te));
+                PROCESSENTRY32W pe;
+                pe.dwSize = sizeof(pe);
+                if (Process32FirstW(ts, &pe))
+                    do { if (pe.th32ProcessID == selfPid) toolhelpParent = pe.th32ParentProcessID; } while (Process32NextW(ts, &pe));
+                CloseHandle(ts);
+            }
+            CHECK(toolhelpThreads > 0 && qAbs(static_cast<int>(me->threads) - static_cast<int>(toolhelpThreads)) <= 8);
+            CHECK(toolhelpParent != 0 && me->parentPid == toolhelpParent);
+
+            // CPU: một luồng đốt liên tục ~0,7 giây => ít nhất ~40% của (100 / số lõi) % tổng CPU.
+            const double oneCore = 100.0 / s2.logicalProcessors;
+            CHECK(me->cpuPercent >= 0.4 * oneCore && me->cpuPercent <= 100.0);
+            CHECK(s2.cpuPercent >= 0.4 * oneCore && s2.cpuPercent <= 100.0);
+            // I/O: ghi 30 MB trong ~0,7 giây => tốc độ phải thấy rõ (đặt ngưỡng thấp: 5 MB/s).
+            CHECK(me->ioBytesPerSec > 5 * 1024 * 1024);
+            CHECK(me->ioWriteBytes >= 30LL * 1024 * 1024);
+            // Mẫu ĐẦU TIÊN chưa có mốc so sánh -> % CPU và I/O bằng 0.
+            const ProcessInfo* me1 = findPid(s1, selfPid);
+            CHECK(me1 && me1->cpuPercent == 0.0 && me1->ioBytesPerSec == 0 && s1.cpuPercent == 0.0);
+        }
+
+        // RAM toàn máy so với GlobalMemoryStatusEx / GetPerformanceInfo.
+        MEMORYSTATUSEX ms;
+        ms.dwLength = sizeof(ms);
+        CHECK(GlobalMemoryStatusEx(&ms));
+        CHECK(s2.memory.totalPhysical == static_cast<qint64>(ms.ullTotalPhys));
+        CHECK(s2.memory.availablePhysical > 0 && s2.memory.availablePhysical < s2.memory.totalPhysical);
+        CHECK(qAbs(s2.memory.availablePhysical - static_cast<qint64>(ms.ullAvailPhys)) < s2.memory.totalPhysical / 5);
+        CHECK(s2.memory.usedPercent() > 0.0 && s2.memory.usedPercent() < 100.0);
+        CHECK(s2.memory.commitUsed > 0 && s2.memory.commitLimit >= s2.memory.commitUsed && s2.memory.commitPeak >= s2.memory.commitUsed);
+        CHECK(s2.memory.kernelNonpaged > 0 && s2.memory.kernelPaged > 0);
+        CHECK(s2.uptimeMs > 0 && s2.threadCount > s2.processCount && s2.handleCount > 1000);
+        CHECK(qAbs(static_cast<int>(s2.processCount) - static_cast<int>(s2.processes.size())) <= 15);
+        // Tiến trình nhân luôn có: System Idle Process (PID 0) và System (PID 4).
+        const ProcessInfo* idle = findPid(s2, 0);
+        const ProcessInfo* sys = findPid(s2, 4);
+        CHECK(idle && idle->name == "System Idle Process" && sys && sys->name == "System");
+        CHECK(sys && sys->workingSetBytes > 0 && sys->threads > 10); // dữ liệu cả tiến trình được bảo vệ (không cần OpenProcess)
+        CHECK(idle && idle->cpuPercent > 1.0); // CPU rảnh hiện ở "tiến trình" Idle, như Task Manager
+        // Mọi PID duy nhất, tên không rỗng.
+        {
+            QSet<quint32> seen;
+            bool unique = true, named = true;
+            for (const ProcessInfo& p : s2.processes)
+            {
+                unique = unique && !seen.contains(p.pid);
+                seen.insert(p.pid);
+                named = named && !p.name.isEmpty();
+            }
+            CHECK(unique && named);
+        }
+
+        // Tiến trình CON do test khởi chạy: phải xuất hiện với PID cha = PID của test; kill xong thì biến mất.
+        {
+            QProcess child;
+            child.start(AppPaths::systemExecutable("ping.exe"), {"-n", "30", "127.0.0.1"});
+            CHECK(child.waitForStarted(5000));
+            const quint32 childPid = static_cast<quint32>(child.processId());
+            const SystemSnapshot s3 = sampler.sample();
+            const ProcessInfo* c = findPid(s3, childPid);
+            CHECK(c != nullptr);
+            if (c)
+            {
+                CHECK(c->parentPid == selfPid && c->name.compare("ping.exe", Qt::CaseInsensitive) == 0);
+                CHECK(c->path.endsWith("ping.exe", Qt::CaseInsensitive));
+                CHECK(me && c->sessionId == me->sessionId);
+                CHECK(c->workingSetBytes > 0 && c->threads >= 1);
+            }
+            child.kill();
+            child.waitForFinished(5000);
+            QThread::msleep(100);
+            CHECK(findPid(sampler.sample(), childPid) == nullptr);
+        }
+
+        // Phương án dự phòng (Toolhelp + OpenProcess): cùng tập tiến trình, cùng số liệu của chính mình.
+        {
+            ProcessSampler fallback;
+            fallback.setForceFallbackForTest(true);
+            const SystemSnapshot f = fallback.sample();
+            CHECK(!f.nativeApi && f.processes.size() > 20);
+            const ProcessInfo* fme = findPid(f, selfPid);
+            CHECK(fme != nullptr);
+            if (fme && me)
+            {
+                CHECK(fme->name.compare(me->name, Qt::CaseInsensitive) == 0 && fme->parentPid == me->parentPid);
+                CHECK(qAbs(fme->workingSetBytes - me->workingSetBytes) < 50LL * 1024 * 1024);
+                CHECK(qAbs(static_cast<int>(fme->threads) - static_cast<int>(me->threads)) <= 8);
+            }
+            QSet<quint32> nativePids, fallbackPids;
+            for (const ProcessInfo& p : s2.processes)
+                nativePids.insert(p.pid);
+            for (const ProcessInfo& p : f.processes)
+                fallbackPids.insert(p.pid);
+            CHECK(nativePids.subtract(fallbackPids).size() <= 15 && fallbackPids.size() > 20);
+        }
+
+        // reset(): quên mẫu trước.
+        sampler.reset();
+        const SystemSnapshot afterReset = sampler.sample();
+        CHECK(afterReset.cpuPercent == 0.0);
+        {
+            bool allZero = true;
+            for (const ProcessInfo& p : afterReset.processes)
+                allZero = allZero && p.cpuPercent == 0.0 && p.ioBytesPerSec == 0;
+            CHECK(allZero);
+        }
+    }
+
+    // ---- ProcessSamplerThread: chỉ lấy mẫu khi được bật, ngủ khi tắt ----
+    {
+        ProcessSamplerThread worker;
+        int received = 0;
+        bool sane = true;
+        QObject::connect(&worker, &ProcessSamplerThread::sampled, [&](std::shared_ptr<SystemSnapshot> s) {
+            ++received;
+            sane = sane && s && s->processes.size() > 20 && s->memory.totalPhysical > 0;
+        });
+        worker.setIntervalMs(250);
+        worker.start(); // chưa bật -> không lấy mẫu
+        QThread::msleep(600);
+        QCoreApplication::processEvents();
+        CHECK(received == 0 && worker.sampleCount() == 0 && !worker.isActive());
+        worker.setActive(true);
+        CHECK(waitUntil([&]() { return received >= 3; }, 8000));
+        CHECK(worker.isActive() && sane);
+        worker.setActive(false);
+        QThread::msleep(400); // chờ mẫu đang dở (nếu có) xong
+        QCoreApplication::processEvents();
+        const int frozen = worker.sampleCount();
+        QThread::msleep(900);
+        QCoreApplication::processEvents();
+        CHECK(worker.sampleCount() == frozen); // tắt rồi thì không lấy thêm
+        // Bật lại: tiếp tục (mẫu đầu tiên sau khi bật lại đã có % CPU nhờ mẫu "khởi động").
+        worker.setActive(true);
+        CHECK(waitUntil([&]() { return worker.sampleCount() > frozen; }, 8000));
+        worker.requestStop();
+        CHECK(worker.wait(5000));
+        CHECK(!worker.isRunning());
     }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);

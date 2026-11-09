@@ -2,14 +2,17 @@
 
 #include "CleanupTab.h"
 #include "DuplicateFilesTab.h"
+#include "FolderTreeTab.h"
 #include "LargeFilesTab.h"
 #include "PartitionTab.h"
+#include "ProcessTab.h"
 #include "core/IconHelper.h"
 #include "core/Logger.h"
 #include "ui/widgets/ComboBoxStyle.h"
 
 #include <QCloseEvent>
 #include <QMessageBox>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QVBoxLayout>
 
@@ -18,7 +21,7 @@ DiskCleanupWindow::DiskCleanupWindow(QWidget* parent)
 {
     setWindowTitle("One for ALL - Disk Cleanup");
     setWindowIcon(IconHelper::makeBadgedIcon(":/icons/cleaner.png", 48, 10, 4));
-    resize(980, 720); // tab "Quản lý phân vùng" có thêm sơ đồ đĩa; các tab khác vẫn dùng vừa vặn
+    resize(1060, 720); // 6 tab + bảng tiến trình nhiều cột; tab "Quản lý phân vùng" có thêm sơ đồ đĩa
     setMinimumSize(760, 480);
     setStyleSheet(
         "QWidget { background-color: #f6f8fa; color: #1f2328; font-family: 'Segoe UI', sans-serif; }"
@@ -28,7 +31,7 @@ DiskCleanupWindow::DiskCleanupWindow(QWidget* parent)
         "QScrollBar::handle:vertical:hover { background: #9aa0a6; }"
         "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; background: none; }"
         "QTabWidget::pane { border: none; }"
-        "QTabBar::tab { background: #eaeef2; color: #57606a; padding: 9px 22px; margin-right: 4px; border-top-left-radius: 10px; border-top-right-radius: 10px; font-weight: 600; }"
+        "QTabBar::tab { background: #eaeef2; color: #57606a; padding: 9px 14px; margin-right: 3px; border-top-left-radius: 10px; border-top-right-radius: 10px; font-weight: 600; }"
         "QTabBar::tab:selected { background: #ffffff; color: #0969da; }"
         "QTabBar::tab:hover:!selected { background: #e0e4e9; }"
         "QLabel { background: transparent; }"
@@ -57,6 +60,10 @@ void DiskCleanupWindow::stopSafelyCancellableWorkForQuit()
         m_largeFilesTab->stopScanIfRunning();
     if (m_duplicateFilesTab)
         m_duplicateFilesTab->stopScanIfRunning();
+    if (m_folderTreeTab)
+        m_folderTreeTab->stopScanIfRunning();
+    if (m_processTab)
+        m_processTab->stopMonitoring(); // thoát ứng dụng: dừng hẳn luồng lấy mẫu tiến trình
 }
 
 bool DiskCleanupWindow::isAnyOtherTabBusy(const QWidget* exceptTab) const
@@ -66,6 +73,8 @@ bool DiskCleanupWindow::isAnyOtherTabBusy(const QWidget* exceptTab) const
     if (m_largeFilesTab && m_largeFilesTab != exceptTab && m_largeFilesTab->isScanningNow())
         return true;
     if (m_duplicateFilesTab && m_duplicateFilesTab != exceptTab && m_duplicateFilesTab->isScanningNow())
+        return true;
+    if (m_folderTreeTab && m_folderTreeTab != exceptTab && m_folderTreeTab->isScanningNow())
         return true;
     if (m_partitionTab && m_partitionTab != exceptTab && m_partitionTab->isResizingNow())
         return true;
@@ -103,6 +112,9 @@ void DiskCleanupWindow::closeEvent(QCloseEvent* event)
         m_largeFilesTab->stopScanIfRunning();
     if (m_duplicateFilesTab)
         m_duplicateFilesTab->stopScanIfRunning();
+    if (m_folderTreeTab)
+        m_folderTreeTab->stopScanIfRunning();
+    // Tab "Tiến trình & RAM" không cần dừng ở đây: ẩn cửa sổ đã khiến hideEvent của nó cho luồng lấy mẫu ngủ.
     event->accept();
 }
 
@@ -113,13 +125,20 @@ void DiskCleanupWindow::buildUi()
     root->setSpacing(10);
 
     m_tabs = new QTabWidget(this);
+    // 6 tab không còn vừa ở cửa sổ hẹp: cho tab co lại + rút gọn chữ thay vì hiện hai nút cuộn (theme không vẽ mũi tên cho chúng).
+    m_tabs->setUsesScrollButtons(false);
+    m_tabs->tabBar()->setElideMode(Qt::ElideRight);
     m_cleanupTab = new CleanupTab(this);
     m_largeFilesTab = new LargeFilesTab(this);
     m_duplicateFilesTab = new DuplicateFilesTab(this);
     m_partitionTab = new PartitionTab(this);
+    m_folderTreeTab = new FolderTreeTab(this);
+    m_processTab = new ProcessTab(this);
     m_tabs->addTab(m_cleanupTab, "🧹  Dọn dẹp theo hạng mục");
     m_tabs->addTab(m_largeFilesTab, "📦  Tìm tệp lớn");
     m_tabs->addTab(m_duplicateFilesTab, "👯  Tìm tệp trùng lặp");
     m_tabs->addTab(m_partitionTab, "💽  Quản lý phân vùng");
+    m_tabs->addTab(m_folderTreeTab, "🌳  Cây thư mục");
+    m_tabs->addTab(m_processTab, "📊  Tiến trình && RAM"); // "&&" = dấu & thật (một "&" sẽ thành phím tắt)
     root->addWidget(m_tabs, 1);
 }

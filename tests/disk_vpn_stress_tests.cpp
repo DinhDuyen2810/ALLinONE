@@ -52,6 +52,7 @@
 #include "tools/diskcleanup/engine/CleanupScanner.h"
 #include "tools/diskcleanup/engine/DuplicateFinder.h"
 #include "tools/diskcleanup/engine/FsSafety.h"
+#include "tools/diskcleanup/engine/FolderTreeScanner.h"
 #include "tools/diskcleanup/engine/LargeFileScanner.h"
 #include "tools/diskcleanup/engine/PartitionManager.h"
 #include "tools/diskcleanup/engine/RecycleBinOps.h"
@@ -709,6 +710,19 @@ int main(int argc, char** argv)
     for (auto it = m.visible.constBegin(); it != m.visible.constEnd(); ++it)
         if (it.value() >= 1)
             ++expectedNonEmptyFiles;
+    // FolderTreeScanner thấy cả lối tắt .lnk (tệp thật có dữ liệu) mà walkFiles cố ý bỏ qua - cộng riêng để đối chiếu.
+    qint64 expectedLnkFiles = 0, expectedLnkBytes = 0;
+    for (const QString& p : m.mustNotSee)
+    {
+        if (!p.endsWith(".lnk", Qt::CaseInsensitive) || !p.startsWith(scan + "/"))
+            continue;
+        const FsSafety::RawInfo ri = FsSafety::rawInfo(p);
+        if (ri.exists && !ri.isDir && !ri.isLink)
+        {
+            ++expectedLnkFiles;
+            expectedLnkBytes += ri.sizeBytes;
+        }
+    }
     QSet<QString> expectedGroupKeys;
     qint64 expectedWasted = 0;
     for (const QStringList& group : m.duplicateGroups)
@@ -929,6 +943,74 @@ int main(int argc, char** argv)
         scanner.startScan();
         CHECK(scanner.wait(120000));
         CHECK(items.size() == (m.visible.contains(scan + "/hard_top.bin") ? 2 : 1) + (haveFileSymlink ? 1 : 0));
+
+        // B5. FolderTreeScanner: số tệp/kích thước đúng sổ ghi trên cây thù địch (junction, symlink, hardlink, đường dẫn dài,
+        // tên có dấu chấm/khoảng trắng cuối...) + mọi bất biến cộng dồn của cây ở MỌI nút.
+        {
+            FolderTreeScanner folder;
+            std::shared_ptr<FolderTree> tree;
+            QObject::connect(&folder, &FolderTreeScanner::scanFinished, [&](std::shared_ptr<FolderTree> t) { tree = t; });
+            folder.setRootPath(scan);
+            folder.setKeepFolderBytes(0); // không gộp gì: kiểm được từng nút
+            folder.setBigFileBytes(1);
+            folder.setMaxBigFilesPerFolder(1000000);
+            folder.startScan();
+            CHECK(folder.wait(180000));
+            QCoreApplication::processEvents();
+            CHECK(tree && tree->root);
+            if (tree && tree->root)
+            {
+                const FolderNode* root = tree->root.get();
+                say("B5. FolderTreeScanner: %lld tep / %lld byte tep / %lld thu muc (mong doi %lld / %lld), uoc tinh %lld, hoi lai %lld, bo qua lien ket %lld\n",
+                    static_cast<long long>(root->fileCount), static_cast<long long>(root->logicalBytes), static_cast<long long>(root->folderCount),
+                    static_cast<long long>(expectedFiles + expectedLnkFiles), static_cast<long long>(expectedBytes + expectedLnkBytes),
+                    static_cast<long long>(tree->stats.estimatedFiles), static_cast<long long>(tree->stats.reopenedFiles),
+                    static_cast<long long>(tree->stats.skippedLinks));
+                CHECK(root->fileCount == expectedFiles + expectedLnkFiles);
+                CHECK(root->logicalBytes == expectedBytes + expectedLnkBytes);
+                CHECK(tree->stats.files == root->fileCount && tree->stats.bytes == root->bytes && tree->stats.unreadableFolders == 0);
+                CHECK(root->bytes >= root->logicalBytes / 2 || root->logicalBytes < 4096); // chiếm trên đĩa cùng cỡ với kích thước tệp
+                if (haveJunction || haveFileSymlink)
+                    CHECK(tree->stats.skippedLinks >= 1); // junction/symlink bị bỏ qua, không đi vào
+                // Bất biến cộng dồn ở mọi nút (duyệt bằng ngăn xếp - cây có độ sâu lớn).
+                bool ok = true;
+                qint64 nodes = 0, bigSum = 0;
+                std::vector<const FolderNode*> pending{root};
+                while (!pending.empty())
+                {
+                    const FolderNode* n = pending.back();
+                    pending.pop_back();
+                    ++nodes;
+                    qint64 kidBytes = 0, kidLogical = 0, kidFiles = 0, kidFolders = 0;
+                    for (size_t i = 0; i < n->children.size(); ++i)
+                    {
+                        const FolderNode* c = n->children[i].get();
+                        ok = ok && c->parent == n && (i == 0 || n->children[i - 1]->bytes >= c->bytes);
+                        kidBytes += c->bytes;
+                        kidLogical += c->logicalBytes;
+                        kidFiles += c->fileCount;
+                        kidFolders += 1 + c->folderCount;
+                        pending.push_back(c);
+                    }
+                    ok = ok && n->bytes == n->ownBytes + kidBytes && n->logicalBytes == n->ownLogicalBytes + kidLogical;
+                    ok = ok && n->fileCount == n->ownFileCount + kidFiles && n->folderCount == kidFolders;
+                    ok = ok && n->prunedFolderCount == 0;
+                    for (const FolderFile& f : n->bigFiles)
+                        bigSum += f.logicalBytes;
+                }
+                CHECK(ok);
+                CHECK(nodes == root->folderCount + 1);
+                CHECK(bigSum <= root->logicalBytes);
+            }
+            // Tên nút gốc/đường dẫn dựng ngược cho một nút sâu nhất.
+            if (tree && tree->root)
+            {
+                const FolderNode* n = tree->root.get();
+                while (!n->children.empty())
+                    n = n->children[0].get(); // luôn đi theo nhánh nặng nhất xuống tận đáy
+                CHECK(n->path().startsWith(tree->rootPath));
+            }
+        }
         say("B. xong (%lld ms)\n", static_cast<long long>(sectionTimer.elapsed()));
     }
 
@@ -988,6 +1070,21 @@ int main(int argc, char** argv)
             stormScanner("DuplicateFinder", finder, terminal, scaled(300), 60,
                          [&]() { return lastTotal.load() == expectedGroupKeys.size(); });
         }
+        {
+            FolderTreeScanner folder;
+            TerminalSignals terminal;
+            std::atomic<qint64> lastFiles{-1};
+            QObject::connect(&folder, &FolderTreeScanner::scanFinished, [&](std::shared_ptr<FolderTree> t) {
+                lastFiles = t && t->root ? t->root->fileCount : -2;
+                ++terminal.finished;
+            });
+            QObject::connect(&folder, &FolderTreeScanner::scanStopped, [&]() { ++terminal.stopped; });
+            folder.setRootPath(scan);
+            folder.setKeepFolderBytes(0);
+            folder.setBigFileBytes(1);
+            stormScanner("FolderTreeScanner", folder, terminal, scaled(300), 15,
+                         [&]() { return lastFiles.load() == expectedFiles + expectedLnkFiles; });
+        }
 
         // Hủy đối tượng lúc luồng còn đang chạy: destructor phải tự dừng + chờ, không crash, không treo.
         const int destroyRounds = scaled(150);
@@ -996,8 +1093,18 @@ int main(int argc, char** argv)
         for (int i = 0; i < destroyRounds; ++i)
         {
             const unsigned long delayUs = static_cast<unsigned long>(rnd(3000));
-            switch (i % 3)
+            switch (i % 4)
             {
+                case 3:
+                {
+                    auto* s = new FolderTreeScanner;
+                    s->setRootPath(scan);
+                    s->setKeepFolderBytes(0);
+                    s->startScan();
+                    QThread::usleep(delayUs * 5);
+                    delete s;
+                    break;
+                }
                 case 0:
                 {
                     auto* s = new LargeFileScanner;

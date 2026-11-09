@@ -274,9 +274,13 @@ add_library(diskcleanup_core STATIC
     src/tools/diskcleanup/engine/DiskLayout.cpp
     src/tools/diskcleanup/engine/FsSafety.h
     src/tools/diskcleanup/engine/FsSafety.cpp
+    src/tools/diskcleanup/engine/FolderTreeScanner.h
+    src/tools/diskcleanup/engine/FolderTreeScanner.cpp
+    src/tools/diskcleanup/engine/ProcessMonitor.h
+    src/tools/diskcleanup/engine/ProcessMonitor.cpp
 )
 target_include_directories(diskcleanup_core PUBLIC src)
-target_link_libraries(diskcleanup_core PUBLIC Qt6::Core shell32 advapi32 core_shared)
+target_link_libraries(diskcleanup_core PUBLIC Qt6::Core shell32 advapi32 psapi core_shared)
 
 # ---- Kiểm thử lõi Disk Cleanup: cmake --build build --target diskcleanup_tests ----
 add_executable(diskcleanup_tests EXCLUDE_FROM_ALL tests/diskcleanup_tests.cpp)
@@ -295,6 +299,14 @@ add_library(diskcleanup_ui STATIC
     src/tools/diskcleanup/DiskMapWidget.cpp
     src/tools/diskcleanup/PartitionTab.h
     src/tools/diskcleanup/PartitionTab.cpp
+    src/tools/diskcleanup/FolderTreeModel.h
+    src/tools/diskcleanup/FolderTreeModel.cpp
+    src/tools/diskcleanup/FolderTreeTab.h
+    src/tools/diskcleanup/FolderTreeTab.cpp
+    src/tools/diskcleanup/ProcessTableModel.h
+    src/tools/diskcleanup/ProcessTableModel.cpp
+    src/tools/diskcleanup/ProcessTab.h
+    src/tools/diskcleanup/ProcessTab.cpp
     src/tools/diskcleanup/DiskCleanupWindow.h
     src/tools/diskcleanup/DiskCleanupWindow.cpp
 )
@@ -428,6 +440,14 @@ target_link_libraries(ike_crypto_check PRIVATE vpn_core)
 # ---- Test bắt tay IKEv1 trọn vẹn offline (IkeSession vs responder giả): cmake --build build --target ike_session_check ----
 add_executable(ike_session_check EXCLUDE_FROM_ALL tests/ike_session_check.cpp)
 target_link_libraries(ike_session_check PRIVATE vpn_core)
+
+# ---- KIỂM TRA TAY (chỉ đọc): quét THẬT một thư mục/ổ bằng FolderTreeScanner + đối chiếu "chiếm trên đĩa" với AllocationSize thật ----
+add_executable(folder_tree_real_check EXCLUDE_FROM_ALL tests/folder_tree_real_check.cpp)
+target_link_libraries(folder_tree_real_check PRIVATE diskcleanup_core)
+
+# ---- KIỂM TRA TAY (chỉ đọc): lấy mẫu THẬT tiến trình/RAM/CPU bằng ProcessSampler để đối chiếu với Get-Process ----
+add_executable(process_monitor_real_check EXCLUDE_FROM_ALL tests/process_monitor_real_check.cpp)
+target_link_libraries(process_monitor_real_check PRIVATE diskcleanup_core)
 
 # ---- KIỂM TRA TAY: dò IKEv1 tới gateway FortiGate THẬT (không đăng nhập): cmake --build build --target ike_real_probe ----
 add_executable(ike_real_probe EXCLUDE_FROM_ALL tests/ike_real_probe.cpp)

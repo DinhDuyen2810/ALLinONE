@@ -99,7 +99,7 @@ bắt tay trọn vẹn offline với responder giả). Hai target
 FortiGate IPsec thật để xem nhóm DH/thuật toán gateway chấp nhận, không đăng nhập) và `ike_real_connect <ip> <user>
 <pass> <psk> [pfs]` (chạy ĐÚNG lớp IkeSession với tài khoản thật để kiểm bắt tay IKEv1 đầu-cuối + thử ESP, không tạo
 adapter nên không cần Admin; bí mật truyền qua tham số, không ghi tệp/log; in nội dung gói ESP trả về - ICMP/DNS/TCP - nên chứng minh được lưu lượng hai chiều; tham số/biến môi trường `IKE_*` xem đầu `tests/ike_real_connect.cpp`), `tunnel_engine_real_check <ip> <user> <pass> <psk> [giây]` (chạy CHÍNH `TunnelEngine` ở chế độ `noAdapterForTest`: không adapter/Admin, bơm ICMP/DNS/TCP SYN rồi đọc gói trả về - kiểm đường dữ liệu của chính app), `directvpn_real_e2e ipsec <ip> <user> <pass> <psk> [đích]` (đầu-cuối với ADAPTER THẬT qua `DirectVpnSession` + helper nâng quyền: cần bấm Yes ở UAC, rồi `ping`/`curl` của HĐH và kiểm dọn sạch) là công cụ KIỂM TRA TAY - không chạy như test tự động
-(quy tắc 5). Rà giao diện: `ui_snapshot <thư mục ảnh> [công cụ,...]` chụp PNG mọi tab; đặt `UI_SNAPSHOT_NATIVE=1` để
+(quy tắc 5). Hai công cụ kiểm tra tay CHỈ ĐỌC của Disk Cleanup: `folder_tree_real_check <đường dẫn> [--top N] [--verify N]` (quét thật bằng `FolderTreeScanner`, in thư mục lớn nhất, `--verify` so "chiếm trên đĩa" với `AllocationSize` thật của mẫu tệp) và `process_monitor_real_check [giây] [--all]` (lấy mẫu thật bằng `ProcessSampler` để so với `Get-Process`). Rà giao diện: `ui_snapshot <thư mục ảnh> [công cụ,...]` chụp PNG mọi tab; đặt `UI_SNAPSHOT_NATIVE=1` để
 vẽ đúng kiểu gốc Windows (không hiện cửa sổ) - nền offscreen không vẽ được ô tích kiểu gốc.
 
 Năm bộ stress/fuzz (mỗi bộ 2-5 phút, chạy khi máy RẢNH - chúng có ngưỡng thời gian): `core_stress_tests`,
