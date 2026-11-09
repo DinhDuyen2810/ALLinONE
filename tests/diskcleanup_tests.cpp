@@ -9,6 +9,7 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
+#include <QMap>
 #include <QSet>
 #include <QTemporaryDir>
 #include <QProcess>
@@ -16,6 +17,7 @@
 #include <QTimer>
 #include <atomic>
 #include <cstdio>
+#include <functional>
 #include <limits>
 #include <map>
 #include <string>
@@ -34,12 +36,14 @@
 #include "tools/diskcleanup/engine/DiskLayout.h"
 #include "tools/diskcleanup/engine/DiskSpaceInfo.h"
 #include "tools/diskcleanup/engine/DuplicateFinder.h"
+#include "tools/diskcleanup/engine/FolderTreeEdit.h"
 #include "tools/diskcleanup/engine/FolderTreeScanner.h"
 #include "tools/diskcleanup/engine/FsSafety.h"
 #include "tools/diskcleanup/engine/LargeFileScanner.h"
 #include "tools/diskcleanup/engine/PartitionManager.h"
 #include "tools/diskcleanup/engine/ProcessMonitor.h"
 #include "tools/diskcleanup/engine/RecycleBinOps.h"
+#include "tools/diskcleanup/engine/TreeDeleteGuard.h"
 
 static int g_fail = 0, g_pass = 0;
 #define CHECK(cond)                                                            \
@@ -2129,6 +2133,382 @@ int main(int argc, char** argv)
             }
             CHECK(finished >= 10 && stopped + finished == 30);
             CHECK(last && last->root && last->root->fileCount == 1000 && last->root->folderCount == 40);
+        }
+    }
+
+    // =====================================================================================
+    // Tab "Cây thư mục": xem/xóa từng mục nhỏ - FolderTreeScanner::listFolderLive, FolderTreeEdit, TreeDeleteGuard.
+    // Chỉ đụng tới QTemporaryDir; việc xóa thật dùng RecycleBinOps::permanentlyDelete trên tệp do chính test tạo.
+    // =====================================================================================
+    {
+        const auto scanTree = [](const QString& root) {
+            FolderTreeScanner s;
+            std::shared_ptr<FolderTree> result;
+            QObject::connect(&s, &FolderTreeScanner::scanFinished, [&](std::shared_ptr<FolderTree> t) { result = t; });
+            s.setRootPath(root);
+            s.startScan();
+            waitUntil([&]() { return static_cast<bool>(result); }, 30000);
+            s.wait();
+            return result;
+        };
+        const auto buildTree = [](const QString& r) {
+            QDir().mkpath(r + "/sub1");
+            QDir().mkpath(r + "/sub2");
+            QDir().mkpath(r + "/smallA");
+            QDir().mkpath(r + "/smallB/inner");
+            QDir().mkpath(r + "/emptyDir");
+            writeFile(r + "/big1.bin", 3000000);
+            writeFile(r + "/s1.txt", 10);
+            writeFile(r + "/s2.txt", 2000);
+            writeFile(r + "/zero.txt", 0);
+            writeFile(r + "/sub1/keep.bin", 2000000);
+            writeFile(r + "/sub1/medium.bin", 1500000);
+            writeFile(r + "/sub1/note.txt", 300);
+            writeFile(r + "/sub2/huge.bin", 5000000);
+            writeFile(r + "/smallA/a.txt", 100);
+            writeFile(r + "/smallA/b.txt", 3000);
+            writeFile(r + "/smallB/inner/c.txt", 500);
+            writeFile(r + "/smallB/d.txt", 7000);
+        };
+
+        // ---- listFolderLive: nội dung thật + khớp với bộ quét ----
+        {
+            QTemporaryDir tmp;
+            CHECK(tmp.isValid());
+            const QString r = tmp.path() + "/lv";
+            buildTree(r);
+            std::atomic_bool noStop{false};
+            const auto live = FolderTreeScanner::listFolderLive(r, noStop);
+            CHECK(!live.stopped && !live.unreadable);
+            CHECK(live.totalFiles == 4 && live.files.size() == 4);
+            CHECK(live.totalFolders == 5 && live.folders.size() == 5);
+            if (live.files.size() == 4)
+            {
+                CHECK(live.files[0].name == "big1.bin" && live.files[0].logicalBytes == 3000000); // giảm dần theo dung lượng
+                for (size_t i = 1; i < live.files.size(); ++i)
+                    CHECK(live.files[i - 1].bytes >= live.files[i].bytes);
+            }
+            QMap<QString, FolderLiveFolder> byName;
+            for (const auto& d : live.folders)
+                byName[d.name] = d;
+            CHECK(byName.contains("sub1") && byName["sub1"].fileCount == 3 && byName["sub1"].folderCount == 0);
+            CHECK(byName.contains("smallB") && byName["smallB"].fileCount == 2 && byName["smallB"].folderCount == 1); // cả cây con
+            CHECK(byName.contains("emptyDir") && byName["emptyDir"].fileCount == 0 && byName["emptyDir"].bytes == 0);
+            for (size_t i = 1; i < live.folders.size(); ++i)
+                CHECK(live.folders[i - 1].bytes >= live.folders[i].bytes);
+
+            // Cộng lại phải đúng bằng số liệu của lượt quét (cùng quy tắc tính).
+            const auto tree = scanTree(r);
+            CHECK(tree && tree->root);
+            if (tree && tree->root)
+            {
+                qint64 fb = 0, fl = 0, db = 0, dl = 0, dfiles = 0, dfolders = 0;
+                for (const auto& f : live.files) { fb += f.bytes; fl += f.logicalBytes; }
+                for (const auto& d : live.folders) { db += d.bytes; dl += d.logicalBytes; dfiles += d.fileCount; dfolders += 1 + d.folderCount; }
+                const FolderNode* root = tree->root.get();
+                CHECK(fb == root->ownBytes && fl == root->ownLogicalBytes);
+                CHECK(fb + db == root->bytes && fl + dl == root->logicalBytes);
+                CHECK(static_cast<qint64>(live.files.size()) + dfiles == root->fileCount);
+                CHECK(dfolders == root->folderCount);
+            }
+
+            // Giới hạn số mục: giữ các mục LỚN NHẤT, total vẫn là số thật.
+            const auto capped = FolderTreeScanner::listFolderLive(r, noStop, 2);
+            CHECK(capped.files.size() == 2 && capped.totalFiles == 4 && capped.folders.size() == 2 && capped.totalFolders == 5);
+            if (capped.files.size() == 2)
+                CHECK(capped.files[0].name == "big1.bin");
+            if (capped.folders.size() == 2)
+                CHECK(capped.folders[0].bytes >= capped.folders[1].bytes);
+
+            // Thư mục không tồn tại / đã dừng.
+            const auto missing = FolderTreeScanner::listFolderLive(r + "/khong_co", noStop);
+            CHECK(missing.unreadable && missing.files.empty() && missing.folders.empty());
+            std::atomic_bool stopNow{true};
+            CHECK(FolderTreeScanner::listFolderLive(r, stopNow).stopped);
+
+            // Junction KHÔNG được đi vào (cùng quy tắc với bộ quét): thư mục đích không hiện và không cộng dung lượng.
+            QDir().mkpath(tmp.path() + "/outside");
+            writeFile(tmp.path() + "/outside/precious.bin", 9000000);
+            if (makeJunction(r + "/jlink", tmp.path() + "/outside"))
+            {
+                const auto withLink = FolderTreeScanner::listFolderLive(r, noStop);
+                bool seen = false;
+                for (const auto& d : withLink.folders)
+                    seen = seen || d.name == "jlink";
+                CHECK(!seen && withLink.totalFolders == 5);
+            }
+            else
+                std::printf("LUU Y: khong tao duoc junction - bo qua kiem tra junction cua listFolderLive\n");
+        }
+
+        // ---- FolderTreeEdit: sửa cây sau khi xóa THẬT phải cho đúng số liệu của một lượt quét lại ----
+        {
+            using Removal = FolderTreeEdit::Removal;
+            using Target = FolderTreeEdit::Target;
+            std::atomic_bool noStop{false};
+
+            // So sánh hai cây theo tên (tổng + phần gộp + tệp lớn). Trả về số điểm khác nhau.
+            std::function<int(const FolderNode&, const FolderNode&, const QString&)> diff = [&](const FolderNode& a, const FolderNode& b, const QString& at) {
+                int d = 0;
+                auto cmp = [&](const char* what, qint64 x, qint64 y) {
+                    if (x != y)
+                    {
+                        ++d;
+                        std::printf("  khac o %s: %s sua=%lld quet-lai=%lld\n", qPrintable(at), what, static_cast<long long>(x), static_cast<long long>(y));
+                    }
+                };
+                cmp("bytes", a.bytes, b.bytes);
+                cmp("logicalBytes", a.logicalBytes, b.logicalBytes);
+                cmp("fileCount", a.fileCount, b.fileCount);
+                cmp("folderCount", a.folderCount, b.folderCount);
+                cmp("ownBytes", a.ownBytes, b.ownBytes);
+                cmp("ownLogicalBytes", a.ownLogicalBytes, b.ownLogicalBytes);
+                cmp("ownFileCount", a.ownFileCount, b.ownFileCount);
+                cmp("prunedFolderCount", a.prunedFolderCount, b.prunedFolderCount);
+                cmp("prunedBytes", a.prunedBytes, b.prunedBytes);
+                cmp("bigFiles", static_cast<qint64>(a.bigFiles.size()), static_cast<qint64>(b.bigFiles.size()));
+                cmp("children", static_cast<qint64>(a.children.size()), static_cast<qint64>(b.children.size()));
+                if (a.children.size() == b.children.size())
+                    for (size_t i = 0; i < a.children.size(); ++i)
+                    {
+                        if (a.children[i]->name != b.children[i]->name)
+                        {
+                            ++d;
+                            std::printf("  khac thu tu/ten con o %s: %s vs %s\n", qPrintable(at), qPrintable(a.children[i]->name), qPrintable(b.children[i]->name));
+                            continue;
+                        }
+                        d += diff(*a.children[i], *b.children[i], at + "/" + a.children[i]->name);
+                    }
+                return d;
+            };
+            const auto findChild = [](FolderNode* n, const QString& name) -> FolderNode* {
+                for (const auto& c : n->children)
+                    if (c->name == name)
+                        return c.get();
+                return nullptr;
+            };
+
+            struct Scenario
+            {
+                const char* label;
+                std::function<std::vector<Removal>(FolderTree&, const QString&)> plan; // dựng Removal từ cây + đường dẫn gốc
+                std::function<QStringList(const QString&)> paths;                      // đường dẫn sẽ xóa thật
+            };
+            const auto liveOf = [&](const QString& dir, const QString& name) {
+                const auto l = FolderTreeScanner::listFolderLive(dir, noStop);
+                for (const auto& d : l.folders)
+                    if (d.name == name)
+                        return d;
+                return FolderLiveFolder{};
+            };
+            const auto liveFile = [&](const QString& dir, const QString& name) {
+                const auto l = FolderTreeScanner::listFolderLive(dir, noStop);
+                for (const auto& f : l.files)
+                    if (f.name == name)
+                        return f;
+                return FolderLiveFile{};
+            };
+            const auto folderRemoval = [&](Target t, FolderNode* node, const QString& dir, const QString& name) {
+                const FolderLiveFolder d = liveOf(dir, name);
+                Removal rem;
+                rem.target = t;
+                rem.node = node;
+                rem.bytes = d.bytes;
+                rem.logicalBytes = d.logicalBytes;
+                rem.files = d.fileCount;
+                rem.folders = 1 + d.folderCount;
+                return rem;
+            };
+            const auto fileRemoval = [&](Target t, FolderNode* node, const QString& dir, const QString& name) {
+                const FolderLiveFile f = liveFile(dir, name);
+                Removal rem;
+                rem.target = t;
+                rem.node = node;
+                rem.bytes = f.bytes;
+                rem.logicalBytes = f.logicalBytes;
+                rem.files = 1;
+                rem.folders = 0;
+                return rem;
+            };
+
+            std::vector<Scenario> scenarios;
+            scenarios.push_back({"thu muc duoc giu (sub2)",
+                                 [&](FolderTree& t, const QString&) {
+                                     Removal rem;
+                                     rem.target = Target::KeptFolder;
+                                     rem.node = findChild(t.root.get(), "sub2");
+                                     return std::vector<Removal>{rem};
+                                 },
+                                 [](const QString& r) { return QStringList{r + "/sub2"}; }});
+            scenarios.push_back({"tep lon trong thu muc duoc giu (sub1/medium.bin)",
+                                 [&](FolderTree& t, const QString&) {
+                                     Removal rem;
+                                     rem.target = Target::BigFile;
+                                     rem.node = findChild(t.root.get(), "sub1");
+                                     rem.fileName = "medium.bin";
+                                     return std::vector<Removal>{rem};
+                                 },
+                                 [](const QString& r) { return QStringList{r + "/sub1/medium.bin"}; }});
+            scenarios.push_back({"tep lon o goc (big1.bin)",
+                                 [&](FolderTree& t, const QString&) {
+                                     Removal rem;
+                                     rem.target = Target::BigFile;
+                                     rem.node = t.root.get();
+                                     rem.fileName = "big1.bin";
+                                     return std::vector<Removal>{rem};
+                                 },
+                                 [](const QString& r) { return QStringList{r + "/big1.bin"}; }});
+            scenarios.push_back({"tep nho (s2.txt)",
+                                 [&](FolderTree& t, const QString& r) { return std::vector<Removal>{fileRemoval(Target::SmallFile, t.root.get(), r, "s2.txt")}; },
+                                 [](const QString& r) { return QStringList{r + "/s2.txt"}; }});
+            scenarios.push_back({"tep rong (zero.txt)",
+                                 [&](FolderTree& t, const QString& r) { return std::vector<Removal>{fileRemoval(Target::SmallFile, t.root.get(), r, "zero.txt")}; },
+                                 [](const QString& r) { return QStringList{r + "/zero.txt"}; }});
+            scenarios.push_back({"thu muc nho da gop (smallA)",
+                                 [&](FolderTree& t, const QString& r) { return std::vector<Removal>{folderRemoval(Target::PrunedFolder, t.root.get(), r, "smallA")}; },
+                                 [](const QString& r) { return QStringList{r + "/smallA"}; }});
+            scenarios.push_back({"thu muc rong da gop (emptyDir)",
+                                 [&](FolderTree& t, const QString& r) { return std::vector<Removal>{folderRemoval(Target::PrunedFolder, t.root.get(), r, "emptyDir")}; },
+                                 [](const QString& r) { return QStringList{r + "/emptyDir"}; }});
+            scenarios.push_back({"tep ben trong thu muc nho (smallB/inner/c.txt)",
+                                 [&](FolderTree& t, const QString& r) {
+                                     return std::vector<Removal>{fileRemoval(Target::InsidePruned, t.root.get(), r + "/smallB/inner", "c.txt")};
+                                 },
+                                 [](const QString& r) { return QStringList{r + "/smallB/inner/c.txt"}; }});
+            scenarios.push_back({"thu muc ben trong thu muc nho (smallB/inner)",
+                                 [&](FolderTree& t, const QString& r) {
+                                     return std::vector<Removal>{folderRemoval(Target::InsidePruned, t.root.get(), r + "/smallB", "inner")};
+                                 },
+                                 [](const QString& r) { return QStringList{r + "/smallB/inner"}; }});
+            scenarios.push_back({"nhieu muc cung luc",
+                                 [&](FolderTree& t, const QString& r) {
+                                     Removal k;
+                                     k.target = Target::KeptFolder;
+                                     k.node = findChild(t.root.get(), "sub2");
+                                     Removal b;
+                                     b.target = Target::BigFile;
+                                     b.node = findChild(t.root.get(), "sub1");
+                                     b.fileName = "medium.bin";
+                                     return std::vector<Removal>{k, b, fileRemoval(Target::SmallFile, t.root.get(), r, "s1.txt"),
+                                                                 folderRemoval(Target::PrunedFolder, t.root.get(), r, "smallA"),
+                                                                 fileRemoval(Target::InsidePruned, t.root.get(), r + "/smallB", "d.txt")};
+                                 },
+                                 [](const QString& r) {
+                                     return QStringList{r + "/sub2", r + "/sub1/medium.bin", r + "/s1.txt", r + "/smallA", r + "/smallB/d.txt"};
+                                 }});
+
+            for (const Scenario& sc : scenarios)
+            {
+                QTemporaryDir tmp;
+                CHECK(tmp.isValid());
+                const QString r = tmp.path() + "/ed";
+                buildTree(r);
+                auto tree = scanTree(r);
+                CHECK(tree && tree->root);
+                if (!tree || !tree->root)
+                    continue;
+                const auto removals = sc.plan(*tree, r); // đọc số liệu TRƯỚC khi xóa
+                const qint64 filesBefore = tree->stats.files, bytesBefore = tree->stats.bytes, foldersBefore = tree->stats.folders;
+
+                QString err;
+                CHECK(RecycleBinOps::permanentlyDelete(sc.paths(r), &err));
+                int applied = 0;
+                for (const Removal& rem : removals)
+                    applied += FolderTreeEdit::apply(*tree, rem) ? 1 : 0;
+                CHECK(applied == static_cast<int>(removals.size()));
+                CHECK(tree->stats.files < filesBefore || tree->stats.bytes < bytesBefore || tree->stats.folders < foldersBefore);
+
+                const auto fresh = scanTree(r);
+                CHECK(fresh && fresh->root);
+                if (!fresh || !fresh->root)
+                    continue;
+                const int d = diff(*tree->root, *fresh->root, "(goc)");
+                if (d != 0)
+                    std::printf("  kich ban \"%s\": %d diem khac\n", sc.label, d);
+                CHECK(d == 0);
+                CHECK(tree->stats.files == fresh->stats.files && tree->stats.folders == fresh->stats.folders);
+                CHECK(tree->stats.bytes == fresh->stats.bytes && tree->stats.logicalBytes == fresh->stats.logicalBytes);
+            }
+
+            // Dữ liệu không khớp -> false và KHÔNG sửa gì: tệp lớn không có, gốc không bị gỡ, nút lạ, dòng gộp rỗng.
+            {
+                QTemporaryDir tmp;
+                const QString r = tmp.path() + "/bad";
+                buildTree(r);
+                auto tree = scanTree(r);
+                CHECK(tree && tree->root);
+                if (tree && tree->root)
+                {
+                    const qint64 bytes0 = tree->root->bytes;
+                    Removal noFile;
+                    noFile.target = Target::BigFile;
+                    noFile.node = tree->root.get();
+                    noFile.fileName = "khong_co.bin";
+                    CHECK(!FolderTreeEdit::apply(*tree, noFile));
+                    Removal rootRemoval;
+                    rootRemoval.target = Target::KeptFolder;
+                    rootRemoval.node = tree->root.get();
+                    CHECK(!FolderTreeEdit::apply(*tree, rootRemoval));
+                    Removal foreign;
+                    FolderNode stranger;
+                    foreign.target = Target::KeptFolder;
+                    foreign.node = &stranger;
+                    CHECK(!FolderTreeEdit::apply(*tree, foreign));
+                    Removal nullNode;
+                    CHECK(!FolderTreeEdit::apply(*tree, nullNode));
+                    FolderNode* sub2 = findChild(tree->root.get(), "sub2");
+                    Removal smallInBig;
+                    smallInBig.target = Target::SmallFile; // sub2 không có tệp "nhỏ" nào
+                    smallInBig.node = sub2;
+                    smallInBig.bytes = 4096;
+                    smallInBig.logicalBytes = 10;
+                    CHECK(sub2 && !FolderTreeEdit::apply(*tree, smallInBig));
+                    Removal noPruned;
+                    noPruned.target = Target::PrunedFolder;
+                    noPruned.node = sub2;
+                    CHECK(sub2 && !FolderTreeEdit::apply(*tree, noPruned));
+                    CHECK(tree->root->bytes == bytes0); // không có gì bị sửa
+                }
+            }
+        }
+
+        // ---- TreeDeleteGuard ----
+        {
+            QTemporaryDir tmp;
+            CHECK(tmp.isValid());
+            const QString root = tmp.path() + "/scan";
+            QDir().mkpath(root + "/x");
+            const auto blocked = [&](const QString& p, bool dir = true) { return !TreeDeleteGuard::check(p, root, dir).blockReason.isEmpty(); };
+            // Cho phép: mục bình thường trong thư mục tạm.
+            CHECK(!blocked(root + "/x"));
+            CHECK(!blocked(root + "/x/file.bin", false));
+            CHECK(TreeDeleteGuard::check(root + "/x", root, true).warning.isEmpty());
+            // Không cho: chính gốc đang xem, cha của gốc, rỗng, tương đối, dấu chấm cuối (Shell hiểu thành mục khác).
+            CHECK(blocked(root) && blocked(tmp.path()) && blocked(QString()) && blocked("relative/path"));
+            CHECK(blocked(root + "/x.") && blocked(root + "/x/*"));
+            // Gốc ổ đĩa + thư mục Windows và mọi thứ trong đó + các mục đặc biệt ở gốc ổ.
+            const QString winDir = FsSafety::windowsDirectory();
+            const QString drive = winDir.left(3); // "C:/"
+            CHECK(!winDir.isEmpty() && blocked(drive) && blocked(winDir) && blocked(winDir + "/Temp") && blocked(winDir + "/System32/drivers/etc/hosts", false));
+            CHECK(blocked(drive + "System Volume Information") && blocked(drive + "$Recycle.Bin/S-1-5-21") && blocked(drive + "pagefile.sys", false) &&
+                  blocked(drive + "hiberfil.sys", false) && blocked(drive + "Recovery") && blocked(drive + "EFI"));
+            // Hồ sơ người dùng/Program Files: chính chúng bị chặn, nội dung bên trong thì được (Program Files kèm cảnh báo).
+            const QString profile = QDir::fromNativeSeparators(qEnvironmentVariable("USERPROFILE"));
+            if (!profile.isEmpty())
+            {
+                CHECK(blocked(profile));
+                CHECK(!blocked(profile + "/Downloads/khong_co_thu_muc_nay_12345"));
+            }
+            const QString pf = QDir::fromNativeSeparators(qEnvironmentVariable("ProgramFiles"));
+            if (!pf.isEmpty())
+            {
+                CHECK(blocked(pf));
+                const auto v = TreeDeleteGuard::check(pf + "/UngDungGia", root, true);
+                CHECK(v.blockReason.isEmpty() && !v.warning.isEmpty());
+            }
+            // Thư mục chứa chính ứng dụng và cha của nó.
+            const QString appDir = QDir::fromNativeSeparators(QCoreApplication::applicationDirPath());
+            CHECK(blocked(appDir) && blocked(appDir + "/OneForAll.exe", false) && blocked(QFileInfo(appDir).absolutePath()));
         }
     }
 

@@ -276,6 +276,10 @@ add_library(diskcleanup_core STATIC
     src/tools/diskcleanup/engine/FsSafety.cpp
     src/tools/diskcleanup/engine/FolderTreeScanner.h
     src/tools/diskcleanup/engine/FolderTreeScanner.cpp
+    src/tools/diskcleanup/engine/FolderTreeEdit.h
+    src/tools/diskcleanup/engine/FolderTreeEdit.cpp
+    src/tools/diskcleanup/engine/TreeDeleteGuard.h
+    src/tools/diskcleanup/engine/TreeDeleteGuard.cpp
     src/tools/diskcleanup/engine/ProcessMonitor.h
     src/tools/diskcleanup/engine/ProcessMonitor.cpp
 )

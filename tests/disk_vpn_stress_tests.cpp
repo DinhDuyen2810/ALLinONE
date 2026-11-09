@@ -1001,6 +1001,52 @@ int main(int argc, char** argv)
                 CHECK(ok);
                 CHECK(nodes == root->folderCount + 1);
                 CHECK(bigSum <= root->logicalBytes);
+
+                // B6. FolderTreeScanner::listFolderLive (các dòng "tệp nhỏ"/"thư mục nhỏ" bung ra trong tab) phải cộng lại ĐÚNG số liệu
+                // của bộ quét ở mọi nút mẫu của cây thù địch này (junction, symlink, hardlink, đường dẫn dài, tên dấu chấm cuối...).
+                {
+                    std::atomic_bool noStop{false};
+                    qint64 sampled = 0, bad = 0;
+                    pending.clear();
+                    pending.push_back(root);
+                    size_t index = 0;
+                    const size_t stride = std::max<size_t>(1, static_cast<size_t>(root->folderCount + 1) / 150);
+                    while (!pending.empty())
+                    {
+                        const FolderNode* n = pending.back();
+                        pending.pop_back();
+                        for (const auto& c : n->children)
+                            pending.push_back(c.get());
+                        if ((index++ % stride) != 0)
+                            continue;
+                        const auto live = FolderTreeScanner::listFolderLive(n->path(), noStop, -1);
+                        qint64 fb = 0, fl = 0, db = 0, dl = 0, dfiles = 0, dfolders = 0;
+                        for (const auto& f : live.files)
+                        {
+                            fb += f.bytes;
+                            fl += f.logicalBytes;
+                        }
+                        for (const auto& d : live.folders)
+                        {
+                            db += d.bytes;
+                            dl += d.logicalBytes;
+                            dfiles += d.fileCount;
+                            dfolders += 1 + d.folderCount;
+                        }
+                        const bool match = !live.unreadable && !live.stopped && fb == n->ownBytes && fl == n->ownLogicalBytes &&
+                                           fb + db == n->bytes && fl + dl == n->logicalBytes &&
+                                           static_cast<qint64>(live.files.size()) + dfiles == n->fileCount && dfolders == n->folderCount &&
+                                           live.totalFiles == n->ownFileCount;
+                        ++sampled;
+                        if (!match)
+                        {
+                            ++bad;
+                            say("  B6 lech o %s\n", qPrintable(n->path().right(120)));
+                        }
+                    }
+                    say("B6. listFolderLive doi chieu %lld nut mau cua cay thu dich: %lld lech\n", static_cast<long long>(sampled), static_cast<long long>(bad));
+                    CHECK(sampled > 0 && bad == 0);
+                }
             }
             // Tên nút gốc/đường dẫn dựng ngược cho một nút sâu nhất.
             if (tree && tree->root)

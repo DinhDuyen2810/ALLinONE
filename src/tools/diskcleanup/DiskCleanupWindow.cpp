@@ -49,7 +49,8 @@ DiskCleanupWindow::~DiskCleanupWindow() = default;
 bool DiskCleanupWindow::hasUnsafeOperationInProgress() const
 {
     return (m_partitionTab && m_partitionTab->isResizingNow()) ||
-           (m_cleanupTab && m_cleanupTab->isCleaningNow());
+           (m_cleanupTab && m_cleanupTab->isCleaningNow()) ||
+           (m_folderTreeTab && m_folderTreeTab->isDeletingNow());
 }
 
 void DiskCleanupWindow::stopSafelyCancellableWorkForQuit()
@@ -74,7 +75,7 @@ bool DiskCleanupWindow::isAnyOtherTabBusy(const QWidget* exceptTab) const
         return true;
     if (m_duplicateFilesTab && m_duplicateFilesTab != exceptTab && m_duplicateFilesTab->isScanningNow())
         return true;
-    if (m_folderTreeTab && m_folderTreeTab != exceptTab && m_folderTreeTab->isScanningNow())
+    if (m_folderTreeTab && m_folderTreeTab != exceptTab && (m_folderTreeTab->isScanningNow() || m_folderTreeTab->isDeletingNow()))
         return true;
     if (m_partitionTab && m_partitionTab != exceptTab && m_partitionTab->isResizingNow())
         return true;
@@ -98,6 +99,14 @@ void DiskCleanupWindow::closeEvent(QCloseEvent* event)
             this, "Đang dọn dẹp",
             "Không thể đóng cửa sổ trong lúc đang xóa tệp - vui lòng đợi quá trình dọn dẹp hoàn tất rồi "
             "đóng lại.");
+        event->ignore();
+        return;
+    }
+    if (m_folderTreeTab && m_folderTreeTab->isDeletingNow())
+    {
+        QMessageBox::warning(
+            this, "Đang xóa",
+            "Không thể đóng cửa sổ trong lúc đang xóa mục đã chọn ở tab \"Cây thư mục\" - vui lòng đợi xóa xong rồi đóng lại.");
         event->ignore();
         return;
     }

@@ -4,8 +4,11 @@
 #include "DiskUiStyle.h"
 #include "FolderTreeModel.h"
 #include "engine/DiskSpaceInfo.h"
+#include "engine/FolderTreeEdit.h"
 #include "engine/FsSafety.h"
 #include "engine/PartitionManager.h"
+#include "engine/RecycleBinOps.h"
+#include "engine/TreeDeleteGuard.h"
 
 #include <QApplication>
 #include <QClipboard>
@@ -23,9 +26,14 @@
 #include <QProcess>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QSet>
+#include <QShortcut>
 #include <QStyledItemDelegate>
+#include <QThread>
 #include <QTreeView>
 #include <QVBoxLayout>
+
+#include <algorithm>
 
 namespace
 {
@@ -112,6 +120,10 @@ FolderTreeTab::~FolderTreeTab()
         m_scanner->requestStop();
         m_scanner->wait(3000);
     }
+    // KHÔNG hủy một thao tác xóa đang chạy giữa chừng, nhưng cũng không để QThread bị hủy khi vẫn chạy: chờ nó xong.
+    // (DiskCleanupWindow::closeEvent đã chặn đóng cửa sổ trong lúc xóa; đây là lưới an toàn cuối.)
+    if (m_deleteThread)
+        m_deleteThread->wait();
 }
 
 void FolderTreeTab::buildUi()
@@ -180,7 +192,7 @@ void FolderTreeTab::buildUi()
     m_view->setAlternatingRowColors(true);
     m_view->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_view->setSelectionBehavior(QAbstractItemView::SelectRows);
-    m_view->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_view->setSelectionMode(QAbstractItemView::ExtendedSelection); // Ctrl/Shift để chọn nhiều mục rồi xóa một lượt
     m_view->setAnimated(false);
     m_view->setIndentation(18);
     m_view->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -199,6 +211,14 @@ void FolderTreeTab::buildUi()
     header->setSectionsClickable(false);
     connect(m_view, &QTreeView::customContextMenuRequested, this, &FolderTreeTab::onContextMenu);
     connect(m_view->selectionModel(), &QItemSelectionModel::currentChanged, this, [this]() { onSelectionChanged(); });
+    connect(m_view->selectionModel(), &QItemSelectionModel::selectionChanged, this, [this]() { onSelectionChanged(); });
+    // Delete = vào Thùng rác (khôi phục được); Shift+Delete = xóa vĩnh viễn. Chỉ khi cây đang giữ tiêu điểm.
+    auto* delKey = new QShortcut(QKeySequence(Qt::Key_Delete), m_view);
+    delKey->setContext(Qt::WidgetShortcut);
+    connect(delKey, &QShortcut::activated, this, [this]() { deleteSelected(false); });
+    auto* permKey = new QShortcut(QKeySequence(Qt::SHIFT | Qt::Key_Delete), m_view);
+    permKey->setContext(Qt::WidgetShortcut);
+    connect(permKey, &QShortcut::activated, this, [this]() { deleteSelected(true); });
     root->addWidget(m_view, 1);
 
     m_busyBar = new QProgressBar(this);
@@ -286,6 +306,35 @@ void FolderTreeTab::buildUi()
     bottomRow->addWidget(m_explorerBtn);
     root->addLayout(bottomRow);
 
+    // Hàng xóa riêng (gợi ý bên trái, hai nút bên phải): đủ chỗ cho chữ đầy đủ kể cả khi cửa sổ hẹp.
+    auto* deleteRow = new QHBoxLayout();
+    m_hintLabel = new QLabel(
+        "💡 Mở dòng [N tệp nhỏ] / [N thư mục nhỏ] để xem từng mục. Chọn nhiều mục bằng Ctrl/Shift rồi bấm Xóa "
+        "(phím Delete = vào Thùng rác, Shift+Delete = xóa vĩnh viễn).",
+        this);
+    m_hintLabel->setWordWrap(true);
+    m_hintLabel->setStyleSheet("color: #57606a; font-size: 11px;");
+    deleteRow->addWidget(m_hintLabel, 1);
+
+    m_recycleBtn = new QPushButton("🗑 Xóa vào Thùng rác", this);
+    m_recycleBtn->setObjectName("treeRecycleButton");
+    m_recycleBtn->setStyleSheet(DiskUi::buttonStyle());
+    m_recycleBtn->setCursor(Qt::PointingHandCursor);
+    m_recycleBtn->setEnabled(false);
+    m_recycleBtn->setToolTip("Chuyển các mục đang chọn vào Thùng rác (khôi phục được). Phím tắt: Delete.");
+    connect(m_recycleBtn, &QPushButton::clicked, this, [this]() { deleteSelected(false); });
+    deleteRow->addWidget(m_recycleBtn);
+
+    m_deleteBtn = new QPushButton("⛔ Xóa vĩnh viễn", this);
+    m_deleteBtn->setObjectName("treeDeleteButton");
+    m_deleteBtn->setStyleSheet(DiskUi::dangerButtonStyle());
+    m_deleteBtn->setCursor(Qt::PointingHandCursor);
+    m_deleteBtn->setEnabled(false);
+    m_deleteBtn->setToolTip("Xóa hẳn các mục đang chọn, KHÔNG qua Thùng rác - không khôi phục được. Phím tắt: Shift+Delete.");
+    connect(m_deleteBtn, &QPushButton::clicked, this, [this]() { deleteSelected(true); });
+    deleteRow->addWidget(m_deleteBtn);
+    root->addLayout(deleteRow);
+
     updateDriveInfo();
 }
 
@@ -353,10 +402,13 @@ void FolderTreeTab::setScanningUi(bool scanning)
     m_busyBar->setVisible(scanning);
     m_driveCombo->setEnabled(!scanning);
     m_browseBtn->setEnabled(!scanning);
+    updateDeleteButtons();
 }
 
 void FolderTreeTab::onScanClicked()
 {
+    if (m_deleting)
+        return; // đang xóa: cây sắp được sửa - không quét lại lúc này
     const QString root = selectedPath();
     if (root.isEmpty())
     {
@@ -493,6 +545,25 @@ void FolderTreeTab::onSelectionChanged()
     const bool has = cur.isValid() && !m_model->pathAt(cur).isEmpty();
     m_explorerBtn->setEnabled(has);
     m_copyBtn->setEnabled(has);
+    updateDeleteButtons();
+}
+
+void FolderTreeTab::updateDeleteButtons()
+{
+    bool any = false;
+    if (!m_deleting && !isScanningNow() && m_view->selectionModel())
+    {
+        for (const QModelIndex& idx : m_view->selectionModel()->selectedRows(0))
+        {
+            if (m_model->isDeletable(idx))
+            {
+                any = true;
+                break;
+            }
+        }
+    }
+    m_recycleBtn->setEnabled(any);
+    m_deleteBtn->setEnabled(any);
 }
 
 void FolderTreeTab::onExpandHeaviestClicked()
@@ -533,7 +604,7 @@ void FolderTreeTab::onOpenInExplorerClicked()
     const QString winDir = FsSafety::windowsDirectory();
     if (winDir.isEmpty())
         return;
-    const bool isFile = m_model->kindAt(cur) == FolderTreeModel::Kind::File;
+    const bool isFile = m_model->kindAt(cur) == FolderTreeModel::Kind::File || m_model->kindAt(cur) == FolderTreeModel::Kind::LiveFile;
     const QString explorer = QDir::toNativeSeparators(winDir + "/explorer.exe");
     if (isFile)
         QProcess::startDetached(explorer, {"/select,", QDir::toNativeSeparators(path)});
@@ -553,16 +624,383 @@ void FolderTreeTab::onContextMenu(const QPoint& pos)
     const QModelIndex idx = m_view->indexAt(pos);
     if (!idx.isValid())
         return;
-    m_view->setCurrentIndex(idx);
+    // Bấm phải vào một dòng ĐANG nằm trong vùng chọn thì giữ nguyên vùng chọn (để xóa nhiều mục); ngoài vùng chọn thì chọn riêng dòng đó.
+    if (!m_view->selectionModel()->isSelected(idx))
+        m_view->setCurrentIndex(idx);
+    else
+        m_view->selectionModel()->setCurrentIndex(idx, QItemSelectionModel::NoUpdate);
+
+    const auto kind = m_model->kindAt(idx);
+    const bool aggregate = kind == FolderTreeModel::Kind::SmallFiles || kind == FolderTreeModel::Kind::SmallFolders;
     QMenu menu(this);
+    QAction* expand = nullptr;
+    if (aggregate)
+        expand = menu.addAction(m_view->isExpanded(idx) ? "👁 Thu gọn danh sách này" : "👁 Xem từng mục");
     QAction* open = menu.addAction("📂 Mở trong Explorer");
     QAction* copy = menu.addAction("📋 Sao chép đường dẫn");
     QAction* size = menu.addAction("Sao chép dung lượng");
+    menu.addSeparator();
+    QAction* recycle = menu.addAction("🗑 Xóa vào Thùng rác");
+    QAction* perm = menu.addAction("⛔ Xóa vĩnh viễn");
+    recycle->setEnabled(m_recycleBtn->isEnabled());
+    perm->setEnabled(m_deleteBtn->isEnabled());
     QAction* chosen = menu.exec(m_view->viewport()->mapToGlobal(pos));
-    if (chosen == open)
+    if (!chosen)
+        return;
+    if (chosen == expand)
+        m_view->setExpanded(idx, !m_view->isExpanded(idx));
+    else if (chosen == open)
         onOpenInExplorerClicked();
     else if (chosen == copy)
         onCopyPathClicked();
     else if (chosen == size)
         QApplication::clipboard()->setText(DiskUi::formatBytes(m_model->bytesAt(idx)));
+    else if (chosen == recycle)
+        deleteSelected(false);
+    else if (chosen == perm)
+        deleteSelected(true);
+}
+
+// ------------------------------------------------------------------------------------------------ xóa
+
+struct FolderTreeTab::PendingDelete
+{
+    QString path; // dấu '/'
+    bool isDir{false};
+    qint64 bytes{0};
+    QString parentPath;
+    FolderTreeEdit::Removal removal;
+};
+
+struct FolderTreeTab::ExpandedState
+{
+    QStringList folders;      // thư mục (trong cây đã quét) đang mở - cha trước con
+    QStringList smallFiles;   // thư mục có dòng "[N tệp nhỏ]" đang mở
+    QStringList smallFolders; // thư mục có dòng "[N thư mục nhỏ]" đang mở
+};
+
+void FolderTreeTab::notify(const QString& title, const QString& text, bool critical)
+{
+    m_lastMessage = text;
+    if (m_autoConfirm)
+        return;
+    if (critical)
+        QMessageBox::critical(this, title, text);
+    else
+        QMessageBox::warning(this, title, text);
+}
+
+bool FolderTreeTab::confirm(const QString& title, const QString& text, bool dangerous)
+{
+    m_lastMessage = text;
+    if (m_autoConfirm)
+        return true;
+    QMessageBox box(dangerous ? QMessageBox::Warning : QMessageBox::Question, title, text, QMessageBox::Yes | QMessageBox::No, this);
+    box.setDefaultButton(QMessageBox::No);
+    box.setEscapeButton(QMessageBox::No);
+    return box.exec() == QMessageBox::Yes;
+}
+
+FolderTreeTab::ExpandedState FolderTreeTab::captureExpanded() const
+{
+    ExpandedState st;
+    std::vector<QModelIndex> stack{m_model->index(0, 0)};
+    while (!stack.empty())
+    {
+        const QModelIndex idx = stack.back();
+        stack.pop_back();
+        if (!idx.isValid() || !m_view->isExpanded(idx))
+            continue;
+        const auto kind = m_model->kindAt(idx);
+        if (kind == FolderTreeModel::Kind::SmallFiles)
+        {
+            st.smallFiles << m_model->pathAt(idx);
+            continue;
+        }
+        if (kind == FolderTreeModel::Kind::SmallFolders)
+        {
+            st.smallFolders << m_model->pathAt(idx);
+            continue;
+        }
+        if (kind != FolderTreeModel::Kind::Folder)
+            continue;
+        st.folders << m_model->pathAt(idx);
+        // Đẩy ngược để pop ra theo đúng thứ tự dòng (cha luôn được ghi trước con).
+        for (int r = m_model->rowCount(idx) - 1; r >= 0; --r)
+            stack.push_back(m_model->index(r, 0, idx));
+    }
+    return st;
+}
+
+void FolderTreeTab::restoreExpanded(const ExpandedState& st)
+{
+    for (const QString& path : st.folders)
+    {
+        const QModelIndex idx = m_model->indexForFolderPath(path);
+        if (idx.isValid() && m_model->hasChildren(idx))
+            m_view->expand(idx);
+    }
+    using Kind = FolderTreeModel::Kind;
+    for (const QString& path : st.smallFiles)
+    {
+        const QModelIndex agg = m_model->aggregateIndex(m_model->indexForFolderPath(path), Kind::SmallFiles);
+        if (agg.isValid())
+            m_view->expand(agg);
+    }
+    for (const QString& path : st.smallFolders)
+    {
+        const QModelIndex agg = m_model->aggregateIndex(m_model->indexForFolderPath(path), Kind::SmallFolders);
+        if (agg.isValid())
+            m_view->expand(agg);
+    }
+}
+
+void FolderTreeTab::deleteSelected(bool permanent)
+{
+    if (m_deleting || isScanningNow() || !m_model->tree())
+        return;
+
+    // Không xóa trong lúc tab khác đang quét/dọn dẹp/đổi kích thước trên cùng ổ - xem DiskCleanupWindow::isAnyOtherTabBusy().
+    if (auto* win = qobject_cast<DiskCleanupWindow*>(window()))
+    {
+        if (win->isAnyOtherTabBusy(this))
+        {
+            notify("Đang có thao tác khác",
+                   "Một tab khác trong Disk Cleanup đang quét/dọn dẹp/đổi kích thước phân vùng - vui lòng đợi xong để tránh "
+                   "xung đột trên cùng ổ đĩa, rồi thử lại.");
+            return;
+        }
+    }
+
+    const QString scanRoot = m_model->tree()->rootPath;
+    std::vector<PendingDelete> candidates;
+    QStringList blocked;
+    int notDeletable = 0;
+    for (const QModelIndex& idx : m_view->selectionModel()->selectedRows(0))
+    {
+        FolderTreeEdit::Removal removal;
+        if (!m_model->removalFor(idx, &removal))
+        {
+            ++notDeletable;
+            continue;
+        }
+        PendingDelete pd;
+        pd.path = QDir::cleanPath(m_model->pathAt(idx));
+        pd.isDir = m_model->isFolderAt(idx);
+        pd.bytes = m_model->bytesAt(idx);
+        pd.removal = removal;
+        const auto verdict = TreeDeleteGuard::check(pd.path, scanRoot, pd.isDir);
+        if (!verdict.blockReason.isEmpty())
+        {
+            blocked << QDir::toNativeSeparators(pd.path) + "\n      (" + verdict.blockReason + ")";
+            continue;
+        }
+        pd.parentPath = QDir::cleanPath(QFileInfo(pd.path).absolutePath());
+        candidates.push_back(std::move(pd));
+    }
+
+    // Mục nằm trong một thư mục cũng đang được chọn thì bỏ (xóa thư mục cha đã bao gồm nó) - tránh xóa/trừ dung lượng hai lần.
+    QSet<QString> dirKeys;
+    for (const auto& c : candidates)
+        if (c.isDir)
+            dirKeys.insert(c.path.toLower());
+    std::vector<PendingDelete> items;
+    for (auto& c : candidates)
+    {
+        bool covered = false;
+        QString up = c.path;
+        for (;;)
+        {
+            const int slash = up.lastIndexOf('/');
+            if (slash <= 2)
+                break;
+            up.truncate(slash);
+            if (dirKeys.contains(up.toLower()))
+            {
+                covered = true;
+                break;
+            }
+        }
+        if (!covered)
+            items.push_back(std::move(c));
+    }
+
+    // Mục đã biến mất khỏi đĩa từ lúc quét: bỏ qua (và nhắc quét lại), không báo lỗi giả.
+    int missing = 0;
+    {
+        std::vector<PendingDelete> present;
+        for (auto& it : items)
+        {
+            if (!FsSafety::existsNoFollow(it.path))
+            {
+                ++missing;
+                continue;
+            }
+            present.push_back(std::move(it));
+        }
+        items = std::move(present);
+    }
+
+    // Vào Thùng rác: lọc TRƯỚC những mục Windows sẽ xóa vĩnh viễn thay vì cất vào Thùng rác (quá lớn so với Thùng rác của ổ,
+    // ổ mạng/ổ tháo rời, Thùng rác bị tắt) - xem RecycleBinOps::notRecyclableReason.
+    QStringList notRecyclable;
+    if (!permanent)
+    {
+        std::vector<PendingDelete> recyclable;
+        for (auto& it : items)
+        {
+            const QString reason = RecycleBinOps::notRecyclableReason(it.path, qMax(it.bytes, FsSafety::rawInfo(it.path).sizeBytes));
+            if (!reason.isEmpty())
+            {
+                notRecyclable << QDir::toNativeSeparators(it.path) + "\n      (" + reason + ")";
+                continue;
+            }
+            recyclable.push_back(std::move(it));
+        }
+        items = std::move(recyclable);
+    }
+
+    QStringList problems;
+    if (!blocked.isEmpty())
+        problems << QString("%1 mục KHÔNG được phép xóa từ đây nên được GIỮ NGUYÊN:\n  • %2%3")
+                        .arg(blocked.size())
+                        .arg(blocked.mid(0, 6).join("\n  • "))
+                        .arg(blocked.size() > 6 ? "\n  • ..." : "");
+    if (!notRecyclable.isEmpty())
+        problems << QString("%1 mục KHÔNG thể đưa vào Thùng rác để khôi phục được nên được giữ nguyên (chọn \"Xóa vĩnh viễn\" nếu thật sự muốn xóa hẳn):\n  • %2%3")
+                        .arg(notRecyclable.size())
+                        .arg(notRecyclable.mid(0, 6).join("\n  • "))
+                        .arg(notRecyclable.size() > 6 ? "\n  • ..." : "");
+    if (notDeletable > 0 && items.empty() && blocked.isEmpty() && notRecyclable.isEmpty() && missing == 0)
+        problems << "Dòng đang chọn không phải thư mục/tệp xóa được (dòng gộp, ghi chú hoặc thư mục gốc). Hãy mở dòng "
+                    "[N tệp nhỏ]/[N thư mục nhỏ] rồi chọn từng mục.";
+    if (missing > 0)
+        problems << QString("%1 mục không còn trên đĩa (đã bị xóa/di chuyển từ lúc quét) - hãy quét lại để cây đúng.").arg(missing);
+    if (!problems.isEmpty())
+        notify("Không xóa một số mục", problems.join("\n\n"));
+    if (items.empty())
+        return;
+
+    // ---- Xác nhận ----
+    qint64 totalBytes = 0;
+    int folders = 0;
+    QStringList warnings;
+    QStringList names;
+    for (const auto& it : items)
+    {
+        totalBytes += it.bytes;
+        folders += it.isDir ? 1 : 0;
+        names << QDir::toNativeSeparators(it.path);
+        const auto verdict = TreeDeleteGuard::check(it.path, scanRoot, it.isDir);
+        if (!verdict.warning.isEmpty())
+            warnings << QDir::toNativeSeparators(it.path) + "\n      (" + verdict.warning + ")";
+    }
+    const QString what = QString("%1 mục (%2 thư mục, %3 tệp), chiếm khoảng %4")
+                             .arg(items.size())
+                             .arg(folders)
+                             .arg(static_cast<int>(items.size()) - folders)
+                             .arg(DiskUi::formatBytes(totalBytes));
+    const QString listing =
+        "  • " + names.mid(0, 8).join("\n  • ") + (names.size() > 8 ? QString("\n  • ... (+%1 mục nữa)").arg(names.size() - 8) : QString());
+    QString text = permanent
+                       ? QString("XÓA VĨNH VIỄN %1?\n\n%2\n\nCác mục này sẽ bị xóa HẲN, KHÔNG qua Thùng rác và KHÔNG THỂ khôi phục.").arg(what, listing)
+                       : QString("Chuyển %1 vào Thùng rác?\n\n%2\n\n(Khôi phục được từ Thùng rác. Dung lượng chỉ được giải phóng khi làm trống Thùng rác.)")
+                             .arg(what, listing);
+    if (!warnings.isEmpty())
+        text += "\n\n⚠ Lưu ý:\n  • " + warnings.mid(0, 4).join("\n  • ");
+    if (!confirm(permanent ? "Xóa vĩnh viễn" : "Xóa vào Thùng rác", text, permanent))
+        return;
+
+    // Hộp thoại vừa rồi chạy vòng lặp sự kiện riêng: kiểm tra lại rằng chưa có gì khác bắt đầu trong lúc đó.
+    if (m_deleting || isScanningNow())
+        return;
+
+    // ---- Chạy nền ----
+    m_deleting = true;
+    updateDeleteButtons();
+    m_scanBtn->setEnabled(false);
+    m_busyBar->setVisible(true);
+    m_statusLabel->setText(QString("⏳ Đang %1 %2 mục...").arg(permanent ? "xóa vĩnh viễn" : "chuyển vào Thùng rác").arg(items.size()));
+
+    auto pending = std::make_shared<std::vector<PendingDelete>>(std::move(items));
+    auto ok = std::make_shared<bool>(false);
+    auto error = std::make_shared<QString>();
+    QStringList paths;
+    for (const auto& it : *pending)
+        paths << it.path;
+    QThread* thread = QThread::create([paths, permanent, ok, error]() {
+        *ok = permanent ? RecycleBinOps::permanentlyDelete(paths, error.get()) : RecycleBinOps::moveToRecycleBin(paths, error.get());
+    });
+    thread->setParent(this);
+    m_deleteThread = thread;
+    connect(thread, &QThread::finished, this, [this, thread, pending, permanent, ok, error]() {
+        if (m_deleteThread == thread)
+            m_deleteThread = nullptr;
+        thread->deleteLater();
+        finishDelete(*pending, permanent, *ok, *error);
+    });
+    thread->start();
+}
+
+void FolderTreeTab::finishDelete(const std::vector<PendingDelete>& items, bool permanent, bool ok, const QString& error)
+{
+    m_deleting = false;
+    m_busyBar->setVisible(false);
+    m_scanBtn->setEnabled(true);
+
+    // Dù thành công hay lỗi giữa chừng: chỉ gỡ khỏi cây những mục THẬT SỰ không còn trên đĩa (kiểm không đi theo liên kết).
+    std::vector<FolderTreeEdit::Removal> removals;
+    qint64 freedBytes = 0;
+    int goneCount = 0;
+    QString firstParent;
+    for (const auto& it : items)
+    {
+        if (FsSafety::existsNoFollow(it.path))
+            continue;
+        removals.push_back(it.removal);
+        freedBytes += it.bytes;
+        ++goneCount;
+        if (firstParent.isEmpty())
+            firstParent = it.parentPath;
+    }
+
+    if (!removals.empty())
+    {
+        const ExpandedState state = captureExpanded();
+        m_model->applyRemovals(removals);
+        const QModelIndex top = m_model->index(0, 0);
+        if (top.isValid())
+            m_view->expand(top);
+        restoreExpanded(state);
+        QModelIndex focus = m_model->indexForFolderPath(firstParent);
+        if (!focus.isValid())
+            focus = top;
+        if (focus.isValid())
+        {
+            m_view->setCurrentIndex(focus);
+            m_view->scrollTo(focus, QAbstractItemView::EnsureVisible);
+        }
+    }
+    updateDriveInfo();
+    updateDeleteButtons();
+    onSelectionChanged();
+
+    const int total = static_cast<int>(items.size());
+    if (ok && goneCount == total)
+    {
+        m_statusLabel->setText(permanent ? QString("✓ Đã xóa vĩnh viễn %1 mục (%2).").arg(goneCount).arg(DiskUi::formatBytes(freedBytes))
+                                         : QString("✓ Đã chuyển %1 mục (%2) vào Thùng rác - dung lượng được giải phóng khi làm trống Thùng rác.")
+                                               .arg(goneCount)
+                                               .arg(DiskUi::formatBytes(freedBytes)));
+        m_lastMessage = m_statusLabel->text();
+        return;
+    }
+    m_statusLabel->setText(QString("⚠ Chỉ %1 được %2/%3 mục.").arg(permanent ? "xóa" : "chuyển vào Thùng rác").arg(goneCount).arg(total));
+    notify("Xóa chưa hoàn tất",
+           QString("Chỉ xóa được %1/%2 mục.\n%3\n\nNhững mục còn lại có thể đang được chương trình khác sử dụng hoặc thiếu quyền (thử chạy "
+                   "ứng dụng với quyền Administrator). Số liệu của các thư mục chứa chúng có thể chưa đúng - hãy quét lại.")
+               .arg(goneCount)
+               .arg(total)
+               .arg(error),
+           true);
 }

@@ -65,7 +65,7 @@ Web" - luồng dữ liệu NTFS `<tệp>:Zone.Identifier` ghi `ZoneId=3` cùng �
 `?...` và thông tin đăng nhập). Dữ liệu này nằm ngay trên tệp trong máy bạn, để Windows SmartScreen/Office Protected View
 cảnh báo khi mở; không gửi đi đâu.
 
-**Disk Cleanup - "Cây thư mục" và "Tiến trình & RAM" (từ v1.23.0)**: hai tab này chỉ ĐỌC cục bộ - quét tên/kích thước tệp trong thư mục bạn chọn và danh sách tiến trình đang chạy (tên, đường dẫn, người dùng, mức dùng RAM/CPU) trên chính máy bạn. Kết quả nằm trong bộ nhớ, KHÔNG ghi xuống đĩa, KHÔNG gửi đi đâu, và không có chức năng xóa/kết thúc tiến trình ở hai tab này.
+**Disk Cleanup - "Cây thư mục" và "Tiến trình & RAM" (từ v1.23.0)**: hai tab này đọc cục bộ - tên/kích thước tệp trong thư mục bạn chọn và danh sách tiến trình đang chạy (tên, đường dẫn, người dùng, mức dùng RAM/CPU) trên chính máy bạn. Kết quả nằm trong bộ nhớ, KHÔNG ghi xuống đĩa, KHÔNG gửi đi đâu. Tab "Tiến trình & RAM" không có chức năng kết thúc tiến trình. Từ v1.24.0 tab "Cây thư mục" có thể XÓA tệp/thư mục (vào Thùng rác hoặc xóa vĩnh viễn) nhưng CHỈ những mục do chính bạn chọn và xác nhận từng lần; ứng dụng không tự xóa gì và không gửi danh sách tệp đi đâu.
 
 ## Kết nối mạng ra bên ngoài ứng dụng CÓ thực hiện (và vì sao)
 Các tính năng sau cần kết nối Internet để hoạt động - đây là các dịch vụ **bên thứ ba độc lập**, không

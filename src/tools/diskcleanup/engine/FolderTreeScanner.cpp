@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <limits>
 
 #ifdef Q_OS_WIN
 #ifndef WIN32_LEAN_AND_MEAN
@@ -160,6 +161,16 @@ public:
 
     /// Chỉ dùng cho test: ép dùng đường ước tính dự phòng.
     void forceEstimate() { m_noDirectoryInfo = true; }
+
+    /// Giữ MỌI tệp trực tiếp (kể cả tệp 0 byte) trong node->bigFiles thay vì chỉ các tệp lớn - dùng cho listFolderLive().
+    void keepAllFiles() { m_keepAll = true; }
+
+    /// Chỉ liệt kê MỘT thư mục (không đi vào thư mục con): tệp được cộng vào 'node', trả về tên các thư mục con.
+    std::vector<std::wstring> listOnly(FolderNode* node, const std::wstring& path)
+    {
+        Frame f = makeFrame(node, path);
+        return std::move(f.subDirs);
+    }
 
     FolderTreeStats stats;
 
@@ -336,7 +347,7 @@ private:
         ++node->ownFileCount;
         ++stats.files;
         stats.bytes += bytes;
-        if (bytes >= m_bigBytes && bytes > 0)
+        if (m_keepAll || (bytes >= m_bigBytes && bytes > 0))
         {
             FolderFile ff;
             ff.name = QString::fromWCharArray(name, static_cast<int>(nameLen));
@@ -399,7 +410,24 @@ private:
     QElapsedTimer m_tick;
     quint32 m_seen{0};
     bool m_noDirectoryInfo{false};
+    bool m_keepAll{false};
 };
+
+/// Kích thước cụm + có phải NTFS không của ổ chứa 'nativePath' - cho phần ƯỚC TÍNH dự phòng (xem FolderTreeScanner::run).
+void probeVolume(const std::wstring& nativePath, qint64* cluster, qint64* resident)
+{
+    *cluster = 4096;
+    *resident = 0;
+    wchar_t volume[MAX_PATH + 1] = {};
+    if (!GetVolumePathNameW(nativePath.c_str(), volume, MAX_PATH))
+        return;
+    DWORD sectors = 0, bytesPerSector = 0;
+    if (GetDiskFreeSpaceW(volume, &sectors, &bytesPerSector, nullptr, nullptr) && sectors > 0 && bytesPerSector > 0)
+        *cluster = static_cast<qint64>(sectors) * bytesPerSector;
+    wchar_t fsName[MAX_PATH + 1] = {};
+    if (GetVolumeInformationW(volume, nullptr, 0, nullptr, nullptr, nullptr, fsName, MAX_PATH) && std::wstring(fsName) == L"NTFS")
+        *resident = FolderTreeInternal::kResidentBaseBytes; // > 0 = ổ NTFS (giới hạn thật tính theo độ dài tên từng tệp)
+}
 } // namespace
 #endif
 
@@ -429,6 +457,87 @@ void FolderTreeScanner::startScan(QThread::Priority priority)
     start(priority);
 }
 
+FolderLiveListing FolderTreeScanner::listFolderLive(const QString& path, const std::atomic_bool& stop, int maxEntries)
+{
+    FolderLiveListing out;
+#ifdef Q_OS_WIN
+    const QString clean = QDir::cleanPath(path);
+    if (clean.trimmed().isEmpty())
+    {
+        out.unreadable = true;
+        return out;
+    }
+    const std::wstring nativeRoot = QDir::toNativeSeparators(clean).toStdWString();
+    qint64 cluster = 4096;
+    qint64 resident = 0;
+    probeVolume(nativeRoot, &cluster, &resident);
+    const auto noProgress = [](const FolderTreeStats&, const std::wstring&) {};
+    constexpr qint64 kNever = std::numeric_limits<qint64>::max();
+
+    // 1) Chính thư mục này: mọi tệp trực tiếp + tên các thư mục con (Walker chỉ liệt kê, không đi sâu).
+    FolderNode node;
+    node.name = clean;
+    Walker lister(stop, 0, kNever, -1, cluster, resident, noProgress);
+    lister.keepAllFiles();
+    const std::vector<std::wstring> subs = lister.listOnly(&node, nativeRoot);
+    if (stop.load())
+    {
+        out.stopped = true;
+        return out;
+    }
+    out.unreadable = node.unreadable;
+    out.totalFiles = static_cast<qint64>(node.bigFiles.size());
+    out.totalFolders = static_cast<qint64>(subs.size());
+    for (const FolderFile& f : node.bigFiles)
+        out.files.push_back({f.name, f.bytes, f.logicalBytes});
+
+    // 2) Mỗi thư mục con: đo cả cây con (cùng quy tắc với bộ quét). Không giữ lại gì ngoài các số tổng.
+    const std::wstring base = nativeRoot.back() == L'\\' ? nativeRoot : nativeRoot + L'\\';
+    for (const std::wstring& sub : subs)
+    {
+        if (stop.load())
+        {
+            out.stopped = true;
+            return out;
+        }
+        FolderNode sn;
+        sn.name = QString::fromStdWString(sub);
+        Walker w(stop, kNever, kNever, 0, cluster, resident, noProgress);
+        if (!w.run(&sn, base + sub))
+        {
+            out.stopped = true;
+            return out;
+        }
+        FolderLiveFolder lf;
+        lf.name = sn.name;
+        lf.bytes = sn.bytes;
+        lf.logicalBytes = sn.logicalBytes;
+        lf.fileCount = sn.fileCount;
+        lf.folderCount = sn.folderCount;
+        lf.unreadable = sn.unreadable;
+        out.folders.push_back(std::move(lf));
+    }
+#else
+    Q_UNUSED(path);
+    Q_UNUSED(stop);
+    out.unreadable = true;
+#endif
+
+    const auto byBytesThenName = [](const auto& a, const auto& b) {
+        return a.bytes != b.bytes ? a.bytes > b.bytes : a.name.compare(b.name, Qt::CaseInsensitive) < 0;
+    };
+    std::sort(out.files.begin(), out.files.end(), byBytesThenName);
+    std::sort(out.folders.begin(), out.folders.end(), byBytesThenName);
+    if (maxEntries >= 0)
+    {
+        if (out.files.size() > static_cast<size_t>(maxEntries))
+            out.files.resize(static_cast<size_t>(maxEntries));
+        if (out.folders.size() > static_cast<size_t>(maxEntries))
+            out.folders.resize(static_cast<size_t>(maxEntries));
+    }
+    return out;
+}
+
 void FolderTreeScanner::run()
 {
     QElapsedTimer clock;
@@ -451,17 +560,7 @@ void FolderTreeScanner::run()
         // lượng cấp phát thật); không hỏi được thì 4 KiB.
         qint64 cluster = 4096;
         qint64 resident = 0;
-        wchar_t volume[MAX_PATH + 1] = {};
-        if (GetVolumePathNameW(nativeRoot.c_str(), volume, MAX_PATH))
-        {
-            DWORD sectors = 0, bytesPerSector = 0;
-            if (GetDiskFreeSpaceW(volume, &sectors, &bytesPerSector, nullptr, nullptr) && sectors > 0 && bytesPerSector > 0)
-                cluster = static_cast<qint64>(sectors) * bytesPerSector;
-            wchar_t fsName[MAX_PATH + 1] = {};
-            if (GetVolumeInformationW(volume, nullptr, 0, nullptr, nullptr, nullptr, fsName, MAX_PATH) &&
-                std::wstring(fsName) == L"NTFS")
-                resident = FolderTreeInternal::kResidentBaseBytes; // > 0 = ổ NTFS (giới hạn thật tính theo độ dài tên từng tệp)
-        }
+        probeVolume(nativeRoot, &cluster, &resident);
 
         Walker walker(m_stopRequested, m_bigFileBytes, m_keepFolderBytes, m_maxBigFiles, cluster, resident,
                       [this](const FolderTreeStats& s, const std::wstring& dir) {

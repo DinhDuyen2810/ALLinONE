@@ -67,6 +67,37 @@ struct FolderTree
 };
 Q_DECLARE_METATYPE(std::shared_ptr<FolderTree>)
 
+/// Một tệp trong danh sách "đọc trực tiếp" một thư mục (xem FolderTreeScanner::listFolderLive).
+struct FolderLiveFile
+{
+    QString name;
+    qint64 bytes{0};        // chiếm trên đĩa
+    qint64 logicalBytes{0}; // kích thước tệp
+};
+
+/// Một thư mục con trong danh sách "đọc trực tiếp" - kèm tổng của CẢ cây con của nó (đo ngay lúc đọc).
+struct FolderLiveFolder
+{
+    QString name;
+    qint64 bytes{0};
+    qint64 logicalBytes{0};
+    qint64 fileCount{0};
+    qint64 folderCount{0}; // số thư mục con ở mọi cấp bên trong (không tính chính nó)
+    bool unreadable{false};
+};
+
+/// Nội dung HIỆN TẠI của một thư mục, đọc trực tiếp từ đĩa (không dựa vào cây đã quét) - dùng để mở các dòng gộp
+/// "[N tệp nhỏ]"/"[N thư mục nhỏ]" thành từng mục riêng cho người dùng xem/xóa.
+struct FolderLiveListing
+{
+    std::vector<FolderLiveFile> files;     // giảm dần theo dung lượng, rồi theo tên; bị cắt còn maxEntries mục lớn nhất
+    std::vector<FolderLiveFolder> folders; // như trên
+    qint64 totalFiles{0};   // số tệp THẬT trực tiếp trong thư mục (trước khi cắt)
+    qint64 totalFolders{0}; // số thư mục con THẬT trực tiếp (trước khi cắt)
+    bool unreadable{false}; // không liệt kê được thư mục này
+    bool stopped{false};    // bị dừng giữa chừng - danh sách KHÔNG đầy đủ
+};
+
 namespace FolderTreeInternal
 {
 /// ƯỚC TÍNH dung lượng một tệp chiếm trên đĩa (xấp xỉ "Size on disk" của Explorer) - đường DỰ PHÒNG, chỉ dùng khi hệ thống
@@ -123,6 +154,12 @@ public:
     void setMaxBigFilesPerFolder(int n) { m_maxBigFiles = n; }
     /// Chỉ dùng cho test: bỏ qua dung lượng cấp phát thật, ép dùng đường ƯỚC TÍNH dự phòng.
     void setForceEstimateForTest(bool on) { m_forceEstimate = on; }
+
+    /// Đọc TRỰC TIẾP nội dung hiện tại của một thư mục (chỉ đọc, chạy ở luồng gọi - nên gọi từ luồng nền): mọi tệp trực
+    /// tiếp bên trong + mọi thư mục con (kèm tổng của cả cây con, cùng quy tắc tính với bộ quét: không đi vào junction/
+    /// symlink, dung lượng cấp phát thật). Mỗi loại giữ tối đa maxEntries mục lớn nhất (totalFiles/totalFolders vẫn là số
+    /// thật). Cờ 'stop' được kiểm tra thường xuyên; bị dừng thì trả về stopped = true.
+    static FolderLiveListing listFolderLive(const QString& path, const std::atomic_bool& stop, int maxEntries = 5000);
 
     /// Bắt đầu quét - LUÔN dùng hàm này thay cho start() trực tiếp (đặt lại cờ dừng trước khi luồng chạy).
     void startScan(QThread::Priority priority = QThread::InheritPriority);

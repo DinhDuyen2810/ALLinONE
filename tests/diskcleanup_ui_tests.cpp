@@ -754,6 +754,244 @@ int main(int argc, char** argv)
             // Dừng khi không quét: không làm gì, không crash.
             folderTab->stopScanIfRunning();
             CHECK(!folderTab->isScanningNow());
+
+            // =============================================================================================================
+            // Xem từng tệp/thư mục nhỏ (đọc trực tiếp, nạp nền) + xóa vào Thùng rác / xóa vĩnh viễn. Cây `base` ở trên là cây thật
+            // trong thư mục tạm; mọi lần xóa chỉ chạm vào đúng cây này.
+            // =============================================================================================================
+            {
+                using Kind = FolderTreeModel::Kind;
+                folderTab->setAutoConfirmForTest(true); // không hiện hộp thoại - nội dung được ghi lại (lastMessageForTest)
+                auto* m = qobject_cast<FolderTreeModel*>(view->model());
+                CHECK(m != nullptr);
+                auto* recycleBtn = folderTab->findChild<QPushButton*>("treeRecycleButton");
+                auto* deleteBtn = folderTab->findChild<QPushButton*>("treeDeleteButton");
+                CHECK(recycleBtn && deleteBtn && !recycleBtn->isEnabled() && !deleteBtn->isEnabled() == true);
+                if (m && recycleBtn && deleteBtn)
+                {
+                    const QString baseClean = QDir::cleanPath(base);
+                    const auto childByName = [&](const QModelIndex& parent, const QString& name) {
+                        for (int r = 0; r < m->rowCount(parent); ++r)
+                            if (m->index(r, 0, parent).data().toString() == name)
+                                return m->index(r, 0, parent);
+                        return QModelIndex();
+                    };
+                    const auto selectOnly = [&](const QList<QModelIndex>& list) {
+                        view->selectionModel()->clearSelection();
+                        for (const QModelIndex& i : list)
+                            view->selectionModel()->select(i, QItemSelectionModel::Select | QItemSelectionModel::Rows);
+                        view->selectionModel()->setCurrentIndex(list.isEmpty() ? QModelIndex() : list.first(), QItemSelectionModel::NoUpdate);
+                        app.processEvents();
+                    };
+                    const auto doDelete = [&](bool permanent) {
+                        folderTab->deleteSelected(permanent);
+                        CHECK(waitFor([&]() { return !folderTab->isDeletingNow(); }, 30000));
+                        app.processEvents();
+                    };
+
+                    QModelIndex topIdx = m->index(0, 0);
+                    CHECK(topIdx.isValid() && m->isScanRoot(topIdx) && !m->isDeletable(topIdx));
+
+                    // --- "[1 tệp nhỏ]" ở gốc: mở ra -> dòng "đang đọc" rồi tệp thật ---
+                    QModelIndex agg = m->aggregateIndex(topIdx, Kind::SmallFiles);
+                    CHECK(agg.isValid() && m->hasChildren(agg) && !m->isDeletable(agg));
+                    view->expand(agg);
+                    CHECK(m->rowCount(agg) >= 1);
+                    CHECK(waitFor([&]() { return m->rowCount(agg) == 1 && m->kindAt(m->index(0, 0, agg)) == Kind::LiveFile; }, 15000));
+                    const QModelIndex rootFile = m->index(0, 0, agg);
+                    CHECK(m->pathAt(rootFile) == baseClean + "/rootfile.bin" && m->data(rootFile).toString() == "rootfile.bin");
+                    CHECK(m->bytesAt(rootFile) >= 300 * 1024 && m->isDeletable(rootFile) && !m->hasChildren(rootFile));
+                    CHECK(m->data(rootFile, FolderTreeModel::ShareRole).toDouble() > 0.0);
+                    CHECK(view->isExpanded(agg)); // chèn mục thật không làm QTreeView thu gọn dòng cha
+
+                    // --- "small" -> "[40 thư mục nhỏ ...]" -> 40 thư mục, mỗi thư mục 25 tệp ---
+                    const QModelIndex smallIdx = childByName(topIdx, "small");
+                    CHECK(smallIdx.isValid() && m->kindAt(smallIdx) == Kind::Folder);
+                    view->expand(smallIdx);
+                    QModelIndex smallDirs = m->aggregateIndex(smallIdx, Kind::SmallFolders);
+                    CHECK(smallDirs.isValid());
+                    view->expand(smallDirs);
+                    CHECK(waitFor([&]() { return m->rowCount(smallDirs) == 40 && m->kindAt(m->index(0, 0, smallDirs)) == Kind::LiveFolder; }, 15000));
+                    bool allUniform = true;
+                    for (int r = 0; r < m->rowCount(smallDirs); ++r)
+                    {
+                        const QModelIndex d = m->index(r, 0, smallDirs);
+                        allUniform = allUniform && m->kindAt(d) == Kind::LiveFolder && m->isDeletable(d) && m->hasChildren(d) &&
+                                     m->data(m->index(r, FolderTreeModel::FilesColumn, smallDirs)).toString() == "25" &&
+                                     m->pathAt(d).startsWith(baseClean + "/small/d");
+                    }
+                    CHECK(allUniform);
+                    // Mở một thư mục nhỏ -> 25 tệp 200 byte.
+                    const QModelIndex d0 = childByName(smallDirs, "d0");
+                    CHECK(d0.isValid());
+                    view->expand(d0);
+                    CHECK(waitFor([&]() { return m->rowCount(d0) == 25 && m->kindAt(m->index(0, 0, d0)) == Kind::LiveFile; }, 15000));
+                    CHECK(m->pathAt(m->index(0, 0, d0)).startsWith(baseClean + "/small/d0/f"));
+                    if (qEnvironmentVariableIsSet("DISKCLEANUP_UI_SHOTS"))
+                    {
+                        selectOnly({d0, childByName(smallDirs, "d1")});
+                        view->scrollTo(d0, QAbstractItemView::PositionAtTop);
+                        app.processEvents();
+                        win.grab().save(qEnvironmentVariable("DISKCLEANUP_UI_SHOTS") + "/foldertree_live.png");
+                    }
+
+                    // --- Nút xóa bật/tắt theo vùng chọn: dòng gộp/gốc không xóa được; thư mục/tệp thật thì được ---
+                    selectOnly({agg});
+                    CHECK(!recycleBtn->isEnabled() && !deleteBtn->isEnabled());
+                    selectOnly({topIdx});
+                    CHECK(!recycleBtn->isEnabled() && !deleteBtn->isEnabled());
+                    selectOnly({d0, childByName(smallDirs, "d1")});
+                    CHECK(recycleBtn->isEnabled() && deleteBtn->isEnabled());
+
+                    // --- Gốc quét KHÔNG xóa được, dù cố bấm: không có gì thay đổi trên đĩa ---
+                    selectOnly({topIdx});
+                    doDelete(true);
+                    CHECK(QDir(base).exists() && QFileInfo::exists(base + "/rootfile.bin"));
+                    CHECK(folderTab->lastMessageForTest().contains("không phải thư mục/tệp xóa được"));
+
+                    // --- Xóa vĩnh viễn HAI thư mục nhỏ (d0 + d1) trong dòng gộp ---
+                    const qint64 filesBefore = m->tree()->root->fileCount;
+                    const qint64 bytesBefore = m->tree()->root->bytes;
+                    const qint64 d0Bytes = m->bytesAt(d0);
+                    const QModelIndex d1 = childByName(smallDirs, "d1");
+                    const qint64 d1Bytes = m->bytesAt(d1);
+                    selectOnly({d0, d1});
+                    doDelete(true);
+                    CHECK(!QFileInfo::exists(base + "/small/d0") && !QFileInfo::exists(base + "/small/d1") && QFileInfo::exists(base + "/small/d2"));
+                    CHECK(status->text().contains("Đã xóa vĩnh viễn 2 mục"));
+                    CHECK(m->tree()->root->fileCount == filesBefore - 50);
+                    CHECK(m->tree()->root->bytes == bytesBefore - d0Bytes - d1Bytes);
+                    // Cây dựng lại nhưng các nhánh đang mở được mở lại và danh sách đọc lại còn 38 thư mục.
+                    topIdx = m->index(0, 0);
+                    CHECK(view->isExpanded(topIdx));
+                    const QModelIndex smallIdx2 = childByName(topIdx, "small");
+                    CHECK(smallIdx2.isValid() && view->isExpanded(smallIdx2) && view->currentIndex() == smallIdx2);
+                    smallDirs = m->aggregateIndex(smallIdx2, Kind::SmallFolders);
+                    CHECK(smallDirs.isValid() && view->isExpanded(smallDirs));
+                    CHECK(waitFor([&]() { return m->rowCount(smallDirs) == 38 && m->kindAt(m->index(0, 0, smallDirs)) == Kind::LiveFolder; }, 15000));
+                    CHECK(!childByName(smallDirs, "d0").isValid() && !childByName(smallDirs, "d1").isValid());
+
+                    // --- Xóa VÀO THÙNG RÁC một tệp nhỏ (tệp do test tạo trong thư mục tạm) ---
+                    agg = m->aggregateIndex(topIdx, Kind::SmallFiles);
+                    CHECK(agg.isValid() && view->isExpanded(agg));
+                    CHECK(waitFor([&]() { return m->rowCount(agg) == 1 && m->kindAt(m->index(0, 0, agg)) == Kind::LiveFile; }, 15000));
+                    selectOnly({m->index(0, 0, agg)});
+                    doDelete(false);
+                    if (QFileInfo::exists(base + "/rootfile.bin"))
+                        std::printf("LUU Y: tep khong vao duoc Thung rac tren may nay (%s) - bo qua kiem tra xoa vao Thung rac\n",
+                                    qPrintable(folderTab->lastMessageForTest().left(120)));
+                    else
+                    {
+                        CHECK(status->text().contains("Thùng rác"));
+                        topIdx = m->index(0, 0);
+                        CHECK(!m->aggregateIndex(topIdx, Kind::SmallFiles).isValid()); // hết tệp nhỏ ở gốc -> dòng gộp biến mất
+                    }
+
+                    // --- Thư mục được giữ riêng ("mid") + chọn cả thư mục lẫn tệp bên trong thư mục khác (chỉ xóa MỘT lần) ---
+                    topIdx = m->index(0, 0);
+                    selectOnly({childByName(topIdx, "mid")});
+                    doDelete(true);
+                    CHECK(!QFileInfo::exists(base + "/mid") && status->text().contains("Đã xóa vĩnh viễn 1 mục"));
+                    topIdx = m->index(0, 0);
+                    CHECK(!childByName(topIdx, "mid").isValid());
+                    const QModelIndex bigIdx = childByName(topIdx, "big");
+                    CHECK(bigIdx.isValid());
+                    view->expand(bigIdx);
+                    const QModelIndex b0 = childByName(bigIdx, "b0.bin");
+                    CHECK(b0.isValid() && m->kindAt(b0) == Kind::File && m->isDeletable(b0));
+                    selectOnly({bigIdx, b0});
+                    doDelete(true);
+                    CHECK(!QFileInfo::exists(base + "/big") && status->text().contains("Đã xóa vĩnh viễn 1 mục"));
+
+                    // --- Số liệu của cây đã sửa phải KHỚP một lượt quét lại ---
+                    FolderTreeScanner fresh;
+                    std::shared_ptr<FolderTree> freshTree;
+                    QObject::connect(&fresh, &FolderTreeScanner::scanFinished, [&](std::shared_ptr<FolderTree> t) { freshTree = t; });
+                    fresh.setRootPath(base);
+                    fresh.startScan();
+                    CHECK(waitFor([&]() { return static_cast<bool>(freshTree); }, 30000));
+                    fresh.wait();
+                    if (freshTree)
+                    {
+                        const auto& edited = *m->tree();
+                        CHECK(edited.root->bytes == freshTree->root->bytes && edited.root->logicalBytes == freshTree->root->logicalBytes);
+                        CHECK(edited.root->fileCount == freshTree->root->fileCount && edited.root->folderCount == freshTree->root->folderCount);
+                        CHECK(edited.stats.bytes == freshTree->stats.bytes && edited.stats.files == freshTree->stats.files);
+                    }
+                    CHECK(!folderTab->isDeletingNow() && !win.hasUnsafeOperationInProgress());
+                }
+                folderTab->setAutoConfirmForTest(false);
+            }
+
+            // --- Hủy mô hình / dựng lại trong lúc đang đọc thư mục: không crash, kết quả cũ bị bỏ ---
+            {
+                using Kind = FolderTreeModel::Kind;
+                QTemporaryDir t2;
+                CHECK(t2.isValid());
+                const QString b2 = t2.path() + "/s2";
+                QDir().mkpath(b2 + "/many");
+                for (int i = 0; i < 300; ++i)
+                {
+                    QFile f(b2 + "/many/f" + QString::number(i) + ".txt");
+                    f.open(QIODevice::WriteOnly);
+                    f.write("hello");
+                }
+                QFile big(b2 + "/many/big.bin");
+                big.open(QIODevice::WriteOnly);
+                big.write(QByteArray(2 * 1024 * 1024, 'y'));
+                big.close();
+                FolderTreeScanner sc;
+                std::shared_ptr<FolderTree> t;
+                QObject::connect(&sc, &FolderTreeScanner::scanFinished, [&](std::shared_ptr<FolderTree> r) { t = r; });
+                sc.setRootPath(b2);
+                sc.startScan();
+                CHECK(waitFor([&]() { return static_cast<bool>(t); }, 30000));
+                sc.wait();
+                if (t)
+                {
+                    // (a) hủy mô hình ngay sau khi bắt đầu đọc.
+                    for (int round = 0; round < 20; ++round)
+                    {
+                        auto mdl = std::make_unique<FolderTreeModel>();
+                        mdl->setTree(t);
+                        const QModelIndex top = mdl->index(0, 0);
+                        const QModelIndex many = mdl->index(0, 0, top);
+                        const QModelIndex a = mdl->aggregateIndex(many, Kind::SmallFiles);
+                        CHECK(a.isValid());
+                        mdl->rowCount(a); // bắt đầu đọc nền
+                        if (round % 2 == 0)
+                            app.processEvents();
+                        mdl.reset(); // ~FolderTreeModel chờ luồng nền thoát
+                    }
+                    app.processEvents();
+                    // (b) dựng lại cây trong lúc đang đọc: dòng "đang đọc" cũ không được gắn vào cây mới.
+                    FolderTreeModel mdl;
+                    mdl.setTree(t);
+                    QModelIndex top = mdl.index(0, 0);
+                    QModelIndex many = mdl.index(0, 0, top);
+                    QModelIndex a = mdl.aggregateIndex(many, Kind::SmallFiles);
+                    mdl.rowCount(a);
+                    mdl.setTree(t); // reset
+                    app.processEvents();
+                    top = mdl.index(0, 0);
+                    many = mdl.index(0, 0, top);
+                    a = mdl.aggregateIndex(many, Kind::SmallFiles);
+                    CHECK(a.isValid() && mdl.rowCount(a) == 1 && mdl.kindAt(mdl.index(0, 0, a)) == Kind::Loading); // lượt mới, sạch
+                    CHECK(waitFor([&]() { return mdl.rowCount(a) == 300 && mdl.kindAt(mdl.index(0, 0, a)) == Kind::LiveFile; }, 15000));
+                    CHECK(mdl.liveLoadsInFlight() == 0);
+                    // Thư mục không còn tồn tại lúc mở: một dòng ghi chú, không crash.
+                    QFile::remove(b2 + "/many/f0.txt");
+                    QDir(b2 + "/many").removeRecursively();
+                    FolderTreeModel gone;
+                    gone.setTree(t);
+                    const QModelIndex gTop = gone.index(0, 0);
+                    const QModelIndex gMany = gone.index(0, 0, gTop);
+                    const QModelIndex gAgg = gone.aggregateIndex(gMany, Kind::SmallFiles);
+                    gone.rowCount(gAgg);
+                    CHECK(waitFor([&]() { return gone.rowCount(gAgg) == 1 && gone.kindAt(gone.index(0, 0, gAgg)) == Kind::LiveMore; }, 15000));
+                    CHECK(!gone.isDeletable(gone.index(0, 0, gAgg)));
+                }
+            }
         }
     }
 
