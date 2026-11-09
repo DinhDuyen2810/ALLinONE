@@ -47,6 +47,7 @@
 #include "tools/diskcleanup/FolderTreeModel.h"
 #include "tools/diskcleanup/FolderTreeTab.h"
 #include "tools/diskcleanup/LargeFilesTab.h"
+#include "tools/diskcleanup/PartitionRunWindow.h"
 #include "tools/diskcleanup/PartitionTab.h"
 #include "tools/diskcleanup/engine/PartitionMover.h"
 #include "tools/diskcleanup/ProcessTab.h"
@@ -648,6 +649,42 @@ int main(int argc, char** argv)
         CHECK(map.previewSize() == bSize && map.previewStart() >= aStart + aSize + MiB - MiB); // vẫn là một vị trí hợp lệ (không chồng A:)
         CHECK(map.previewStart() >= aStart + aSize); // không bao giờ chồng lên A:
         mouse(QEvent::MouseButtonRelease, bBlock.center(), Qt::LeftButton, Qt::NoButton);
+    }
+
+    // ---- Cửa sổ chạy kế hoạch dời (bản sao tạm): nút Bắt đầu/Thử lại/Tiếp tục theo kết quả - KHÔNG chạy gì thật (không bấm Bắt đầu) ----
+    {
+        PartitionRelocator::Plan plan;
+        plan.disk = 0;
+        plan.partition = 4;
+        plan.letter = "D";
+        plan.description = "Dời D: (thử)";
+        plan.steps.append(DiskLayout::PlanStep{DiskLayout::StepKind::MoveData, DiskLayout::Geometry{200 * GiB, 10 * GiB}});
+        PartitionRunWindow w(plan, 0 /*ứng dụng gốc đã thoát*/, QString());
+        w.setQuietForTest(true);
+        app.processEvents();
+        CHECK(w.startEnabled() && !w.isRunning() && w.startButtonText().contains("Bắt đầu"));
+        auto finished = [&](bool ok, bool resumable, int failedStep) {
+            QMetaObject::invokeMethod(&w, "onFinished", Qt::DirectConnection, Q_ARG(bool, ok), Q_ARG(bool, resumable), Q_ARG(QString, QString("thông báo")),
+                                      Q_ARG(int, failedStep));
+        };
+        finished(false, false, -2); // kiểm tra trước không đạt (chưa đổi gì) -> THỬ LẠI được ngay
+        CHECK(w.startEnabled() && w.startButtonText().contains("Thử lại"));
+        finished(false, false, 0);   // bước đầu lỗi trước khi ghi -> thử lại được
+        CHECK(w.startEnabled() && w.startButtonText().contains("Thử lại"));
+        finished(false, true, 1);    // dừng giữa lúc chép (có nhật ký) -> TIẾP TỤC
+        CHECK(w.startEnabled() && w.startButtonText().contains("Tiếp tục"));
+        finished(false, false, 2);   // lỗi ở bước sau (đã đổi một phần) -> KHÔNG tự thử lại
+        CHECK(w.findChild<QPushButton*>("runReopenButton") != nullptr);
+        PartitionRunWindow w2(plan, 0, QString());
+        w2.setQuietForTest(true);
+        QMetaObject::invokeMethod(&w2, "onFinished", Qt::DirectConnection, Q_ARG(bool, false), Q_ARG(bool, false), Q_ARG(QString, QString("x")), Q_ARG(int, 2));
+        CHECK(!w2.startEnabled());
+        QMetaObject::invokeMethod(&w2, "onFinished", Qt::DirectConnection, Q_ARG(bool, true), Q_ARG(bool, false), Q_ARG(QString, QString("xong")), Q_ARG(int, -1));
+        CHECK(!w2.startEnabled() && !w2.isRunning());
+        // Chờ ứng dụng gốc: PID đang sống (chính test) -> chưa cho bắt đầu.
+        PartitionRunWindow w3(plan, GetCurrentProcessId(), QString());
+        app.processEvents();
+        CHECK(!w3.startEnabled());
     }
 
     // ---- PartitionTab với dữ liệu GIẢ: ô vị trí, kế hoạch, chặn khi không dời được, banner nhật ký ----

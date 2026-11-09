@@ -136,6 +136,11 @@ bool PartitionRunWindow::startEnabled() const
     return m_startBtn->isEnabled();
 }
 
+QString PartitionRunWindow::startButtonText() const
+{
+    return m_startBtn->text();
+}
+
 void PartitionRunWindow::onPoll()
 {
     if (m_running || !m_poll)
@@ -234,14 +239,25 @@ void PartitionRunWindow::onFinished(bool ok, bool resumable, QString message, in
     m_pauseBtn->setVisible(false);
     m_closeBtn->setEnabled(true);
     m_reopenBtn->setVisible(true);
-    m_statusLabel->setText(ok ? QStringLiteral("✓ Hoàn tất") : QString("⚠ Dừng%1").arg(failedStep >= 0 ? QString(" ở bước %1").arg(failedStep + 1) : QString()));
+    m_statusLabel->setText(ok ? QStringLiteral("✓ Hoàn tất")
+                              : failedStep == -2 ? QStringLiteral("⚠ Chưa bắt đầu - kiểm tra trước không đạt (chưa có gì bị thay đổi)")
+                                                 : QString("⚠ Dừng%1").arg(failedStep >= 0 ? QString(" ở bước %1").arg(failedStep + 1) : QString()));
     m_progressLabel->setText(message);
+    m_startBtn->setEnabled(false); // chỉ bật lại ở hai trường hợp bên dưới (tiếp tục / thử lại)
     if (!ok && resumable)
     {
         m_startBtn->setText("▶ Tiếp tục");
         m_plan.resume = true; // lần bấm sau chạy tiếp theo nhật ký
         m_startBtn->setEnabled(true);
     }
+    else if (!ok && (failedStep == -2 || failedStep == 0))
+    {
+        // Chưa đổi gì (kiểm tra trước không đạt, hoặc bước ĐẦU TIÊN lỗi trước khi ghi): đóng các chương trình đang giữ ổ rồi thử lại NGAY, khỏi mở lại ứng dụng.
+        m_startBtn->setText("🔄 Thử lại (sau khi đã đóng các chương trình giữ ổ)");
+        m_startBtn->setEnabled(true);
+    }
+    if (m_quiet)
+        return;
     if (ok)
         QMessageBox::information(this, "Hoàn tất", message);
     else

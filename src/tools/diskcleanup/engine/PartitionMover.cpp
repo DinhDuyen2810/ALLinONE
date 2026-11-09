@@ -1076,7 +1076,8 @@ void PlanWorker::run()
         const QString why = preflightMove(m_disk, m_partition, m_letter);
         if (!why.isEmpty())
         {
-            fail(0, false, why + QStringLiteral("\nChưa có gì bị thay đổi."));
+            Logger::instance().info("PartitionMover", QStringLiteral("Kiểm tra trước không đạt: %1").arg(why));
+            emit planFinished(false, false, why + QStringLiteral("\nChưa có gì bị thay đổi."), -2);
             return;
         }
     }

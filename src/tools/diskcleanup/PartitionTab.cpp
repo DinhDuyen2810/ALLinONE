@@ -1248,7 +1248,7 @@ void PartitionTab::onPlanFinished(bool ok, bool resumable, QString message, int 
     }
     else
     {
-        m_statusAfterReload = QString("⚠ %1%2").arg(failedStep >= 0 ? QString("(bước %1) ").arg(failedStep + 1) : QString(), message.left(300));
+        m_statusAfterReload = QString("⚠ %1%2").arg(failedStep >= 0 ? QString("(bước %1) ").arg(failedStep + 1) : (failedStep == -2 ? QString("(kiểm tra trước) ") : QString()), message.left(300));
         if (resumable)
             QMessageBox::warning(this, "Đã dừng giữa chừng", message);
         else

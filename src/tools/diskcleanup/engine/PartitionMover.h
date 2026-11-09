@@ -130,7 +130,7 @@ public:
 signals:
     /// stepIndex: bước đang chạy (từ 0). done/total: byte đã chép/tổng (0/0 ngoài bước chép).
     void progress(int stepIndex, int stepCount, qint64 doneBytes, qint64 totalBytes, QString phase);
-    /// ok = xong cả kế hoạch. resumable = dừng giữa bước chép, nhật ký còn (xem loadJournal) - "Tiếp tục" được. failedStep = chỉ số bước lỗi (-1 nếu ok).
+    /// ok = xong cả kế hoạch. resumable = dừng giữa bước chép, nhật ký còn (xem loadJournal) - "Tiếp tục" được. failedStep = chỉ số bước lỗi (từ 0); -1 = ok; -2 = KIỂM TRA TRƯỚC không đạt (chưa đổi gì - thử lại an toàn).
     void planFinished(bool ok, bool resumable, QString message, int failedStep);
 
 protected:

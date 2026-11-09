@@ -29,6 +29,9 @@ public:
 
     bool isRunning() const;
     bool startEnabled() const;
+    /// CHỈ cho test UI: không hiện hộp thoại (nội dung vẫn nằm trong nhãn tiến độ).
+    void setQuietForTest(bool quiet) { m_quiet = quiet; }
+    QString startButtonText() const;
     /// Bấm "Bắt đầu" (dùng cho test/đường tự động hóa hiếm gặp) - chỉ có tác dụng khi nút đang bật.
     void start();
 
@@ -64,4 +67,5 @@ private:
     qint64 m_copyBase{0};
     bool m_running{false};
     bool m_parentGone{false};
+    bool m_quiet{false};
 };
