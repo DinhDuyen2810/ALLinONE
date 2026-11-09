@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QString>
+#include <QStringList>
 #include <QThread>
 
 #include <QMutex>
@@ -35,6 +36,16 @@ struct MoveRequest
 
 /// Rỗng nếu phân vùng này CÓ THỂ dời; ngược lại là lý do (loại, hệ thống tệp, khởi động/hệ thống/ổ Windows...). Chỉ đọc thông tin đã có.
 QString notMovableReason(const PartitionManager::PartitionInfo& partition);
+
+/// Tên các tiến trình đang chạy từ ổ có chữ này ("D"; không phân biệt hoa thường) - dùng để báo cho người dùng biết cái gì đang giữ ổ khi không khóa được.
+/// Chỉ đọc danh sách tiến trình. Rỗng nếu không có (hoặc không đọc được đường dẫn - tiến trình hệ thống khi không có quyền Admin).
+QStringList processesRunningFromDrive(const QString& driveLetter);
+/// Lý do KHÔNG thể tháo ổ này vì chính ứng dụng đang chạy từ đó (thư mục chứa exe hoặc thư mục dữ liệu nằm trên ổ); rỗng nếu không. Thư mục làm việc
+/// hiện tại nằm trên ổ thì KHÔNG phải lý do (ứng dụng tự chuyển nó sang thư mục tạm khi chuẩn bị dời - xem preflightMove).
+QString runningFromDriveReason(const QString& driveLetter);
+/// Kiểm tra TRƯỚC khi đổi bất cứ thứ gì (kể cả bước thu nhỏ của Windows): ổ có khóa được không (thử khóa rồi mở khóa ngay, KHÔNG tháo), cờ bẩn,
+/// ứng dụng không chạy từ ổ này. Rỗng nếu ổn; ngược lại là lý do rõ ràng (kèm danh sách chương trình đang giữ ổ). Cần quyền Administrator; không ghi gì xuống đĩa.
+QString preflightMove(int diskNumber, int partitionNumber, const QString& driveLetter);
 
 /// Tệp nhật ký (một lần dời tại một thời điểm): %LOCALAPPDATA%\OneForAll\partition_move_journal.json.
 QString journalPath();

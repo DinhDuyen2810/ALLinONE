@@ -2,7 +2,9 @@
 
 #include "core/AppPaths.h"
 #include "core/Logger.h"
+#include "ProcessMonitor.h"
 
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -223,7 +225,7 @@ QString findVolume(int diskNumber, qint64 start, qint64 length)
 class LockedVolume
 {
 public:
-    bool lockAndDismount(const QString& volumePath, QString* error)
+    bool lockAndDismount(const QString& volumePath, QString* error, const QString& driveLetter = QString(), bool dismount = true)
     {
         const std::wstring path = volumePath.toStdWString();
         m_h.reset(CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_FLAG_NO_BUFFERING, nullptr));
@@ -242,14 +244,24 @@ public:
         }
         if (!locked)
         {
+            const DWORD code = GetLastError();
             if (error)
-                *error = QStringLiteral("Không khóa được ổ - đang có chương trình mở tệp trên ổ này (Explorer, chương trình đang chạy từ ổ, "
-                                        "tệp tạm/pagefile...). Hãy đóng chúng rồi thử lại. (%1)")
-                             .arg(winError(GetLastError()));
+            {
+                QString msg = QStringLiteral("Không khóa được ổ%1 - đang có chương trình giữ ổ này (cửa sổ Explorer/Terminal/VS Code đang mở ở ổ, chương trình đang chạy từ ổ, "
+                                             "tệp đang mở, pagefile, phần mềm quét/đồng bộ...). Hãy đóng chúng rồi thử lại. (%2)")
+                                  .arg(driveLetter.isEmpty() ? QString() : (" " + driveLetter.left(1).toUpper() + ":"), winError(code));
+                const QStringList procs = processesRunningFromDrive(driveLetter);
+                if (!procs.isEmpty())
+                    msg += QStringLiteral("\nChương trình đang chạy từ ổ %1: %2").arg(driveLetter.left(1).toUpper(), procs.mid(0, 12).join(", ")) +
+                           (procs.size() > 12 ? QStringLiteral(" (và %1 chương trình khác)").arg(procs.size() - 12) : QString());
+                *error = msg;
+            }
             m_h.reset();
             return false;
         }
         m_locked = true;
+        if (!dismount)
+            return true; // chỉ thử khóa (preflight): giữ khóa tới khi release()
         FlushFileBuffers(m_h.get());
         if (!ioctl(m_h.get(), FSCTL_DISMOUNT_VOLUME, nullptr, 0, nullptr, 0))
         {
@@ -384,6 +396,75 @@ QString letterOfPath(const QString& path)
     return n.size() >= 2 && n[1] == QLatin1Char(':') ? n.left(1).toUpper() : QString();
 }
 } // namespace
+
+QStringList processesRunningFromDrive(const QString& driveLetter)
+{
+    QStringList out;
+    if (driveLetter.isEmpty())
+        return out;
+    const QString prefix = driveLetter.left(1).toUpper() + QStringLiteral(":\\");
+    ProcessSampler sampler;
+    const SystemSnapshot snap = sampler.sample();
+    const quint32 self = GetCurrentProcessId();
+    for (const ProcessInfo& p : snap.processes)
+    {
+        if (p.path.isEmpty() || !QDir::toNativeSeparators(p.path).startsWith(prefix, Qt::CaseInsensitive))
+            continue;
+        const QString label = p.pid == self ? QStringLiteral("%1 (CHÍNH ỨNG DỤNG NÀY)").arg(p.name) : p.name;
+        if (!out.contains(label))
+            out << label;
+    }
+    return out;
+}
+
+QString runningFromDriveReason(const QString& driveLetter)
+{
+    if (driveLetter.isEmpty())
+        return {};
+    const QString letter = driveLetter.left(1).toUpper();
+    const QString appDir = QDir::toNativeSeparators(QCoreApplication::applicationDirPath());
+    if (letterOfPath(appDir) == letter)
+        return QStringLiteral("ứng dụng One for ALL đang chạy từ chính ổ %1: (%2) - tháo ổ này sẽ làm ứng dụng sập và ổ cũng không khóa được. "
+                              "Hãy chép thư mục ứng dụng sang ổ khác (ví dụ C:\\OneForAll) rồi chạy từ đó")
+            .arg(letter, appDir);
+    if (letterOfPath(AppPaths::dataDir()) == letter)
+        return QStringLiteral("thư mục dữ liệu của ứng dụng (chứa nhật ký phục hồi) nằm trên chính ổ %1:").arg(letter);
+    return {};
+}
+
+QString preflightMove(int diskNumber, int partitionNumber, const QString& driveLetter)
+{
+    if (!PartitionManager::isElevated())
+        return QStringLiteral("Cần quyền Administrator để dời phân vùng.");
+    if (const QString why = runningFromDriveReason(driveLetter); !why.isEmpty())
+        return QStringLiteral("Không dời được: ") + why + QStringLiteral(".");
+    // Thư mục làm việc nằm trên ổ cũng giữ ổ (tay cầm thư mục) - ứng dụng tự chuyển sang thư mục tạm (an toàn, chỉ ảnh hưởng tiến trình này).
+    if (!driveLetter.isEmpty() && letterOfPath(QDir::currentPath()) == driveLetter.left(1).toUpper())
+        QDir::setCurrent(QDir::tempPath());
+
+    PhysicalDisk disk;
+    QString err;
+    if (!disk.open(diskNumber, &err))
+        return err;
+    std::vector<char> raw;
+    if (!readLayoutRaw(disk.handle(), &raw, &err))
+        return err;
+    qint64 start = 0, length = 0;
+    if (!internal::findEntry(raw, partitionNumber, &start, &length, nullptr))
+        return QStringLiteral("Không thấy phân vùng số %1 trên đĩa %2.").arg(partitionNumber).arg(diskNumber);
+    const QString volumePath = findVolume(diskNumber, start, length);
+    if (volumePath.isEmpty())
+        return QStringLiteral("Không tìm thấy ổ (volume) tương ứng với phân vùng này - phân vùng chưa gắn hay không có hệ thống tệp.");
+    if (volumeIsDirty(volumePath))
+        return QStringLiteral("Ổ đang ở trạng thái \"bẩn\" (chưa đóng đúng cách). Hãy chạy chkdsk %1: /f rồi thử lại.")
+            .arg(driveLetter.isEmpty() ? QStringLiteral("<ổ>") : driveLetter.left(1));
+    // Thử khóa rồi mở khóa ngay (KHÔNG tháo ổ, không ghi gì): nếu không khóa được thì dừng TRƯỚC khi đổi bất cứ thứ gì.
+    LockedVolume probe;
+    if (!probe.lockAndDismount(volumePath, &err, driveLetter, /*dismount=*/false))
+        return err;
+    probe.release();
+    return {};
+}
 
 // ------------------------------------------------------------------------------------------------ nhật ký
 
@@ -770,7 +851,7 @@ void MoveWorker::run()
                 return;
             }
             say(QStringLiteral("Khóa và tháo ổ %1...").arg(req.driveLetter.isEmpty() ? QStringLiteral("(không có chữ ổ)") : req.driveLetter.left(1) + ":"));
-            if (!volume.lockAndDismount(volumePath, &err))
+            if (!volume.lockAndDismount(volumePath, &err, letter.isEmpty() ? req.driveLetter : letter))
             {
                 finish(false, resuming, err);
                 return;
@@ -921,6 +1002,21 @@ void PlanWorker::run()
         fail(0, false, QStringLiteral("Cần quyền Administrator để đổi vị trí/kích thước phân vùng."));
         return;
     }
+    // Có bước chép dữ liệu: kiểm tra TRƯỚC (khóa thử ổ, chương trình đang giữ ổ...) để không đổi gì (kể cả bước thu nhỏ của Windows) rồi mới thấy không chép được.
+    bool hasMove = false;
+    for (const auto& st : m_steps)
+        hasMove = hasMove || st.kind == DiskLayout::StepKind::MoveData;
+    if (hasMove)
+    {
+        emit progress(0, count, 0, 0, QStringLiteral("Kiểm tra trước: ổ có khóa/tháo được không..."));
+        const QString why = preflightMove(m_disk, m_partition, m_letter);
+        if (!why.isEmpty())
+        {
+            fail(0, false, why + QStringLiteral("\nChưa có gì bị thay đổi."));
+            return;
+        }
+    }
+    qint64 originalSize = -1;
     for (int i = 0; i < count; ++i)
     {
         const DiskLayout::PlanStep& step = m_steps[i];
@@ -936,6 +1032,8 @@ void PlanWorker::run()
             fail(i, false, QStringLiteral("Không đọc lại được phân vùng từ Windows%1.").arg(err.isEmpty() ? QString() : (": " + err)));
             return;
         }
+        if (i == 0)
+            originalSize = cur->sizeBytes;
         if (step.kind == DiskLayout::StepKind::MoveData)
         {
             MoveRequest req;
@@ -972,7 +1070,33 @@ void PlanWorker::run()
             }
             if (!ok)
             {
-                fail(i, resumable, message);
+                QString extra;
+                // Chép lỗi mà CHƯA ghi gì (không resumable, không có nhật ký) sau một bước thu nhỏ: hoàn tác thu nhỏ để không để đĩa nửa vời (vùng trống ở sai phía).
+                PartitionMove::JournalState j;
+                if (!resumable && i > 0 && m_steps[i - 1].kind == DiskLayout::StepKind::ShrinkRight && originalSize > 0 && !loadJournal(&j))
+                {
+                    emit progress(i, count, 0, 0, QStringLiteral("Hoàn tác bước thu nhỏ (khôi phục kích thước ban đầu)..."));
+                    QString undoErr;
+                    const auto partsNow = PartitionManager::listPartitions(&undoErr);
+                    const PartitionManager::PartitionInfo* now = nullptr;
+                    for (const auto& pp : partsNow)
+                        if (pp.diskNumber == m_disk && pp.partitionNumber == m_partition)
+                            now = &pp;
+                    bool restored = false;
+                    if (now)
+                    {
+                        QString rangeErr2;
+                        const auto range2 = PartitionManager::querySupportedSize(m_disk, m_partition, &rangeErr2);
+                        const QString block = PartitionManager::internal::resizeBlockReason(m_disk, m_partition, now->sizeBytes, partsNow, range2, originalSize);
+                        restored = block.isEmpty() && PartitionManager::resizePartition(m_disk, m_partition, originalSize, &undoErr);
+                        if (!block.isEmpty())
+                            undoErr = block;
+                    }
+                    extra = restored ? QStringLiteral("\nĐã tự khôi phục kích thước ban đầu của phân vùng (không còn vùng trống thừa bên phải).")
+                                     : QStringLiteral("\nBước thu nhỏ trước đó đã xong nhưng CHƯA khôi phục được tự động (%1): dữ liệu vẫn nguyên vẹn - "
+                                                      "hãy kéo mép phải để mở rộng lại nếu muốn.").arg(undoErr);
+                }
+                fail(i, resumable, message + extra);
                 return;
             }
         }

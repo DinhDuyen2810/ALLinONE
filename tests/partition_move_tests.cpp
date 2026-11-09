@@ -865,6 +865,40 @@ int main(int argc, char** argv)
         }
     }
 
+    // ---- Ai đang giữ ổ: tiến trình chạy từ ổ + ứng dụng chạy từ ổ (lỗi thật người dùng gặp: "Không khóa được ổ ... Access is denied") ----
+    {
+        QTemporaryDir dataDir;
+        CHECK(dataDir.isValid());
+        AppPaths::setDataDirOverride(dataDir.path()); // runningFromDriveReason() hỏi thư mục dữ liệu - không đụng dữ liệu thật
+        const QString exe = QDir::toNativeSeparators(QCoreApplication::applicationFilePath());
+        const QString letter = exe.left(1);
+        const QStringList procs = PartitionMover::processesRunningFromDrive(letter);
+        bool self = false;
+        for (const QString& p : procs)
+            self = self || p.contains("CHÍNH ỨNG DỤNG NÀY");
+        CHECK(self); // chính tiến trình test chạy từ ổ này và phải được nêu đích danh
+        CHECK(PartitionMover::processesRunningFromDrive(letter.toLower()) == procs); // không phân biệt hoa thường
+        CHECK(PartitionMover::processesRunningFromDrive(QString()).isEmpty() && PartitionMover::processesRunningFromDrive("#").isEmpty());
+        const QString why = PartitionMover::runningFromDriveReason(letter);
+        CHECK(why.contains("chạy từ chính ổ") && why.contains("C:\\OneForAll"));
+        CHECK(PartitionMover::runningFromDriveReason(QString()).isEmpty());
+        // Ổ khác với ổ chứa exe (và khác ổ chứa thư mục dữ liệu tạm): không có lý do.
+        const QString tempLetter = QDir::toNativeSeparators(dataDir.path()).left(1).toUpper();
+        for (char c = 'A'; c <= 'Z'; ++c)
+        {
+            const QString l = QString(QChar(c));
+            if (l.compare(letter, Qt::CaseInsensitive) != 0 && l.compare(tempLetter, Qt::CaseInsensitive) != 0)
+            {
+                CHECK(PartitionMover::runningFromDriveReason(l).isEmpty());
+                break;
+            }
+        }
+        // Không có quyền Administrator: preflight từ chối ngay, không đụng đĩa.
+        if (!PartitionManager::isElevated())
+            CHECK(PartitionMover::preflightMove(0, 1, "Z").contains("Administrator"));
+        AppPaths::setDataDirOverride(QString());
+    }
+
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

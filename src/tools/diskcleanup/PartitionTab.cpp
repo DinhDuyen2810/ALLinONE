@@ -725,7 +725,9 @@ QString PartitionTab::moveSupportReason() const
         return "cần chạy ứng dụng với quyền Administrator";
     if (m_pendingJournal)
         return "đang có một lần dời dở dang - hãy tiếp tục hoặc hủy bỏ nó trước";
-    return PartitionMover::notMovableReason(*p);
+    if (const QString why = PartitionMover::notMovableReason(*p); !why.isEmpty())
+        return why;
+    return PartitionMover::runningFromDriveReason(p->driveLetter); // ứng dụng chạy từ chính ổ này: không tháo được
 }
 
 void PartitionTab::updateMoveSupport()
