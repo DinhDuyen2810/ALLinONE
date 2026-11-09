@@ -16,6 +16,9 @@ class MainWindow : public QMainWindow
 
 public:
     explicit MainWindow(QWidget* parent = nullptr);
+
+    /// Đăng ký đủ 9 công cụ vào ToolManager (idempotent). Chế độ "--open-tool <id>" (main.cpp) gọi riêng hàm này để mở ĐÚNG một tiện ích mà không dựng cửa sổ chính.
+    static void registerAllTools();
     ~MainWindow() override = default;
 
 private slots:

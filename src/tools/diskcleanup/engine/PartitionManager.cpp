@@ -30,7 +30,7 @@ bool isElevated()
 
 bool relaunchElevated(QString* error)
 {
-    return WinElevation::relaunchElevated(error);
+    return WinElevation::relaunchElevated(error, QStringLiteral("disk")); // chỉ mở lại tiện ích Disk Cleanup
 }
 
 QList<PartitionInfo> listPartitions(QString* error)

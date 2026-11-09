@@ -16,5 +16,5 @@ bool isElevated();
 /// thoại UAC chuẩn của Windows, người dùng tự xác nhận/từ chối, KHÔNG có gì diễn ra âm thầm). Gọi
 /// xong, nếu thành công, nơi gọi tự quyết định có thoát tiến trình hiện tại hay không. Trả về false
 /// nếu người dùng bấm "No" trên hộp thoại UAC hoặc có lỗi khác.
-bool relaunchElevated(QString* error = nullptr);
+bool relaunchElevated(QString* error = nullptr, const QString& toolId = QString());
 } // namespace WinElevation

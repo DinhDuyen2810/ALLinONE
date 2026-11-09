@@ -397,6 +397,50 @@ QString letterOfPath(const QString& path)
 }
 } // namespace
 
+namespace
+{
+using NtQueryInformationProcessFn = LONG(NTAPI*)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+
+/// Thư mục làm việc hiện tại của một tiến trình x64 (đọc từ PEB: ProcessParameters @0x20, CurrentDirectory.DosPath @0x38). Rỗng nếu không đọc được
+/// (thiếu quyền, tiến trình 32 bit, tiến trình hệ thống...). Chỉ ĐỌC bộ nhớ tiến trình khác.
+QString processCurrentDirectory(HANDLE process, NtQueryInformationProcessFn query)
+{
+#ifdef _WIN64
+    struct BasicInfo
+    {
+        PVOID exitStatus;
+        PVOID pebBase;
+        PVOID affinity;
+        PVOID basePriority;
+        PVOID pid;
+        PVOID parentPid;
+    } info{};
+    if (query(process, 0 /*ProcessBasicInformation*/, &info, sizeof(info), nullptr) != 0 || !info.pebBase)
+        return {};
+    PVOID params = nullptr;
+    if (!ReadProcessMemory(process, static_cast<char*>(info.pebBase) + 0x20, &params, sizeof(params), nullptr) || !params)
+        return {};
+    struct UnicodeString
+    {
+        USHORT length;
+        USHORT maximum;
+        ULONG pad;
+        PWSTR buffer;
+    } cur{};
+    if (!ReadProcessMemory(process, static_cast<char*>(params) + 0x38, &cur, sizeof(cur), nullptr) || !cur.buffer || cur.length == 0 || cur.length > 2 * 1024)
+        return {};
+    std::wstring path(cur.length / sizeof(wchar_t), L'\0');
+    if (!ReadProcessMemory(process, cur.buffer, path.data(), cur.length, nullptr))
+        return {};
+    return QString::fromStdWString(path);
+#else
+    Q_UNUSED(process);
+    Q_UNUSED(query);
+    return {};
+#endif
+}
+} // namespace
+
 QStringList processesRunningFromDrive(const QString& driveLetter)
 {
     QStringList out;
@@ -406,13 +450,33 @@ QStringList processesRunningFromDrive(const QString& driveLetter)
     ProcessSampler sampler;
     const SystemSnapshot snap = sampler.sample();
     const quint32 self = GetCurrentProcessId();
+    const auto query = reinterpret_cast<NtQueryInformationProcessFn>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationProcess"));
     for (const ProcessInfo& p : snap.processes)
     {
-        if (p.path.isEmpty() || !QDir::toNativeSeparators(p.path).startsWith(prefix, Qt::CaseInsensitive))
+        // 1) chạy TỪ ổ (tệp exe nằm trên ổ)
+        if (!p.path.isEmpty() && QDir::toNativeSeparators(p.path).startsWith(prefix, Qt::CaseInsensitive))
+        {
+            const QString label = p.pid == self ? QStringLiteral("%1 (CHÍNH ỨNG DỤNG NÀY)").arg(p.name) : p.name;
+            if (!out.contains(label))
+                out << label;
             continue;
-        const QString label = p.pid == self ? QStringLiteral("%1 (CHÍNH ỨNG DỤNG NÀY)").arg(p.name) : p.name;
-        if (!out.contains(label))
-            out << label;
+        }
+        // 2) đang ĐỨNG ở một thư mục trên ổ (terminal, VS Code, trình soạn thảo...) - giữ tay cầm thư mục nên cũng chặn khóa ổ
+        if (query && p.pid != 0 && p.pid != 4 && p.pid != self)
+        {
+            const HANDLE h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, p.pid);
+            if (h)
+            {
+                const QString cwd = processCurrentDirectory(h, query);
+                CloseHandle(h);
+                if (QDir::toNativeSeparators(cwd).startsWith(prefix, Qt::CaseInsensitive))
+                {
+                    const QString label = QStringLiteral("%1 (thư mục làm việc: %2)").arg(p.name, QDir::toNativeSeparators(cwd));
+                    if (!out.contains(label))
+                        out << label;
+                }
+            }
+        }
     }
     return out;
 }

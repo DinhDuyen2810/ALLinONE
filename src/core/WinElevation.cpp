@@ -1,6 +1,7 @@
 #include "WinElevation.h"
 
 #include <QCoreApplication>
+#include <QRegularExpression>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -40,7 +41,7 @@ bool isElevated()
 #endif
 }
 
-bool relaunchElevated(QString* error)
+bool relaunchElevated(QString* error, const QString& toolId)
 {
 #ifdef Q_OS_WIN
     const QString exePath = QCoreApplication::applicationFilePath();
@@ -50,6 +51,14 @@ bool relaunchElevated(QString* error)
     info.lpVerb = L"runas"; // yêu cầu UAC - Windows tự hiện hộp thoại xác nhận chuẩn, không qua mặt gì cả
     const std::wstring exePathW = exePath.toStdWString();
     info.lpFile = exePathW.c_str();
+    // Chỉ mở ĐÚNG tiện ích đang dùng (không dựng lại cửa sổ chính + toàn bộ danh sách công cụ): "--open-tool <id>" - xem main.cpp.
+    // id chỉ gồm chữ/số do chính ứng dụng đặt (ITool::id()), không bao giờ là dữ liệu bên ngoài; vẫn lọc cho chắc.
+    std::wstring paramsW;
+    if (!toolId.isEmpty() && toolId.size() <= 32 && !toolId.contains(QRegularExpression("[^A-Za-z0-9_-]")))
+    {
+        paramsW = (QStringLiteral("--open-tool ") + toolId).toStdWString();
+        info.lpParameters = paramsW.c_str();
+    }
     info.nShow = SW_SHOWNORMAL;
 
     if (!ShellExecuteExW(&info))

@@ -6,8 +6,10 @@
 #include "engine/PartitionMover.h"
 #include "engine/PartitionResizer.h"
 #include "core/ToolManager.h"
+#include "engine/PartitionRelocator.h"
 
 #include <QApplication>
+#include <QCoreApplication>
 #include <QDir>
 #include <QCheckBox>
 #include <QDoubleSpinBox>
@@ -725,9 +727,49 @@ QString PartitionTab::moveSupportReason() const
         return "cần chạy ứng dụng với quyền Administrator";
     if (m_pendingJournal)
         return "đang có một lần dời dở dang - hãy tiếp tục hoặc hủy bỏ nó trước";
-    if (const QString why = PartitionMover::notMovableReason(*p); !why.isEmpty())
-        return why;
-    return PartitionMover::runningFromDriveReason(p->driveLetter); // ứng dụng chạy từ chính ổ này: không tháo được
+    return PartitionMover::notMovableReason(*p);
+}
+
+bool PartitionTab::needsRelocation() const
+{
+    const auto* p = selectedPartition();
+    return p && !PartitionMover::runningFromDriveReason(p->driveLetter).isEmpty();
+}
+
+bool PartitionTab::startRelocated(const PartitionRelocator::Plan& plan)
+{
+    // Thoát ứng dụng sau khi chạy bản sao: chặn nếu tool khác đang làm việc không an toàn để buộc dừng (cùng lớp chặn với "chạy lại với quyền Quản trị").
+    QString busyReason;
+    if (ToolManager::instance().anyToolWindowBusy(&busyReason))
+    {
+        QMessageBox::warning(this, "Không thể chạy lại lúc này",
+                             "Đang có một thao tác không an toàn để hủy giữa chừng (" + busyReason + ") - hãy đợi xong rồi thử lại.");
+        return false;
+    }
+    const QString runtimeDir = PartitionRelocator::newRuntimeDir();
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+    m_statusLabel->setText("⏳ Đang chép bộ chạy tối thiểu sang thư mục tạm...");
+    QApplication::processEvents();
+    qint64 bytes = 0;
+    QString error;
+    const bool copied = PartitionRelocator::copyRuntime(QCoreApplication::applicationDirPath(), runtimeDir, &error, &bytes);
+    QApplication::restoreOverrideCursor();
+    if (!copied)
+    {
+        QMessageBox::critical(this, "Không chép được bộ chạy tạm", error + "\n\nChưa có gì bị thay đổi.");
+        return false;
+    }
+    const QString runnerExe = runtimeDir + "/" + QFileInfo(QCoreApplication::applicationFilePath()).fileName();
+    if (!PartitionRelocator::launchElevatedRunner(runnerExe, runtimeDir, plan, &error))
+    {
+        QDir(runtimeDir).removeRecursively();
+        QMessageBox::warning(this, "Không khởi chạy được", error + "\n\nChưa có gì bị thay đổi.");
+        return false;
+    }
+    m_statusLabel->setText("Đã khởi chạy bản sao tạm - ứng dụng này sẽ đóng để nhả ổ...");
+    QApplication::processEvents();
+    qApp->quit();
+    return true;
 }
 
 void PartitionTab::updateMoveSupport()
@@ -751,7 +793,10 @@ void PartitionTab::updateMoveSupport()
         m_edgeNoteLabel->setText(
             "ℹ Phân vùng này DỜI được: kéo MÉP TRÁI (sang trái = mở rộng về bên trái, sang phải = thu nhỏ từ bên trái) hoặc kéo CẢ KHỐI trên sơ đồ "
             "(kể cả sang một vùng chưa phân bổ khác để đổi thứ tự). Windows không làm được việc này nên ứng dụng tự CHÉP dữ liệu sang vị trí mới - "
-            "chậm (phụ thuộc tốc độ đĩa), ổ bị khóa trong lúc chép, có nhật ký để chạy tiếp nếu mất điện. HÃY SAO LƯU trước.");
+            "chậm (phụ thuộc tốc độ đĩa), ổ bị khóa trong lúc chép, có nhật ký để chạy tiếp nếu mất điện. HÃY SAO LƯU trước." +
+            QString(needsRelocation() ? "\n⚙ Ứng dụng đang chạy từ chính ổ này: khi bấm Áp dụng, ứng dụng sẽ TỰ chép mình sang thư mục tạm và khởi động lại ở đó (một lần UAC) rồi đóng, "
+                                        "để ổ tháo được - không cần tự chép sang ổ khác. Cửa sổ Explorer/Terminal/VS Code đang mở ở ổ này vẫn phải đóng trước."
+                                      : QString()));
     }
     else
     {
@@ -1006,6 +1051,7 @@ void PartitionTab::onResizeClicked()
             QString("Sắp DỜI/đổi mép trái ổ %1 (đĩa %2, phân vùng %3).\n\n%4\n\n"
                     "• Ứng dụng sẽ CHÉP %5 GB dữ liệu của ổ này sang vị trí mới - có thể mất vài phút tới hàng chục phút.\n"
                     "• Trong lúc chép, ổ %1 bị KHÓA và THÁO (các chương trình đang mở tệp trên ổ sẽ báo lỗi) - hãy đóng chúng trước. Nếu không khóa được, thao tác bị từ chối trước khi ghi gì.\n"
+                    "%6"
                     "• KHÔNG tắt máy/rút nguồn/rút cáp. Nếu lỡ mất điện: mở lại ứng dụng, tab này sẽ hiện nút \"Tiếp tục\" theo nhật ký phục hồi; "
                     "TRONG LÚC DANG DỞ KHÔNG định dạng hay dùng ổ này.\n"
                     "• Đây là thao tác ghi thẳng xuống đĩa. Hãy SAO LƯU dữ liệu quan trọng trước. Chưa được kiểm chứng trên mọi loại đĩa.\n\n"
@@ -1014,13 +1060,28 @@ void PartitionTab::onResizeClicked()
                 .arg(p->diskNumber)
                 .arg(p->partitionNumber)
                 .arg(DiskLayout::describePlan(moveName, plan))
-                .arg(QString::number(copyGb, 'f', 2)),
+                .arg(QString::number(copyGb, 'f', 2))
+                .arg(needsRelocation() ? QString("• Ứng dụng đang chạy từ chính ổ %1: nên sẽ TỰ chép mình sang thư mục tạm, khởi động lại ở đó với quyền Administrator (một lần UAC) và ĐÓNG cửa sổ này "
+                                                 "để nhả ổ; việc dời chạy trong cửa sổ mới, xong thì có nút \"Mở lại One for ALL\".\n").arg(moveName)
+                                       : QString()),
             QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
         if (answer != QMessageBox::Yes)
             return;
         p = selectedPartition();
         if (!p || !resizeRequestBlockReason().isEmpty() || m_loading || isResizingNow())
             return;
+        if (needsRelocation())
+        {
+            PartitionRelocator::Plan rp;
+            rp.disk = p->diskNumber;
+            rp.partition = p->partitionNumber;
+            rp.letter = p->driveLetter;
+            rp.steps = plan.steps;
+            rp.originalExe = QCoreApplication::applicationFilePath();
+            rp.description = QString("Dời/đổi mép trái ổ %1 (đĩa %2, phân vùng %3)\n%4").arg(moveName).arg(p->diskNumber).arg(p->partitionNumber).arg(DiskLayout::describePlan(moveName, plan));
+            startRelocated(rp);
+            return;
+        }
         startPlan(plan, moveName, p->diskNumber, p->partitionNumber, p->driveLetter);
         return;
     }
@@ -1254,6 +1315,18 @@ void PartitionTab::onResumeClicked()
     for (const auto& pp : m_partitions)
         if (pp.diskNumber == j.diskNumber && pp.partitionNumber == j.partitionNumber)
             letter = pp.driveLetter;
+    if (!PartitionMover::runningFromDriveReason(letter).isEmpty())
+    {
+        PartitionRelocator::Plan rp;
+        rp.resume = true;
+        rp.disk = j.diskNumber;
+        rp.partition = j.partitionNumber;
+        rp.letter = letter;
+        rp.originalExe = QCoreApplication::applicationFilePath();
+        rp.description = "Chạy tiếp lần dời dở dang\n" + PartitionMover::describeJournal(j);
+        startRelocated(rp);
+        return;
+    }
     m_planActive = true;
     m_copyTimer.invalidate();
     m_progressBar->setRange(0, 0);

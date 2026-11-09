@@ -71,9 +71,11 @@ MainWindow::MainWindow(QWidget* parent)
     connect(qApp, &QApplication::aboutToQuit, this, [] { ToolManager::instance().stopAllBackgroundWorkForQuit(); });
 }
 
-void MainWindow::registerTools()
+void MainWindow::registerAllTools()
 {
     auto& tm = ToolManager::instance();
+    if (!tm.getAllTools().empty())
+        return; // đã đăng ký (chế độ chỉ-mở-một-tiện-ích gọi hàm này mà không dựng MainWindow)
 
     // 1. Auto Click (Main tool implemented)
     tm.registerTool(std::make_unique<AutoClickTool>());
@@ -93,6 +95,12 @@ void MainWindow::registerTools()
     tm.registerTool(std::make_unique<VpnControlTool>());
 
     tm.registerTool(std::make_unique<WifiTool>());
+}
+
+void MainWindow::registerTools()
+{
+    registerAllTools();
+    auto& tm = ToolManager::instance();
 
     // Populate sidebar list
     m_toolListWidget->clear();

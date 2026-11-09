@@ -7,6 +7,7 @@
 // dựng UI - test xác nhận nó thực sự chạy được trên máy build. KHÔNG bao giờ test đổi kích thước thật.
 // Build: cmake --build build --target diskcleanup_ui_tests && build\diskcleanup_ui_tests.exe
 #include <QApplication>
+#include <QCoreApplication>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDir>
@@ -735,6 +736,27 @@ int main(int argc, char** argv)
             CHECK(!startSpin->isVisibleTo(partTab) && !resizeBtn->isVisibleTo(partTab) && !tmap->isMoveEnabled() && !tmap->isResizeActive());
             partTab->applySupportedRangeForTest(moveRange);
             CHECK(tmap->isResizeActive() && tmap->previewStart() == e2Start && tmap->currentStart() == e2Start);
+
+            // Ứng dụng đang chạy từ chính ổ của phân vùng: dời qua BẢN CHẠY TẠM (needsRelocation) + ghi chú nêu rõ; ổ khác thì dời trực tiếp như thường.
+            {
+                const QString exeLetter = QDir::toNativeSeparators(QCoreApplication::applicationFilePath()).left(1).toUpper();
+                auto relocParts = moveParts;
+                relocParts[2].driveLetter = exeLetter;
+                relocParts[3].driveLetter = exeLetter == "Z" ? "Y" : "Z";
+                partTab->setDataForTest({moveDisk}, relocParts);
+                app.processEvents();
+                table->selectRow(2);
+                app.processEvents();
+                partTab->applySupportedRangeForTest(moveRange);
+                CHECK(partTab->needsRelocation() && edgeNote->text().contains("TỰ chép mình"));
+                CHECK(partTab->moveSupportReason().isEmpty()); // KHÔNG còn bị tắt chỉ vì chạy từ ổ này
+                table->selectRow(3);
+                app.processEvents();
+                partTab->applySupportedRangeForTest(moveRange);
+                CHECK(!partTab->needsRelocation() && !edgeNote->text().contains("TỰ chép mình"));
+                partTab->setDataForTest({moveDisk}, moveParts);
+                app.processEvents();
+            }
 
             // Banner nhật ký dở dang: ghi tệp nhật ký THẬT (nhưng trong thư mục dữ liệu tạm của test) -> banner + nút theo canAbandon + chặn mọi thao tác.
             PartitionMove::JournalState j;

@@ -284,6 +284,8 @@ add_library(diskcleanup_core STATIC
     src/tools/diskcleanup/engine/PartitionMoveCore.cpp
     src/tools/diskcleanup/engine/PartitionMover.h
     src/tools/diskcleanup/engine/PartitionMover.cpp
+    src/tools/diskcleanup/engine/PartitionRelocator.h
+    src/tools/diskcleanup/engine/PartitionRelocator.cpp
     src/tools/diskcleanup/engine/ProcessMonitor.h
     src/tools/diskcleanup/engine/ProcessMonitor.cpp
 )
@@ -315,6 +317,10 @@ add_library(diskcleanup_ui STATIC
     src/tools/diskcleanup/DiskMapWidget.cpp
     src/tools/diskcleanup/PartitionTab.h
     src/tools/diskcleanup/PartitionTab.cpp
+    src/tools/diskcleanup/PartitionRunWindow.h
+    src/tools/diskcleanup/PartitionRunWindow.cpp
+    src/tools/diskcleanup/PartitionRunMain.h
+    src/tools/diskcleanup/PartitionRunMain.cpp
     src/tools/diskcleanup/FolderTreeModel.h
     src/tools/diskcleanup/FolderTreeModel.cpp
     src/tools/diskcleanup/FolderTreeTab.h

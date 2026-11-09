@@ -4,6 +4,9 @@
 // Build: cmake --build build --target partition_move_tests && build\partition_move_tests.exe
 #include <QCoreApplication>
 #include <QFile>
+#include <QFileInfo>
+#include <QProcess>
+#include <QProcessEnvironment>
 #include <QTemporaryDir>
 
 #include <atomic>
@@ -19,6 +22,7 @@
 #include "core/AppPaths.h"
 #include "tools/diskcleanup/engine/PartitionMoveCore.h"
 #include "tools/diskcleanup/engine/PartitionMover.h"
+#include "tools/diskcleanup/engine/PartitionRelocator.h"
 
 using namespace PartitionMove;
 
@@ -896,6 +900,158 @@ int main(int argc, char** argv)
         // Không có quyền Administrator: preflight từ chối ngay, không đụng đĩa.
         if (!PartitionManager::isElevated())
             CHECK(PartitionMover::preflightMove(0, 1, "Z").contains("Administrator"));
+        AppPaths::setDataDirOverride(QString());
+    }
+
+    // ---- PartitionRelocator: kế hoạch qua dòng lệnh, bản sao tạm tối thiểu, chạy thử bản sao ----
+    {
+        using PartitionRelocator::Plan;
+        Plan plan;
+        plan.disk = 2;
+        plan.partition = 3;
+        plan.letter = "D";
+        plan.originalExe = "D:\\ALLinONE\\OneForAll_Release\\OneForAll.exe";
+        plan.description = "Dời D: sang phải \"thử\" 10 GB";
+        plan.steps.append(DiskLayout::PlanStep{DiskLayout::StepKind::ShrinkRight, DiskLayout::Geometry{121LL * kMiB, 50000LL * kMiB}});
+        plan.steps.append(DiskLayout::PlanStep{DiskLayout::StepKind::MoveData, DiskLayout::Geometry{5000LL * 1024 * kMiB, 50000LL * kMiB}});
+        const QString arg = PartitionRelocator::encodeArgument(plan);
+        CHECK(!arg.isEmpty() && !arg.contains(' ') && !arg.contains('"') && !arg.contains('=') && !arg.contains('+') && !arg.contains('/')); // dán an toàn vào dòng lệnh
+        CHECK(arg.size() < 2000);
+        Plan back;
+        QString err;
+        CHECK(PartitionRelocator::decodeArgument(arg, &back, &err));
+        CHECK(back.disk == 2 && back.partition == 3 && back.letter == "D" && !back.resume && back.originalExe == plan.originalExe && back.description == plan.description);
+        CHECK(back.steps.size() == 2 && back.steps[0].kind == DiskLayout::StepKind::ShrinkRight && back.steps[1].kind == DiskLayout::StepKind::MoveData);
+        CHECK(back.steps[1].after.start == 5000LL * 1024 * kMiB && back.steps[1].after.size == 50000LL * kMiB); // số lớn (5 TiB) không mất chính xác
+        // Chạy tiếp theo nhật ký: không cần bước.
+        Plan resume;
+        resume.resume = true;
+        resume.disk = 1;
+        resume.partition = 2;
+        CHECK(PartitionRelocator::decodeArgument(PartitionRelocator::encodeArgument(resume), &back, &err) && back.resume && back.steps.isEmpty());
+        // Từ chối kế hoạch hỏng/vô lý (không bao giờ chạy).
+        CHECK(!PartitionRelocator::decodeArgument("", &back, &err));
+        CHECK(!PartitionRelocator::decodeArgument("!!!khong-phai-base64", &back, &err));
+        CHECK(!PartitionRelocator::decodeArgument(QString::fromLatin1(QByteArray("[]").toBase64(QByteArray::Base64UrlEncoding)), &back, &err));
+        CHECK(!PartitionRelocator::fromJson("{\"v\":2,\"disk\":1,\"partition\":1,\"steps\":[]}", &back, &err));
+        CHECK(!PartitionRelocator::fromJson("{\"v\":1,\"disk\":-1,\"partition\":1,\"steps\":[{\"kind\":1,\"start\":\"1\",\"size\":\"1\"}]}", &back, &err));
+        CHECK(!PartitionRelocator::fromJson("{\"v\":1,\"disk\":1,\"partition\":1,\"steps\":[]}", &back, &err));                                 // không resume mà không có bước
+        CHECK(!PartitionRelocator::fromJson("{\"v\":1,\"disk\":1,\"partition\":1,\"steps\":[{\"kind\":9,\"start\":\"1\",\"size\":\"1\"}]}", &back, &err)); // bước lạ
+        CHECK(!PartitionRelocator::fromJson("{\"v\":1,\"disk\":1,\"partition\":1,\"steps\":[{\"kind\":1,\"start\":\"-5\",\"size\":\"1\"}]}", &back, &err));
+        CHECK(!PartitionRelocator::fromJson("{\"v\":1,\"disk\":1,\"partition\":1,\"steps\":[{\"kind\":1,\"start\":\"abc\",\"size\":\"1\"}]}", &back, &err));
+        CHECK(!PartitionRelocator::fromJson("{\"v\":1,\"disk\":1,\"partition\":1,\"letter\":\"DD\",\"resume\":true}", &back, &err));
+        CHECK(!PartitionRelocator::fromJson("{\"v\":1,\"disk\":99999,\"partition\":1,\"resume\":true}", &back, &err));
+
+        // Thư mục tạm: đúng mẫu, nằm trong %TEMP%; chỉ thư mục như vậy mới bị xóa tự động.
+        const QString rt = PartitionRelocator::newRuntimeDir();
+        CHECK(PartitionRelocator::isRuntimeDir(rt) && rt != PartitionRelocator::newRuntimeDir());
+        CHECK(!PartitionRelocator::isRuntimeDir(QString()) && !PartitionRelocator::isRuntimeDir(QDir::tempPath()) && !PartitionRelocator::isRuntimeDir("C:/Windows") &&
+              !PartitionRelocator::isRuntimeDir(QDir::tempPath() + "/khac_OneForAll_diskmove_x") && !PartitionRelocator::isRuntimeDir(QDir::tempPath() + "/OneForAll_diskmove_") &&
+              !PartitionRelocator::isRuntimeDir(QDir::tempPath() + "/sub/OneForAll_diskmove_x"));
+
+        // Sao chép bộ chạy tối thiểu: tệp cấp trên + thư mục plugin; BỎ QUA yt-dlp/scrcpy/wintun/profiles/opengl32sw/D3Dcompiler.
+        QTemporaryDir src, dst;
+        CHECK(src.isValid() && dst.isValid());
+        auto put = [&](const QString& rel, const QByteArray& data) {
+            QDir().mkpath(QFileInfo(src.path() + "/" + rel).absolutePath());
+            QFile f(src.path() + "/" + rel);
+            f.open(QIODevice::WriteOnly);
+            f.write(data);
+        };
+        put("OneForAll.exe", QByteArray(1000, 'e'));
+        put("Qt6Core.dll", QByteArray(2000, 'q'));
+        put("platforms/qwindows.dll", QByteArray(500, 'p'));
+        put("styles/qmodernwindowsstyle.dll", QByteArray(300, 's'));
+        put("yt-dlp/yt-dlp.exe", QByteArray(9000, 'y'));
+        put("scrcpy/scrcpy.exe", QByteArray(9000, 'c'));
+        put("wintun/wintun.dll", QByteArray(100, 'w'));
+        put("profiles/default.json", "{}");
+        put("opengl32sw.dll", QByteArray(9000, 'o'));
+        put("D3Dcompiler_47.dll", QByteArray(9000, 'd'));
+        qint64 bytes = 0;
+        const QString target = dst.path() + "/rt";
+        CHECK(PartitionRelocator::copyRuntime(src.path(), target, &err, &bytes));
+        CHECK(QFile::exists(target + "/OneForAll.exe") && QFile::exists(target + "/Qt6Core.dll") && QFile::exists(target + "/platforms/qwindows.dll") &&
+              QFile::exists(target + "/styles/qmodernwindowsstyle.dll"));
+        CHECK(!QFile::exists(target + "/yt-dlp") && !QFile::exists(target + "/scrcpy") && !QFile::exists(target + "/wintun") && !QFile::exists(target + "/profiles") &&
+              !QFile::exists(target + "/opengl32sw.dll") && !QFile::exists(target + "/D3Dcompiler_47.dll"));
+        CHECK(bytes == 1000 + 2000 + 500 + 300 && QFileInfo(target + "/Qt6Core.dll").size() == 2000); // nội dung chép nguyên vẹn
+        CHECK(!PartitionRelocator::copyRuntime(src.path() + "/khong_co", dst.path() + "/rt2", &err) && !err.isEmpty());
+        CHECK(!QDir(dst.path() + "/rt2").exists() || QDir(dst.path() + "/rt2").isEmpty());
+
+        // processHasExited: tiến trình không tồn tại / đã thoát = true; tiến trình này = còn sống (false, không chờ).
+        CHECK(PartitionRelocator::processHasExited(0, 0) && PartitionRelocator::processHasExited(4000000000u, 0));
+        CHECK(!PartitionRelocator::processHasExited(GetCurrentProcessId(), 0));
+        {
+            QProcess child;
+            child.start(AppPaths::systemExecutable("cmd.exe"), {"/c", "exit", "0"});
+            CHECK(child.waitForStarted(5000));
+            const quint32 pid = static_cast<quint32>(child.processId());
+            child.waitForFinished(10000);
+            CHECK(PartitionRelocator::processHasExited(pid, 5000));
+        }
+
+        // CHẠY THẬT bản sao tối thiểu của CHÍNH ứng dụng (nếu OneForAll.exe có cạnh test): phải khởi động được chế độ chạy kế hoạch (không UAC) - chứng tỏ
+        // danh sách tệp được chép đủ để cửa sổ Widgets dựng được (DLL + plugin nền tảng) mà không cần yt-dlp/scrcpy/OpenGL mềm.
+        const QString appDir = QCoreApplication::applicationDirPath();
+        if (QFile::exists(appDir + "/OneForAll.exe") && QFile::exists(appDir + "/platforms/qwindows.dll"))
+        {
+            QTemporaryDir rtParent;
+            CHECK(rtParent.isValid());
+            const QString runtime = rtParent.path() + "/runtime";
+            qint64 realBytes = 0;
+            CHECK(PartitionRelocator::copyRuntime(appDir, runtime, &err, &realBytes));
+            std::printf("Ban sao toi thieu cua ung dung: %lld MB\n", static_cast<long long>(realBytes / kMiB));
+            CHECK(realBytes > 10 * kMiB && realBytes < 200 * kMiB && !QFile::exists(runtime + "/yt-dlp") && !QFile::exists(runtime + "/scrcpy"));
+            QProcess runner;
+            runner.setWorkingDirectory(runtime);
+            QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+            env.insert("PATH", QDir::toNativeSeparators(runtime)); // KHÔNG dùng DLL Qt của máy build: bản sao phải tự đủ
+            runner.setProcessEnvironment(env);
+            runner.start(runtime + "/OneForAll.exe", {"--run-partition-plan", "--selftest", "--plan-b64", arg, "--wait-pid", "0"});
+            CHECK(runner.waitForStarted(10000));
+            const bool finished = runner.waitForFinished(30000);
+            const QString out = QString::fromLocal8Bit(runner.readAllStandardOutput());
+            if (!finished || runner.exitCode() != 0 || !out.contains("RUNNER_SELFTEST_OK"))
+                std::printf("  runner: finished=%d exit=%d out=\"%s\" err=\"%s\"\n", finished, runner.exitCode(), qPrintable(out.left(200)),
+                            qPrintable(QString::fromLocal8Bit(runner.readAllStandardError()).left(300)));
+            CHECK(finished && runner.exitCode() == 0 && out.contains("RUNNER_SELFTEST_OK"));
+            // Kế hoạch hỏng -> thoát mã 2, không dựng gì.
+            QProcess bad;
+            bad.setWorkingDirectory(runtime);
+            bad.setProcessEnvironment(env);
+            bad.start(runtime + "/OneForAll.exe", {"--run-partition-plan", "--selftest", "--plan-b64", "!!!", "--wait-pid", "0"});
+            CHECK(bad.waitForFinished(30000) && bad.exitCode() == 2);
+        }
+        else
+            std::printf("LUU Y: khong thay OneForAll.exe + platforms canh bo test - bo qua chay thu ban sao toi thieu\n");
+    }
+
+    // ---- Chương trình đang giữ ổ qua THƯ MỤC LÀM VIỆC (terminal/VS Code...) ----
+    {
+        QTemporaryDir dataDir;
+        AppPaths::setDataDirOverride(dataDir.path());
+        const QString exe = QDir::toNativeSeparators(QCoreApplication::applicationFilePath());
+        QTemporaryDir cwdDir(exe.left(3) + "oneforall_cwd_test_XXXXXX"); // thư mục tạm TRÊN CÙNG Ổ với exe test
+        if (cwdDir.isValid())
+        {
+            QProcess child;
+            child.setWorkingDirectory(cwdDir.path());
+            child.start(AppPaths::systemExecutable("ping.exe"), {"-n", "8", "127.0.0.1"});
+            CHECK(child.waitForStarted(5000));
+            QThread::msleep(300);
+            const QStringList holders = PartitionMover::processesRunningFromDrive(exe.left(1));
+            bool foundCwd = false;
+            for (const QString& h : holders)
+                foundCwd = foundCwd || (h.startsWith("ping.exe", Qt::CaseInsensitive) && h.contains("thư mục làm việc"));
+            if (!foundCwd)
+                std::printf("  nguoi giu o %s: %s\n", qPrintable(exe.left(1)), qPrintable(holders.join(" | ")));
+            CHECK(foundCwd); // tiến trình con KHÔNG chạy từ ổ này (ping ở System32) nhưng đang đứng ở một thư mục trên ổ -> vẫn bị nêu đích danh
+            child.kill();
+            child.waitForFinished(5000);
+        }
+        else
+            std::printf("LUU Y: khong tao duoc thu muc tam tren cung o voi exe test - bo qua kiem tra thu muc lam viec\n");
         AppPaths::setDataDirOverride(QString());
     }
 

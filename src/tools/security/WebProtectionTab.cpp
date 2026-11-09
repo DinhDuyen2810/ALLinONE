@@ -180,7 +180,7 @@ void WebProtectionTab::onRelaunchElevatedClicked()
     }
 
     QString error;
-    if (!WinElevation::relaunchElevated(&error))
+    if (!WinElevation::relaunchElevated(&error, QStringLiteral("security")))
     {
         QMessageBox::warning(this, "Chạy lại với quyền Quản trị", error.isEmpty() ? "Không thực hiện được." : error);
         return;

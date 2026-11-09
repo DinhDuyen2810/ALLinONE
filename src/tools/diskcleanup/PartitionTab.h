@@ -8,6 +8,7 @@
 
 #include "engine/DiskLayout.h"
 #include "engine/PartitionManager.h"
+#include "engine/PartitionRelocator.h"
 
 class QThread;
 
@@ -59,6 +60,8 @@ public:
     DiskLayout::ChangePlan currentPlan() const;
     /// Rỗng nếu phân vùng đang chọn dời được (Admin, NTFS dữ liệu, không hệ thống...); ngược lại là lý do. Dùng cho giao diện + test.
     QString moveSupportReason() const;
+    /// true nếu chính ứng dụng đang chạy từ ổ của phân vùng đang chọn: khi dời, ứng dụng tự chép mình sang thư mục tạm, chạy lại ở đó (UAC) rồi đóng để nhả ổ.
+    bool needsRelocation() const;
     /// Có nhật ký dời dở dang (banner "Tiếp tục") không.
     bool hasPendingJournal() const { return m_pendingJournal; }
     /// CHỈ cho test UI: ép coi mọi phân vùng đã tra là dời được (bỏ qua Admin/loại phân vùng) - KHÔNG bao giờ chạy thật (nút Áp dụng vẫn kiểm Admin).
@@ -111,6 +114,8 @@ private:
     void checkPendingJournal();
     void setOperationUi(bool running);
     void startPlan(const DiskLayout::ChangePlan& plan, const QString& name, int disk, int partition, const QString& letter);
+    /// Ứng dụng đang chạy từ ổ cần tháo: chép bộ chạy tối thiểu sang %TEMP%, chạy lại ở đó với quyền Admin (UAC) rồi thoát. false nếu thất bại (đã báo người dùng).
+    bool startRelocated(const PartitionRelocator::Plan& plan);
     void reloadPartitions();
     void populatePartitions(const QList<PartitionManager::PartitionInfo>& partitions,
                             const QList<PartitionManager::DiskInfo>& disks, const QString& error);

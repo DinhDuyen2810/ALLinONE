@@ -4,6 +4,9 @@
 #include "ui/MainWindow.h"
 #include "core/Logger.h"
 #include "core/Version.h"
+#include "core/ToolManager.h"
+#include "tools/diskcleanup/PartitionRunMain.h"
+#include "tools/diskcleanup/engine/PartitionRelocator.h"
 #include "tools/vpn/direct/VpnHelperMain.h"
 
 #ifdef _WIN32
@@ -37,6 +40,36 @@ int main(int argc, char* argv[])
     AppTheme::apply(app); // kiểu Fusion + bảng màu sáng + stylesheet toàn ứng dụng (hover/nhấn/focus, bo góc, con trỏ tay)
 
     Logger::instance().info("Application", QString("Khởi động One for ALL v%1 (C++20, Qt6)").arg(APP_VERSION));
+
+    // Tiến trình CHẠY KẾ HOẠCH DỜI PHÂN VÙNG (do chính ứng dụng khởi chạy qua UAC từ một bản sao trong thư mục tạm, để ổ đang chứa ứng dụng tháo được) - xem PartitionRunMain.h.
+    if (argc >= 2 && std::strcmp(argv[1], "--run-partition-plan") == 0)
+        return runPartitionPlanMode(app, argc, argv);
+
+    // Dọn các bản sao tạm cũ còn sót của chế độ dời phân vùng (best-effort, bỏ qua cái đang dùng).
+    PartitionRelocator::cleanupStaleRuntimes();
+
+    // "--open-tool <id>" (do relaunch với quyền Administrator truyền vào): chỉ mở ĐÚNG tiện ích đó, không dựng cửa sổ chính/kiểm tra cập nhật. Đóng cửa sổ
+    // tiện ích là ứng dụng thoát (không còn cửa sổ nào hiện). Không có/không mở được tiện ích đó thì rơi về cửa sổ chính như bình thường.
+    QString openTool;
+    for (int i = 1; i + 1 < argc; ++i)
+        if (std::strcmp(argv[i], "--open-tool") == 0)
+            openTool = QString::fromLocal8Bit(argv[i + 1]);
+    if (!openTool.isEmpty())
+    {
+        MainWindow::registerAllTools();
+        if (ITool* tool = ToolManager::instance().getTool(openTool))
+        {
+            QObject::connect(&app, &QApplication::aboutToQuit, [] { ToolManager::instance().stopAllBackgroundWorkForQuit(); });
+            if (QWidget* window = tool->createWindow())
+            {
+                Logger::instance().info("Application", QString("Chế độ một tiện ích: %1").arg(openTool));
+                window->showNormal();
+                window->raise();
+                window->activateWindow();
+                return app.exec();
+            }
+        }
+    }
 
     MainWindow mainWindow;
     mainWindow.show();
