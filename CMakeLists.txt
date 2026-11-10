@@ -110,6 +110,10 @@ set_source_files_properties(
 add_executable(qr_tests EXCLUDE_FROM_ALL tests/qr_tests.cpp)
 target_link_libraries(qr_tests PRIVATE qr_core Qt6::Svg)
 
+# ---- KIỂM TRA TAY CHỈ ĐỌC: giải mã QR từ tệp ảnh bằng đúng QRCodec::decode() - qr_decode_probe <ảnh>... ----
+add_executable(qr_decode_probe EXCLUDE_FROM_ALL tests/qr_decode_probe.cpp)
+target_link_libraries(qr_decode_probe PRIVATE qr_core)
+
 # ---- Giao diện QR (static lib để dùng chung với bộ kiểm thử UI) ----
 add_library(qr_ui STATIC
     src/tools/qr/QRWindow.h

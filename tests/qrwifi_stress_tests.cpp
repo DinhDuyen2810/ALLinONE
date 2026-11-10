@@ -2009,7 +2009,7 @@ static void stressWifiUi(int opens)
         win->show();
         QCoreApplication::processEvents();
         auto* tabs = win->findChild<QTabWidget*>();
-        CHECK(tabs && tabs->count() == 3);
+        CHECK(tabs && tabs->count() == 4);
         for (int k = 0, n = rnd(1, 5); tabs && k < n; ++k)
         {
             tabs->setCurrentIndex(rnd(0, 2));

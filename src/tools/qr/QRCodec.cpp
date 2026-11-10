@@ -1,11 +1,14 @@
 #include "QRCodec.h"
 
 #include <QBuffer>
+#include <QElapsedTimer>
 #include <QPainter>
 #include <QPainterPath>
 #include <QStringConverter>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
+#include <vector>
 #include <memory>
 #include <stdexcept>
 
@@ -103,21 +106,333 @@ QImage toGray(const QImage& src)
     return src.convertToFormat(QImage::Format_Grayscale8);
 }
 
-QImage padWhite(const QImage& gray, int pad)
+QImage padFill(const QImage& gray, int pad, int fill)
 {
     if (pad <= 0)
         return gray;
     QImage out(gray.width() + 2 * pad, gray.height() + 2 * pad, QImage::Format_Grayscale8);
-    out.fill(255);
+    out.fill(fill);
     QPainter p(&out);
     p.drawImage(pad, pad, gray);
     p.end();
     return out;
 }
 
+QImage padWhite(const QImage& gray, int pad)
+{
+    return padFill(gray, pad, 255);
+}
+
+/// Giá trị xám trung vị của viền ngoài cùng ảnh (cỡ nền xung quanh). Dùng để đệm đúng màu nền khi mã nằm trên nền tối.
+int edgeMedian(const QImage& gray)
+{
+    std::vector<uint8_t> v;
+    const int w = gray.width(), h = gray.height();
+    if (w < 4 || h < 4)
+        return 255;
+    for (int x = 0; x < w; ++x)
+    {
+        v.push_back(gray.constScanLine(0)[x]);
+        v.push_back(gray.constScanLine(h - 1)[x]);
+    }
+    for (int y = 1; y < h - 1; ++y)
+    {
+        v.push_back(gray.constScanLine(y)[0]);
+        v.push_back(gray.constScanLine(y)[w - 1]);
+    }
+    std::nth_element(v.begin(), v.begin() + v.size() / 2, v.end());
+    return v[v.size() / 2];
+}
+
+// ---- Tinh chỉnh lưới cho mã QR "cách điệu" (ô bo tròn, chấm tròn, logo giữa, ảnh chụp lệch) ----
+//
+// quirc ước lượng 4 góc của lưới từ 3 ô định vị; góc thứ tư chỉ được ngoại suy (rồi sửa chút ít nhờ ô căn chỉnh). Mã có ô định vị BO TRÒN (Telegram, nhiều
+// mã đẹp tạo bằng công cụ trực tuyến) làm góc bị lệch vào trong ~1-2 ô, lưới lấy mẫu trôi dần về phía góc kia và ECC hỏng dù mã hoàn toàn đọc được (đo thật
+// trên mã Telegram 33x33: quirc báo "ECC failure"). Cách sửa: tối ưu 4 góc bằng leo đồi sao cho các mẫu CHỨC NĂNG đã biết trước của QR (3 ô định vị + khoảng
+// trắng quanh chúng, 2 đường timing, các ô căn chỉnh) khớp nhất với ảnh, rồi lấy mẫu lại toàn bộ lưới và để quirc giải mã. Chỉ chạy khi giải mã thường thất bại.
+
+struct Homography
+{
+    double a{1}, b{0}, c{0}, d{0}, e{1}, f{0}, g{0}, h{0};
+    QPointF map(double u, double v) const
+    {
+        const double w = g * u + h * v + 1.0;
+        return {(a * u + b * v + c) / w, (d * u + e * v + f) / w};
+    }
+};
+
+/// Phép chiếu từ hình vuông đơn vị (TL, TR, BR, BL) lên tứ giác p[0..3] (Heckbert). false nếu suy biến.
+bool unitSquareToQuad(const QPointF p[4], Homography* out)
+{
+    const double dx1 = p[1].x() - p[2].x(), dx2 = p[3].x() - p[2].x(), dx3 = p[0].x() - p[1].x() + p[2].x() - p[3].x();
+    const double dy1 = p[1].y() - p[2].y(), dy2 = p[3].y() - p[2].y(), dy3 = p[0].y() - p[1].y() + p[2].y() - p[3].y();
+    const double den = dx1 * dy2 - dx2 * dy1;
+    Homography H;
+    if (std::abs(dx3) < 1e-9 && std::abs(dy3) < 1e-9)
+    {
+        H.a = p[1].x() - p[0].x();
+        H.b = p[3].x() - p[0].x();
+        H.c = p[0].x();
+        H.d = p[1].y() - p[0].y();
+        H.e = p[3].y() - p[0].y();
+        H.f = p[0].y();
+    }
+    else
+    {
+        if (std::abs(den) < 1e-12)
+            return false;
+        H.g = (dx3 * dy2 - dx2 * dy3) / den;
+        H.h = (dx1 * dy3 - dx3 * dy1) / den;
+        H.a = p[1].x() - p[0].x() + H.g * p[1].x();
+        H.b = p[3].x() - p[0].x() + H.h * p[3].x();
+        H.c = p[0].x();
+        H.d = p[1].y() - p[0].y() + H.g * p[1].y();
+        H.e = p[3].y() - p[0].y() + H.h * p[3].y();
+        H.f = p[0].y();
+    }
+    *out = H;
+    return true;
+}
+
+double sampleBilinear(const QImage& gray, double x, double y)
+{
+    if (x < 0 || y < 0 || x > gray.width() - 1.001 || y > gray.height() - 1.001)
+        return 255.0; // ngoài ảnh: coi là nền sáng
+    const int x0 = static_cast<int>(x), y0 = static_cast<int>(y);
+    const double fx = x - x0, fy = y - y0;
+    const uchar* r0 = gray.constScanLine(y0);
+    const uchar* r1 = gray.constScanLine(y0 + 1);
+    return (r0[x0] * (1 - fx) + r0[x0 + 1] * fx) * (1 - fy) + (r1[x0] * (1 - fx) + r1[x0 + 1] * fx) * fy;
+}
+
+/// Vị trí tâm các ô căn chỉnh (cùng công thức chuẩn ISO 18004 / qrcodegen).
+std::vector<int> alignmentPositions(int version)
+{
+    std::vector<int> pos;
+    if (version <= 1)
+        return pos;
+    const int n = version / 7 + 2;
+    const int size = version * 4 + 17;
+    const int step = version == 32 ? 26 : (version * 4 + n * 2 + 1) / (n * 2 - 2) * 2;
+    for (int i = 0, p = size - 7; i < n - 1; ++i, p -= step)
+        pos.insert(pos.begin(), p);
+    pos.insert(pos.begin(), 6);
+    return pos;
+}
+
+struct FunctionModule
+{
+    int x, y;
+    bool dark;
+};
+
+/// Các ô có giá trị BIẾT TRƯỚC: ô định vị 7x7 + viền trắng 1 ô, đường timing, ô căn chỉnh 5x5.
+std::vector<FunctionModule> functionModules(int size)
+{
+    const int version = (size - 17) / 4;
+    std::vector<FunctionModule> out;
+    auto finder = [&](int ox, int oy) {
+        for (int j = -1; j <= 7; ++j)
+            for (int i = -1; i <= 7; ++i)
+            {
+                const int x = ox + i, y = oy + j;
+                if (x < 0 || y < 0 || x >= size || y >= size)
+                    continue;
+                const bool inside = i >= 0 && i <= 6 && j >= 0 && j <= 6;
+                const bool dark = inside && (i == 0 || i == 6 || j == 0 || j == 6 || (i >= 2 && i <= 4 && j >= 2 && j <= 4));
+                out.push_back({x, y, dark});
+            }
+    };
+    finder(0, 0);
+    finder(size - 7, 0);
+    finder(0, size - 7);
+    for (int i = 8; i < size - 8; ++i)
+    {
+        out.push_back({i, 6, i % 2 == 0});
+        out.push_back({6, i, i % 2 == 0});
+    }
+    const std::vector<int> ap = alignmentPositions(version);
+    for (size_t a = 0; a < ap.size(); ++a)
+        for (size_t b = 0; b < ap.size(); ++b)
+        {
+            const int cx = ap[a], cy = ap[b];
+            if ((a == 0 && b == 0) || (a == 0 && b == ap.size() - 1) || (a == ap.size() - 1 && b == 0))
+                continue; // trùng ô định vị
+            for (int j = -2; j <= 2; ++j)
+                for (int i = -2; i <= 2; ++i)
+                    out.push_back({cx + i, cy + j, std::max(std::abs(i), std::abs(j)) != 1});
+        }
+    return out;
+}
+
+/// Giá trị xám trung bình của một ô (tâm + 4 điểm lệch) theo phép chiếu H (hệ tọa độ: ô (x,y) chiếm [x,x+1) trên N ô).
+double moduleValue(const QImage& gray, const Homography& H, int size, int x, int y)
+{
+    static const double off[5][2] = {{0.5, 0.5}, {0.3, 0.5}, {0.7, 0.5}, {0.5, 0.3}, {0.5, 0.7}};
+    double sum = 0;
+    for (const auto& o : off)
+    {
+        const QPointF p = H.map((x + o[0]) / size, (y + o[1]) / size);
+        sum += sampleBilinear(gray, p.x(), p.y());
+    }
+    return sum / 5.0;
+}
+
+/// Điểm khớp liên tục của 4 góc với các ô chức năng: tổng "lề" (đúng phía ngưỡng, kẹp [-1,1]); ngưỡng = trung điểm trung bình các ô đáng sáng/đáng tối.
+double scoreCorners(const QImage& gray, const QPointF c[4], int size, const std::vector<FunctionModule>& fm, double* thresholdOut = nullptr)
+{
+    Homography H;
+    if (!unitSquareToQuad(c, &H))
+        return -1e9;
+    std::vector<double> v(fm.size());
+    double darkSum = 0, lightSum = 0;
+    int darkN = 0, lightN = 0;
+    for (size_t i = 0; i < fm.size(); ++i)
+    {
+        v[i] = moduleValue(gray, H, size, fm[i].x, fm[i].y);
+        (fm[i].dark ? darkSum : lightSum) += v[i];
+        ++(fm[i].dark ? darkN : lightN);
+    }
+    if (darkN == 0 || lightN == 0)
+        return -1e9;
+    const double dm = darkSum / darkN, lm = lightSum / lightN;
+    const double thr = (dm + lm) / 2.0;
+    if (thresholdOut)
+        *thresholdOut = thr;
+    const double range = std::max(20.0, std::abs(lm - dm) / 2.0);
+    double score = 0;
+    for (size_t i = 0; i < fm.size(); ++i)
+    {
+        const double margin = (fm[i].dark ? thr - v[i] : v[i] - thr) / range;
+        score += std::clamp(margin, -1.0, 1.0);
+    }
+    return score;
+}
+
+/// Leo đồi 4 góc (c vào/ra) theo điểm khớp các ô chức năng, bước đầu `firstStep` rồi thu dần; mỗi góc thử 4 hướng trục + 4 hướng chéo. Trả về điểm tốt nhất.
+double climbCorners(const QImage& gray, QPointF c[4], int size, const std::vector<FunctionModule>& fm, double modulePx, double firstStep,
+                    const QElapsedTimer& clock, qint64 budgetMs)
+{
+    double best = scoreCorners(gray, c, size, fm);
+    static const int dx[8] = {1, -1, 0, 0, 1, 1, -1, -1};
+    static const int dy[8] = {0, 0, 1, -1, 1, -1, 1, -1};
+    for (double step = modulePx * firstStep; step > modulePx * 0.04; step *= 0.6)
+    {
+        bool improved = true;
+        for (int round = 0; improved && round < 60; ++round)
+        {
+            improved = false;
+            for (int k = 0; k < 4; ++k)
+                for (int dir = 0; dir < 8; ++dir)
+                {
+                    if (clock.elapsed() > budgetMs)
+                        return best; // hết ngân sách thời gian (ảnh nhiễu cho nhiều lưới giả rất lớn)
+                    QPointF t[4] = {c[0], c[1], c[2], c[3]};
+                    t[k] += QPointF(dx[dir] * step, dy[dir] * step);
+                    const double s = scoreCorners(gray, t, size, fm);
+                    if (s > best + 1e-9)
+                    {
+                        best = s;
+                        for (int i = 0; i < 4; ++i)
+                            c[i] = t[i];
+                        improved = true;
+                    }
+                }
+        }
+    }
+    return best;
+}
+
+/// Lấy mẫu lại toàn bộ lưới `size` x `size` theo 4 góc c vào `out`.
+bool sampleGrid(const QImage& gray, const QPointF c[4], int size, const std::vector<FunctionModule>& fm, double thrOffset, quirc_code* out)
+{
+    Homography H;
+    if (!unitSquareToQuad(c, &H))
+        return false;
+    double thr = 128;
+    scoreCorners(gray, c, size, fm, &thr);
+    thr += thrOffset;
+    std::memset(out, 0, sizeof(*out));
+    out->size = size;
+    for (int i = 0; i < 4; ++i)
+        out->corners[i] = {static_cast<int>(std::lround(c[i].x())), static_cast<int>(std::lround(c[i].y()))};
+    for (int y = 0; y < size; ++y)
+        for (int x = 0; x < size; ++x)
+            if (moduleValue(gray, H, size, x, y) < thr)
+            {
+                const int bit = y * size + x;
+                out->cell_bitmap[bit >> 3] |= static_cast<uint8_t>(1 << (bit & 7));
+            }
+    return true;
+}
+
+/// Dựng các ứng viên lưới cỡ `size` từ 4 góc của quirc (seed): leo đồi từ hai bước đầu khác nhau (1 ô: sửa lệch nhỏ do ô định vị bo tròn;
+/// 2,5 ô: góc dưới-phải chỉ được ô căn chỉnh nhỏ giữ nên quirc có thể lệch tới vài ô) rồi lấy mẫu lại. Mỗi ứng viên được nơi gọi thử giải mã.
+std::vector<quirc_code> refineGrids(const QImage& gray, const quirc_code& seed, int size, const QElapsedTimer& clock, qint64 budgetMs)
+{
+    std::vector<quirc_code> out;
+    if (size < 21 || size > 177 || (size - 17) % 4 != 0)
+        return out;
+    QPointF c0[4];
+    for (int i = 0; i < 4; ++i)
+        c0[i] = QPointF(seed.corners[i].x, seed.corners[i].y);
+    const double modulePx = std::hypot(c0[1].x() - c0[0].x(), c0[1].y() - c0[0].y()) / size;
+    if (modulePx < 2.0)
+        return out;
+    const std::vector<FunctionModule> fm = functionModules(size);
+    const double start = scoreCorners(gray, c0, size, fm);
+    for (double firstStep : {1.0, 2.5})
+    {
+        QPointF c[4] = {c0[0], c0[1], c0[2], c0[3]};
+        const double best = climbCorners(gray, c, size, fm, modulePx, firstStep, clock, budgetMs);
+        if (best <= start + 1e-6 || clock.elapsed() > budgetMs)
+            continue;
+        // Ngưỡng đen/trắng tính từ các ô chức năng; ảnh nén JPEG/mờ có thể cần ngưỡng lệch nhẹ nên thêm hai biến thể.
+        for (double thrOffset : {0.0, -14.0, 14.0})
+        {
+            quirc_code code;
+            if (sampleGrid(gray, c, size, fm, thrOffset, &code))
+                out.push_back(code);
+        }
+    }
+    return out;
+}
+
+/// Các lưới mà quirc đã THẤY nhưng không giải mã được ở một lượt, kèm ảnh/tỉ lệ của lượt đó - giai đoạn 2 của QRCodec::decode() tinh chỉnh chúng
+/// mà không phải dò lại cả ảnh (dò lại ảnh lớn rất tốn).
+struct GridMiss
+{
+    QImage gray;
+    double scale{1.0};
+    int pad{0};
+    std::vector<quirc_code> seeds;
+};
+
+QRDecoded makeDecoded(const quirc_code& code, const quirc_data& data, double scale, int pad)
+{
+    QRDecoded d;
+    d.text = payloadToString(data);
+    d.format = formatName(data.data_type);
+    d.version = data.version;
+    d.ecc = fromQuircEcc(data.ecc_level);
+    for (int c = 0; c < 4; ++c)
+    {
+        d.corners << QPoint(static_cast<int>((code.corners[c].x - pad) / scale),
+                            static_cast<int>((code.corners[c].y - pad) / scale));
+    }
+    return d;
+}
+
+void addUnique(QList<QRDecoded>* results, const QRDecoded& d)
+{
+    const bool dup = std::any_of(results->begin(), results->end(), [&](const QRDecoded& r) { return r.text == d.text; });
+    if (!dup)
+        results->push_back(d);
+}
+
 /// undecoded (nếu khác null) nhận số lưới mã mà quirc ĐÃ NHÌN THẤY trong ảnh nhưng KHÔNG giải mã được ở
-/// lượt này - nơi gọi dùng để biết kết quả mới chỉ là một phần (xem QRCodec::decode()).
-QList<QRDecoded> decodeGray(const QImage& gray, double scale, int pad, int* undecoded)
+/// lượt này - nơi gọi dùng để biết kết quả mới chỉ là một phần (xem QRCodec::decode()). miss (nếu khác null) nhận chính các lưới đó.
+QList<QRDecoded> decodeGray(const QImage& gray, double scale, int pad, int* undecoded, GridMiss* miss = nullptr)
 {
     QList<QRDecoded> results;
     if (undecoded)
@@ -142,6 +457,7 @@ QList<QRDecoded> decodeGray(const QImage& gray, double scale, int pad, int* unde
     for (int i = 0; i < count; ++i)
     {
         quirc_extract(q.get(), i, code.get());
+        const quirc_code seed = *code; // bản chưa bị lật - dùng cho giai đoạn tinh chỉnh
         quirc_decode_error_t err = quirc_decode(code.get(), data.get());
         if (err == QUIRC_ERROR_DATA_ECC)
         {
@@ -154,24 +470,56 @@ QList<QRDecoded> decodeGray(const QImage& gray, double scale, int pad, int* unde
         {
             if (undecoded)
                 ++*undecoded;
+            if (miss && miss->seeds.size() < 6)
+            {
+                miss->gray = gray;
+                miss->scale = scale;
+                miss->pad = pad;
+                miss->seeds.push_back(seed);
+            }
             continue;
         }
+        addUnique(&results, makeDecoded(*code, *data, scale, pad));
+    }
+    return results;
+}
 
-        QRDecoded d;
-        d.text = payloadToString(*data);
-        d.format = formatName(data->data_type);
-        d.version = data->version;
-        d.ecc = fromQuircEcc(data->ecc_level);
-        for (int c = 0; c < 4; ++c)
+/// Giai đoạn 2: tinh chỉnh các lưới quirc đã thấy mà không giải mã được (xem refineGrids()). Trần thời gian ~400 ms cho cả lượt.
+/// undecoded nhận số lưới vẫn chưa đọc được.
+QList<QRDecoded> refineMissed(const GridMiss& miss, int* undecoded)
+{
+    QList<QRDecoded> results;
+    if (undecoded)
+        *undecoded = 0;
+    auto data = std::make_unique<quirc_data>();
+    QElapsedTimer clock;
+    clock.start();
+    for (const quirc_code& seed : miss.seeds)
+    {
+        bool ok = false;
+        // quirc cũng có thể đoán SAI kích thước lưới (ô định vị bo tròn/vẽ to làm số ô đếm được lệch 4 ô) nên thử cả các cỡ lân cận.
+        for (int delta : {0, -4, 4, -8, 8})
         {
-            d.corners << QPoint(static_cast<int>((code->corners[c].x - pad) / scale),
-                                static_cast<int>((code->corners[c].y - pad) / scale));
+            if (ok || clock.elapsed() > 400)
+                break;
+            for (quirc_code& cand : refineGrids(miss.gray, seed, seed.size + delta, clock, 400))
+            {
+                quirc_decode_error_t err = quirc_decode(&cand, data.get());
+                if (err == QUIRC_ERROR_DATA_ECC)
+                {
+                    quirc_flip(&cand);
+                    err = quirc_decode(&cand, data.get());
+                }
+                if (err == QUIRC_SUCCESS)
+                {
+                    addUnique(&results, makeDecoded(cand, *data, miss.scale, miss.pad));
+                    ok = true;
+                    break;
+                }
+            }
         }
-
-        const bool dup = std::any_of(results.begin(), results.end(),
-                                     [&](const QRDecoded& r) { return r.text == d.text; });
-        if (!dup)
-            results.push_back(d);
+        if (!ok && undecoded)
+            ++*undecoded;
     }
     return results;
 }
@@ -469,11 +817,10 @@ QList<QRDecoded> QRCodec::decode(const QImage& image, int* undecodedCount)
     bool partialInvert = false;
     int maxUndecoded = 0; // số lưới NHÌN THẤY nhưng không đọc được, lớn nhất qua các lượt đã thử
 
-    for (const Pass& pass : passes)
-    {
-        if (partial && pass.invert != partialInvert)
-            continue;
-
+    // Lượt 0: đệm TRẮNG (mã sát mép ảnh vẫn có vùng yên tĩnh). Lượt 1 - chỉ khi lượt 0 không ra gì và viền ảnh tối rõ rệt (mã nằm trên nền tối,
+    // chế độ tối của ứng dụng/trang web): đệm bằng CHÍNH màu nền, vì dải trắng đệm sát nền tối làm quirc không còn thấy lưới nào (đo thật).
+    const int edge = edgeMedian(base);
+    auto runPass = [&](int attempt, const Pass& pass, int* undecoded, GridMiss* miss) {
         QImage work = base;
         if (pass.scale != 1.0)
         {
@@ -485,28 +832,71 @@ QList<QRDecoded> QRCodec::decode(const QImage& image, int* undecodedCount)
             work.invertPixels();
 
         constexpr int pad = 32;
-        const QImage padded = padWhite(work, pad);
-        int undecoded = 0;
-        const QList<QRDecoded> found = decodeGray(padded, pass.scale * baseScale, pad, &undecoded);
-        maxUndecoded = std::max(maxUndecoded, undecoded);
+        const QImage padded = padFill(work, pad, attempt == 0 ? 255 : (pass.invert ? 255 - edge : edge));
+        return decodeGray(padded, pass.scale * baseScale, pad, undecoded, miss);
+    };
+    auto merge = [&](const QList<QRDecoded>& found) {
         for (const QRDecoded& d : found)
         {
-            const bool dup = std::any_of(all.begin(), all.end(),
-                                         [&](const QRDecoded& r) { return r.text == d.text; });
+            const bool dup = std::any_of(all.begin(), all.end(), [&](const QRDecoded& r) { return r.text == d.text; });
             if (!dup)
                 all.push_back(d);
         }
+    };
+    std::vector<GridMiss> sawGrids; // các lưới đã THẤY mà không đọc được (tối đa 4 lượt) - để tinh chỉnh ở giai đoạn 2
 
-        if (!found.isEmpty() && undecoded == 0)
+    for (int attempt = 0; attempt < 2; ++attempt)
+    {
+        if (attempt == 1 && (!all.isEmpty() || maxUndecoded > 0 || edge >= 160))
+            break;
+        for (size_t pi = 0; pi < passes.size(); ++pi)
         {
-            if (undecodedCount)
-                *undecodedCount = maxUndecoded;
-            return all;
+            const Pass& pass = passes[pi];
+            if (partial && pass.invert != partialInvert)
+                continue;
+
+            int undecoded = 0;
+            GridMiss miss;
+            const QList<QRDecoded> found = runPass(attempt, pass, &undecoded, &miss);
+            maxUndecoded = std::max(maxUndecoded, undecoded);
+            merge(found);
+            if (undecoded > 0 && sawGrids.size() < 4)
+                sawGrids.push_back(std::move(miss));
+
+            if (!found.isEmpty() && undecoded == 0)
+            {
+                if (undecodedCount)
+                    *undecodedCount = maxUndecoded;
+                return all;
+            }
+            if (!all.isEmpty() && !partial)
+            {
+                partial = true;
+                partialInvert = pass.invert;
+            }
         }
-        if (!all.isEmpty() && !partial)
+    }
+
+    // Giai đoạn 2 (chỉ chạy khi quirc đã THẤY lưới mà không đọc được): tinh chỉnh lưới cho mã cách điệu/bo tròn/ngoại suy lệch (xem refineGrids()).
+    // Tách riêng để ảnh thường/ảnh nhiễu không phải trả chi phí tinh chỉnh ở MỌI lượt; chỉ thử tối đa 2 lượt đã thấy lưới.
+    if (maxUndecoded > 0)
+    {
+        // Lượt ảnh nhỏ (đã thu nhỏ) rẻ hơn nên thử trước.
+        std::stable_sort(sawGrids.begin(), sawGrids.end(), [](const GridMiss& a, const GridMiss& b) { return a.scale < b.scale; });
+        int tried = 0;
+        for (const GridMiss& miss : sawGrids)
         {
-            partial = true;
-            partialInvert = pass.invert;
+            if (tried++ >= 2)
+                break;
+            int undecoded = 0;
+            const QList<QRDecoded> found = refineMissed(miss, &undecoded);
+            merge(found);
+            if (!found.isEmpty() && undecoded == 0)
+            {
+                if (undecodedCount)
+                    *undecodedCount = 0;
+                return all;
+            }
         }
     }
     if (undecodedCount)

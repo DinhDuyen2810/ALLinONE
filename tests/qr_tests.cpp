@@ -3,6 +3,7 @@
 #include <QCoreApplication>
 #include <QGuiApplication>
 #include <QPainter>
+#include <QPolygonF>
 #include <QSvgRenderer>
 #include <QTransform>
 #include <QUrl>
@@ -624,6 +625,88 @@ int main(int argc, char** argv)
         CHECK(emptyT.security == "nopass");
         const WifiInfo wep = QRPayload::parseWifi("WIFI:T:WEP;S:X;P:abcde;;");
         CHECK(wep.security == "WEP");
+    }
+
+    // ---- Hồi quy v1.26.2: mã QR "cách điệu" kiểu Telegram (ô định vị bo tròn dạng vòng, logo tròn ở giữa, vùng yên tĩnh chỉ 1 ô) trên nền sáng/tối ----
+    // Trước đây quirc đoán sai góc/cỡ lưới (rồi báo ECC failure) nên quét màn hình/dán ảnh đều "không thấy mã"; nay có bước tinh chỉnh lưới + đệm theo màu nền.
+    {
+        auto renderFancy = [](const QRMatrix& m, double px, int quiet, const QColor& card, const QColor& ink) {
+            const int n = m.size;
+            const int side = qRound((n + 2 * quiet) * px);
+            QImage img(side, side, QImage::Format_RGB32);
+            img.fill(card);
+            QPainter p(&img);
+            p.setRenderHint(QPainter::Antialiasing);
+            p.setPen(Qt::NoPen);
+            const double o = quiet * px;
+            auto inFinder = [&](int x, int y) { return (x < 8 && y < 8) || (x >= n - 8 && y < 8) || (x < 8 && y >= n - 8); };
+            const double cx = n / 2.0, cy = n / 2.0, clear = 3.4, disc = 2.7; // đơn vị ô
+            p.setBrush(ink);
+            for (int y = 0; y < n; ++y)
+                for (int x = 0; x < n; ++x)
+                    if (m.at(x, y) && !inFinder(x, y) && std::hypot(x + 0.5 - cx, y + 0.5 - cy) > clear)
+                        p.drawRect(QRectF(o + x * px, o + y * px, px, px));
+            auto finder = [&](int fx, int fy) {
+                const double x0 = o + fx * px, y0 = o + fy * px;
+                p.setBrush(ink);
+                p.drawRoundedRect(QRectF(x0, y0, 7 * px, 7 * px), 2.3 * px, 2.3 * px);
+                p.setBrush(card);
+                p.drawRoundedRect(QRectF(x0 + px, y0 + px, 5 * px, 5 * px), 1.5 * px, 1.5 * px);
+                p.setBrush(ink);
+                p.drawRoundedRect(QRectF(x0 + 2 * px, y0 + 2 * px, 3 * px, 3 * px), 1.0 * px, 1.0 * px);
+            };
+            finder(0, 0);
+            finder(n - 7, 0);
+            finder(0, n - 7);
+            p.setBrush(ink);
+            p.drawEllipse(QPointF(o + cx * px, o + cy * px), disc * px, disc * px);
+            p.setBrush(card);
+            p.drawPolygon(QPolygonF({QPointF(o + (cx - 1.1) * px, o + (cy + 0.1) * px), QPointF(o + (cx + 1.2) * px, o + (cy - 1.0) * px), QPointF(o + (cx + 0.3) * px, o + (cy + 1.2) * px)}));
+            p.end();
+            return img;
+        };
+        const QString texts[] = {"https://t.me/example_user_42", "https://t.me/a_much_longer_public_channel_name_for_tests"};
+        int fancyOk = 0, fancyTotal = 0, screenOk = 0, screenTotal = 0;
+        for (const QString& text : texts)
+        {
+            QString err;
+            const QRMatrix m = QRCodec::encode(text, QREcc::Medium, &err);
+            CHECK(m.isValid());
+            for (double px : {5.0, 7.0, 9.5, 14.0})
+                for (int quiet : {1, 2, 4})
+                {
+                    const QImage card = renderFancy(m, px, quiet, Qt::white, Qt::black);
+                    if (qEnvironmentVariableIsSet("QR_TEST_DUMP"))
+                        card.save(QString("%1/fancy_%2_%3_%4.png").arg(qEnvironmentVariable("QR_TEST_DUMP")).arg(text.size()).arg(px).arg(quiet));
+                    ++fancyTotal;
+                    if (roundTrips(text, QREcc::Medium, QRStyle(), "fancy", &card))
+                        ++fancyOk;
+                    // dán thẻ lên "màn hình" nền tối / nền sáng xám / gradient rồi quét như chụp vùng màn hình (ôm sát + rộng)
+                    for (int bg = 0; bg < 3; ++bg)
+                    {
+                        QImage screen(card.width() + 240, card.height() + 200, QImage::Format_RGB32);
+                        for (int y = 0; y < screen.height(); ++y)
+                            for (int x = 0; x < screen.width(); ++x)
+                                screen.setPixel(x, y, bg == 0 ? qRgb(20, 24, 33) : bg == 1 ? qRgb(236, 236, 238) : qRgb(40 + x * 120 / screen.width(), 70, 90 + y * 120 / screen.height()));
+                        QPainter sp(&screen);
+                        sp.drawImage(120, 100, card);
+                        sp.end();
+                        for (int margin : {0, 30, 100})
+                        {
+                            const QRect r = QRect(120, 100, card.width(), card.height()).adjusted(-margin, -margin, margin, margin);
+                            const QImage snip = screen.copy(r);
+                            ++screenTotal;
+                            if (roundTrips(text, QREcc::Medium, QRStyle(), qPrintable(QString("fancy-screen px=%1 quiet=%2 bg=%3 le=%4 len=%5").arg(px).arg(quiet).arg(bg).arg(margin).arg(text.size())), &snip))
+                                ++screenOk;
+                            else if (qEnvironmentVariableIsSet("QR_TEST_DUMP"))
+                                snip.save(QString("%1/failsnip_%2_%3_%4_%5.png").arg(qEnvironmentVariable("QR_TEST_DUMP")).arg(text.size()).arg(px).arg(bg).arg(margin));
+                        }
+                    }
+                }
+        }
+        std::printf("  fancy: %d/%d, trên nền màn hình: %d/%d\n", fancyOk, fancyTotal, screenOk, screenTotal);
+        CHECK(fancyOk == fancyTotal);
+        CHECK(screenOk == screenTotal);
     }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);
