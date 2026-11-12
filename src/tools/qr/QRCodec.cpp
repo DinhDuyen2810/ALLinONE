@@ -316,29 +316,77 @@ double climbCorners(const QImage& gray, QPointF c[4], int size, const std::vecto
                     const QElapsedTimer& clock, qint64 budgetMs)
 {
     double best = scoreCorners(gray, c, size, fm);
+    const double enough = 0.97 * static_cast<double>(fm.size()); // khớp gần trọn vẹn: không cần tinh chỉnh thêm
     static const int dx[8] = {1, -1, 0, 0, 1, 1, -1, -1};
     static const int dy[8] = {0, 0, 1, -1, 1, -1, 1, -1};
-    for (double step = modulePx * firstStep; step > modulePx * 0.04; step *= 0.6)
+    for (double step = modulePx * firstStep; step > modulePx * 0.08; step *= 0.55)
     {
         bool improved = true;
         for (int round = 0; improved && round < 60; ++round)
         {
+            if (best >= enough)
+                return best;
             improved = false;
-            for (int k = 0; k < 4; ++k)
+            auto tryMove = [&](const QPointF t[4]) {
+                const double s = scoreCorners(gray, t, size, fm);
+                if (s > best + 1e-9)
+                {
+                    best = s;
+                    for (int i = 0; i < 4; ++i)
+                        c[i] = t[i];
+                    improved = true;
+                }
+            };
+            // Bước ghép trước (dời cả lưới, phóng/thu, xoay, dời cả một cạnh): chỉ nhích MỘT góc thì lưới méo đi và điểm giảm trước khi tăng
+            // => leo đồi kẹt ở cực trị cục bộ khi lưới xoay/ô nhỏ (đo thật: điểm ~0,4 thay vì ~0,9). Các bước ghép giữ lưới gần hình bình hành nên đi được "sống núi".
+            const QPointF mid = (c[0] + c[1] + c[2] + c[3]) / 4.0;
+            const double radius = std::max(1.0, std::hypot(c[2].x() - c[0].x(), c[2].y() - c[0].y()) / 2.0);
+            for (int dir = 0; dir < 8; ++dir)
+            {
+                if (clock.elapsed() > budgetMs)
+                    return best;
+                QPointF t[4];
+                for (int i = 0; i < 4; ++i)
+                    t[i] = c[i] + QPointF(dx[dir] * step, dy[dir] * step);
+                tryMove(t);
+            }
+            for (int sign : {1, -1})
+            {
+                if (clock.elapsed() > budgetMs)
+                    return best;
+                QPointF t[4];
+                const double f = 1.0 + sign * step / radius; // phóng/thu quanh tâm: các góc dịch ~step
+                for (int i = 0; i < 4; ++i)
+                    t[i] = mid + (c[i] - mid) * f;
+                tryMove(t);
+                const double a = sign * step / radius; // xoay quanh tâm: các góc dịch ~step
+                const double ca = std::cos(a), sa = std::sin(a);
+                for (int i = 0; i < 4; ++i)
+                {
+                    const QPointF d = c[i] - mid;
+                    t[i] = mid + QPointF(d.x() * ca - d.y() * sa, d.x() * sa + d.y() * ca);
+                }
+                tryMove(t);
+            }
+            // Các bước đắt hơn (cạnh, từng góc) chỉ thử khi các bước rẻ hơn hết cải thiện - hội tụ nhanh hơn, ảnh không phải mã (lưới giả) tốn ít thời gian hơn.
+            for (int e = 0; e < 4 && !improved; ++e)
+                for (int dir = 0; dir < 8; ++dir)
+                {
+                    if (clock.elapsed() > budgetMs)
+                        return best;
+                    QPointF t[4] = {c[0], c[1], c[2], c[3]};
+                    t[e] += QPointF(dx[dir] * step, dy[dir] * step);
+                    t[(e + 1) % 4] += QPointF(dx[dir] * step, dy[dir] * step);
+                    tryMove(t);
+                }
+            for (int k = 0; k < 4 && !improved; ++k)
                 for (int dir = 0; dir < 8; ++dir)
                 {
                     if (clock.elapsed() > budgetMs)
                         return best; // hết ngân sách thời gian (ảnh nhiễu cho nhiều lưới giả rất lớn)
                     QPointF t[4] = {c[0], c[1], c[2], c[3]};
                     t[k] += QPointF(dx[dir] * step, dy[dir] * step);
-                    const double s = scoreCorners(gray, t, size, fm);
-                    if (s > best + 1e-9)
-                    {
-                        best = s;
-                        for (int i = 0; i < 4; ++i)
-                            c[i] = t[i];
-                        improved = true;
-                    }
+                    tryMove(t);
                 }
         }
     }
@@ -446,7 +494,14 @@ bool tripleFromGrid(const QImage& gray, const quirc_code& seed, SeedTriple* out)
 
 /// quirc có thể THẤY ba ô định vị mà không ghép được thành lưới (kiểm tra hình học của nó dựa vào GÓC ô định vị - lệch với ô tròn/bo tròn): ghép tay từ TÂM
 /// các ô định vị: ba tâm tạo góc vuông (cosin nhỏ) với hai cạnh gần bằng nhau. Trả tối đa maxN bộ ba, bộ "vuông" và "cân" nhất trước.
-std::vector<SeedTriple> capstoneTriples(const QImage& gray, const quirc* q, size_t maxN)
+struct FinderPt
+{
+    QPointF c;       // tâm (đã tinh chỉnh)
+    double side{0};  // bề rộng ô định vị ~ 7 ô (px)
+};
+
+/// Ghép các tâm ô định vị thành bộ ba (TL, TR, BL): ba tâm tạo góc vuông, hai cạnh gần bằng nhau, ô định vị cùng cỡ. Trả tối đa maxN bộ, "vuông" và "cân" nhất trước.
+std::vector<SeedTriple> triplesFromFinders(const std::vector<FinderPt>& pts, size_t maxN)
 {
     struct Scored
     {
@@ -454,26 +509,25 @@ std::vector<SeedTriple> capstoneTriples(const QImage& gray, const quirc* q, size
         SeedTriple t;
     };
     std::vector<Scored> found;
-    const int n = std::min(q->num_capstones, 12);
-    std::vector<QPointF> centres(static_cast<size_t>(n));
-    for (int i = 0; i < n; ++i)
-    {
-        const quirc_capstone& cap = q->capstones[i];
-        double side = 0;
-        for (int k = 0; k < 4; ++k)
-            side += std::hypot(cap.corners[k].x - cap.corners[(k + 1) % 4].x, cap.corners[k].y - cap.corners[(k + 1) % 4].y) / 4.0;
-        centres[static_cast<size_t>(i)] = refineCentre(gray, QPointF(cap.center.x, cap.center.y), std::max(2.5, 0.243 * side));
-    }
+    const int n = static_cast<int>(std::min<size_t>(pts.size(), 16));
     for (int i = 0; i < n; ++i)
         for (int j = i + 1; j < n; ++j)
             for (int k = j + 1; k < n; ++k)
             {
-                const QPointF p[3] = {centres[static_cast<size_t>(i)], centres[static_cast<size_t>(j)], centres[static_cast<size_t>(k)]};
+                const FinderPt* f[3] = {&pts[static_cast<size_t>(i)], &pts[static_cast<size_t>(j)], &pts[static_cast<size_t>(k)]};
+                const double smin = std::min({f[0]->side, f[1]->side, f[2]->side}), smax = std::max({f[0]->side, f[1]->side, f[2]->side});
+                if (smin > 0 && smax / smin > 1.6)
+                    continue; // ba ô định vị của MỘT mã cùng cỡ (trừ phối cảnh rất mạnh)
+                const QPointF p[3] = {f[0]->c, f[1]->c, f[2]->c};
                 for (int v = 0; v < 3; ++v)
                 {
                     const QPointF a = p[(v + 1) % 3] - p[v], b = p[(v + 2) % 3] - p[v];
                     const double la = std::hypot(a.x(), a.y()), lb = std::hypot(b.x(), b.y());
                     if (la < 8 || lb < 8)
+                        continue;
+                    // hai ô định vị cùng một mã cách nhau (cỡ lưới - 7) >= 14 ô; ba "ô định vị" sát nhau là nhiễu/chữ
+                    const double mod = (f[0]->side + f[1]->side + f[2]->side) / 21.0;
+                    if (mod > 0 && (la < 11 * mod || lb < 11 * mod || la > 180 * mod || lb > 180 * mod))
                         continue;
                     const double cosv = std::abs(a.x() * b.x() + a.y() * b.y()) / (la * lb);
                     const double ratio = la > lb ? la / lb : lb / la;
@@ -497,6 +551,378 @@ std::vector<SeedTriple> capstoneTriples(const QImage& gray, const quirc* q, size
         out.push_back(f.t);
     }
     return out;
+}
+
+std::vector<SeedTriple> capstoneTriples(const QImage& gray, const quirc* q, size_t maxN)
+{
+    std::vector<FinderPt> pts;
+    const int n = std::min(q->num_capstones, 12);
+    for (int i = 0; i < n; ++i)
+    {
+        const quirc_capstone& cap = q->capstones[i];
+        double side = 0;
+        for (int k = 0; k < 4; ++k)
+            side += std::hypot(cap.corners[k].x - cap.corners[(k + 1) % 4].x, cap.corners[k].y - cap.corners[(k + 1) % 4].y) / 4.0;
+        pts.push_back({refineCentre(gray, QPointF(cap.center.x, cap.center.y), std::max(2.5, 0.243 * side)), side});
+    }
+    return triplesFromFinders(pts, maxN);
+}
+
+// ---------------------------------------------------------------- Bộ dò ô định vị riêng (dự phòng khi quirc bỏ sót)
+
+/// Các lần chạy (độ dài) liên tiếp cùng màu theo đường thẳng; ok khi 5 lần chạy r[0..4] (đen,trắng,đen,trắng,đen) theo tỉ lệ 1:1:3:1:1 (dung sai ~65% một ô).
+bool finderRatio(const double r[5], double* module)
+{
+    double total = 0;
+    for (int i = 0; i < 5; ++i)
+    {
+        if (r[i] < 1.0)
+            return false;
+        total += r[i];
+    }
+    const double m = total / 7.0;
+    const double tol = m * 0.65;
+    if (std::abs(r[0] - m) > tol || std::abs(r[1] - m) > tol || std::abs(r[2] - 3 * m) > 3 * tol || std::abs(r[3] - m) > tol || std::abs(r[4] - m) > tol)
+        return false;
+    *module = m;
+    return true;
+}
+
+/// Đo mẫu 1:1:3:1:1 quanh điểm (x,y) (đang ở trong ô lõi đen) dọc theo hướng (dx,dy) trên ảnh nhị phân bin (1 = mực). Trả tâm theo hướng đó (độ lệch so với (x,y) dọc theo hướng) và bề rộng tổng.
+bool crossCheck(const std::vector<uchar>& bin, int w, int h, int x, int y, int dx, int dy, double* shift, double* total, double* module)
+{
+    auto at = [&](int i) -> int {
+        const int px = x + dx * i, py = y + dy * i;
+        if (px < 0 || py < 0 || px >= w || py >= h)
+            return -1;
+        return bin[static_cast<size_t>(py) * w + px];
+    };
+    if (at(0) != 1)
+        return false;
+    // Đi về hai phía: mỗi phía có (nửa lõi đen), (trắng), (đen ngoài cùng).
+    int len[2][3] = {{0, 0, 0}, {0, 0, 0}};
+    for (int side = 0; side < 2; ++side)
+    {
+        const int sgn = side == 0 ? 1 : -1;
+        int i = 0;
+        const int maxRun = std::max(w, h);
+        // lõi đen
+        int k = 0;
+        for (; k < maxRun && at(sgn * (i + 1)) == 1; ++k)
+            ++i;
+        len[side][0] = k;
+        // trắng
+        k = 0;
+        for (; k < maxRun && at(sgn * (i + 1)) == 0; ++k)
+            ++i;
+        len[side][1] = k;
+        if (at(sgn * (i + 1)) != 1)
+            return false;
+        // đen ngoài cùng
+        k = 0;
+        for (; k < maxRun && at(sgn * (i + 1)) == 1; ++k)
+            ++i;
+        len[side][2] = k;
+        if (len[side][1] == 0 || len[side][2] == 0)
+            return false;
+    }
+    const double r[5] = {static_cast<double>(len[0][2]), static_cast<double>(len[0][1]), static_cast<double>(len[0][0] + len[1][0] + 1), static_cast<double>(len[1][1]), static_cast<double>(len[1][2])};
+    if (!finderRatio(r, module))
+        return false;
+    *total = r[0] + r[1] + r[2] + r[3] + r[4];
+    // tâm = giữa lõi đen: lõi trải từ -len[1][0] đến +len[0][0] (hướng dương = phía side 0)
+    *shift = (len[0][0] - len[1][0]) / 2.0;
+    return true;
+}
+
+/// Dò ô định vị trên ảnh nhị phân bin: quét từng hàng tìm mẫu 1:1:3:1:1, kiểm chéo theo cột (và hàng lại ở tâm mới). Tỉ lệ này GIỮ NGUYÊN trên mọi đường thẳng đi qua tâm ô định vị
+/// (hình vuông đồng dạng quanh tâm) nên chỉ cần quét ngang + dọc là bắt được ô định vị ở MỌI góc xoay, kể cả 45 độ. Trả tâm (chưa tinh chỉnh) + bề rộng, nhiều "phiếu" nhất trước.
+std::vector<FinderPt> findFinders(const std::vector<uchar>& bin, int w, int h, const QElapsedTimer& clock, qint64 budgetMs)
+{
+    struct Cluster
+    {
+        double sx{0}, sy{0}, sm{0};
+        int n{0};
+    };
+    std::vector<Cluster> clusters;
+    std::vector<int> runStart;
+    std::vector<int> runLen;
+    for (int y = 0; y < h; ++y)
+    {
+        if ((y & 63) == 0 && clock.elapsed() > budgetMs)
+            break;
+        const uchar* row = bin.data() + static_cast<size_t>(y) * w;
+        runStart.clear();
+        runLen.clear();
+        int s = 0;
+        for (int x = 1; x <= w; ++x)
+            if (x == w || row[x] != row[s])
+            {
+                runStart.push_back(s);
+                runLen.push_back(x - s);
+                s = x;
+            }
+        for (size_t i = 0; i + 4 < runStart.size(); ++i)
+        {
+            if (row[runStart[i]] != 1)
+                continue;
+            const double r[5] = {static_cast<double>(runLen[i]), static_cast<double>(runLen[i + 1]), static_cast<double>(runLen[i + 2]), static_cast<double>(runLen[i + 3]), static_cast<double>(runLen[i + 4])};
+            double m = 0;
+            if (!finderRatio(r, &m))
+                continue;
+            const double cx = runStart[i + 2] + runLen[i + 2] / 2.0;
+            double vShift = 0, vTotal = 0, vModule = 0;
+            const int xi = static_cast<int>(cx);
+            if (!crossCheck(bin, w, h, xi, y, 0, 1, &vShift, &vTotal, &vModule))
+                continue;
+            const double total = r[0] + r[1] + r[2] + r[3] + r[4];
+            if (vTotal > total * 1.5 || vTotal < total / 1.5)
+                continue;
+            const double cy = y + vShift;
+            double hShift = 0, hTotal = 0, hModule = 0;
+            if (!crossCheck(bin, w, h, xi, static_cast<int>(cy), 1, 0, &hShift, &hTotal, &hModule))
+                continue;
+            const double fx = xi + hShift, fy = cy, fm = (total + vTotal + hTotal) / 21.0;
+            // Ô định vị thật thỏa 1:1:3:1:1 trên MỌI đường qua tâm: kiểm thêm hai đường chéo (bỏ qua khi ô quá nhỏ để lấy mẫu chéo) - loại phần lớn "giống ô định vị" trong nhiễu/chữ.
+            if (fm >= 3.5)
+            {
+                double ds = 0, dt = 0, dm = 0;
+                const int cxi = static_cast<int>(std::lround(fx)), cyi = static_cast<int>(std::lround(fy));
+                if (!crossCheck(bin, w, h, cxi, cyi, 1, 1, &ds, &dt, &dm) || !crossCheck(bin, w, h, cxi, cyi, 1, -1, &ds, &dt, &dm))
+                    continue;
+            }
+            bool merged = false;
+            for (Cluster& c : clusters)
+            {
+                const double mx = c.sx / c.n, my = c.sy / c.n, mm = c.sm / c.n;
+                if (std::hypot(fx - mx, fy - my) < 2.0 * std::max(mm, fm))
+                {
+                    c.sx += fx;
+                    c.sy += fy;
+                    c.sm += fm;
+                    ++c.n;
+                    merged = true;
+                    break;
+                }
+            }
+            if (!merged && clusters.size() < 400)
+                clusters.push_back({fx, fy, fm, 1});
+        }
+    }
+    std::stable_sort(clusters.begin(), clusters.end(), [](const Cluster& a, const Cluster& b) { return a.n > b.n; });
+    std::vector<FinderPt> out;
+    for (const Cluster& c : clusters)
+    {
+        if (c.n < 2 || out.size() >= 16)
+            break;
+        out.push_back({QPointF(c.sx / c.n, c.sy / c.n), 7.0 * c.sm / c.n});
+    }
+    return out;
+}
+
+/// Nhị phân hóa ảnh xám thành 1 = mực (tối) theo ngưỡng Otsu toàn cục (adaptive=false) hoặc theo trung bình cục bộ (adaptive=true, cửa sổ ~1/10 ảnh).
+std::vector<uchar> binarizeInk(const QImage& gray, bool adaptive)
+{
+    const int w = gray.width(), h = gray.height();
+    std::vector<uchar> bin(static_cast<size_t>(w) * h, 0);
+    if (!adaptive)
+    {
+        std::vector<qint64> hist(256, 0);
+        for (int y = 0; y < h; ++y)
+        {
+            const uchar* row = gray.constScanLine(y);
+            for (int x = 0; x < w; ++x)
+                ++hist[row[x]];
+        }
+        const qint64 total = static_cast<qint64>(w) * h;
+        double sumAll = 0;
+        for (int i = 0; i < 256; ++i)
+            sumAll += static_cast<double>(i) * static_cast<double>(hist[static_cast<size_t>(i)]);
+        double sumB = 0, bestVar = -1;
+        qint64 wB = 0;
+        int thr = 128;
+        for (int t = 0; t < 256; ++t)
+        {
+            wB += hist[static_cast<size_t>(t)];
+            if (wB == 0)
+                continue;
+            const qint64 wF = total - wB;
+            if (wF == 0)
+                break;
+            sumB += static_cast<double>(t) * static_cast<double>(hist[static_cast<size_t>(t)]);
+            const double mB = sumB / static_cast<double>(wB), mF = (sumAll - sumB) / static_cast<double>(wF);
+            const double between = static_cast<double>(wB) * static_cast<double>(wF) * (mB - mF) * (mB - mF);
+            if (between > bestVar)
+            {
+                bestVar = between;
+                thr = t;
+            }
+        }
+        for (int y = 0; y < h; ++y)
+        {
+            const uchar* row = gray.constScanLine(y);
+            uchar* o = bin.data() + static_cast<size_t>(y) * w;
+            for (int x = 0; x < w; ++x)
+                o[x] = row[x] <= thr ? 1 : 0;
+        }
+        return bin;
+    }
+    // Ảnh tích phân -> trung bình cục bộ.
+    std::vector<qint64> integral(static_cast<size_t>(w + 1) * (h + 1), 0);
+    for (int y = 0; y < h; ++y)
+    {
+        const uchar* row = gray.constScanLine(y);
+        qint64 rowSum = 0;
+        for (int x = 0; x < w; ++x)
+        {
+            rowSum += row[x];
+            integral[static_cast<size_t>(y + 1) * (w + 1) + (x + 1)] = integral[static_cast<size_t>(y) * (w + 1) + (x + 1)] + rowSum;
+        }
+    }
+    const int r = std::max(12, std::min(w, h) / 10);
+    for (int y = 0; y < h; ++y)
+    {
+        const uchar* row = gray.constScanLine(y);
+        uchar* o = bin.data() + static_cast<size_t>(y) * w;
+        const int y0 = std::max(0, y - r), y1 = std::min(h, y + r + 1);
+        for (int x = 0; x < w; ++x)
+        {
+            const int x0 = std::max(0, x - r), x1 = std::min(w, x + r + 1);
+            const qint64 sum = integral[static_cast<size_t>(y1) * (w + 1) + x1] - integral[static_cast<size_t>(y0) * (w + 1) + x1] -
+                               integral[static_cast<size_t>(y1) * (w + 1) + x0] + integral[static_cast<size_t>(y0) * (w + 1) + x0];
+            const double mean = static_cast<double>(sum) / (static_cast<double>(x1 - x0) * (y1 - y0));
+            o[x] = row[x] < mean * 0.85 ? 1 : 0;
+        }
+    }
+    return bin;
+}
+
+/// Giải phép chiếu 3x3 (h[0..7], h8 = 1) ánh xạ 4 điểm src -> dst (khử Gauss 8x8). false nếu suy biến.
+bool homographyFrom4(const double src[4][2], const QPointF dst[4], double h[8])
+{
+    double a[8][9];
+    for (int i = 0; i < 4; ++i)
+    {
+        const double x = src[i][0], y = src[i][1], u = dst[i].x(), v = dst[i].y();
+        const double r1[9] = {x, y, 1, 0, 0, 0, -x * u, -y * u, u};
+        const double r2[9] = {0, 0, 0, x, y, 1, -x * v, -y * v, v};
+        std::memcpy(a[2 * i], r1, sizeof(r1));
+        std::memcpy(a[2 * i + 1], r2, sizeof(r2));
+    }
+    for (int col = 0; col < 8; ++col)
+    {
+        int piv = col;
+        for (int r = col + 1; r < 8; ++r)
+            if (std::abs(a[r][col]) > std::abs(a[piv][col]))
+                piv = r;
+        if (std::abs(a[piv][col]) < 1e-12)
+            return false;
+        if (piv != col)
+            for (int k = 0; k < 9; ++k)
+                std::swap(a[piv][k], a[col][k]);
+        for (int r = 0; r < 8; ++r)
+        {
+            if (r == col)
+                continue;
+            const double f = a[r][col] / a[col][col];
+            for (int k = col; k < 9; ++k)
+                a[r][k] -= f * a[col][k];
+        }
+    }
+    for (int i = 0; i < 8; ++i)
+        h[i] = a[i][8] / a[i][i];
+    return true;
+}
+
+QPointF applyH8(const double h[8], double x, double y)
+{
+    const double d = h[6] * x + h[7] * y + 1.0;
+    return QPointF((h[0] * x + h[1] * y + h[2]) / d, (h[3] * x + h[4] * y + h[5]) / d);
+}
+
+/// Dò ô căn chỉnh góc dưới-phải (mẫu 5x5: tâm tối, vòng 3x3 sáng, viền 5x5 tối) quanh vị trí dự đoán theo phép chiếu affine từ 3 tâm ô định vị. Nghiêng góc nhìn/xoay làm vị trí
+/// thật lệch tới vài ô nên tìm trong cửa sổ rộng; tìm được thì giải phép chiếu từ 4 điểm (3 tâm ô định vị + ô căn chỉnh) -> 4 góc chính xác hơn nhiều so với ngoại suy affine.
+/// Trả điểm khớp của mẫu (độ tương phản chuẩn hóa 0..1) hoặc -1 nếu không dựng được; corners = TL,TR,BR,BL.
+double alignedCorners(const QImage& gray, const SeedTriple& seed, int size, QPointF corners[4])
+{
+    if (size < 25)
+        return -1;
+    const double k = 1.0 / (size - 7);
+    const QPointF ex = (seed.tr - seed.tl) * k, ey = (seed.bl - seed.tl) * k;
+    const QPointF est = seed.tl + (ex + ey) * (size - 10);
+    const double R = std::min(8.0, std::max(2.0, 0.16 * size));
+    auto score = [&](const QPointF& p) {
+        double dark = 0, darkSq = 0, light = 0, lightSq = 0;
+        int nd = 0, nl = 0;
+        for (int j = -2; j <= 2; ++j)
+            for (int i = -2; i <= 2; ++i)
+            {
+                const QPointF q = p + ex * i + ey * j;
+                const double v = sampleBilinear(gray, q.x(), q.y());
+                const int ring = std::max(std::abs(i), std::abs(j));
+                if (ring == 1)
+                {
+                    light += v;
+                    lightSq += v * v;
+                    ++nl;
+                }
+                else
+                {
+                    dark += v;
+                    darkSq += v * v;
+                    ++nd;
+                }
+            }
+        const double dm = dark / nd, lm = light / nl;
+        const double dv = std::sqrt(std::max(0.0, darkSq / nd - dm * dm)), lv = std::sqrt(std::max(0.0, lightSq / nl - lm * lm));
+        return ((lm - dm) - 0.5 * (dv + lv)) / 255.0;
+    };
+    double best = -1;
+    QPointF bestP = est;
+    for (double dy = -R; dy <= R + 1e-9; dy += 0.5)
+        for (double dx = -R; dx <= R + 1e-9; dx += 0.5)
+        {
+            const QPointF p = est + ex * dx + ey * dy;
+            const double s = score(p);
+            if (s > best)
+            {
+                best = s;
+                bestP = p;
+            }
+        }
+    // tinh chỉnh mịn quanh điểm tốt nhất
+    for (double step = 0.25; step > 0.05; step *= 0.5)
+        for (int it = 0; it < 6; ++it)
+        {
+            bool moved = false;
+            for (int d = 0; d < 8; ++d)
+            {
+                static const int sx[8] = {1, -1, 0, 0, 1, 1, -1, -1};
+                static const int sy[8] = {0, 0, 1, -1, 1, -1, 1, -1};
+                const QPointF p = bestP + ex * (sx[d] * step) + ey * (sy[d] * step);
+                const double s = score(p);
+                if (s > best)
+                {
+                    best = s;
+                    bestP = p;
+                    moved = true;
+                }
+            }
+            if (!moved)
+                break;
+        }
+    if (best < 0.25)
+        return -1;
+    const double src[4][2] = {{3.5, 3.5}, {size - 3.5, 3.5}, {3.5, size - 3.5}, {size - 6.5, size - 6.5}};
+    const QPointF dst[4] = {seed.tl, seed.tr, seed.bl, bestP};
+    double h[8];
+    if (!homographyFrom4(src, dst, h))
+        return -1;
+    corners[0] = applyH8(h, 0, 0);
+    corners[1] = applyH8(h, size, 0);
+    corners[2] = applyH8(h, size, size);
+    corners[3] = applyH8(h, 0, size);
+    return best;
 }
 
 /// Dựng và thử các ứng viên lưới từ lưới quirc đã THẤY (seed) mà không giải mã được. quirc đoán cỡ lưới từ bề rộng ô định vị nên với ô định vị bo tròn/hình tròn
@@ -530,6 +956,18 @@ void refineGrids(const QImage& gray, const SeedTriple& seed, const QElapsedTimer
         cd.c[2] = cd.c[0] + (ex + ey) * size;
         cd.fm = functionModules(size);
         cd.score = scoreCorners(gray, cd.c, size, cd.fm) / static_cast<double>(cd.fm.size());
+        // Điểm xuất phát tốt hơn nhờ ô căn chỉnh góc dưới-phải (mã nghiêng/xoay/dày): dùng nếu khớp các ô chức năng hơn ngoại suy affine.
+        QPointF ac[4];
+        if (alignedCorners(gray, seed, size, ac) > 0)
+        {
+            const double s2 = scoreCorners(gray, ac, size, cd.fm) / static_cast<double>(cd.fm.size());
+            if (s2 > cd.score)
+            {
+                for (int i = 0; i < 4; ++i)
+                    cd.c[i] = ac[i];
+                cd.score = s2;
+            }
+        }
         cands.push_back(std::move(cd));
     }
     std::stable_sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) { return a.score > b.score; });
@@ -543,10 +981,14 @@ void refineGrids(const QImage& gray, const SeedTriple& seed, const QElapsedTimer
         const double modulePx = std::hypot(cd.c[1].x() - cd.c[0].x(), cd.c[1].y() - cd.c[0].y()) / cd.size;
         const double start = scoreCorners(gray, cd.c, cd.size, cd.fm);
         // Leo đồi từ hai bước đầu khác nhau (1 ô: sửa lệch nhỏ; 2,5 ô: góc dưới-phải chỉ được ô căn chỉnh nhỏ giữ nên ngoại suy có thể lệch tới vài ô).
+        double bestSoFar = 0;
         for (double firstStep : {1.0, 2.5})
         {
+            if (firstStep > 1.0 && bestSoFar >= 0.85 * static_cast<double>(cd.fm.size()))
+                continue; // lượt bước nhỏ đã khớp rất tốt: lượt bước lớn chỉ tốn thời gian
             QPointF c[4] = {cd.c[0], cd.c[1], cd.c[2], cd.c[3]};
             const double best = climbCorners(gray, c, cd.size, cd.fm, modulePx, firstStep, clock, budgetMs);
+            bestSoFar = std::max(bestSoFar, best);
             if (best <= start + 1e-6 && firstStep > 1.0)
                 continue;
             // Ngưỡng đen/trắng tính từ các ô chức năng; ảnh nén JPEG/mờ có thể cần ngưỡng lệch nhẹ nên thêm hai biến thể.
@@ -556,6 +998,9 @@ void refineGrids(const QImage& gray, const SeedTriple& seed, const QElapsedTimer
                 if (sampleGrid(gray, c, cd.size, cd.fm, thrOffset, &code) && tryCode(code))
                     return;
             }
+            // Lưới khớp gần như TRỌN VẸN các ô chức năng mà dữ liệu vẫn không giải mã được => mã hỏng thật (hoặc lưới giả có ô định vị): thử thêm cỡ/bước khác chỉ tốn thời gian.
+            if (best >= 0.92 * static_cast<double>(cd.fm.size()))
+                return;
             if (clock.elapsed() > budgetMs)
                 return;
         }
@@ -715,7 +1160,7 @@ QList<QRDecoded> decodeGray(const QImage& gray, double scale, int pad, int* unde
 
 /// Giai đoạn 2: tinh chỉnh các lưới quirc đã thấy mà không giải mã được (xem refineGrids()). Trần thời gian ~900 ms cho cả lượt.
 /// undecoded nhận số lưới vẫn chưa đọc được.
-QList<QRDecoded> refineMissed(const GridMiss& miss, int* undecoded)
+QList<QRDecoded> refineMissed(const GridMiss& miss, int* undecoded, qint64 totalMs = 900)
 {
     QList<QRDecoded> results;
     if (undecoded)
@@ -723,11 +1168,19 @@ QList<QRDecoded> refineMissed(const GridMiss& miss, int* undecoded)
     auto data = std::make_unique<quirc_data>();
     QElapsedTimer clock;
     clock.start();
+    std::vector<SeedTriple> done;
     for (const SeedTriple& seed : miss.seeds)
     {
+        // Hạt giống suy ra từ lưới quirc và bộ ba ô định vị thường là CÙNG một bộ ba: bỏ bản gần trùng (tâm lệch < 0,1 cạnh) cho khỏi tinh chỉnh hai lần.
+        const double edgeLen = std::max(std::hypot((seed.tr - seed.tl).x(), (seed.tr - seed.tl).y()), std::hypot((seed.bl - seed.tl).x(), (seed.bl - seed.tl).y()));
+        auto close = [&](const QPointF& a, const QPointF& b) { return std::hypot(a.x() - b.x(), a.y() - b.y()) < 0.1 * edgeLen; };
+        const bool dup = std::any_of(done.begin(), done.end(), [&](const SeedTriple& d) { return close(d.tl, seed.tl) && close(d.tr, seed.tr) && close(d.bl, seed.bl); });
+        if (dup)
+            continue;
+        done.push_back(seed);
         bool ok = false;
-        if (clock.elapsed() < 900)
-            refineGrids(miss.gray, seed, clock, std::min<qint64>(900, clock.elapsed() + 450), [&](quirc_code& cand) {
+        if (clock.elapsed() < totalMs)
+            refineGrids(miss.gray, seed, clock, std::min<qint64>(totalMs, clock.elapsed() + 450), [&](quirc_code& cand) {
                 quirc_decode_error_t err = quirc_decode(&cand, data.get());
                 if (err == QUIRC_ERROR_DATA_ECC)
                 {
@@ -987,7 +1440,12 @@ QString QRCodec::toSvg(const QRMatrix& matrix, const QRStyle& style)
     return svg;
 }
 
-QList<QRDecoded> QRCodec::decode(const QImage& image, int* undecodedCount)
+namespace
+{
+QList<QRDecoded> decodeFlat(const QImage& gray, int* undecodedCount, bool quick);
+}
+
+QList<QRDecoded> QRCodec::decode(const QImage& image, int* undecodedCount, bool quick)
 {
     if (undecodedCount)
         *undecodedCount = 0;
@@ -1004,6 +1462,36 @@ QList<QRDecoded> QRCodec::decode(const QImage& image, int* undecodedCount)
         normalized.setDevicePixelRatio(1.0);
 
     const QImage gray = toGray(normalized);
+    QList<QRDecoded> found = decodeFlat(gray, undecodedCount, quick);
+    if (found.isEmpty() && normalized.hasAlphaChannel())
+    {
+        // PNG nền TRONG SUỐT (tải từ trang tạo mã, mã "chế độ tối" mực trắng): trộn lên nền trắng thì mực trắng biến mất. Thử lại trộn lên nền ĐEN.
+        QImage flat(normalized.size(), QImage::Format_RGB32);
+        flat.fill(Qt::black);
+        {
+            QPainter p(&flat);
+            p.drawImage(0, 0, normalized);
+        }
+        int und2 = 0;
+        const QList<QRDecoded> second = decodeFlat(flat.convertToFormat(QImage::Format_Grayscale8), &und2, quick);
+        if (!second.isEmpty())
+        {
+            if (undecodedCount)
+                *undecodedCount = und2;
+            return second;
+        }
+        if (undecodedCount)
+            *undecodedCount = std::max(*undecodedCount, und2);
+    }
+    return found;
+}
+
+namespace
+{
+QList<QRDecoded> decodeFlat(const QImage& gray, int* undecodedCount, bool quick)
+{
+    if (undecodedCount)
+        *undecodedCount = 0;
 
     // Hạn chế ảnh quá lớn để quét nhanh và tiết kiệm bộ nhớ
     const int maxDim = std::max(gray.width(), gray.height());
@@ -1104,28 +1592,34 @@ QList<QRDecoded> QRCodec::decode(const QImage& image, int* undecodedCount)
     // Giai đoạn 1b: chưa thấy GÌ cả (không ô định vị, không lưới) - có thể là mã vẽ các ô TÁCH RỜI (khe hở cắt vụn viền ô định vị). Thử lại sau phép đóng hình thái học
     // (r = 1 rồi 2); ảnh lớn thì làm ở nửa độ phân giải cho rẻ. Cực tính theo viền ảnh (nền tối -> mã sáng, đảo màu). Chỉ MỘT cực tính: thử cả hai làm quét ảnh
     // không có mã chậm gấp 4 (đo thật 164 -> 700 ms ở 1080p) - hạn chế đã biết: thẻ mã SÁNG kiểu ô tách rời đặt trên nền màn hình TỐI.
-    if (all.isEmpty() && maxUndecoded == 0)
+    if (!quick && all.isEmpty() && maxUndecoded == 0)
     {
-        const bool big = std::max(base.width(), base.height()) > 1000;
-        for (int r : {1, 2})
-        {
-            const Pass pass{big ? 0.5 : 1.0, edge < 128, r};
-            int undecoded = 0;
-            GridMiss miss;
-            const QList<QRDecoded> found = runPass(edge < 246 ? 1 : 0, pass, &undecoded, &miss);
-            maxUndecoded = std::max(maxUndecoded, undecoded);
-            merge(found);
-            if (undecoded > 0 && sawGrids.size() < 4)
-                sawGrids.push_back(std::move(miss));
-            if (!found.isEmpty() && undecoded == 0)
+        const int maxDim = std::max(base.width(), base.height());
+        const bool big = maxDim > 1000;
+        // Cực tính theo viền ảnh trước (nền tối -> mã sáng). Ảnh không quá lớn (<= 1800 px: vùng chụp, ảnh dán, ảnh chụp điện thoại) thử thêm cực tính ngược lại - mã mực TỐI trên thẻ
+        // sáng nằm giữa nền màn hình tối là trường hợp thật; ảnh toàn màn hình lớn hơn thì giữ một cực tính cho khỏi chậm.
+        const int polarities = maxDim <= 1800 ? 2 : 1;
+        for (int pol = 0; pol < polarities && maxUndecoded == 0; ++pol)
+            for (int r : {1, 2})
             {
-                if (undecodedCount)
-                    *undecodedCount = maxUndecoded;
-                return all;
+                const bool inv = (edge < 128) != (pol == 1);
+                const Pass pass{big ? 0.5 : 1.0, inv, r};
+                int undecoded = 0;
+                GridMiss miss;
+                const QList<QRDecoded> found = runPass(pol == 0 ? (edge < 246 ? 1 : 0) : 0, pass, &undecoded, &miss);
+                maxUndecoded = std::max(maxUndecoded, undecoded);
+                merge(found);
+                if (undecoded > 0 && sawGrids.size() < 4)
+                    sawGrids.push_back(std::move(miss));
+                if (!found.isEmpty() && undecoded == 0)
+                {
+                    if (undecodedCount)
+                        *undecodedCount = maxUndecoded;
+                    return all;
+                }
+                if (maxUndecoded > 0)
+                    break; // đã THẤY ô định vị: không phải lỗi khe hở - để giai đoạn 2 tinh chỉnh
             }
-            if (maxUndecoded > 0)
-                break; // đã THẤY ô định vị: không phải lỗi khe hở - để giai đoạn 2 tinh chỉnh
-        }
     }
 
     // Giai đoạn 2 (chỉ chạy khi quirc đã THẤY lưới mà không đọc được): tinh chỉnh lưới cho mã cách điệu/bo tròn/ngoại suy lệch (xem refineGrids()).
@@ -1150,10 +1644,53 @@ QList<QRDecoded> QRCodec::decode(const QImage& image, int* undecodedCount)
             }
         }
     }
+    // Giai đoạn 3 (dự phòng cuối): quirc bỏ sót một ô định vị (đo thật: mã xoay chéo, ô nhỏ, nằm sát mép thẻ sáng trên nền tối) nên không có hạt giống đúng cho giai đoạn 2.
+    // Tự dò ô định vị bằng quét tỉ lệ 1:1:3:1:1 (findFinders), ghép bộ ba rồi dùng lại phần tinh chỉnh lưới. Thử ngưỡng toàn cục rồi cục bộ; cực tính theo viền ảnh trước.
+    if (!quick && all.isEmpty())
+    {
+        QElapsedTimer clock;
+        clock.start();
+        // Quirc đã thấy lưới mà giai đoạn 2 không đọc được (mã hỏng/che khuất thật) thì thêm tự dò chỉ có ích ở ít ca -> ngân sách ngắn; chưa thấy gì thì dò kỹ hơn.
+        const qint64 kTotalMs = maxUndecoded > 0 ? 250 : 1200;
+        const bool darkFirst = edge < 128;
+        for (int pol = 0; pol < 2 && all.isEmpty(); ++pol)
+            for (int mode = 0; mode < 2 && all.isEmpty(); ++mode)
+            {
+                if (clock.elapsed() > kTotalMs)
+                    break;
+                const bool inv = (pol == 1) != darkFirst;
+                QImage work = base;
+                if (inv)
+                    work.invertPixels();
+                constexpr int pad = 32;
+                const QImage padded = padFill(work, pad, inv ? 255 - edge : edge);
+                const std::vector<uchar> bin = binarizeInk(padded, mode == 1);
+                std::vector<FinderPt> finders = findFinders(bin, padded.width(), padded.height(), clock, kTotalMs);
+                for (FinderPt& f : finders)
+                    f.c = refineCentre(padded, f.c, std::max(2.5, 1.7 * f.side / 7.0));
+                const std::vector<SeedTriple> triples = triplesFromFinders(finders, 3);
+                if (triples.empty())
+                    continue;
+                GridMiss miss;
+                miss.gray = padded;
+                miss.scale = baseScale;
+                miss.pad = pad;
+                miss.seeds = triples;
+                int undecoded = 0;
+                merge(refineMissed(miss, &undecoded, std::max<qint64>(200, kTotalMs - clock.elapsed())));
+            }
+        if (!all.isEmpty())
+        {
+            if (undecodedCount)
+                *undecodedCount = 0;
+            return all;
+        }
+    }
     if (undecodedCount)
         *undecodedCount = maxUndecoded;
     return all;
 }
+} // namespace
 
 double QRCodec::contrastRatio(const QColor& a, const QColor& b)
 {

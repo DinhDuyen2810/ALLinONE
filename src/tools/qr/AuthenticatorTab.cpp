@@ -299,7 +299,10 @@ int AuthenticatorTab::importImage(const QImage& image, const QString& sourceName
             added += importUri(d.text);
         }
     if (otpCodes == 0)
-        setStatus(QString("Có %1 mã QR trong %2 nhưng không phải mã Authenticator (otpauth://).").arg(found.size()).arg(sourceName), true);
+    {
+        setStatus(QString("Có %1 mã QR trong %2 nhưng không phải mã Authenticator (otpauth://) - đã chuyển sang tab Quét để xem nội dung.").arg(found.size()).arg(sourceName), true);
+        emit nonOtpScanned(image, found, sourceName);
+    }
     return added;
 }
 

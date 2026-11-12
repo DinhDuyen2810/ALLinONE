@@ -39,6 +39,48 @@ int main(int argc, char** argv)
         std::printf("nhieu %dx%d: %lld ms, doc duoc %lld, thay %d luoi\n", n, n, nt.elapsed(), static_cast<long long>(r.size()), und);
         return 0;
     }
+    if (qEnvironmentVariableIsSet("QR_PROBE_FAKE"))
+    {
+        // Đo thời gian ảnh "mã giả": dữ liệu ngẫu nhiên + 3 ô định vị thật (quirc thấy lưới nhưng không giải mã được) - đường chậm nhất của ảnh KHÔNG phải mã thật.
+        const int n = qEnvironmentVariableIntValue("QR_PROBE_FAKE");
+        quint32 s = 777;
+        qint64 total = 0, worst = 0;
+        for (int k = 0; k < n; ++k)
+        {
+            const int modules = 21 + 4 * (k % 10), px = 2 + k % 4;
+            const int side = (modules + 8) * px;
+            QImage img(side, side, QImage::Format_RGB32);
+            img.fill(Qt::white);
+            {
+                QPainter p(&img);
+                p.setPen(Qt::NoPen);
+                for (int y = 0; y < modules; ++y)
+                    for (int x = 0; x < modules; ++x)
+                    {
+                        s = s * 1664525u + 1013904223u;
+                        if ((s >> 24) & 1)
+                            p.fillRect((x + 4) * px, (y + 4) * px, px, px, Qt::black);
+                    }
+                auto stamp = [&](int x0, int y0) {
+                    p.fillRect(x0 - px, y0 - px, 9 * px, 9 * px, Qt::white);
+                    p.fillRect(x0, y0, 7 * px, 7 * px, Qt::black);
+                    p.fillRect(x0 + px, y0 + px, 5 * px, 5 * px, Qt::white);
+                    p.fillRect(x0 + 2 * px, y0 + 2 * px, 3 * px, 3 * px, Qt::black);
+                };
+                stamp(4 * px, 4 * px);
+                stamp((4 + modules - 7) * px, 4 * px);
+                stamp(4 * px, (4 + modules - 7) * px);
+            }
+            QElapsedTimer t;
+            t.start();
+            QRCodec::decode(img);
+            const qint64 ms = t.elapsed();
+            total += ms;
+            worst = std::max(worst, ms);
+        }
+        std::printf("ma gia x%d: trung binh %lld ms, cham nhat %lld ms\n", n, static_cast<long long>(total / std::max(1, n)), static_cast<long long>(worst));
+        return 0;
+    }
     if (qEnvironmentVariableIsSet("QR_PROBE_BLANK"))
     {
         // Đo thời gian giải mã ảnh "giống màn hình, KHÔNG có mã" (nền + vài khối chữ/ảnh): đường hay gặp nhất khi quét nền - không được chậm.

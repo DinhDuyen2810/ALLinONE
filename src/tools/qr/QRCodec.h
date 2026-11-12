@@ -75,7 +75,10 @@ public:
     /// nhưng KHÔNG giải mã được ở lượt "tốt nhất" - nơi gọi dùng để phân biệt "không có gì giống mã QR
     /// trong ảnh" (undecodedCount==0, kết quả rỗng) với "có thấy dạng mã QR nhưng đọc hỏng/không đúng định
     /// dạng" (undecodedCount>0, kết quả rỗng) khi trả về danh sách rỗng - hai thông báo lỗi khác nhau.
-    static QList<QRDecoded> decode(const QImage& image, int* undecodedCount = nullptr);
+    ///
+    /// `quick` = true (camera: mỗi giây gọi nhiều lần trên GUI thread, khung kế tiếp sẽ tốt hơn): bỏ các giai đoạn dự phòng tốn thời gian (phép đóng cho mã ô tách rời,
+    /// tự dò ô định vị) - các lượt chính và tinh chỉnh lưới vẫn chạy. Quét ảnh/dán/chụp vùng luôn dùng chế độ đầy đủ.
+    static QList<QRDecoded> decode(const QImage& image, int* undecodedCount = nullptr, bool quick = false);
 
     /// Độ tương phản WCAG giữa hai màu (1..21). Quét tốt khi >= 3 và nền sáng hơn mã.
     static double contrastRatio(const QColor& a, const QColor& b);

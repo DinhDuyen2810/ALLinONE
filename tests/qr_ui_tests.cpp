@@ -868,6 +868,10 @@ int main(int argc, char** argv)
             const QRMatrix m = QRCodec::encode("otpauth://totp/X:y?secret=GEZDGNBVGY3TQOJQ&issuer=X", QREcc::Medium, &err);
             CHECK(scanTab && scanTab->scanImage(QRCodec::render(m, st), "otp") == 1);
             CHECK(QRHistoryStore::instance().entries().size() == before);
+            // v1.28.0: quét ra mã Authenticator -> TỰ thêm vào tab Authenticator và chuyển sang đó (không cần bấm nút)
+            CHECK(w2.authenticatorTab()->rowCount() == 4);
+            CHECK(w2.tabs()->currentWidget() == w2.authenticatorTab());
+            w2.tabs()->setCurrentWidget(scanTab);
             QPushButton* action = nullptr;
             for (QPushButton* b : scanTab->findChildren<QPushButton*>())
                 if (b->text().contains("Thêm vào Authenticator"))
@@ -880,6 +884,61 @@ int main(int argc, char** argv)
             CHECK(signalled);
             CHECK(w2.authenticatorTab()->rowCount() == 4); // QRWindow chuyển tiếp sang tab Authenticator
             CHECK(w2.tabs()->currentWidget() == w2.authenticatorTab());
+        }
+        // v1.28.0: tự chuyển tab theo loại mã
+        {
+            QRScanTab* scanTab = w2.findChild<QRScanTab*>();
+            QString err;
+            QRStyle st;
+            st.targetSize = 300;
+            const QImage otpImg = QRCodec::render(QRCodec::encode("otpauth://totp/Z:z@z.com?secret=MFRGGZDFMZTWQ2LK&issuer=Z", QREcc::Medium, &err), st);
+            const QImage urlImg = QRCodec::render(QRCodec::encode("https://example.com/hello", QREcc::Medium, &err), st);
+            // (a) ảnh chỉ có mã thường -> ở lại tab Quét, hiện nội dung, KHÔNG thêm tài khoản
+            w2.tabs()->setCurrentWidget(scanTab);
+            const int rowsBefore = w2.authenticatorTab()->rowCount();
+            CHECK(scanTab->scanImage(urlImg, "url") == 1);
+            CHECK(w2.tabs()->currentWidget() == scanTab);
+            CHECK(w2.authenticatorTab()->rowCount() == rowsBefore);
+            CHECK(scanTab->results().size() == 1 && scanTab->results().first().text == "https://example.com/hello");
+            // (b) ảnh lẫn mã Authenticator + mã thường -> thêm tài khoản nhưng ở lại tab Quét để xem nội dung mã thường
+            QImage both(otpImg.width() + urlImg.width() + 40, qMax(otpImg.height(), urlImg.height()) + 20, QImage::Format_RGB32);
+            both.fill(Qt::white);
+            {
+                QPainter p(&both);
+                p.drawImage(10, 10, otpImg);
+                p.drawImage(otpImg.width() + 30, 10, urlImg);
+            }
+            CHECK(scanTab->scanImage(both, "hai mã") == 2);
+            CHECK(w2.authenticatorTab()->rowCount() == rowsBefore + 1);
+            CHECK(w2.tabs()->currentWidget() == scanTab);
+            CHECK(scanTab->statusText().contains("Authenticator"));
+            // (c) ngược lại: tab Authenticator nhập ảnh KHÔNG có mã Authenticator -> chuyển sang tab Quét hiện nội dung
+            w2.tabs()->setCurrentWidget(w2.authenticatorTab());
+            CHECK(w2.authenticatorTab()->importImage(urlImg, "url") == 0);
+            CHECK(w2.tabs()->currentWidget() == scanTab);
+            CHECK(scanTab->results().size() == 1 && scanTab->results().first().text == "https://example.com/hello");
+            // (d) ảnh có mã Authenticator xoay chéo vẫn tự chuyển tab
+            w2.tabs()->setCurrentWidget(scanTab);
+            QImage rot(otpImg.width() * 3 / 2, otpImg.height() * 3 / 2, QImage::Format_RGB32);
+            rot.fill(Qt::white);
+            {
+                QPainter p(&rot);
+                p.setRenderHint(QPainter::SmoothPixmapTransform);
+                p.translate(rot.width() / 2.0, rot.height() / 2.0);
+                p.rotate(37);
+                p.drawImage(-otpImg.width() / 2.0, -otpImg.height() / 2.0, otpImg);
+            }
+            const int rows2 = w2.authenticatorTab()->rowCount();
+            CHECK(scanTab->scanImage(rot, "xoay") == 1);
+            CHECK(w2.tabs()->currentWidget() == w2.authenticatorTab());
+            CHECK(w2.authenticatorTab()->rowCount() == rows2); // đã có sẵn -> không thêm trùng
+            // (e) dán liên kết otpauth:// dạng CHỮ ở tab Quét -> thêm luôn và chuyển tab
+            w2.tabs()->setCurrentWidget(scanTab);
+            QGuiApplication::clipboard()->setText("otpauth://totp/Paste:p@p.com?secret=KRSXG5CTMVRXEZLU&issuer=Paste");
+            scanTab->pasteFromClipboard();
+            CHECK(w2.authenticatorTab()->rowCount() == rows2 + 1);
+            CHECK(w2.tabs()->currentWidget() == w2.authenticatorTab());
+            QGuiApplication::clipboard()->clear();
         }
     }
 

@@ -143,6 +143,143 @@ int main(int argc, char** argv)
     sc.push_back({"screen-dark+logo-circle", withLogo(Dots::Round, Eyes::Rounded, Logo::CircleBadge, 0.22, true), {4.0, 6.0}, screenOf(dark, 30), QREcc::High});
     sc.push_back({"ecc-L-dense(v11)", base(Dots::Square, Eyes::Square), {3.0, 4.0}, nullptr, QREcc::Low});
 
+    if (qEnvironmentVariableIsSet("QR_MATRIX_FORMATS"))
+    {
+        // Định dạng điểm ảnh/kiểu ảnh mà clipboard, tệp PNG/GIF/BMP và chụp màn hình thật có thể đưa vào QRCodec::decode().
+        auto fmt = [](QImage::Format f) { return [f](const QImage& i) { return i.convertToFormat(f); }; };
+        const auto plain = base(Dots::Square, Eyes::Square);
+        const std::vector<double> px = {4.0, 7.0};
+        sc.push_back({"fmt-ARGB32", plain, px, fmt(QImage::Format_ARGB32)});
+        sc.push_back({"fmt-ARGB32-premultiplied", plain, px, fmt(QImage::Format_ARGB32_Premultiplied)});
+        sc.push_back({"fmt-RGBA8888", plain, px, fmt(QImage::Format_RGBA8888)});
+        sc.push_back({"fmt-RGBA8888-premultiplied", plain, px, fmt(QImage::Format_RGBA8888_Premultiplied)});
+        sc.push_back({"fmt-BGR888", plain, px, fmt(QImage::Format_BGR888)});
+        sc.push_back({"fmt-RGB888", plain, px, fmt(QImage::Format_RGB888)});
+        sc.push_back({"fmt-RGB16", plain, px, fmt(QImage::Format_RGB16)});
+        sc.push_back({"fmt-RGB555", plain, px, fmt(QImage::Format_RGB555)});
+        sc.push_back({"fmt-RGB30", plain, px, fmt(QImage::Format_RGB30)});
+        sc.push_back({"fmt-Grayscale8", plain, px, fmt(QImage::Format_Grayscale8)});
+        sc.push_back({"fmt-Grayscale16", plain, px, fmt(QImage::Format_Grayscale16)});
+        sc.push_back({"fmt-RGBA64", plain, px, fmt(QImage::Format_RGBA64)});
+        sc.push_back({"fmt-RGBX64", plain, px, fmt(QImage::Format_RGBX64)});
+        sc.push_back({"fmt-RGBA16FPx4", plain, px, fmt(QImage::Format_RGBA16FPx4)});
+        sc.push_back({"fmt-Indexed8-gray", plain, px, fmt(QImage::Format_Indexed8)});
+        sc.push_back({"fmt-Indexed8-2colour", plain, px, [](const QImage& i) {
+                          QImage o = i.convertToFormat(QImage::Format_Grayscale8).convertToFormat(QImage::Format_Indexed8, {qRgb(30, 30, 90), qRgb(250, 250, 200)});
+                          return o;
+                      }});
+        sc.push_back({"fmt-Mono-threshold", plain, {6.0, 9.0}, [](const QImage& i) { return i.convertToFormat(QImage::Format_Mono, Qt::MonoOnly | Qt::ThresholdDither | Qt::AvoidDither); }});
+        sc.push_back({"fmt-Mono-dither", plain, {8.0, 11.0}, [](const QImage& i) { return i.convertToFormat(QImage::Format_Mono, Qt::MonoOnly | Qt::OrderedDither); }});
+        // PNG nền trong suốt: mực đen / mực trắng (tải từ trang tạo mã, chế độ tối) - trộn lên nền nào cũng phải đọc được
+        sc.push_back({"alpha-black-ink-transparent-bg", plain, px, [](const QImage& i) {
+                          QImage o(i.size(), QImage::Format_ARGB32);
+                          o.fill(Qt::transparent);
+                          for (int y = 0; y < i.height(); ++y)
+                              for (int x = 0; x < i.width(); ++x)
+                                  if (qGray(i.pixel(x, y)) < 128)
+                                      o.setPixel(x, y, qRgba(0, 0, 0, 255));
+                          return o;
+                      }});
+        sc.push_back({"alpha-white-ink-transparent-bg", plain, px, [](const QImage& i) {
+                          QImage o(i.size(), QImage::Format_ARGB32);
+                          o.fill(Qt::transparent);
+                          for (int y = 0; y < i.height(); ++y)
+                              for (int x = 0; x < i.width(); ++x)
+                                  if (qGray(i.pixel(x, y)) < 128)
+                                      o.setPixel(x, y, qRgba(255, 255, 255, 255));
+                          return o;
+                      }});
+        sc.push_back({"alpha-half-transparent-card", plain, px, [](const QImage& i) {
+                          QImage o = i.convertToFormat(QImage::Format_ARGB32);
+                          for (int y = 0; y < o.height(); ++y)
+                              for (int x = 0; x < o.width(); ++x)
+                              {
+                                  const QRgb c = o.pixel(x, y);
+                                  o.setPixel(x, y, qRgba(qRed(c), qGreen(c), qBlue(c), 200));
+                              }
+                          return o;
+                      }});
+        sc.push_back({"dpr-1.5", plain, px, [](const QImage& i) { QImage o = i; o.setDevicePixelRatio(1.5); return o; }});
+        sc.push_back({"dpr-2.0+ARGB", plain, px, [](const QImage& i) { QImage o = i.convertToFormat(QImage::Format_ARGB32_Premultiplied); o.setDevicePixelRatio(2.0); return o; }});
+        sc.push_back({"canvas-4k-dark(code-small)", plain, {3.0, 4.0}, [dark](const QImage& i) {
+                          QImage o(3840, 2160, QImage::Format_RGB32);
+                          o.fill(dark);
+                          QPainter p(&o);
+                          p.drawImage(1500, 700, i);
+                          // thêm "giao diện" xung quanh: vài khối sáng + chữ giả
+                          p.setPen(Qt::NoPen);
+                          p.setBrush(QColor(60, 66, 80));
+                          for (int k = 0; k < 40; ++k)
+                              p.drawRoundedRect(QRectF(100 + (k % 8) * 440, 100 + (k / 8) * 80, 380, 30), 8, 8);
+                          return o;
+                      }});
+        sc.push_back({"canvas-fullhd-white-page(code-small)", plain, {3.0, 5.0}, [](const QImage& i) {
+                          QImage o(1920, 1080, QImage::Format_RGB32);
+                          o.fill(QColor(250, 250, 250));
+                          QPainter p(&o);
+                          p.drawImage(1200, 300, i);
+                          p.setPen(Qt::NoPen);
+                          p.setBrush(QColor(80, 80, 90));
+                          for (int k = 0; k < 20; ++k)
+                              p.drawRect(QRectF(100, 100 + k * 40, 900 - (k % 5) * 90, 14));
+                          return o;
+                      }});
+        sc.push_back({"tight-crop-no-quiet", [](double px) { Spec s; s.px = px; s.quiet = 0; return s; }, {4.0, 7.0}, fmt(QImage::Format_ARGB32)});
+        sc.push_back({"tight-crop-rot-30", [](double px) { Spec s; s.px = px; s.quiet = 0; return s; }, {6.0, 9.0}, [](const QImage& i) { return camera(i, Qt::white, 30, 0, 2); }});
+        sc.push_back({"two-codes-in-one-image", plain, {5.0}, [](const QImage& i) {
+                          QImage o(i.width() * 2 + 60, i.height() + 40, QImage::Format_RGB32);
+                          o.fill(Qt::white);
+                          QPainter p(&o);
+                          p.drawImage(10, 20, i);
+                          p.drawImage(i.width() + 50, 20, i.mirrored(false, false));
+                          return o;
+                      }});
+        std::vector<Scenario> only;
+        for (const Scenario& s : sc)
+            if (s.name.startsWith("fmt-") || s.name.startsWith("alpha-") || s.name.startsWith("dpr-") || s.name.startsWith("canvas-") || s.name.startsWith("tight-") || s.name.startsWith("two-"))
+                only.push_back(s);
+        sc = only;
+    }
+
+    if (qEnvironmentVariableIsSet("QR_MATRIX_SWEEP"))
+    {
+        // Quét mọi góc xoay: ngang/dọc/chéo (0..359 độ, bước QR_MATRIX_SWEEP, mặc định 7), có/không lật gương, nghiêng góc nhìn,
+        // trên nền trắng và nền màn hình tối/sáng, với ô vuông thường + kiểu tròn + đảo màu. Tên kịch bản bắt đầu bằng "sweep-".
+        int step = qEnvironmentVariableIntValue("QR_MATRIX_SWEEP");
+        if (step <= 0)
+            step = 7;
+        struct Style
+        {
+            const char* name;
+            std::function<Spec(double)> spec;
+            QREcc ecc;
+        };
+        const std::vector<Style> styles = {
+            {"plain", base(Dots::Square, Eyes::Square), QREcc::Medium},
+            {"round", base(Dots::Round, Eyes::Rounded), QREcc::Medium},
+            {"circle", base(Dots::Circle, Eyes::Circle), QREcc::Medium},
+            {"inverted", [](double px) { Spec s; s.px = px; s.card = QColor(20, 24, 33); s.ink = Qt::white; s.eyeInk = Qt::white; return s; }, QREcc::Medium},
+        };
+        for (const Style& st : styles)
+            for (int deg = 0; deg < 360; deg += step)
+            {
+                const QString tag = QString("sweep-%1-%2").arg(st.name).arg(deg, 3, 10, QChar('0'));
+                sc.push_back({tag, st.spec, {6.0, 9.0}, [deg](const QImage& i) { return camera(i, Qt::white, deg, 0, 12); }, st.ecc});
+                sc.push_back({tag + "-mirror", st.spec, {6.0}, [deg](const QImage& i) { return camera(i.mirrored(true, false), Qt::white, deg, 0, 12); }, st.ecc});
+                if (deg % 3 == 0)
+                {
+                    sc.push_back({tag + "-persp", st.spec, {8.0, 11.0}, [deg](const QImage& i) { return camera(i, Qt::white, deg, 0.08, 20); }, st.ecc});
+                    sc.push_back({tag + "-on-dark", st.spec, {4.0, 6.0}, [deg, dark](const QImage& i) { return camera(i, dark, deg, 0, 40); }, st.ecc});
+                    sc.push_back({tag + "-on-gray-jpeg", st.spec, {6.0, 9.0}, [deg](const QImage& i) { return jpeg(camera(i, QColor(236, 236, 238), deg, 0, 40), 70); }, st.ecc});
+                }
+            }
+        std::vector<Scenario> only;
+        for (const Scenario& s : sc)
+            if (s.name.startsWith("sweep-"))
+                only.push_back(s);
+        sc = only;
+    }
+
     if (qEnvironmentVariableIsSet("QR_MATRIX_RANDOM"))
     {
         // Chế độ ngẫu nhiên: trộn kiểu ô/ô định vị/logo/màu/kích thước + chuỗi hậu xử lý; hạt giống cố định để lặp lại được.
@@ -154,6 +291,7 @@ int main(int argc, char** argv)
         const char* dotNames[] = {"square", "gap", "round", "circle", "blob", "bars", "diamond"};
         const char* eyeNames[] = {"sq-eyes", "round-eyes", "circle-eyes", "dot-eyes"};
         int ok = 0;
+        const bool anyAngle = qEnvironmentVariableIsSet("QR_MATRIX_ANYANGLE");
         QStringList failures;
         for (int t = 0; t < trials; ++t)
         {
@@ -195,9 +333,11 @@ int main(int argc, char** argv)
                 img = noise(img, amp, rs);
                 post << QString("noise%1").arg(amp);
             }
-            if (rnd(3) == 0)
+            if (anyAngle ? rnd(5) != 0 : rnd(3) == 0)
             {
-                const double deg = rnd(3) == 0 ? 90 * (1 + rnd(3)) : rndf(-30, 30), pers = rnd(3) == 0 ? rndf(0.0, 0.1) : 0.0;
+                // QR_MATRIX_ANYANGLE: xoay ngang/dọc/chéo bất kỳ (0..360 độ) + nghiêng góc nhìn tới 12%
+                const double deg = anyAngle ? rndf(0, 360) : (rnd(3) == 0 ? 90 * (1 + rnd(3)) : rndf(-30, 30)),
+                             pers = anyAngle ? (rnd(2) == 0 ? rndf(0.0, 0.12) : 0.0) : (rnd(3) == 0 ? rndf(0.0, 0.1) : 0.0);
                 img = camera(img, sp.card, deg, pers, 10 + rnd(30));
                 post << QString("rot%1/persp%2").arg(deg, 0, 'f', 0).arg(pers, 0, 'f', 2);
             }

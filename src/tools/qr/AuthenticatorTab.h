@@ -3,7 +3,10 @@
 #include <QImage>
 #include <QWidget>
 
+#include <QList>
+
 #include "Authenticator.h"
+#include "QRCodec.h"
 
 class QLabel;
 class QPushButton;
@@ -28,6 +31,10 @@ public:
 
     QString statusText() const;
     int rowCount() const;
+
+signals:
+    /// Ảnh vừa nhập có mã QR nhưng KHÔNG có mã Authenticator nào: cửa sổ chuyển sang tab Quét để hiện nội dung các mã đó.
+    void nonOtpScanned(const QImage& image, const QList<QRDecoded>& found, const QString& sourceName);
 
 protected:
     void dragEnterEvent(QDragEnterEvent* event) override;

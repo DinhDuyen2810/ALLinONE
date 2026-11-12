@@ -527,6 +527,8 @@ static void stressDecode(int noiseCount, int damagedCount)
     // (c) Hàng nghìn ảnh nhiễu nhỏ: nhiễu trắng, nhiễu khối, lưới giả có ô định vị.
     for (int i = 0; i < noiseCount; ++i)
     {
+        if (i % 500 == 0)
+            std::printf("    nhieu %d/%d (%lld ms)\n", i, noiseCount, static_cast<long long>(timer.elapsed()));
         QImage img;
         const int mode = rnd(0, 3);
         if (mode == 0)
@@ -558,6 +560,8 @@ static void stressDecode(int noiseCount, int damagedCount)
     int lossless = 0, lossy = 0, lossyRead = 0, wrong = 0;
     for (int i = 0; i < damagedCount; ++i)
     {
+        if (i % 250 == 0)
+            std::printf("    ma hong %d/%d (%lld ms)\n", i, damagedCount, static_cast<long long>(timer.elapsed()));
         const QString text = randomUnicode(rnd(1, 120), false);
         const QString expected = QString::fromUtf8(text.toUtf8());
         const QRMatrix m = QRCodec::encode(text, static_cast<QREcc>(rnd(0, 3)));
@@ -2223,6 +2227,7 @@ static void stressWifiUi(int opens)
 
 int main(int argc, char** argv)
 {
+    std::setvbuf(stdout, nullptr, _IONBF, 0); // in ngay (không đệm khối): chạy lâu, cần xem tiến độ từng phần khi chuyển hướng ra tệp
     // Chạy không cần màn hình (máy build/CI); đặt QT_QPA_PLATFORM=windows để xem bằng nền tảng thật. Tự tìm
     // plugin offscreen để Qt không bật hộp thoại lỗi khi thư mục chạy thiếu nó - xem tests/OffscreenPlatform.h.
     if (!TestPlatform::forceOffscreen(argv[0]))
@@ -2250,7 +2255,7 @@ int main(int argc, char** argv)
     try
     {
         if (wanted("qr"))      stressQrRoundTrip(3000);
-        if (wanted("decode"))  stressDecode(2500, 1500);
+        if (wanted("decode"))  stressDecode(qEnvironmentVariableIsSet("QRWIFI_NOISE_COUNT") ? qEnvironmentVariableIntValue("QRWIFI_NOISE_COUNT") : 2500, 1500);
         if (wanted("payload")) stressPayload(60000, 20000);
         if (wanted("history")) stressHistory(tmp, 20000, 300);
         if (wanted("xml"))     stressProfileXml(20000);

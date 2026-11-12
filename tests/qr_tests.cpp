@@ -779,6 +779,135 @@ int main(int argc, char** argv)
         CHECK(styleOk == styleTotal);
     }
 
+    // ---- v1.28.0: quét mã ở MỌI góc xoay (ngang/dọc/chéo), nghiêng, mã dày, ảnh nền trong suốt/các định dạng ảnh dán ----
+    {
+        using namespace qrstyle;
+        const QString urlText = "https://t.me/example_user_42";
+        const QString bankText = "00020101021238540010A0000007270124000697041601101234567890208QRIBFTTA53037045405100005802VN62150811Thanh toan 6304ABCD";
+        const QString longText = QString("https://example.com/path/to/a/rather/long/resource?token=") + QString(180, QChar('x')) + "abc123";
+        const QColor dk(20, 24, 33);
+        auto specOf = [&](Dots d, Eyes e, bool inverted, double px) {
+            Spec s;
+            s.dots = d;
+            s.eyes = e;
+            s.px = px;
+            if (inverted)
+            {
+                s.card = dk;
+                s.ink = Qt::white;
+                s.eyeInk = Qt::white;
+            }
+            return s;
+        };
+        auto matrixOf = [&](const QString& t) { QString err; return QRCodec::encode(t, QREcc::Medium, &err); };
+        auto readsAs = [&](const QImage& img, const QString& want) {
+            const QList<QRDecoded> r = QRCodec::decode(img);
+            return std::any_of(r.begin(), r.end(), [&](const QRDecoded& d) { return d.text == want; });
+        };
+
+        // 1) Quét xoay 0..350 độ bước 10 (có/không lật gương) trên 4 kiểu x 3 mã (v2, v7, v11), nền trắng và nền màn hình tối/xám có JPEG.
+        int rotOk = 0, rotTotal = 0;
+        QStringList rotFail;
+        const struct
+        {
+            const char* name;
+            Dots d;
+            Eyes e;
+            bool inv;
+        } styles[] = {{"vuông", Dots::Square, Eyes::Square, false}, {"bo tròn", Dots::Round, Eyes::Rounded, false}, {"chấm tròn", Dots::Circle, Eyes::Circle, false}, {"đảo màu", Dots::Square, Eyes::Square, true}};
+        const QString texts[] = {urlText, bankText, longText};
+        for (const auto& st : styles)
+            for (const QString& text : texts)
+            {
+                const QRMatrix m = matrixOf(text);
+                const double px = text == longText ? 7.0 : 6.0;
+                const QImage base = render(m, specOf(st.d, st.e, st.inv, px));
+                for (int deg = 0; deg < 360; deg += 10)
+                {
+                    QImage variants[3] = {camera(base, st.inv ? dk : QColor(Qt::white), deg, 0, 12), camera(base.mirrored(true, false), st.inv ? dk : QColor(Qt::white), deg, 0, 12),
+                                          jpeg(camera(base, deg % 20 == 0 ? dk : QColor(236, 236, 238), deg, 0, 40), 70)};
+                    for (int v = 0; v < 3; ++v)
+                    {
+                        ++rotTotal;
+                        if (readsAs(variants[v], text))
+                            ++rotOk;
+                        else
+                            rotFail << QString("%1/%2/%3°/v%4").arg(st.name).arg(text.size()).arg(deg).arg(v);
+                    }
+                }
+            }
+        std::printf("  xoay mọi góc: %d/%d %s\n", rotOk, rotTotal, qPrintable(rotFail.join(' ')));
+        CHECK(rotOk == rotTotal);
+
+        // 2) Ba ảnh từng KHÔNG đọc được khi quét xoay (quirc bỏ sót một ô định vị / lấy nhầm cấu trúc giả): giờ phải đọc được.
+        CHECK(readsAs(camera(render(matrixOf(longText), specOf(Dots::Square, Eyes::Square, false, 9.0)), Qt::white, 112, 0, 12), longText));
+        CHECK(readsAs(camera(render(matrixOf(longText), specOf(Dots::Square, Eyes::Square, false, 6.0)), dk, 210, 0, 40), longText));
+        CHECK(readsAs(camera(render(matrixOf(bankText), specOf(Dots::Square, Eyes::Square, true, 4.0)), dk, 126, 0, 40), bankText));
+
+        // 3) Mã dày (v9-v14) bị nghiêng góc nhìn ~10% + xoay chéo: cần ô căn chỉnh để cố định góc thứ tư.
+        int persOk = 0, persTotal = 0;
+        for (const QString& text : {longText, QString("otpauth://totp/Example:alice@example.com?secret=JBSWY3DPEHPK3PXP&issuer=Example&algorithm=SHA1&digits=6&period=30")})
+        {
+            QString err;
+            const QRMatrix m = QRCodec::encode(text, QREcc::High, &err);
+            for (int deg : {20, 61, 130, 209, 225, 300})
+            {
+                ++persTotal;
+                if (readsAs(jpeg(camera(render(m, specOf(Dots::Round, Eyes::Circle, false, 8.0)), QColor(236, 236, 238), deg, 0.10, 12), 70), text))
+                    ++persOk;
+            }
+        }
+        std::printf("  mã dày + nghiêng 10%% + xoay: %d/%d\n", persOk, persTotal);
+        CHECK(persOk == persTotal);
+
+        // 4) PNG nền trong suốt (mực đen / mực trắng), các định dạng điểm ảnh clipboard/tệp có thể đưa vào, tỉ lệ thiết bị > 1.
+        {
+            const QRMatrix m = matrixOf(urlText);
+            const QImage solid = render(m, specOf(Dots::Square, Eyes::Square, false, 6.0));
+            auto onTransparent = [&](const QColor& ink) {
+                QImage o(solid.size(), QImage::Format_ARGB32);
+                o.fill(Qt::transparent);
+                for (int y = 0; y < solid.height(); ++y)
+                    for (int x = 0; x < solid.width(); ++x)
+                        if (qGray(solid.pixel(x, y)) < 128)
+                            o.setPixel(x, y, ink.rgba());
+                return o;
+            };
+            CHECK(readsAs(onTransparent(Qt::black), urlText));
+            CHECK(readsAs(onTransparent(Qt::white), urlText)); // mực trắng trên nền trong suốt: trộn lên nền trắng thì mất - phải thử nền đen
+            for (QImage::Format f : {QImage::Format_ARGB32_Premultiplied, QImage::Format_RGBA8888, QImage::Format_RGB16, QImage::Format_RGB555, QImage::Format_BGR888,
+                                     QImage::Format_Grayscale8, QImage::Format_Grayscale16, QImage::Format_RGBA64, QImage::Format_Indexed8})
+                CHECK(readsAs(solid.convertToFormat(f), urlText));
+            CHECK(readsAs(solid.convertToFormat(QImage::Format_Mono, Qt::MonoOnly | Qt::ThresholdDither | Qt::AvoidDither), urlText));
+            QImage dpr = solid;
+            dpr.setDevicePixelRatio(1.5);
+            CHECK(readsAs(dpr, urlText));
+        }
+
+        // 5) Hai mã KHÁC nhau trong một ảnh (một xoay chéo) đều được trả về.
+        {
+            const QImage a = render(matrixOf(urlText), specOf(Dots::Square, Eyes::Square, false, 6.0));
+            const QImage b = camera(render(matrixOf(bankText), specOf(Dots::Square, Eyes::Square, false, 5.0)), Qt::white, 35, 0, 6);
+            QImage both(a.width() + b.width() + 40, std::max(a.height(), b.height()) + 20, QImage::Format_RGB32);
+            both.fill(Qt::white);
+            QPainter p(&both);
+            p.drawImage(10, 10, a);
+            p.drawImage(a.width() + 30, 10, b);
+            p.end();
+            const QList<QRDecoded> r = QRCodec::decode(both);
+            const bool hasUrl = std::any_of(r.begin(), r.end(), [&](const QRDecoded& d) { return d.text == urlText; });
+            const bool hasBank = std::any_of(r.begin(), r.end(), [&](const QRDecoded& d) { return d.text == bankText; });
+            CHECK(hasUrl && hasBank);
+        }
+
+        // 6) Chế độ nhanh (camera) vẫn đọc mã xoay thường.
+        {
+            const QImage img = camera(render(matrixOf(urlText), specOf(Dots::Square, Eyes::Square, false, 7.0)), Qt::white, 33, 0, 12);
+            const QList<QRDecoded> r = QRCodec::decode(img, nullptr, true);
+            CHECK(!r.isEmpty() && r.first().text == urlText);
+        }
+    }
+
     // ---- v1.27.0: Authenticator (TOTP/HOTP, Google Authenticator) ----
     {
         // RFC 4226 phụ lục D: HOTP SHA-1, khóa "12345678901234567890"

@@ -298,6 +298,18 @@ int QRScanTab::presentResults(const QImage& image, const QList<QRDecoded>& found
     m_resultList->setCurrentRow(0);
 
     setStatus(QString("✓ Tìm thấy %1 mã QR trong: %2").arg(found.size()).arg(sourceName));
+
+    // Mã Authenticator: tự thêm vào tab Authenticator (cửa sổ chuyển tab nếu ảnh CHỈ có mã loại này; còn lẫn mã khác thì ở lại hiện nội dung).
+    QStringList otpUris;
+    for (int i = 0; i < found.size(); ++i)
+        if (m_parsed[i].type == QRContentType::Otp)
+            otpUris << found[i].text;
+    if (!otpUris.isEmpty())
+    {
+        if (otpUris.size() < found.size())
+            setStatus(QString("✓ Tìm thấy %1 mã QR trong: %2 (%3 mã Authenticator đã được thêm vào tab Authenticator)").arg(found.size()).arg(sourceName).arg(otpUris.size()));
+        emit otpFound(otpUris, otpUris.size() == found.size());
+    }
     return found.size();
 }
 
@@ -517,6 +529,17 @@ void QRScanTab::pasteFromClipboard()
             }
     }
 
+    if (img.isNull() && md && md->hasText())
+    {
+        // Người dùng sao chép liên kết Authenticator dạng CHỮ (otpauth://... hoặc otpauth-migration://...): không cần ảnh, chuyển thẳng sang tab Authenticator.
+        const QString text = md->text().trimmed();
+        if (QRPayload::parse(text).type == QRContentType::Otp)
+        {
+            setStatus("✓ Clipboard có liên kết Authenticator - đã thêm vào tab Authenticator.");
+            emit otpFound(QStringList{text}, true);
+            return;
+        }
+    }
     if (img.isNull())
     {
         setStatus("Clipboard không có ảnh. Hãy sao chép một ảnh (hoặc chụp màn hình bằng Win+Shift+S) rồi thử lại.", true);
@@ -727,7 +750,7 @@ void QRScanTab::onVideoFrame(const QVideoFrame& frame)
     QImage work = img;
     if (std::max(work.width(), work.height()) > 960)
         work = work.scaled(960, 960, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-    QList<QRDecoded> found = QRCodec::decode(work);
+    QList<QRDecoded> found = QRCodec::decode(work, nullptr, true);
     m_decodingFrame = false;
 
     if (!found.isEmpty())

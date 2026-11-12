@@ -34,6 +34,9 @@ public:
     /// Giải mã ảnh và hiển thị kết quả. Trả về số mã tìm được.
     int scanImage(const QImage& image, const QString& sourceName);
 
+    /// Hiển thị kết quả ĐÃ giải mã ở nơi khác (tab Authenticator quét ra mã không phải otpauth:// thì chuyển sang đây xem nội dung).
+    int showScanResult(const QImage& image, const QList<QRDecoded>& found, const QString& sourceName) { return presentResults(image, found, sourceName, 0); }
+
     QList<QRDecoded> results() const { return m_results; }
     QString statusText() const;
 
@@ -42,6 +45,9 @@ public:
 signals:
     void recreateRequested(const QString& text); // "Tạo lại mã này"
     void otpImportRequested(const QString& text); // "Thêm vào Authenticator" (mã otpauth:// hoặc otpauth-migration://)
+    /// Lượt quét vừa thấy mã Authenticator: cửa sổ tự thêm vào tab Authenticator. onlyOtp = mọi mã trong ảnh đều là Authenticator
+    /// (khi đó cửa sổ chuyển luôn sang tab Authenticator; còn lẫn mã khác thì ở lại để hiện nội dung các mã đó).
+    void otpFound(const QStringList& uris, bool onlyOtp);
 
 public slots:
     void openImageFile();

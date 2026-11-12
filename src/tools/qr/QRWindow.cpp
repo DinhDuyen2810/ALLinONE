@@ -53,6 +53,19 @@ QRWindow::QRWindow(QWidget* parent)
         m_auth->importUri(text);
         m_tabs->setCurrentWidget(m_auth);
     });
+    // Quét ra mã Authenticator ở tab Quét (ảnh/dán/chụp vùng/cả màn hình/camera): tự thêm vào tab Authenticator và chuyển sang đó;
+    // ảnh có lẫn mã khác thì ở lại tab Quét để hiện nội dung các mã còn lại.
+    connect(m_scan, &QRScanTab::otpFound, this, [this](const QStringList& uris, bool onlyOtp) {
+        for (const QString& uri : uris)
+            m_auth->importUri(uri);
+        if (onlyOtp)
+            m_tabs->setCurrentWidget(m_auth);
+    });
+    // Ngược lại: nhập ảnh ở tab Authenticator mà không có mã Authenticator nào -> chuyển sang tab Quét hiện nội dung.
+    connect(m_auth, &AuthenticatorTab::nonOtpScanned, this, [this](const QImage& image, const QList<QRDecoded>& found, const QString& source) {
+        m_scan->showScanResult(image, found, source);
+        m_tabs->setCurrentWidget(m_scan);
+    });
     connect(m_tabs, &QTabWidget::currentChanged, this, [this](int) {
         if (m_tabs->currentWidget() != m_scan)
             m_scan->stopCamera();
