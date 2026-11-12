@@ -90,6 +90,8 @@ add_library(qr_core STATIC
     src/tools/qr/QRCodec.cpp
     src/tools/qr/QRPayload.h
     src/tools/qr/QRPayload.cpp
+    src/tools/qr/Authenticator.h
+    src/tools/qr/Authenticator.cpp
     src/third_party/qrcodegen/qrcodegen.cpp
     src/third_party/quirc/quirc.c
     src/third_party/quirc/decode.c
@@ -97,7 +99,7 @@ add_library(qr_core STATIC
     src/third_party/quirc/version_db.c
 )
 target_include_directories(qr_core PUBLIC src)
-target_link_libraries(qr_core PUBLIC Qt6::Core Qt6::Gui)
+target_link_libraries(qr_core PUBLIC Qt6::Core Qt6::Gui crypt32) # crypt32: DPAPI cho kho khóa Authenticator
 # quirc mặc định chỉ có 254 vùng liên thông (pixel 8-bit) nên mã QR mật độ cao (version >= ~26) không được tìm thấy
 target_compile_definitions(qr_core PRIVATE QUIRC_MAX_REGIONS=65534)
 # Code bên thứ ba: không cảnh báo
@@ -113,6 +115,11 @@ target_link_libraries(qr_tests PRIVATE qr_core Qt6::Svg)
 # ---- KIỂM TRA TAY CHỈ ĐỌC: giải mã QR từ tệp ảnh bằng đúng QRCodec::decode() - qr_decode_probe <ảnh>... ----
 add_executable(qr_decode_probe EXCLUDE_FROM_ALL tests/qr_decode_probe.cpp)
 target_link_libraries(qr_decode_probe PRIVATE qr_core)
+target_compile_definitions(qr_decode_probe PRIVATE QUIRC_MAX_REGIONS=65534) # phải khớp qr_core: probe đọc cấu trúc nội bộ của quirc (QR_PROBE_BIN)
+
+# ---- KIỂM TRA TAY CHỈ ĐỌC: dựng mã QR kiểu nhiều ứng dụng (ô tròn, logo, đảo màu, gradient...) + hậu xử lý đời thật rồi đo tỉ lệ đọc được ----
+add_executable(qr_style_matrix EXCLUDE_FROM_ALL tests/qr_style_matrix.cpp)
+target_link_libraries(qr_style_matrix PRIVATE qr_core)
 
 # ---- Giao diện QR (static lib để dùng chung với bộ kiểm thử UI) ----
 add_library(qr_ui STATIC
@@ -126,6 +133,9 @@ add_library(qr_ui STATIC
     src/tools/qr/QRHistoryTab.cpp
     src/tools/qr/QRHistoryStore.h
     src/tools/qr/QRHistoryStore.cpp
+    src/tools/qr/AuthenticatorStore.cpp
+    src/tools/qr/AuthenticatorTab.h
+    src/tools/qr/AuthenticatorTab.cpp
     src/tools/qr/QRImageView.h
     src/tools/qr/QRImageView.cpp
     src/tools/qr/ScreenSnipOverlay.h

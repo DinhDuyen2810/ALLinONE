@@ -1,6 +1,7 @@
 // Kiểm thử giao diện QR (không hiển thị lên màn hình). Build: cmake --build build --target qr_ui_tests
 #include <QApplication>
 #include <QCheckBox>
+#include <QDateTime>
 #include <QClipboard>
 #include <QComboBox>
 #include <QDir>
@@ -24,6 +25,8 @@
 #include <cstdio>
 
 #include "core/AppPaths.h"
+#include "tools/qr/Authenticator.h"
+#include "tools/qr/AuthenticatorTab.h"
 #include "tools/qr/QRCodec.h"
 #include "tools/qr/QRGenerateTab.h"
 #include "tools/qr/QRHistoryStore.h"
@@ -71,7 +74,7 @@ int main(int argc, char** argv)
     // ---- 0. Trạng thái ban đầu: chưa có nội dung ----
     CHECK(gen->currentContent().isEmpty());
     CHECK(gen->currentImage().isNull());
-    CHECK(win.tabs()->count() == 3);
+    CHECK(win.tabs()->count() == 4);
 
     // ---- 1. Văn bản tiếng Việt ----
     gen->setRawText(QString::fromUtf8("Xin chào QR – Việt Nam"));
@@ -718,6 +721,166 @@ int main(int argc, char** argv)
                 std::printf("  nút chưa có con trỏ ngón tay: '%s'\n", b->text().toUtf8().constData());
             }
         CHECK(notHand == 0);
+    }
+
+    // ---- v1.27.0: tab Authenticator + kho khóa (DPAPI) ----
+    {
+        // --- kho: ghi/đọc lại, trùng, sửa, xóa, bộ đếm HOTP, hai bản ứng dụng cùng ghi, tệp hỏng ---
+        const QString path = tmp.filePath("auth_store_test.json");
+        QFile::remove(path);
+        OtpAccount a1;
+        a1.issuer = "Example";
+        a1.name = "alice@example.com";
+        a1.secret = Otp::base32Decode("JBSWY3DPEHPK3PXP");
+        OtpAccount a2;
+        a2.issuer = "GitHub";
+        a2.name = "bob";
+        a2.secret = Otp::base32Decode("GEZDGNBVGY3TQOJQ");
+        a2.type = OtpAccount::Type::Hotp;
+        a2.counter = 3;
+        {
+            AuthenticatorStore s1(path);
+            CHECK(s1.accounts().isEmpty());
+            CHECK(s1.add(a1));
+            CHECK(s1.add(a2));
+            CHECK(!s1.add(a1)); // trùng
+            CHECK(s1.lastError().startsWith("Tài khoản này đã có"));
+            CHECK(s1.accounts().size() == 2);
+        }
+        {
+            AuthenticatorStore s2(path); // nạp lại từ đĩa
+            CHECK(s2.accounts().size() == 2);
+            CHECK(s2.accounts()[0].secret == a1.secret && s2.accounts()[0].issuer == "Example");
+            CHECK(s2.accounts()[1].type == OtpAccount::Type::Hotp && s2.accounts()[1].counter == 3);
+            CHECK(!s2.accounts()[0].id.isEmpty() && s2.accounts()[0].id != s2.accounts()[1].id);
+            // khóa KHÔNG nằm dạng rõ trong tệp
+            QFile f(path);
+            CHECK(f.open(QIODevice::ReadOnly));
+            const QByteArray raw = f.readAll();
+            f.close();
+            CHECK(!raw.contains("JBSWY3DPEHPK3PXP") && !raw.contains(a1.secret) && raw.contains("Example"));
+            CHECK(s2.advanceCounter(s2.accounts()[1].id));
+            CHECK(s2.accounts()[1].counter == 4);
+            OtpAccount renamed = s2.accounts()[0];
+            renamed.name = "alice2";
+            CHECK(s2.update(renamed));
+            // bản thứ hai (đang giữ danh sách cũ) thêm một tài khoản: phải GỘP, không đè mất thay đổi của s2
+            AuthenticatorStore s3(path);
+            OtpAccount a3;
+            a3.issuer = "Third";
+            a3.name = "c";
+            a3.secret = Otp::base32Decode("MFRGGZDFMZTWQ2LK");
+            CHECK(s2.add(a3));
+            CHECK(s3.add(a3) == false); // s3 đọc lại thấy đã có
+            CHECK(s3.accounts().size() == 3);
+            CHECK(s3.accounts()[0].name == "alice2");
+            CHECK(s3.remove(s3.accounts()[2].id));
+            AuthenticatorStore s4(path);
+            CHECK(s4.accounts().size() == 2);
+            CHECK(!s4.remove("khong-ton-tai"));
+        }
+        // tệp hỏng: không mất bản hỏng, kho rỗng dùng được
+        {
+            QFile f(path);
+            CHECK(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+            f.write("{ không phải json");
+            f.close();
+            AuthenticatorStore s5(path);
+            CHECK(s5.accounts().isEmpty());
+            CHECK(QFile::exists(path + ".bak"));
+            CHECK(s5.add(a1));
+            AuthenticatorStore s6(path);
+            CHECK(s6.accounts().size() == 1);
+        }
+
+        // --- tab (kho thật của ứng dụng nằm trong thư mục dữ liệu tạm của bộ test) ---
+        AuthenticatorStore& store = AuthenticatorStore::instance();
+        for (const OtpAccount& e : QList<OtpAccount>(store.accounts()))
+            store.remove(e.id);
+        QRWindow w2;
+        AuthenticatorTab* auth = w2.authenticatorTab();
+        CHECK(auth != nullptr);
+        CHECK(w2.tabs()->count() == 4);
+        CHECK(auth && auth->rowCount() == 0);
+        if (auth)
+        {
+            const QString uri = "otpauth://totp/Example:alice@example.com?secret=JBSWY3DPEHPK3PXP&issuer=Example";
+            QString err;
+            const QRMatrix m = QRCodec::encode(uri, QREcc::Quartile, &err);
+            QRStyle st;
+            st.targetSize = 320;
+            const QImage img = QRCodec::render(m, st);
+            CHECK(auth->importImage(img, "test") == 1);
+            CHECK(auth->rowCount() == 1);
+            CHECK(auth->importImage(img, "test") == 0); // trùng -> không thêm
+            CHECK(auth->statusText().contains("đã có sẵn"));
+            CHECK(auth->rowCount() == 1);
+            CHECK(auth->importUri("không phải otp") == 0);
+            // mã hiện ra khớp thuật toán (bảng đã cập nhật qua tín hiệu changed())
+            auto* table = auth->findChild<QTableWidget*>();
+            CHECK(table && table->rowCount() == 1);
+            if (table && table->rowCount() == 1)
+            {
+                const QString shown = table->item(0, 2)->text().remove(' ');
+                OtpAccount ref;
+                ref.secret = Otp::base32Decode("JBSWY3DPEHPK3PXP");
+                const qint64 now = QDateTime::currentSecsSinceEpoch();
+                CHECK(shown == Otp::code(ref, now) || shown == Otp::code(ref, now - 1) || shown == Otp::code(ref, now + 1));
+                CHECK(table->item(0, 0)->text() == "Example" && table->item(0, 1)->text() == "alice@example.com");
+            }
+            // ảnh không chứa mã Authenticator
+            const QRMatrix other = QRCodec::encode("https://example.com", QREcc::Medium, &err);
+            CHECK(auth->importImage(QRCodec::render(other, st), "khác") == 0);
+            CHECK(auth->statusText().contains("không phải mã Authenticator"));
+            // mã xuất của Google Authenticator: nhiều tài khoản trong một mã
+            auto varint = [](quint64 v) {
+                QByteArray b;
+                do
+                {
+                    quint8 x = v & 0x7F;
+                    v >>= 7;
+                    if (v)
+                        x |= 0x80;
+                    b.append(static_cast<char>(x));
+                } while (v);
+                return b;
+            };
+            auto field = [&](int num, const QByteArray& p) { return varint((static_cast<quint64>(num) << 3) | 2) + varint(p.size()) + p; };
+            auto vfield = [&](int num, quint64 v) { return varint(static_cast<quint64>(num) << 3) + varint(v); };
+            auto param = [&](const QByteArray& secret, const QByteArray& name, const QByteArray& issuer) {
+                return field(1, secret) + field(2, name) + field(3, issuer) + vfield(4, 1) + vfield(5, 1) + vfield(6, 2);
+            };
+            const QByteArray payload = field(1, param("0123456789", "u1", "SvcA")) + field(1, param("abcdefghij", "u2", "SvcB")) + vfield(2, 1);
+            const QString mig = "otpauth-migration://offline?data=" + QString::fromLatin1(QUrl::toPercentEncoding(QString::fromLatin1(payload.toBase64())));
+            const QRMatrix mm = QRCodec::encode(mig, QREcc::Medium, &err);
+            CHECK(mm.isValid());
+            CHECK(auth->importImage(QRCodec::render(mm, st), "migration") == 2);
+            CHECK(auth->rowCount() == 3);
+        }
+        // tab quét: mã Authenticator có nút "Thêm vào Authenticator" và KHÔNG vào lịch sử
+        {
+            QRScanTab* scanTab = w2.findChild<QRScanTab*>();
+            CHECK(scanTab != nullptr);
+            const int before = QRHistoryStore::instance().entries().size();
+            QString err;
+            QRStyle st;
+            st.targetSize = 320;
+            const QRMatrix m = QRCodec::encode("otpauth://totp/X:y?secret=GEZDGNBVGY3TQOJQ&issuer=X", QREcc::Medium, &err);
+            CHECK(scanTab && scanTab->scanImage(QRCodec::render(m, st), "otp") == 1);
+            CHECK(QRHistoryStore::instance().entries().size() == before);
+            QPushButton* action = nullptr;
+            for (QPushButton* b : scanTab->findChildren<QPushButton*>())
+                if (b->text().contains("Thêm vào Authenticator"))
+                    action = b;
+            CHECK(action != nullptr);
+            bool signalled = false;
+            QObject::connect(scanTab, &QRScanTab::otpImportRequested, [&](const QString& text) { signalled = text.startsWith("otpauth://"); });
+            if (action)
+                action->click();
+            CHECK(signalled);
+            CHECK(w2.authenticatorTab()->rowCount() == 4); // QRWindow chuyển tiếp sang tab Authenticator
+            CHECK(w2.tabs()->currentWidget() == w2.authenticatorTab());
+        }
     }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);

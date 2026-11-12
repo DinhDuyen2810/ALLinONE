@@ -2,9 +2,11 @@
 
 #include <QWidget>
 
+class AuthenticatorTab;
 class QRGenerateTab;
 class QRHistoryTab;
 class QRScanTab;
+class AuthenticatorTab;
 class QTabWidget;
 
 /// Cửa sổ QR Tools: Tạo mã - Quét mã - Lịch sử.
@@ -18,6 +20,7 @@ public:
     QRGenerateTab* generateTab() const { return m_generate; }
     QRScanTab* scanTab() const { return m_scan; }
     QRHistoryTab* historyTab() const { return m_history; }
+    AuthenticatorTab* authenticatorTab() const { return m_auth; }
     QTabWidget* tabs() const { return m_tabs; }
 
 protected:
@@ -30,4 +33,5 @@ private:
     QRGenerateTab* m_generate{nullptr};
     QRScanTab* m_scan{nullptr};
     QRHistoryTab* m_history{nullptr};
+    AuthenticatorTab* m_auth{nullptr};
 };

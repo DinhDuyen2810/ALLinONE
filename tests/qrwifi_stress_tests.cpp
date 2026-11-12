@@ -1742,7 +1742,7 @@ static void stressQrUi(const QTemporaryDir& tmp, int opens, int fuzzRounds)
         if (i % 10 == 0)
             QCoreApplication::processEvents();
     }
-    CHECK(win.isVisible() && win.tabs()->count() == 3);
+    CHECK(win.isVisible() && win.tabs()->count() == 4);
 
     lap("QRWindow tai dung");
 

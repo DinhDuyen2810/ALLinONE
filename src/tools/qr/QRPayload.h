@@ -15,7 +15,8 @@ enum class QRContentType
     Phone,
     Sms,
     Geo,
-    VCard
+    VCard,
+    Otp // mã xác thực hai bước: otpauth:// (một tài khoản) hoặc otpauth-migration:// (Google Authenticator xuất nhiều tài khoản)
 };
 
 /// Dữ liệu đầu vào khi tạo từng loại nội dung.

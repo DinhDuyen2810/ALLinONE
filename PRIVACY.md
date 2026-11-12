@@ -19,6 +19,7 @@ này - muốn xóa sạch dữ liệu, tự xóa thư mục đó.
   lúc đó. Dữ liệu ghi được chỉ lưu vào tệp hồ sơ cục bộ này, không gửi đi đâu; ứng dụng luôn hỏi xác nhận
   trước khi bắt đầu ghi mỗi lần.
 - **QR Tools**: lịch sử quét/tạo mã QR (`profiles\qr_history.json`), gồm cả nội dung mã WiFi bạn đã tạo/quét.
+- **QR Tools > Authenticator**: danh sách tài khoản xác thực hai bước (`profiles\authenticator.json`); khóa bí mật của từng tài khoản được mã hóa bằng DPAPI của Windows (chỉ đúng tài khoản Windows này giải mã được), phần còn lại (nhà cung cấp, tên tài khoản) lưu rõ. Mã Authenticator quét được KHÔNG ghi vào lịch sử QR. Không gửi gì ra ngoài.
   Từ bản 1.19.12: quét được mã QR WiFi có thể bấm "Kết nối WiFi" ngay (dùng lại đúng API WLAN/hộp thoại của
   module WiFi Connection, đúng MỘT mật khẩu lấy từ chính mã QR, không dò/thử gì thêm); tạo mã QR WiFi có thể
   chọn nhanh từ hồ sơ WiFi đã lưu trên máy (đọc trực tiếp từ Windows, không gửi đi đâu); tạo mã QR Vị trí có

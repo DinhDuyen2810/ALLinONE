@@ -1,5 +1,7 @@
 #include "QRPayload.h"
 
+#include "Authenticator.h"
+
 #include <QRegularExpression>
 #include <QUrl>
 #include <QUrlQuery>
@@ -140,6 +142,7 @@ QString QRPayload::typeName(QRContentType type)
         case QRContentType::Sms:   return "SMS";
         case QRContentType::Geo:   return "Vị trí (Geo)";
         case QRContentType::VCard: return "Danh bạ (vCard)";
+        case QRContentType::Otp:   return "Xác thực 2 bước (Authenticator)";
     }
     return "Văn bản";
 }
@@ -171,6 +174,8 @@ QString QRPayload::unescapeWifi(const QString& s)
 QString QRPayload::maskSecrets(const QString& content)
 {
     const QString text = content.trimmed();
+    if (Otp::isOtpUri(text))
+        return Otp::maskUri(content); // khóa bí mật của Authenticator không được phơi ra màn hình/lịch sử
     if (!text.startsWith("WIFI:", Qt::CaseInsensitive))
         return content;
 
@@ -544,6 +549,46 @@ ParsedPayload QRPayload::parse(const QString& content)
         p.type = t;
         p.typeName = typeName(t);
     };
+
+    // ---- Authenticator (TOTP/HOTP) ----
+    if (Otp::isOtpUri(text))
+    {
+        setType(QRContentType::Otp);
+        p.actionLabel = "🔐 Thêm vào Authenticator";
+        if (text.startsWith("otpauth-migration://", Qt::CaseInsensitive))
+        {
+            QString err;
+            const QList<OtpAccount> list = Otp::parseMigration(text, &err);
+            p.fields << qMakePair(QString("Kiểu"), QString("Xuất tài khoản (Google Authenticator)"))
+                     << qMakePair(QString("Số tài khoản trong mã này"), QString::number(list.size()));
+            for (int i = 0; i < list.size(); ++i)
+                p.fields << qMakePair(QString("Tài khoản %1").arg(i + 1), list[i].displayName());
+            if (!err.isEmpty())
+                p.fields << qMakePair(QString("Lưu ý"), err);
+            p.secretField = p.fields.size();
+            p.fields << qMakePair(QString("Dữ liệu (chứa khóa bí mật)"), text);
+        }
+        else
+        {
+            OtpAccount a;
+            QString err;
+            if (Otp::parseUri(text, &a, &err))
+            {
+                p.fields << qMakePair(QString("Kiểu"), a.type == OtpAccount::Type::Totp ? QString("TOTP (theo thời gian)") : QString("HOTP (theo bộ đếm)"))
+                         << qMakePair(QString("Dịch vụ"), a.issuer)
+                         << qMakePair(QString("Tài khoản"), a.name)
+                         << qMakePair(QString("Thuật toán"), a.algorithm)
+                         << qMakePair(QString("Số chữ số"), QString::number(a.digits));
+                if (a.type == OtpAccount::Type::Totp)
+                    p.fields << qMakePair(QString("Chu kỳ (giây)"), QString::number(a.period));
+                p.secretField = p.fields.size();
+                p.fields << qMakePair(QString("Khóa bí mật"), Otp::base32Encode(a.secret));
+            }
+            else
+                p.fields << qMakePair(QString("Lỗi"), err);
+        }
+        return p;
+    }
 
     // ---- WiFi ----
     if (text.startsWith("WIFI:", Qt::CaseInsensitive))

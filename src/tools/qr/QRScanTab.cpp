@@ -28,6 +28,7 @@
 #include <QMimeData>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QScreen>
 #include <QShortcut>
 #include <QTableWidget>
 #include <QTimer>
@@ -64,13 +65,16 @@ void QRScanTab::buildUi()
     bar->setSpacing(8);
     m_openBtn = new QPushButton("📁 Mở ảnh...", this);
     m_pasteBtn = new QPushButton("📋 Dán ảnh (Ctrl+V)", this);
-    m_screenBtn = new QPushButton("🖥 Chụp vùng màn hình", this);
+    m_screenBtn = new QPushButton("🖥 Chụp vùng", this);
+    m_screenBtn->setToolTip("Kéo khung quanh mã QR trên màn hình - đọc chắc nhất, kể cả mã nhỏ");
+    m_fullScreenBtn = new QPushButton("🖥 Cả màn hình", this);
+    m_fullScreenBtn->setToolTip("Chụp toàn bộ màn hình (mọi màn) và tự tìm mã QR - không cần kéo khung");
     m_cameraBtn = new QPushButton("📷 Camera", this);
     m_cameraBtn->setCheckable(true);
     m_cameraCombo = new QComboBox(this);
-    m_cameraCombo->setMinimumWidth(160);
+    m_cameraCombo->setMinimumWidth(110);
     m_cameraCombo->setStyleSheet(QRUi::inputStyle());
-    for (QPushButton* b : {m_openBtn, m_pasteBtn, m_screenBtn, m_cameraBtn})
+    for (QPushButton* b : {m_openBtn, m_pasteBtn, m_screenBtn, m_fullScreenBtn, m_cameraBtn})
     {
         b->setStyleSheet(QRUi::buttonStyle());
         b->setCursor(Qt::PointingHandCursor);
@@ -83,6 +87,7 @@ void QRScanTab::buildUi()
     connect(m_openBtn, &QPushButton::clicked, this, &QRScanTab::openImageFile);
     connect(m_pasteBtn, &QPushButton::clicked, this, &QRScanTab::pasteFromClipboard);
     connect(m_screenBtn, &QPushButton::clicked, this, &QRScanTab::captureScreen);
+    connect(m_fullScreenBtn, &QPushButton::clicked, this, &QRScanTab::captureFullScreen);
     connect(m_cameraBtn, &QPushButton::toggled, this, &QRScanTab::toggleCamera);
 
     // ---------- Thân: ảnh | kết quả ----------
@@ -281,7 +286,9 @@ int QRScanTab::presentResults(const QImage& image, const QList<QRDecoded>& found
         if (snippet.size() > 60)
             snippet = snippet.left(60) + "…";
         m_resultList->addItem(QString("%1. [%2] %3").arg(i + 1).arg(m_parsed[i].typeName, snippet));
-        QRHistoryStore::instance().add("scan", m_parsed[i].typeName, found[i].text);
+        // Mã Authenticator chứa khóa bí mật: KHÔNG ghi vào lịch sử (tệp lịch sử là văn bản thường).
+        if (m_parsed[i].type != QRContentType::Otp)
+            QRHistoryStore::instance().add("scan", m_parsed[i].typeName, found[i].text);
     }
     // Chỉ MỘT mã (trường hợp thường gặp nhất): không cần danh sách chọn, ẩn hẳn cho gọn - chỉ hiện khi
     // thật sự cần chọn giữa NHIỀU mã trong cùng một ảnh.
@@ -335,6 +342,11 @@ void QRScanTab::showResult(int index)
         m_actionBtn->setEnabled(!QRPayload::parseWifi(d.text).ssid.isEmpty());
         m_actionBtn->setText("🔗 Kết nối WiFi");
     }
+    else if (p.type == QRContentType::Otp)
+    {
+        m_actionBtn->setEnabled(true);
+        m_actionBtn->setText(p.actionLabel);
+    }
     else
     {
         m_actionBtn->setEnabled(!p.actionUrl.isEmpty());
@@ -360,6 +372,11 @@ void QRScanTab::openAction()
     if (m_parsed[row].type == QRContentType::Wifi)
     {
         connectToScannedWifi(row);
+        return;
+    }
+    if (m_parsed[row].type == QRContentType::Otp)
+    {
+        emit otpImportRequested(m_results[row].text);
         return;
     }
 
@@ -538,6 +555,48 @@ void QRScanTab::captureScreen()
         overlay->raise();
         overlay->activateWindow();
         overlay->setFocus();
+    });
+}
+
+void QRScanTab::captureFullScreen()
+{
+    stopCamera();
+    QWidget* top = window();
+    const Qt::WindowStates previousState = top->windowState() & ~Qt::WindowMinimized;
+    top->hide();
+    // Chờ cửa sổ này biến mất khỏi màn hình rồi chụp MỌI màn hình, giải mã từng màn - không cần kéo khung chọn vùng.
+    QTimer::singleShot(300, this, [this, top, previousState] {
+        QList<QImage> shots;
+        QStringList names;
+        for (QScreen* screen : QGuiApplication::screens())
+        {
+            shots << screen->grabWindow(0).toImage();
+            names << screen->name();
+        }
+        top->setWindowState(previousState);
+        top->show();
+        top->raise();
+        top->activateWindow();
+
+        QApplication::setOverrideCursor(Qt::WaitCursor);
+        for (int i = 0; i < shots.size(); ++i)
+        {
+            int undecoded = 0;
+            const QList<QRDecoded> found = QRCodec::decode(shots[i], &undecoded);
+            if (!found.isEmpty())
+            {
+                QApplication::restoreOverrideCursor();
+                presentResults(shots[i], found, QString("toàn màn hình (%1)").arg(names[i]), undecoded);
+                return;
+            }
+        }
+        QApplication::restoreOverrideCursor();
+        if (!shots.isEmpty())
+        {
+            clearResults();
+            m_view->setImage(shots.first());
+        }
+        setStatus("Không thấy mã QR nào trên màn hình. Nếu mã nhỏ hoặc nằm trong ảnh lớn, dùng “Chụp vùng” và kéo khung quanh mã.", true);
     });
 }
 

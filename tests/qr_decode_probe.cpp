@@ -10,6 +10,9 @@
 
 #include "tools/qr/QRCodec.h"
 #include "third_party/quirc/quirc.h"
+extern "C" {
+#include "third_party/quirc/quirc_internal.h"
+}
 
 #include <memory>
 
@@ -34,6 +37,32 @@ int main(int argc, char** argv)
         int und = 0;
         const auto r = QRCodec::decode(noise, &und);
         std::printf("nhieu %dx%d: %lld ms, doc duoc %lld, thay %d luoi\n", n, n, nt.elapsed(), static_cast<long long>(r.size()), und);
+        return 0;
+    }
+    if (qEnvironmentVariableIsSet("QR_PROBE_BLANK"))
+    {
+        // Đo thời gian giải mã ảnh "giống màn hình, KHÔNG có mã" (nền + vài khối chữ/ảnh): đường hay gặp nhất khi quét nền - không được chậm.
+        const QStringList wh = qEnvironmentVariable("QR_PROBE_BLANK").split('x');
+        const int bw = wh.value(0).toInt(), bh = wh.value(1).toInt();
+        for (int dark = 0; dark < 2; ++dark)
+        {
+            QImage scr(bw, bh, QImage::Format_RGB32);
+            scr.fill(dark ? QColor(24, 26, 32) : QColor(245, 245, 247));
+            QPainter pp(&scr);
+            quint32 rs = 99;
+            for (int k = 0; k < 400; ++k)
+            {
+                rs = rs * 1664525u + 1013904223u;
+                const int x = (rs >> 8) % bw, y = (rs >> 3) % bh, w2 = 20 + (rs >> 12) % 200, h2 = 6 + (rs >> 5) % 30;
+                pp.fillRect(x, y, w2, h2, dark ? QColor(200, 205, 215) : QColor(40, 44, 52));
+            }
+            pp.end();
+            QElapsedTimer bt;
+            bt.start();
+            int und = 0;
+            const auto r = QRCodec::decode(scr, &und);
+            std::printf("man hinh %dx%d %s: %lld ms, doc duoc %lld, thay %d luoi\n", bw, bh, dark ? "toi" : "sang", bt.elapsed(), static_cast<long long>(r.size()), und);
+        }
         return 0;
     }
     for (int i = 1; i < argc; ++i)
@@ -98,6 +127,16 @@ int main(int argc, char** argv)
             for (int y = 0; y < h; ++y)
                 std::copy(g.constScanLine(y), g.constScanLine(y) + w, buf + static_cast<size_t>(y) * w);
             quirc_end(q.get());
+            if (qEnvironmentVariableIsSet("QR_PROBE_BIN"))
+            {
+                // Gỡ lỗi: ảnh nhị phân hóa của quirc (đen = vùng quirc coi là mực) + số ô định vị nó thấy.
+                QImage b(w, h, QImage::Format_Grayscale8);
+                for (int yy = 0; yy < h; ++yy)
+                    for (int xx = 0; xx < w; ++xx)
+                        b.scanLine(yy)[xx] = q->pixels[yy * w + xx] ? 0 : 255;
+                b.save(qEnvironmentVariable("QR_PROBE_BIN"));
+                std::printf("  o dinh vi quirc thay: %d, vung: %d\n", q->num_capstones, q->num_regions);
+            }
             for (int k = 0; k < quirc_count(q.get()); ++k)
             {
                 quirc_code code;

@@ -1,5 +1,6 @@
 #include "QRWindow.h"
 
+#include "AuthenticatorTab.h"
 #include "QRGenerateTab.h"
 #include "QRHistoryTab.h"
 #include "QRScanTab.h"
@@ -38,14 +39,20 @@ QRWindow::QRWindow(QWidget* parent)
     m_tabs = new QTabWidget(this);
     m_generate = new QRGenerateTab(this);
     m_scan = new QRScanTab(this);
+    m_auth = new AuthenticatorTab(this);
     m_history = new QRHistoryTab(this);
     m_tabs->addTab(m_generate, "✚  Tạo mã QR");
     m_tabs->addTab(m_scan, "🔍  Quét mã QR");
+    m_tabs->addTab(m_auth, "🔐  Authenticator");
     m_tabs->addTab(m_history, "🕘  Lịch sử");
     layout->addWidget(m_tabs);
 
     connect(m_scan, &QRScanTab::recreateRequested, this, &QRWindow::recreateFromText);
     connect(m_history, &QRHistoryTab::recreateRequested, this, &QRWindow::recreateFromText);
+    connect(m_scan, &QRScanTab::otpImportRequested, this, [this](const QString& text) {
+        m_auth->importUri(text);
+        m_tabs->setCurrentWidget(m_auth);
+    });
     connect(m_tabs, &QTabWidget::currentChanged, this, [this](int) {
         if (m_tabs->currentWidget() != m_scan)
             m_scan->stopCamera();

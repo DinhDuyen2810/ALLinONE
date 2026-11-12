@@ -41,11 +41,13 @@ public:
 
 signals:
     void recreateRequested(const QString& text); // "Tạo lại mã này"
+    void otpImportRequested(const QString& text); // "Thêm vào Authenticator" (mã otpauth:// hoặc otpauth-migration://)
 
 public slots:
     void openImageFile();
     void pasteFromClipboard();
     void captureScreen();
+    void captureFullScreen();
     void toggleCamera(bool on);
 
 private slots:
@@ -85,6 +87,7 @@ private:
     QPushButton* m_openBtn{nullptr};
     QPushButton* m_pasteBtn{nullptr};
     QPushButton* m_screenBtn{nullptr};
+    QPushButton* m_fullScreenBtn{nullptr};
     QPushButton* m_cameraBtn{nullptr};
     QComboBox* m_cameraCombo{nullptr};
     QPushButton* m_copyBtn{nullptr};

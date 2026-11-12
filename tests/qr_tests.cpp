@@ -8,8 +8,12 @@
 #include <QTransform>
 #include <QUrl>
 #include <cmath>
+#include <functional>
+#include <vector>
 #include <cstdio>
 
+#include "QrAppStyles.h"
+#include "tools/qr/Authenticator.h"
 #include "tools/qr/QRCodec.h"
 #include "tools/qr/QRPayload.h"
 
@@ -707,6 +711,249 @@ int main(int argc, char** argv)
         std::printf("  fancy: %d/%d, trên nền màn hình: %d/%d\n", fancyOk, fancyTotal, screenOk, screenTotal);
         CHECK(fancyOk == fancyTotal);
         CHECK(screenOk == screenTotal);
+    }
+
+    // ---- v1.27.0: kiểu mã QR của nhiều ứng dụng (Zalo/Telegram/ví/ngân hàng/trình tạo QR) - xem tests/QrAppStyles.h, công cụ qr_style_matrix ----
+    {
+        using namespace qrstyle;
+        const QString texts[] = {"https://t.me/example_user_42",
+                                 "00020101021238540010A0000007270124000697041601101234567890208QRIBFTTA53037045405100005802VN62150811Thanh toan 6304ABCD",
+                                 "otpauth-migration://offline?data=CjEKCkhlbGxvId6tvu8SGEV4YW1wbGU6YWxpY2VAZXhhbXBsZS5jb20aB0V4YW1wbGUgASgBMAIQARgBIAAojrzh2gQ%3D"};
+        struct Case
+        {
+            const char* name;
+            Spec spec;
+            QREcc ecc;
+            std::vector<double> pxs;
+            int post; // 0 không; 1 nghiêng 8% + xoay 5 độ
+        };
+        auto mk = [](Dots d, Eyes e, Logo l, bool carve, QColor ink, QColor card, int quiet) {
+            Spec s;
+            s.dots = d;
+            s.eyes = e;
+            s.logo = l;
+            s.logoRatio = 0.24;
+            s.carveLogo = carve;
+            s.ink = ink;
+            s.eyeInk = ink;
+            s.card = card;
+            s.quiet = quiet;
+            return s;
+        };
+        const QColor dk(20, 24, 33);
+        const std::vector<Case> cases = {
+            {"ô tách rời (gap)", mk(Dots::Gap, Eyes::Square, Logo::None, false, Qt::black, Qt::white, 4), QREcc::Medium, {7.0, 10.0}, 0},
+            {"ô định vị tròn", mk(Dots::Circle, Eyes::Circle, Logo::None, false, Qt::black, Qt::white, 4), QREcc::Medium, {4.0, 5.0, 8.0}, 0},
+            {"logo tròn khoét giữa + ô bo tròn", mk(Dots::Round, Eyes::Rounded, Logo::CircleBadge, true, Qt::black, Qt::white, 4), QREcc::High, {4.0, 7.0}, 0},
+            {"đảo màu + ô bo tròn", mk(Dots::Round, Eyes::Rounded, Logo::None, false, Qt::white, dk, 4), QREcc::Medium, {4.0, 7.0}, 0},
+            {"ô blob + ô định vị bo tròn", mk(Dots::Blob, Eyes::Rounded, Logo::None, false, Qt::black, Qt::white, 4), QREcc::Medium, {4.0, 7.0}, 0},
+            {"thanh dọc + ô định vị bo tròn", mk(Dots::Bars, Eyes::Rounded, Logo::None, false, Qt::black, Qt::white, 4), QREcc::Medium, {4.0, 7.0}, 0},
+            {"thẻ màu (nền không trắng) + chấm tròn", mk(Dots::Circle, Eyes::Rounded, Logo::None, false, QColor(0x0e, 0x7a, 0x2a), QColor(0x9c, 0x9e, 0xec), 1), QREcc::Medium, {5.0, 7.6}, 0},
+            {"chấm tròn + nghiêng góc nhìn", mk(Dots::Circle, Eyes::Rounded, Logo::None, false, Qt::black, Qt::white, 4), QREcc::Medium, {7.0, 10.0}, 1},
+        };
+        int styleOk = 0, styleTotal = 0;
+        for (const Case& c : cases)
+        {
+            int caseOk = 0, caseTotal = 0;
+            for (const QString& text : texts)
+            {
+                QString err;
+                const QRMatrix m = QRCodec::encode(text, c.ecc, &err);
+                CHECK(m.isValid());
+                for (double px : c.pxs)
+                {
+                    Spec sp = c.spec;
+                    sp.px = px;
+                    QImage img = render(m, sp);
+                    if (c.post == 1)
+                        img = camera(img, sp.card, 5, 0.08, 10);
+                    ++caseTotal;
+                    if (roundTrips(text, c.ecc, QRStyle(), qPrintable(QString("app-style %1 px=%2 len=%3").arg(c.name).arg(px).arg(text.size())), &img))
+                        ++caseOk;
+                }
+            }
+            std::printf("  kiểu app «%s»: %d/%d\n", c.name, caseOk, caseTotal);
+            styleOk += caseOk;
+            styleTotal += caseTotal;
+        }
+        CHECK(styleOk == styleTotal);
+    }
+
+    // ---- v1.27.0: Authenticator (TOTP/HOTP, Google Authenticator) ----
+    {
+        // RFC 4226 phụ lục D: HOTP SHA-1, khóa "12345678901234567890"
+        OtpAccount h;
+        h.secret = "12345678901234567890";
+        h.type = OtpAccount::Type::Hotp;
+        const char* expected[] = {"755224", "287082", "359152", "969429", "338314", "254676", "287922", "162583", "399871", "520489"};
+        for (int i = 0; i < 10; ++i)
+            CHECK(Otp::hotp(h, i) == QString(expected[i]));
+
+        // RFC 6238 phụ lục B: TOTP 8 chữ số, ba thuật toán (mỗi thuật toán một khóa riêng)
+        struct V
+        {
+            const char* alg;
+            const char* key;
+            qint64 t;
+            const char* code;
+        };
+        const char* k1 = "12345678901234567890";
+        const char* k256 = "12345678901234567890123456789012";
+        const char* k512 = "1234567890123456789012345678901234567890123456789012345678901234";
+        const V vectors[] = {
+            {"SHA1", k1, 59, "94287082"},         {"SHA1", k1, 1111111109, "07081804"}, {"SHA1", k1, 1111111111, "14050471"},
+            {"SHA1", k1, 1234567890, "89005924"}, {"SHA1", k1, 2000000000, "69279037"}, {"SHA1", k1, 20000000000LL, "65353130"},
+            {"SHA256", k256, 59, "46119246"},     {"SHA256", k256, 1111111109, "68084774"},
+            {"SHA512", k512, 59, "90693936"},     {"SHA512", k512, 1111111109, "25091201"},
+        };
+        for (const V& v : vectors)
+        {
+            OtpAccount a;
+            a.secret = v.key;
+            a.algorithm = v.alg;
+            a.digits = 8;
+            CHECK(Otp::code(a, v.t) == QString(v.code));
+        }
+        OtpAccount t;
+        t.secret = "12345678901234567890";
+        CHECK(Otp::remainingSeconds(t, 59) == 1);
+        CHECK(Otp::remainingSeconds(t, 60) == 30);
+        CHECK(Otp::code(t, 59) == "287082"); // 6 chữ số của thời điểm 59 s (bộ đếm 1) trùng HOTP #1
+
+        // base32
+        bool b32ok = false;
+        const QByteArray decoded = Otp::base32Decode("jbsw y3dp-ehpk3pxp", &b32ok);
+        CHECK(b32ok);
+        CHECK(decoded == QByteArray("Hello!\xDE\xAD\xBE\xEF", 10));
+        CHECK(Otp::base32Encode(decoded) == "JBSWY3DPEHPK3PXP");
+        Otp::base32Decode("ABC1", &b32ok);
+        CHECK(!b32ok);
+        Otp::base32Decode("", &b32ok);
+        CHECK(!b32ok);
+        for (int n = 1; n < 40; ++n)
+        {
+            QByteArray raw;
+            for (int i = 0; i < n; ++i)
+                raw.append(static_cast<char>(i * 37 + n));
+            bool rt = false;
+            CHECK(Otp::base32Decode(Otp::base32Encode(raw), &rt) == raw && rt);
+        }
+
+        // otpauth://
+        OtpAccount a;
+        QString err;
+        CHECK(Otp::parseUri("otpauth://totp/Example:alice@example.com?secret=JBSWY3DPEHPK3PXP&issuer=Example&algorithm=SHA256&digits=8&period=60", &a, &err));
+        CHECK(a.issuer == "Example" && a.name == "alice@example.com" && a.algorithm == "SHA256" && a.digits == 8 && a.period == 60);
+        CHECK(a.type == OtpAccount::Type::Totp && a.secret == QByteArray("Hello!\xDE\xAD\xBE\xEF", 10));
+        CHECK(Otp::parseUri("otpauth://totp/GitHub%3Abob?secret=jbswy3dpehpk3pxp", &a, &err));
+        CHECK(a.issuer == "GitHub" && a.name == "bob" && a.digits == 6 && a.period == 30 && a.algorithm == "SHA1");
+        CHECK(Otp::parseUri("otpauth://hotp/Svc:me?secret=JBSWY3DPEHPK3PXP&counter=7", &a, &err));
+        CHECK(a.type == OtpAccount::Type::Hotp && a.counter == 7);
+        CHECK(!Otp::parseUri("otpauth://totp/x?issuer=a", &a, &err)); // thiếu secret
+        CHECK(!Otp::parseUri("otpauth://totp/x?secret=!!!", &a, &err));
+        CHECK(!Otp::parseUri("otpauth://totp/x?secret=JBSWY3DPEHPK3PXP&digits=99", &a, &err));
+        CHECK(!Otp::parseUri("otpauth://totp/x?secret=JBSWY3DPEHPK3PXP&algorithm=MD5", &a, &err));
+        CHECK(!Otp::parseUri("otpauth://foo/x?secret=JBSWY3DPEHPK3PXP", &a, &err));
+        CHECK(!Otp::parseUri("https://example.com", &a, &err));
+        // dựng ngược rồi đọc lại (ký tự đặc biệt, tiếng Việt)
+        OtpAccount round;
+        round.issuer = "Công ty A&B";
+        round.name = QString::fromUtf8("người.dùng+tag@example.com");
+        round.secret = QByteArray("\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c", 12);
+        round.algorithm = "SHA512";
+        round.digits = 8;
+        round.period = 45;
+        OtpAccount back;
+        CHECK(Otp::parseUri(Otp::buildUri(round), &back, &err));
+        CHECK(back.issuer == round.issuer && back.name == round.name && back.secret == round.secret && back.algorithm == "SHA512" && back.digits == 8 && back.period == 45);
+
+        // Google Authenticator "Xuất tài khoản" (otpauth-migration) - dữ liệu dựng bằng bộ mã hóa protobuf tối thiểu ngay trong test
+        auto varint = [](quint64 v) {
+            QByteArray b;
+            do
+            {
+                quint8 x = v & 0x7F;
+                v >>= 7;
+                if (v)
+                    x |= 0x80;
+                b.append(static_cast<char>(x));
+            } while (v);
+            return b;
+        };
+        auto field = [&](int num, const QByteArray& payload) { return varint((static_cast<quint64>(num) << 3) | 2) + varint(payload.size()) + payload; };
+        auto vfield = [&](int num, quint64 v) { return varint(static_cast<quint64>(num) << 3) + varint(v); };
+        auto param = [&](const QByteArray& secret, const QByteArray& name, const QByteArray& issuer, int algo, int digits, int type, quint64 counter) {
+            QByteArray p = field(1, secret) + field(2, name) + field(3, issuer) + vfield(4, algo) + vfield(5, digits) + vfield(6, type);
+            if (counter)
+                p += vfield(7, counter);
+            return p;
+        };
+        auto migUri = [](const QByteArray& payload) {
+            return "otpauth-migration://offline?data=" + QString::fromLatin1(QUrl::toPercentEncoding(QString::fromLatin1(payload.toBase64())));
+        };
+        const QString mig = migUri(field(1, param(QByteArray("Hello!\xDE\xAD\xBE\xEF", 10), "Example:alice@example.com", "Example", 1, 1, 2, 0)) + vfield(2, 1) + vfield(3, 1) + vfield(4, 0));
+        const QList<OtpAccount> list = Otp::parseMigration(mig, &err);
+        CHECK(list.size() == 1);
+        if (list.size() == 1)
+        {
+            CHECK(list[0].issuer == "Example" && list[0].name == "alice@example.com");
+            CHECK(list[0].secret == QByteArray("Hello!\xDE\xAD\xBE\xEF", 10));
+            CHECK(list[0].algorithm == "SHA1" && list[0].digits == 6 && list[0].type == OtpAccount::Type::Totp);
+        }
+        // Nhiều tài khoản + SHA256/8 chữ số/HOTP + một tài khoản MD5 (bị bỏ qua)
+        QByteArray payload;
+        payload += field(1, param("0123456789", "acc1", "Svc1", 2, 2, 2, 0));
+        payload += field(1, param("abcdefghij", "Svc2:acc2", "", 3, 1, 1, 5));
+        payload += field(1, param("zzzzzzzzzz", "bad", "Md5", 4, 1, 2, 0));
+        payload += vfield(2, 1) + vfield(3, 2) + vfield(4, 0);
+        const QString mig2 = migUri(payload);
+        const QList<OtpAccount> list2 = Otp::parseMigration(mig2, &err);
+        CHECK(list2.size() == 2);
+        CHECK(!err.isEmpty()); // báo có tài khoản bị bỏ qua
+        if (list2.size() == 2)
+        {
+            CHECK(list2[0].algorithm == "SHA256" && list2[0].digits == 8 && list2[0].issuer == "Svc1" && list2[0].name == "acc1");
+            CHECK(list2[1].algorithm == "SHA512" && list2[1].type == OtpAccount::Type::Hotp && list2[1].counter == 5);
+            CHECK(list2[1].issuer == "Svc2" && list2[1].name == "acc2"); // "Issuer:name" tách được khi không có trường issuer
+        }
+        CHECK(Otp::parseMigration("otpauth-migration://offline?data=!!!!", &err).isEmpty());
+        CHECK(Otp::parseMigration("otpauth-migration://offline", &err).isEmpty());
+        CHECK(Otp::parseMigration("otpauth-migration://offline?data=AAAA", &err).isEmpty());
+
+        // DPAPI khứ hồi, và dữ liệu hỏng thì mở thất bại (không trả rác)
+        const QByteArray secretBytes("\x00\x01 secret \xff", 10);
+        const QByteArray wrapped = Otp::protect(secretBytes);
+        CHECK(!wrapped.isEmpty() && wrapped != secretBytes);
+        CHECK(Otp::unprotect(wrapped) == secretBytes);
+        QByteArray tampered = wrapped;
+        tampered[tampered.size() / 2] = static_cast<char>(tampered[tampered.size() / 2] ^ 0x5A);
+        CHECK(Otp::unprotect(tampered).isEmpty());
+
+        // QR khứ hồi: mã otpauth tạo thành ảnh -> quét lại -> tính được đúng mã
+        OtpAccount qa;
+        qa.issuer = "Example";
+        qa.name = "alice@example.com";
+        qa.secret = Otp::base32Decode("JBSWY3DPEHPK3PXP");
+        const QString uri = Otp::buildUri(qa);
+        const QRMatrix qm = QRCodec::encode(uri, QREcc::Quartile, &err);
+        CHECK(qm.isValid());
+        QRStyle qs;
+        qs.targetSize = 300;
+        const QList<QRDecoded> dec = QRCodec::decode(QRCodec::render(qm, qs));
+        CHECK(dec.size() == 1 && dec[0].text == uri);
+        OtpAccount fromQr;
+        CHECK(Otp::parseUri(dec.value(0).text, &fromQr, &err));
+        CHECK(Otp::code(fromQr, 59) == Otp::code(qa, 59));
+
+        // QRPayload: loại mới + che khóa
+        const ParsedPayload pp = QRPayload::parse(uri);
+        CHECK(pp.type == QRContentType::Otp);
+        CHECK(pp.secretField >= 0 && pp.secretField < pp.fields.size());
+        CHECK(!QRPayload::maskSecrets(uri).contains("JBSWY3DPEHPK3PXP"));
+        CHECK(!QRPayload::maskSecrets(mig).contains("CjEKCkhlbGxv"));
+        const ParsedPayload pm = QRPayload::parse(mig);
+        CHECK(pm.type == QRContentType::Otp && pm.secretField >= 0);
+        CHECK(QRPayload::parse("https://example.com").type == QRContentType::Url);
     }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);
