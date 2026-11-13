@@ -57,8 +57,8 @@ target_include_directories(core_shared PUBLIC src)
 # winprocess_core: PowerShellRunner dừng cả tiến trình cháu của script khi hủy/hết giờ (WinProcessTree).
 target_link_libraries(core_shared PUBLIC Qt6::Core winprocess_core advapi32 shell32)
 
-# ---- InputController (SendInput/SetCursorPos) - dùng chung cho Auto Click (ActionRunner) và Security
-# Gateway (CommandLauncher gửi Ctrl+V). Trước đây liệt kê trùng trong security_core và SOURCES của exe.
+# ---- InputController (SendInput/SetCursorPos) - dùng cho Auto Click (ActionRunner). Security Gateway từng
+# dùng nó để gửi Ctrl+V thật; từ v1.28.1 dán qua bộ đệm nhập của console (ConsolePaste), không cần nữa.
 add_library(input_core STATIC
     src/tools/autoclick/engine/InputController.h
     src/tools/autoclick/engine/InputController.cpp
@@ -568,13 +568,15 @@ add_executable(disk_vpn_stress_tests EXCLUDE_FROM_ALL tests/disk_vpn_stress_test
 target_link_libraries(disk_vpn_stress_tests PRIVATE diskcleanup_core vpn_core)
 
 # ---- Lõi Security Gateway (cổng lệnh PowerShell + bảo vệ web + quét mã độc qua Windows Defender) ----
-# CommandLauncher cần gửi Ctrl+V thật qua InputController - link input_core (dùng chung với Auto Click).
+# CommandLauncher mở powershell.exe + ConsolePaste dán vào ĐÚNG console đó (WriteConsoleInputW, không SendInput).
 add_library(security_core STATIC
     src/tools/security/model/ThreatRecord.h
     src/tools/security/engine/CommandAnalyzer.h
     src/tools/security/engine/CommandAnalyzer.cpp
     src/tools/security/engine/CommandLauncher.h
     src/tools/security/engine/CommandLauncher.cpp
+    src/tools/security/engine/ConsolePaste.h
+    src/tools/security/engine/ConsolePaste.cpp
     src/tools/security/engine/DefenderController.h
     src/tools/security/engine/DefenderController.cpp
     src/tools/security/engine/DefenderScanWorker.h
@@ -583,11 +585,20 @@ add_library(security_core STATIC
     src/tools/security/engine/HostsBlocklist.cpp
 )
 target_include_directories(security_core PUBLIC src)
-target_link_libraries(security_core PUBLIC Qt6::Core Qt6::Gui advapi32 shell32 user32 core_shared input_core)
+target_link_libraries(security_core PUBLIC Qt6::Core Qt6::Gui advapi32 shell32 user32 core_shared)
 
 # ---- Kiểm thử lõi Security Gateway: cmake --build build --target security_tests ----
 add_executable(security_tests EXCLUDE_FROM_ALL tests/security_tests.cpp)
 target_link_libraries(security_tests PRIVATE security_core)
+
+# ---- Kiểm thử ĐẦU-CUỐI "Mở PowerShell & dán lệnh": cmake --build build --target command_launcher_tests ----
+# Mở powershell.exe THẬT nhưng console ẨN (CREATE_NO_WINDOW - không hiện gì lên màn hình), dán qua chính
+# CommandLauncher + tiến trình phụ "--console-paste" (tệp test tự đóng vai tiến trình phụ; có thêm một ca dùng
+# đúng build\OneForAll.exe nếu đã build), đọc lại màn hình console và kiểm lệnh KHÔNG bị chạy (tệp đánh dấu
+# không xuất hiện). Không SendInput, không đổi cấu hình máy; Clipboard của người dùng được chụp lại và khôi
+# phục nguyên vẹn (mọi định dạng). Thêm "--visible" để chạy đúng đường của ứng dụng (cửa sổ thật + profile).
+add_executable(command_launcher_tests EXCLUDE_FROM_ALL tests/command_launcher_tests.cpp)
+target_link_libraries(command_launcher_tests PRIVATE security_core Qt6::Gui user32)
 
 # ---- Giao diện Security Gateway ----
 add_library(security_ui STATIC

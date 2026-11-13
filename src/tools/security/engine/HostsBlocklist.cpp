@@ -1,9 +1,9 @@
 #include "HostsBlocklist.h"
 
+#include "core/AppPaths.h"
 #include "core/WinElevation.h"
 
 #include <QFile>
-#include <QProcessEnvironment>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QStringDecoder>
@@ -226,10 +226,9 @@ namespace internal
 
 QString hostsFilePath()
 {
-    QString systemRoot = QProcessEnvironment::systemEnvironment().value("SystemRoot");
-    if (systemRoot.isEmpty())
-        systemRoot = "C:/Windows";
-    return systemRoot + "/System32/drivers/etc/hosts";
+    // Thư mục System32 thật (GetSystemDirectoryW) - không đọc biến môi trường %SystemRoot% (tiến trình cha đặt
+    // lại được biến này, khiến công cụ đọc/ghi một tệp "hosts" nằm chỗ khác).
+    return AppPaths::systemExecutable("drivers/etc/hosts");
 }
 
 QString backupFilePath(const QString& hostsPath)

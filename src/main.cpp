@@ -7,6 +7,7 @@
 #include "core/ToolManager.h"
 #include "tools/diskcleanup/PartitionRunMain.h"
 #include "tools/diskcleanup/engine/PartitionRelocator.h"
+#include "tools/security/engine/ConsolePaste.h"
 #include "tools/vpn/direct/VpnHelperMain.h"
 
 #ifdef _WIN32
@@ -20,6 +21,11 @@ int main(int argc, char* argv[])
     // giao diện, không giữ mutex của ứng dụng; tự thoát khi ứng dụng chính đóng kênh điều khiển.
     if (argc >= 4 && std::strcmp(argv[1], "--vpn-helper") == 0)
         return runVpnHelper(argc, argv);
+
+    // Tiến trình phụ của Security Gateway: dán lệnh (Ctrl+V vào bộ đệm nhập) vào ĐÚNG cửa sổ PowerShell vừa
+    // mở rồi đọc lại màn hình để xác nhận - không dựng giao diện, không giữ mutex; xem ConsolePaste.h.
+    if (argc >= 3 && std::strcmp(argv[1], ConsolePaste::kHelperSwitch) == 0)
+        return ConsolePaste::runHelperMode(argc, argv);
 
 #ifdef _WIN32
     // Thiết lập Per-Monitor DPI Awareness V2 theo mục 68 trong tài liệu thiết kế

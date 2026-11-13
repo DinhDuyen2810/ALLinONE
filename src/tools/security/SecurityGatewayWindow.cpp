@@ -65,7 +65,7 @@ void SecurityGatewayWindow::closeEvent(QCloseEvent* event)
 void SecurityGatewayWindow::requestCancelScanForQuit()
 {
     if (m_scanTab)
-        m_scanTab->requestCancelScan();
+        m_scanTab->requestCancelScan(3000);
 }
 
 void SecurityGatewayWindow::buildUi()

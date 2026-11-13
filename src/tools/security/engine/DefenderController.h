@@ -66,6 +66,18 @@ QList<ThreatRecord> listThreats(QString* error = nullptr);
 /// đe dọa/chính sách) - lỗi khi đó được trả về qua *error.
 bool removeAllActiveThreats(QString* error = nullptr);
 
+/// Kết luận sau một lần bật/tắt (setRealtimeProtectionEnabled/setNetworkProtectionEnabled).
+enum class ToggleOutcome
+{
+    Applied,    ///< Đọc lại được và trạng thái thật đúng như yêu cầu
+    NotApplied, ///< Đọc lại được và trạng thái thật KHÁC yêu cầu (lỗi quyền, Tamper Protection...)
+    Unknown,    ///< KHÔNG đọc lại được trạng thái - không biết thay đổi có áp dụng hay không
+};
+
+/// Thuần, test được. Trước v1.28.1 UI so thẳng `*verified == wanted` - khi đọc lại thất bại `*verified` mang
+/// giá trị mặc định false nên bấm "Tắt" luôn báo "✓ Đã tắt" (che cả lỗi Set-MpPreference thật).
+ToggleOutcome toggleOutcome(const QString& readBackError, bool actualState, bool wanted);
+
 namespace internal
 {
 QString buildGetComputerStatusScript();

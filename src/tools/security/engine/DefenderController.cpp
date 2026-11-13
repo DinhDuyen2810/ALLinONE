@@ -28,8 +28,11 @@ ThreatRecord threatFromJsonObject(const QJsonObject& o)
     t.threatName = o.value("ThreatName").toString();
     t.severity = o.value("SeverityID").toInt();
     t.isActive = o.value("IsActive").toBool();
+    // Get-MpThreat có Resources = $null thì script ra [""] (đo thật trên PS 5.1) - bỏ mục rỗng để giao diện hiện
+    // "—" thay vì một ô trống trông như đường dẫn bị mất.
     for (const QJsonValue& r : o.value("Resources").toArray())
-        t.resources << r.toString();
+        if (!r.toString().trimmed().isEmpty())
+            t.resources << r.toString();
     return t;
 }
 } // namespace
@@ -93,6 +96,13 @@ bool setNetworkProtectionEnabled(bool enabled, bool* verifiedEnabled, QString* e
         *error = readErr;
     // Như setRealtimeProtectionEnabled(): không phụ thuộc nơi gọi có truyền verifiedEnabled hay không.
     return ok && readErr.isEmpty() && status.networkProtectionEnabled() == enabled;
+}
+
+ToggleOutcome toggleOutcome(const QString& readBackError, bool actualState, bool wanted)
+{
+    if (!readBackError.isEmpty())
+        return ToggleOutcome::Unknown;
+    return actualState == wanted ? ToggleOutcome::Applied : ToggleOutcome::NotApplied;
 }
 
 QList<ThreatRecord> listThreats(QString* error)

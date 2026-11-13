@@ -29,8 +29,9 @@ void CommandGatewayTab::buildUi()
         "Dán một lệnh/đoạn script PowerShell khả nghi vào ô dưới để kiểm tra TRƯỚC KHI chạy thật. Ứng "
         "dụng chỉ PHÂN TÍCH CHỮ (không chạy thử) rồi cho biết có dấu hiệu bất thường hay không - việc "
         "chạy thật luôn diễn ra trên một cửa sổ PowerShell THẬT, riêng biệt, và bạn luôn là người tự "
-        "bấm Enter cuối cùng. Ứng dụng không bao giờ tự chạy lệnh thay bạn. Lưu ý: với lệnh NHIỀU DÒNG, "
-        "console có thể tự chạy các dòng trước dòng cuối ngay khi dán - ứng dụng sẽ hỏi lại trước khi dán.",
+        "bấm Enter cuối cùng. Ứng dụng không bao giờ tự chạy lệnh thay bạn: lệnh được dán bằng phím Ctrl+V "
+        "của chính PowerShell (kể cả lệnh nhiều dòng cũng không dòng nào tự chạy), rồi ứng dụng đọc lại cửa "
+        "sổ PowerShell để xác nhận lệnh đã nằm ở dòng lệnh.",
         this);
     introLabel->setWordWrap(true);
     introLabel->setStyleSheet(SecurityUi::bannerStyle("info"));
@@ -70,7 +71,8 @@ void CommandGatewayTab::buildUi()
     connect(m_acknowledgeCheck, &QCheckBox::toggled, this, &CommandGatewayTab::onAcknowledgeToggled);
     root->addWidget(m_acknowledgeCheck);
 
-    m_launchBtn = new QPushButton("📋 Mở PowerShell & dán lệnh", this);
+    // "&&" = một dấu & thật: nhãn nút coi "&" là ký hiệu phím tắt - bản trước hiện thành "Mở PowerShell _dán lệnh".
+    m_launchBtn = new QPushButton("📋 Mở PowerShell && dán lệnh", this);
     m_launchBtn->setStyleSheet(SecurityUi::buttonStyle());
     m_launchBtn->setCursor(Qt::PointingHandCursor);
     m_launchBtn->setEnabled(false);
@@ -93,6 +95,9 @@ void CommandGatewayTab::onTextChanged()
     m_reasonsLabel->setVisible(false);
     m_acknowledgeCheck->setVisible(false);
     m_acknowledgeCheck->setChecked(false);
+    // Kết quả "đã dán" của lệnh CŨ không còn đúng với nội dung mới (trừ khi lần mở đó vẫn đang chạy).
+    if (!m_launcher || !m_launcher->isBusy())
+        m_statusLabel->clear();
     updateLaunchButtonState();
 }
 
@@ -139,6 +144,13 @@ void CommandGatewayTab::onAcknowledgeToggled(bool)
 
 void CommandGatewayTab::updateLaunchButtonState()
 {
+    // Đang mở/dán (tới ~20 giây nếu PowerShell nạp profile chậm): sửa ô lệnh trong lúc đó không được bật lại
+    // nút - bấm lần nữa sẽ bị bỏ qua và dòng trạng thái kẹt ở "Đang mở".
+    if (m_launcher && m_launcher->isBusy())
+    {
+        m_launchBtn->setEnabled(false);
+        return;
+    }
     if (!m_analyzed || m_commandEdit->toPlainText().trimmed().isEmpty())
     {
         m_launchBtn->setEnabled(false);
@@ -152,8 +164,8 @@ void CommandGatewayTab::updateLaunchButtonState()
 
 void CommandGatewayTab::onLaunchClicked()
 {
-    // Hai tình huống mà "dán hộ" không còn vô hại như mô tả ở đầu tab - nói rõ và để người dùng quyết
-    // định TRƯỚC khi mở cửa sổ (xem CommandLauncherInternal::pasteWarnings).
+    // Tình huống mà "dán hộ" không còn vô hại như mô tả ở đầu tab (ứng dụng đang có quyền Administrator) -
+    // nói rõ và để người dùng quyết định TRƯỚC khi mở cửa sổ (xem CommandLauncherInternal::pasteWarnings).
     const QStringList warnings = CommandLauncherInternal::pasteWarnings(
         CommandLauncherInternal::prepareForPaste(m_commandEdit->toPlainText()), WinElevation::isElevated());
     if (!warnings.isEmpty())
@@ -163,22 +175,19 @@ void CommandGatewayTab::onLaunchClicked()
             text += "• " + w + "\n\n";
         const auto answer = QMessageBox::warning(
             this, "Mở PowerShell & dán lệnh",
-            text + "Vẫn mở PowerShell và dán lệnh này? (Chọn \"No\" nếu muốn tự sao chép và dán từng phần.)",
+            text + "Vẫn mở PowerShell và dán lệnh này?",
             QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
         if (answer != QMessageBox::Yes)
             return;
     }
 
-    m_launchBtn->setEnabled(false);
-    m_statusLabel->setText("⏳ Đang mở PowerShell...");
+    m_statusLabel->setText("⏳ Đang mở PowerShell và dán lệnh...");
     m_launcher->launchAndPaste(m_commandEdit->toPlainText());
+    updateLaunchButtonState();
 }
 
-void CommandGatewayTab::onLaunchFinished(bool ok, QString error)
+void CommandGatewayTab::onLaunchFinished(bool ok, QString message)
 {
     updateLaunchButtonState();
-    if (ok)
-        m_statusLabel->setText("✓ Đã mở PowerShell và dán lệnh vào - tự xem lại rồi bấm Enter để chạy.");
-    else
-        m_statusLabel->setText("⚠ " + error);
+    m_statusLabel->setText(ok ? message : "⚠ " + message);
 }

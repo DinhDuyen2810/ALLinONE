@@ -577,6 +577,8 @@ KHÔNG tự kiểm tra được `rasdial` kết nối/ngắt kết nối thật 
 tra tay. Việc thêm/liệt kê/xóa hồ sơ (Add/Get/Remove-VpnConnection) đã được xác nhận thật trên Windows.
 
 ## 4i. Security Gateway (đã hoàn thiện)
+> **Từ v1.28.1** luồng "Mở PowerShell & dán lệnh" mô tả dưới đây (SetForegroundWindow + SendInput Ctrl+V, "chưa tự kiểm tra được") đã được thay hẳn - bản cũ không bao giờ dán được. Xem mục 4zzg.
+
 Yêu cầu người dùng: tham khảo Kaspersky, gồm (1) một "tab PowerShell" để kiểm tra lệnh có mã độc/bất
 thường không trước khi tự mở PowerShell thật và dán lệnh đã kiểm tra vào, (2) chặn ngay truy vấn tới
 link độc hại trên web, (3) quét máy tìm mã độc, xóa/cách ly khi đang bật.
@@ -3165,6 +3167,105 @@ Thêm: (a) PNG nền TRONG SUỐT: nếu trộn nền trắng không ra gì và 
 **Kết quả đo sau sửa**: sweep bước 7° 6336/6336, bước 5° 8640/8640; ma trận cố định 1140/1140; định dạng ảnh 330/330 (ARGB/premultiplied/RGBA/BGR/RGB16/RGB555/RGB30/xám 8-16/RGBA64/RGBX64/FP16/Indexed8/Mono, alpha, dpr 1,5-2, canvas 4K tối + 1080p trắng với mã nhỏ, cắt sát không lề, hai mã trong một ảnh); ngẫu nhiên 396/400; ngẫu nhiên xoay-chéo + nghiêng 294/300 và 295/300 (hai hạt giống). Ảnh không có mã 1080p ~245 ms; ảnh "mã giả" (công cụ `QR_PROBE_FAKE=N` của `qr_decode_probe`) ~0,7 s (v1.27.0: 0,47 s); `qrwifi_stress_tests` 761.094/0, 1203 s. Bài học: lần đầu giai đoạn 3 (1,8 s) + leo đồi đầy đủ làm bộ stress chạy gấp đôi (mỗi ảnh mã giả ~2 s) nên đã giới hạn ngân sách, bỏ hạt giống trùng và thêm điểm dừng sớm; chỉ phát hiện nhờ in tiến độ từng phần của bộ stress.
 **Còn rớt (đã biết, không hứa "mọi mã")**: mã ô tách rời (gap) với tương phản thấp/mực tối trên thẻ tối; kiểu "kim cương" (ô định vị cũng vẽ bằng ô hình thoi); nhiễu + JPEG nặng cùng mã v9+ chấm tròn nhỏ; mã vạch 1 chiều/Micro QR/Aztec/DataMatrix không hỗ trợ. CHƯA kiểm chứng: camera thật, DPI 125/150% thật, mã "Xuất tài khoản" thật từ điện thoại.
 
+## 4zzg. Security Gateway: "Mở PowerShell & dán lệnh" chạy THẬT + rà soát toàn bộ (v1.28.1, 13/11/2026)
+
+Người dùng: rà tính năng Security Gateway, cho nhiều test xem có hoạt động chuẩn không; phần mở PowerShell thấy chưa làm được.
+
+**Nguyên nhân gốc (đo thật bằng chương trình thử, không đoán):** `CommandLauncher` mở PowerShell bằng `QProcess::startDetached`.
+Với ứng dụng GUI (không có console), Qt 6.11.1 tạo cho powershell.exe một console KHÔNG CÓ CỬA SỔ: gắn vào tiến trình đó
+(AttachConsole) đọc được dấu nhắc `PS D:\ALLinONE>` nhưng `GetConsoleWindow()` = NULL. Hệ quả: bấm nút không thấy gì hiện ra,
+sau 3 giây báo "không tìm thấy cửa sổ... không tự dán", và MỖI lần bấm để lại một powershell.exe ẩn chạy mãi. (Khi tiến trình
+cha có stdin/stdout - vd chạy từ shell - powershell.exe còn kế thừa luôn stdin/stdout của cha rồi thoát ngay.) Từ khi có tính năng
+tới v1.28.0, nút này CHƯA BAO GIỜ dán được; mục 4i trước đây ghi "chưa tự kiểm tra được, cần người dùng thử trên máy thật".
+
+**Cách làm mới (`CommandLauncher` + `ConsolePaste` mới):**
+- Tạo powershell.exe bằng `CreateProcessW` + `CREATE_NEW_CONSOLE`, không kế thừa handle, thư mục làm việc = thư mục người dùng (không
+  còn mở trong thư mục cài ứng dụng). Đo thật: có cửa sổ, tìm thấy theo PID sau ~125 ms (Windows báo chủ cửa sổ console là chính
+  powershell.exe), `GetConsoleWindow()` khác NULL.
+- Dán: tiến trình phụ `OneForAll.exe --console-paste <pid> [ms]` (lệnh cần đối chiếu đi qua stdin, KHÔNG qua dòng lệnh - dòng lệnh hiện
+  trong danh sách tiến trình/log của phần mềm bảo mật) gắn vào console của PowerShell đó, ghi phím Ctrl+V vào BỘ ĐỆM NHẬP của chính
+  console ấy (`WriteConsoleInputW`), rồi đọc lại màn hình (`ReadConsoleOutputCharacterW`) tới khi thấy lệnh: đối chiếu tối đa 40 chữ/số
+  ASCII đầu của dòng đầu tiên, số lần xuất hiện phải TĂNG so với lúc trước khi dán. Mã thoát = kết quả (`ConsolePaste::Outcome`:
+  Pasted, SentUnverified, AttachFailed, NotSeen, PromptIdle, ProcessExited, BadArguments, WriteFailed), `CommandLauncherInternal::
+  helperResult()` diễn giải thành thông báo; người dùng thấy kết quả THẬT ("đã đọc lại cửa sổ PowerShell để xác nhận") thay vì
+  "đã gửi phím, chắc là được".
+- Vì sao tiến trình phụ: `AttachConsole` đổi console của CẢ tiến trình - làm trong tiến trình giao diện thì tiến trình con do luồng khác
+  tạo lúc đó (PowerShellRunner) dùng chung console của người dùng, và người dùng đóng cửa sổ PowerShell đúng lúc đang gắn sẽ gửi
+  CTRL_CLOSE_EVENT làm chính ứng dụng bị kết thúc. `main.cpp` có thêm chế độ khởi chạy phụ `--console-paste` (trước QApplication,
+  không giữ mutex) - giữ nguyên khi sửa `main.cpp`.
+- Không còn `SendInput`/`SetForegroundWindow` để dán: không thể dán nhầm sang cửa sổ khác, không bị cơ chế chống cướp focus chặn.
+  `SetForegroundWindow` chỉ còn là bước tiện (đưa cửa sổ lên trước, thất bại cũng không sao). `security_core` bỏ phụ thuộc `input_core`.
+- Giao diện: nút khóa suốt lúc đang mở/dán (tới ~20 s nếu profile chậm) - trước đây sửa ô lệnh giữa chừng bật lại nút, bấm lần nữa bị
+  bỏ qua và dòng trạng thái kẹt; sửa nội dung thì xóa dòng trạng thái "đã dán" của lệnh cũ.
+
+**Hành vi đo thật (Windows 10 22H2, Windows PowerShell 5.1, PSReadLine 2.0.0, bảng mã console 1258):**
+- Ctrl+V gửi TRƯỚC khi dấu nhắc hiện vẫn được PSReadLine xử lý khi sẵn sàng.
+- Lệnh nhiều dòng: chức năng Paste của PSReadLine chèn thành một khối có dấu nhắc nối `>> `, KHÔNG dòng nào chạy (tệp đánh dấu mà
+  lệnh sẽ tạo nếu chạy không xuất hiện) -> bỏ hộp hỏi lại "lệnh nhiều dòng có thể tự chạy"; chỉ còn cảnh báo khi ứng dụng có quyền
+  Administrator. Hướng dẫn tự dán dặn KHÔNG dán lệnh nhiều dòng bằng chuột phải (dán kiểu console - các dòng trước dòng cuối chạy ngay).
+- Ctrl+V mang ký tự 0x16 vào PowerShell KHÔNG có PSReadLine -> chèn "^V" vào dòng lệnh; mang ký tự 0 -> bị bỏ qua hẳn -> dùng ký tự 0.
+  Không có PSReadLine: không dán, không chạy, báo tự dán sau ~3,8 s (dấu nhắc đứng yên 3 s).
+- Đã thử phương án "gõ từng ký tự Unicode" (xuống dòng = Shift+Enter): với PowerShell không có PSReadLine, Shift+Enter bị hiểu là Enter
+  -> LỆNH BỊ CHẠY (tệp đánh dấu xuất hiện) -> loại bỏ, giữ Ctrl+V.
+- PSReadLine 2.0 VẼ chữ ngoài bảng mã console (ế, ệ với bảng mã 1258) thành "?" nhưng nội dung bên trong ĐÚNG (cho chạy lệnh vô hại ghi
+  mã ký tự ra tệp: 84,105,7871,...,7879,116). Bản đầu đối chiếu cả chữ có dấu nên báo "chưa thấy lệnh" sau 20 s (tìm thấy khi chạy test
+  thật) -> chỉ đối chiếu chữ/số ASCII.
+- Paste của PSReadLine đổi Tab thành 4 dấu cách -> thông báo nói rõ khi lệnh có Tab.
+- Đối chiếu từng mã UTF-16 của một chuỗi khó (tiếng Việt, chữ Hán, emoji, NBSP, `` `n ``, `$(1+1)`) sau khi dán rồi cho chạy: khớp tuyệt đối.
+
+**Test mới `command_launcher_tests`** (target `EXCLUDE_FROM_ALL`): mở powershell.exe THẬT bằng đúng `CommandLauncher`, console ẨN
+(`CREATE_NO_WINDOW`) trừ một ca có cửa sổ thật nhưng thu nhỏ + không lấy focus (hồi quy lỗi gốc: `WINDOW=1`, chủ cửa sổ = PID của
+powershell.exe); tệp test tự đóng vai tiến trình phụ, một ca dùng đúng `build\OneForAll.exe`. Kiểm ĐỘC LẬP bằng tiến trình phụ
+`--dump-screen` (đọc màn hình console) và tệp đánh dấu: một dòng, ba dòng, xuống dòng ở cuối (bị bỏ nên không thành "bấm Enter hộ"),
+tiếng Việt + nháy cong + Tab, lệnh ~3000 ký tự, lệnh trông "Nguy hiểm", lệnh không có chữ/số, không có PSReadLine, PowerShell bận lâu
+hơn thời gian chờ (báo "chưa thấy lệnh" và phím dán vẫn được xử lý sau đó, vẫn không chạy), PowerShell thoát ngay, thiếu tiến trình phụ,
+bấm hai lần liên tiếp (một tín hiệu, một cửa sổ), năm lần liên tiếp, tham số sai của `--console-paste`, đối chiếu từng mã ký tự. An toàn
+theo quy tắc 5: không SendInput (phím ghi vào bộ đệm của console do test tạo), đóng mọi powershell.exe test đã mở, tệp chỉ trong thư mục
+tạm, Clipboard của người dùng chụp lại và khôi phục MỌI định dạng (`tests/ClipboardSnapshot.h` - đo thật: ảnh 1920x1019, 6 định dạng còn
+nguyên sau test). Kết quả: 136/0 trong ~59 s. `command_launcher_tests --visible` = kiểm tay đúng đường của ứng dụng (cửa sổ PowerShell
+thật hiện lên, nạp profile người dùng, `OneForAll.exe` làm tiến trình phụ): 17/0.
+
+**Rà soát các phần còn lại (một agent đọc code độc lập + chạy thử bộ phân tích bằng chương trình riêng), đã sửa:**
+1. Bật/tắt Network Protection / bảo vệ thời gian thực: khi KHÔNG đọc lại được trạng thái, giá trị đọc lại mặc định `false` trùng với yêu
+   cầu "tắt" nên giao diện báo "✓ Đã tắt" (che cả lỗi Set-MpPreference thật). Thêm `DefenderController::toggleOutcome()` (Applied/
+   NotApplied/Unknown, thuần, có test) - đọc lại lỗi thì báo "chưa biết thay đổi có áp dụng không".
+2. Thoát ứng dụng khi đang quét: `stopBackgroundWorkForQuit` chỉ yêu cầu hủy mà không chờ - tiến trình thoát trước khi luồng quét kịp
+   kết thúc powershell.exe con, Start-MpScan chạy mồ côi (cửa sổ công cụ không bao giờ bị hủy). Nay chờ tối đa 3 s.
+3. Nút quét có thể kẹt ở "đang quét": `scanFinished` phát từ BÊN TRONG `run()`, bấm quét lại ngay khi luồng chưa thoát hẳn thì
+   `QThread::start()` không làm gì. Nay đợi luồng cũ thoát trước khi bắt đầu.
+4. Mối đe dọa không có đường dẫn (Resources = $null -> `[""]` trên PS 5.1) hiện ô trống thay vì "—" - bỏ mục rỗng khi phân tích JSON.
+5. Nút "Xóa" tên miền chặn dùng `currentItem()` - xóa được mục có focus dù không thấy mục nào được chọn; nay dùng mục đang chọn.
+6. Quét thư mục tùy chọn: đường dẫn từ QFileDialog ("C:/x") đưa về dạng Windows trước khi truyền `-ScanPath`.
+7. Đường dẫn hosts lấy từ biến môi trường `%SystemRoot%` -> lấy từ thư mục System32 thật (`AppPaths::systemExecutable`).
+8. Nhãn nút hiện "Mở PowerShell _dán lệnh": dấu `&` trong nhãn QPushButton là ký hiệu phím tắt (thấy qua `ui_snapshot`) -> viết `&&`.
+Test: `security_tests` 513/0, `security_ui_tests` 29/0 (thêm máy trạng thái tab Cổng lệnh: An toàn/Đáng chú ý bật nút ngay, Nguy hiểm
+phải tích xác nhận, sửa nội dung thì xóa xác nhận và khóa nút, trống không bật), `secdl_stress_tests` 1.872.248/0 (kim mẫu `-enc` đổi
+sang Base64 UTF-16LE hợp lệ; bộ phân tích chậm nhất 705 ms với 4 triệu ký tự, ngưỡng 2000 ms).
+
+**`CommandAnalyzer` (bảng luật viết lại, giữ nguyên cơ chế so khớp tuyến tính):** agent tìm ~35 ca phân loại sai, mỗi ca đã chạy
+thật qua bản cũ. Bỏ sót đã sửa: dấu gạch Unicode (–/—) trước tham số của Set-MpPreference/Add-MpPreference/Set-NetFirewallProfile;
+tiền tố viết tắt không nhập nhằng của MỌI tham số `-Disable*` (TÍNH từ danh sách tham số thật lấy bằng `Get-Command Set-MpPreference`,
+vd `-DisableIO`, `-DisableE`) và bí danh chính thức (`-drtm`, `-dtp`...); `DisableTamperProtection`; splatting `@{DisableRealtimeMonitoring=$true}`;
+khóa registry chính sách Defender = 1 (`reg add`/`New-ItemProperty`); `ThreatDefaultAction 6/9` (cho phép mối đe dọa); `Set-Service
+WinDefend -StartupType Disabled`, `sc config ... start= disabled`, `Get-Service WinDefend | Stop-Service`; `TcpClient` + `GetStream` (mọi
+cách viết); tải về rồi chạy bằng `& x`, `start x`, `.\x`, `powershell -File x`; `[scriptblock]::Create(irm ...)`/`InvokeScript`; nháy cong
+trong lệnh che giấu (`&(‘I’+‘EX’)`, `i‘’ex`); dấu `^` nối dòng của cmd.exe; RunOnce; IFEO `Debugger` (sethc); `reg save HKLM\SAM`,
+`procdump ... lsass`, `ntdsutil ifm`; `AmsiScanBuffer`; `wmic /format:http`; `CommandLineEventConsumer`; `msiexec ... http` (Đáng chú ý);
+`powershell -Version 2` (Đáng chú ý); tắt UAC (`EnableLUA`=0). Báo nhầm đã sửa: tải xuống đĩa đơn thuần (`DownloadFile`,
+`Start-BitsTransfer`) chỉ còn Đáng chú ý; chỉ NHẮC tới `DisableAntiSpyware` (gỡ/đọc khóa) là Đáng chú ý, đặt = 1 mới Nguy hiểm;
+`Stop-Process -Name mshta`/`taskkill /im mshta.exe` (mshta chỉ tính khi theo sau là thứ nó sẽ chạy); `rundll32 printui.dll,... \\máy-in`;
+`Register-WmiEvent` trong phiên (Đáng chú ý); `sc config WinDefend start= auto`; `D:\DownloadFiles\`; `powershell -c "ping -w 1 ..."` (tham
+số powershell.exe không xét qua dấu nháy - `Gap::SameStatementUnquoted`); `-Enc BigEndianUnicode` và chuỗi hex 40 ký tự (-EncodedCommand
+nay phải đúng dạng Base64 của UTF-16LE như PowerShell bắt buộc: nhóm 4 ký tự thứ hai bắt đầu/kết thúc bằng 'A'); `Stop-Service Spooler;
+Get-Service WinDefend`; `TcpClient` để kiểm tra cổng (Đáng chú ý thay vì Nguy hiểm). Tất cả thành test trong `security_tests` (64 ca sai cũ +
+13 ca phải giữ nguyên), 424 kiểm tra cũ vẫn qua.
+
+**CHƯA kiểm chứng:** Windows Terminal làm trình console mặc định (Windows 11) - ConsolePaste dùng API console chuẩn nên về lý thuyết vẫn
+dán được, chỉ không tìm được cửa sổ để đưa lên trước; PSReadLine bản mới hơn 2.0 và chế độ trình đọc màn hình; bấm nút bằng chuột trong
+ứng dụng thật (đường mã giống hệt `--visible` đã chạy thật, chỉ khác người bấm); ứng dụng chạy quyền Administrator. Chưa sửa (nhỏ): nút
+"Chạy lại với quyền Quản trị" của một tab không biết tab kia đang chạy lệnh nền ngắn; trạng thái hiển thị không tự làm mới khi mở lại cửa
+sổ; lệnh PowerShell ngắn của hai tab kia (≤20 s) vẫn tự chạy nốt sau khi ứng dụng thoát.
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
@@ -3348,6 +3449,7 @@ Quy tắc đứng nằm ở `CLAUDE.md` (gốc dự án). Tóm tắt - mỗi l�
 | 2026-10-22 | VPN: bỏ OpenVPN -> SSTP; sửa lỗi gốc quay số RAS; kết nối trực tiếp FortiGate/GlobalProtect (v1.19.31) | Mục 4zq. OpenVPN treo vì lời nhắc `ENTER PASSWORD:` không bị xóa khỏi bộ đệm (không gửi `hold release`) + rò `openvpn.exe` nâng quyền khi hết giờ -> gỡ hẳn. VPN Gate nối SSTP (RAS gốc, `<HostName>.opengw.net` khớp chứng chỉ Let's Encrypt). Lỗi gốc `VpnConnector`: mã 6 TẠM THỜI của `RasGetConnectStatusW` ở +16ms bị coi là thất bại -> mọi lần quay số qua app hỏng (cả "Lỗi 6" người dùng gặp từ đầu); `dwNotifierType` sửa lại 1 (v1.19.27 đổi nhầm 2). Đã đổi IP THẬT bằng code của app (VN -> Tokyo). Kết nối trực tiếp FortiGate SSL-VPN/GlobalProtect: client giao thức tự viết (PPP/LCP/IPCP, đăng nhập/OTP/cấu hình), adapter wintun.dll + iphlpapi, tiến trình phụ nâng quyền `--vpn-helper` (pipe + mã một lần, tự dọn khi pipe đóng), ghim vân tay chứng chỉ tự ký. `vpn_tests` 219/0, `vpn_ui_tests` 7/0, `vpn_direct_tests` 150/0 (mới; máy chủ FortiGate/GP giả đầu-cuối). Đã chạy thật: adapter wintun Admin 10/10, thăm dò 3/3 máy chủ thật (không đăng nhập). CHƯA kiểm chứng: đăng nhập + đường hầm bằng tài khoản cơ quan thật. Chỉ push code, KHÔNG tag/Release. |
 | 2026-10-22 | Lấy IP chậm sau khi nối VPN + rà giao diện bằng ảnh chụp thật (v1.19.32) | Mục 4zr. Kết nối HTTPS keep-alive cũ kẹt sau khi tuyến đổi -> 8 s rồi hủy; `clearConnectionCache()` + thử lại 1 lần -> 1093 ms. Công cụ `ui_snapshot` (offscreen hoặc kiểu gốc không hiện màn hình) rà 8 công cụ: sửa cắt chữ hàng điều khiển VPN Gate (2 hàng, NAT chỉ khi L2TP), ô Cổng, nút Android, nhóm ghép đôi Connect bị ép. Nhật ký chẩn đoán kết nối trực tiếp. vpn 219/7, vpn_direct 150, android 153/30, connect_ui 17. Chỉ push code, KHÔNG tag/Release. |
 | 2026-10-23..24 | Kết nối trực tiếp FortiClient IPsec: client IKEv1 tự viết (v1.19.33→39) | Mục 4zs-4zv. v1.19.33: kết nối trực tiếp CHẠY THẬT với FortiGate người dùng + lưu tài khoản + sửa DNS nội bộ. v1.19.34: GlobalProtect nộp HIP (sửa rớt ~60s). v1.19.35: GlobalProtect kênh ESP (gateway bắt buộc). **v1.19.36**: hồ sơ FortiClient IPsec (VPN_CVTLT) nối trực tiếp bằng client **IKEv1 tự viết** (`IkeCrypto`+`IsakmpMessage`+`IkeKeys`+`IkeSession`, dựa BCrypt): Aggressive+PSK+XAuth+Mode-config+Quick Mode+ESP; IKE+ESP chung socket UDP (NAT-T 4500). Test `ike_crypto_check` 47/0, `ike_session_check` 24/0 (bắt tay TRỌN VẸN offline với responder giả, khớp khóa ESP hai bên), `vpn_direct_tests` 357/0. **v1.19.37**: dò thật gateway (`ike_real_probe`, không đăng nhập) xác nhận gateway dùng **nhóm 20 ECP-384 + AES-256 + SHA-256 + XAUTHPSK + NAT-T** → thêm ECDH (nhóm 19/20/21) vào IkeCrypto, IkeSession chào nhiều transform + đọc transform gateway chọn; `ike_crypto_check` 59/0. **v1.19.38**: với PSK + tài khoản thật, `ike_real_connect` hoàn tất **bắt tay IKEv1 đầu-cuối THẬT** (Phase 1→XAuth→Mode-config cấp IP→Quick Mode→khóa ESP). Sửa: mã thuộc tính XAuth (STATUS=16527/MESSAGE=16524), PFS nhóm 20, nhiều transform ESP + đọc transform gateway chọn (AES-256-CBC+SHA1), đóng gói Tunnel(1) (FortiGate từ chối UDP-Tunnel 3/61443), proxy 0/0, ESP seq=1. **v1.19.39**: bắt gói (`pktmon`) so với FortiClient -> client+app nay khớp FortiClient trên dây (UDP 4500↔4500 từ cổng 4500, NAT-T từ msg1, NAT-D). Tầng DỮ LIỆU ESP VẪN CHẶN: gói ESP ra đúng (giống FortiClient) mà gateway im (thử 5 biến thể KEYMAT); SA đã cài; cần nhật ký phía FortiGate. Chỉ push code, KHÔNG tag/Release. |
+| 2026-11-13 | Security Gateway: "Mở PowerShell & dán lệnh" chạy THẬT + rà soát toàn bộ (v1.28.1) | Mục 4zzg. Nút mở PowerShell CHƯA BAO GIỜ dán được: `QProcess::startDetached` (Qt 6.11, app GUI) tạo console KHÔNG cửa sổ + để lại powershell.exe ẩn. Nay CreateProcessW + CREATE_NEW_CONSOLE, dán bằng tiến trình phụ `--console-paste` ghi Ctrl+V vào bộ đệm nhập của đúng console rồi đọc lại màn hình để xác nhận (không SendInput); lệnh nhiều dòng không dòng nào chạy (đo thật). Test mới `command_launcher_tests` 136/0 (PowerShell thật, console ẩn, Clipboard khôi phục). Sửa 7 lỗi tab Bảo vệ Web/Quét mã độc ("✓ Đã tắt" giả khi đọc lại lỗi, quét mồ côi khi thoát, nút quét kẹt, Xóa nhầm tên miền...) và ~35 ca phân loại sai của CommandAnalyzer (thành test). |
 | 2026-11-12 | QR: quét mọi góc xoay + tự chuyển tab Authenticator (v1.28.0) | Mục 4zzf. Leo đồi 4 góc có bước ghép; ô căn chỉnh góc dưới-phải + phép chiếu 4 điểm; giai đoạn 3 tự dò ô định vị (1:1:3:1:1) khi quirc bỏ sót; PNG nền trong suốt thử nền đen; `otpFound` -> QRWindow tự thêm tài khoản + chuyển tab; `decode(quick)` cho camera. |
 | 2026-11-12 | QR: đọc mã của nhiều ứng dụng + tab Authenticator (v1.27.0) | Mục 4zze. Giai đoạn 2 của `QRCodec::decode()` dựng lại lưới từ TÂM 3 ô định vị (trọng tâm, đối xứng 180°) và chấm điểm mọi cỡ lưới; ghép tay bộ ba ô định vị khi quirc không ghép được; lượt đóng hình thái học cho ô tách rời; đệm theo màu nền cho viền không trắng. Tab Authenticator (`Authenticator.*`, `AuthenticatorStore.cpp`, `AuthenticatorTab.*`): `otpauth://` + `otpauth-migration://` (Google Authenticator), TOTP/HOTP, DPAPI. Ma trận kiểu app 770/942 → 942/942 (mở rộng thêm 198 ca khó hơn: 1138/1140); bộ ngẫu nhiên 366/400 ở lần đo đầu → 390/400. | `src/tools/qr/*`<br>`tests/{qr_tests,qr_ui_tests,qr_style_matrix,qr_decode_probe}.cpp`<br>`tests/QrAppStyles.h`<br>`CMakeLists.txt`<br>`VERSION` |
 | 2026-11-10 | QR: đọc mã cách điệu (ô định vị bo tròn + logo) và mã trên nền tối khi quét màn hình/dán ảnh (v1.26.2) | Mục 4zzd. Giai đoạn 2 trong `QRCodec::decode()`: tinh chỉnh lưới (thử cỡ ±4/±8, leo đồi 4 góc theo ô chức năng, lấy mẫu lại, giải mã lại) + đệm theo màu nền khi viền ảnh tối. Mã cách điệu tổng hợp 0/240 → 240/240. Công cụ tay `qr_decode_probe`. Sửa kỳ vọng 4 tab WiFi trong stress. | `src/tools/qr/QRCodec.cpp`<br>`tests/{qr_tests,qr_decode_probe,qrwifi_stress_tests}.cpp`<br>`CMakeLists.txt`<br>`VERSION` |

@@ -271,9 +271,17 @@ void WebProtectionTab::onToggleNetworkProtectionClicked()
         },
         [this, wantEnable, verified, error, status, statusError]() {
             applyStatus(*status, *statusError);
-            if (*verified == wantEnable)
+            const auto outcome = DefenderController::toggleOutcome(*statusError, *verified, wantEnable);
+            if (outcome == DefenderController::ToggleOutcome::Applied)
             {
                 m_statusLabel->setText(m_statusLabel->text() + (wantEnable ? "  ✓ Đã bật." : "  ✓ Đã tắt."));
+            }
+            else if (outcome == DefenderController::ToggleOutcome::Unknown)
+            {
+                QMessageBox::warning(this, "Network Protection",
+                    "Đã gửi lệnh " + QString(wantEnable ? "bật" : "tắt") + " nhưng KHÔNG đọc lại được trạng thái thật "
+                    "sau đó - chưa biết thay đổi có áp dụng hay không. Bấm \"Làm mới\" để đọc lại." +
+                        (error->isEmpty() ? "" : ("\n\nChi tiết: " + *error)));
             }
             else
             {
@@ -318,9 +326,12 @@ void WebProtectionTab::onAddDomainClicked()
 
 void WebProtectionTab::onRemoveDomainClicked()
 {
-    auto* item = m_domainList->currentItem();
-    if (!item)
+    // Mục ĐANG CHỌN, không phải currentItem(): mục có focus vẫn là "current" dù không được tô chọn (vd sau khi
+    // danh sách được nạp lại) - bấm Xóa khi không thấy mục nào được chọn từng xóa mất một tên miền.
+    const auto selected = m_domainList->selectedItems();
+    if (selected.isEmpty())
         return;
+    auto* item = selected.first();
     QString error;
     if (!HostsBlocklist::removeDomain(item->text(), &error))
     {
