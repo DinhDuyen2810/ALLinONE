@@ -4,9 +4,13 @@
 
 #include <functional>
 
+#include "engine/Ipv6GuardSession.h"
 #include "engine/PublicIpChecker.h"
+#include "engine/PublicIpv6Checker.h"
 #include "model/VpnGateServer.h"
+#include "model/VpnProfile.h"
 
+class QCheckBox;
 class QComboBox;
 class QLabel;
 class QPushButton;
@@ -27,6 +31,10 @@ class VpnGateClient;
 /// - **L2TP/IPsec** (PSK "vpn"): tới IP máy chủ.
 /// Ứng dụng tạo một hồ sơ VPN TẠM tên "OneForAll-VPNGate", kết nối, rồi khi ngắt sẽ tự xóa hồ sơ đó.
 /// KHÔNG phải máy chủ nào cũng bật mọi giao thức - nếu thất bại, người dùng thử máy chủ khác.
+///
+/// IPv6: máy chủ VPN Gate chỉ cấp IPv4 cho đường hầm - không chặn thì IPv6 thật của máy vẫn ra Internet trực tiếp
+/// và trang web thấy vị trí thật. Ô "Chặn rò rỉ IPv6" (bật sẵn) chặn IPv6 ra Internet TRƯỚC khi quay số (xem
+/// Ipv6GuardSession.h); dòng "IPv6" ở khung vị trí kiểm tra THẬT bằng một dịch vụ chỉ có IPv6.
 class VpnGateTab : public QWidget
 {
     Q_OBJECT
@@ -60,6 +68,9 @@ private slots:
     void onCheckLocationClicked();
     void onIpResult(PublicIpInfo info);
     void onIpError(QString message);
+    void onIpv6Result(PublicIpv6Info info);
+    void onGuardReady(bool ok, QString message);
+    void onGuardStateChanged(Ipv6GuardSession::State state, QString text);
 
 private:
     void buildUi();
@@ -70,6 +81,8 @@ private:
     /// Chạy một lệnh nền (tạo/xóa hồ sơ VPN tạm qua PowerShell) rồi gọi 'done' trên luồng giao diện.
     void runInBackground(const QString& statusText, std::function<void()> work, std::function<void()> done);
     void removeTempProfileInBackground();
+    /// Bước 2 của Kết nối (sau khi đã chặn IPv6 xong hoặc không cần chặn): tạo hồ sơ tạm rồi quay số.
+    void proceedConnect();
 
     enum class Phase { Idle, Connecting, Connected, Disconnecting };
     Phase m_phase{Phase::Idle};
@@ -88,7 +101,10 @@ private:
 
     QLabel* m_locationIpLabel{nullptr};
     QLabel* m_locationPlaceLabel{nullptr};
+    QLabel* m_locationIpv6Label{nullptr};
     QPushButton* m_refreshLocationBtn{nullptr};
+    QCheckBox* m_ipv6GuardCheck{nullptr};
+    QLabel* m_ipv6GuardLabel{nullptr};
 
     QList<VpnGateServer> m_allServers; // toàn bộ danh sách tải về (đã sắp theo điểm giảm dần)
     QList<VpnGateServer> m_shown;      // các dòng đang hiển thị (sau khi lọc quốc gia)
@@ -98,5 +114,9 @@ private:
     VpnGateClient* m_client{nullptr};
     VpnConnector* m_connector{nullptr};
     PublicIpChecker* m_ipChecker{nullptr};
+    PublicIpv6Checker* m_ipv6Checker{nullptr};
+    Ipv6GuardSession* m_ipv6Guard{nullptr};
+    VpnProfile m_pendingProfile;  ///< hồ sơ chờ quay số trong lúc đang bật chặn IPv6
+    bool m_waitingGuard{false};   ///< đang chờ Ipv6GuardSession::ready()
     QThread* m_backgroundThread{nullptr};
 };

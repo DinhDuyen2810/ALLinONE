@@ -3266,6 +3266,62 @@ dán được, chỉ không tìm được cửa sổ để đưa lên trước; 
 "Chạy lại với quyền Quản trị" của một tab không biết tab kia đang chạy lệnh nền ngắn; trạng thái hiển thị không tự làm mới khi mở lại cửa
 sổ; lệnh PowerShell ngắn của hai tab kia (≤20 s) vẫn tự chạy nốt sau khi ứng dụng thoát.
 
+## 4zzh. VPN: chặn rò rỉ IPv6 khi "đổi IP" (v1.29.0, 16/11/2026)
+
+Yêu cầu người dùng: "đảm bảo fake vpn thì fake được cả ipv6 nữa chứ ko phải mỗi ipv4".
+
+**Vấn đề (đọc mã, không đoán)**: tab "Đổi IP theo quốc gia" nối VPN Gate qua RAS của Windows (SSTP/L2TP) - máy chủ VPN Gate
+chỉ cấp IPv4 cho đường hầm (`PppSession`/RAS không thương lượng IPV6CP; tab "VPN hệ thống" cũng vậy với đa số nhà cung cấp).
+Windows vẫn giữ IPv6 toàn cầu + tuyến `::/0` của card mạng thật; trình duyệt ưu tiên IPv6 cho mọi trang hỗ trợ nên trang web
+thấy IPv6 THẬT (Việt Nam) dù IPv4 đã "ở Nhật". Ứng dụng trước đây không có dòng nào đụng tới IPv6 (`grep` cả `src/tools/vpn`).
+
+**Cách làm - chặn, không "đổi" được**: VPN không cấp IPv6 thì không có IPv6 nào để "giả"; cách đúng (như WireGuard for
+Windows/Mullvad) là CHẶN IPv6 ra Internet suốt phiên VPN để mọi kết nối quay về IPv4 - đi qua VPN. Khi VPN CÓ cấp IPv6, IPv6
+được phép qua đúng card đường hầm (lúc đó IPv6 cũng mang vị trí của VPN).
+- `Ipv6LeakGuard::WfpBlock`: bộ lọc Windows Filtering Platform trong phiên ĐỘNG (`FWPM_SESSION_FLAG_DYNAMIC`) ở hai tầng
+  `ALE_AUTH_CONNECT_V6`/`ALE_AUTH_RECV_ACCEPT_V6`: CHẶN địa chỉ đầu kia thuộc `2000::/3` (mọi IPv6 Internet, gồm Teredo/6to4) +
+  `64:ff9b::/96`, `64:ff9b:1::/48` (NAT64 - trên mạng chỉ-IPv6, trang IPv4 đi qua đây). CHO PHÉP (trọng số cao hơn) qua card
+  đường hầm (LUID) và tới chính địa chỉ IPv6 của máy chủ VPN. Không đụng IPv4, `::1`, `fe80::/10`, ULA (Tailscale), multicast.
+  Thay bộ lọc trong MỘT giao dịch WFP (không có khoảnh khắc hở). Tài liệu Microsoft "ALE Reauthorization" (đã đọc): thêm bộ
+  lọc ở tầng ALE làm Windows tái xét cả kết nối ĐANG mở ở gói kế tiếp - kết nối IPv6 cũ cũng bị cắt.
+- Vì sao WFP động mà không sửa tường lửa / tắt IPv6 trên card / thêm tuyến: phiên động bị dịch vụ BFE TỰ GỠ khi tiến trình giữ
+  nó thoát hoặc bị giết - không có cấu hình nào còn sót trên máy nếu ứng dụng chết giữa chừng.
+- GUID tầng/điều kiện: MinGW không khai (chỉ Windows SDK có) - tự khai, đối chiếu với `wireguard-windows`
+  (`tunnel/firewall/types_windows.go`). Không có quyền Admin thì Windows không cho đọc danh mục tầng (`FwpmLayerGetByKey0` trả 5,
+  đã thử) nên chỉ kiểm được bằng công cụ tay bên dưới. Hai tầng transport v6 KHÔNG dùng (không đối chiếu được GUID; ALE
+  reauthorization đã đủ cắt kết nối cũ).
+- `--ipv6-guard <kênh> <mã>` (`Ipv6GuardHelper`): tiến trình phụ NÂNG QUYỀN (một hộp thoại UAC lúc bấm Kết nối, chỉ khi mạng có
+  IPv6) giữ bộ lọc. Vòng đời: giữ chừng nào ứng dụng còn nối kênh HOẶC kết nối RAS cùng tên còn (VPN của Windows không tắt theo
+  ứng dụng - đóng app khi VPN còn nối thì IPv6 vẫn bị chặn); ứng dụng báo `release` (Ngắt / nối thất bại) thì gỡ ngay; mất cả
+  hai liên tục 3 giây thì thoát. Mỗi giây dò lại card đường hầm để cập nhật bộ lọc "cho phép" khi VPN vừa lên.
+- `Ipv6GuardSession` (phía ứng dụng): `begin()` TRƯỚC khi quay số. Máy không có IPv6 ra Internet (`assess()`: card đang chạy, có
+  địa chỉ `2000::/3` VÀ có tuyến bao trùm IPv6 Internet - `::/0`, `::/1`, `::/2`, `2000::/3`) -> không hỏi UAC, vẫn dò lại mỗi 3
+  giây suốt phiên, IPv6 xuất hiện giữa chừng thì tự chặn. Có IPv6 -> chặn xong mới quay số; không chặn được (từ chối UAC, lỗi)
+  thì KHÔNG quay số và nói rõ (bỏ tích "Chặn rò rỉ IPv6" nếu chấp nhận lộ).
+- `PublicIpv6Checker`: dòng "IPv6" mới trong khung vị trí hỏi `api6.ipify.org` (dự phòng `ipv6.icanhazip.com`) - hai tên miền
+  CHỈ có bản ghi AAAA (đã kiểm bằng `Resolve-DnsName`) nên yêu cầu bắt buộc đi bằng IPv6: trả lời được = đang lộ IPv6 đó (tra
+  quốc gia qua `ipwho.is/<ip>`); không tới được = không lộ. VPN đã nối mà IPv6 vẫn ra Internet (và không phải qua VPN) thì
+  hiện đỏ "⚠ IPv6 vẫn lộ".
+- Giao diện: ô "🛡 Chặn rò rỉ IPv6" (bật sẵn) ở tab "Đổi IP theo quốc gia" và "VPN hệ thống". Tab VPN hệ thống chỉ chặn với kết
+  nối KHÔNG chia tuyến (`SplitTunneling` - nay đọc thêm từ `Get-VpnConnection`): VPN cơ quan chia tuyến vốn không đổi IP.
+- KHÔNG đổi: WireGuard (WireGuard for Windows tự chặn mọi lưu lượng ngoài đường hầm - cả IPv6 - khi một peer có `0.0.0.0/0`
+  hoặc `::/0`, theo mã nguồn của họ; CHƯA kiểm chứng trên máy thật), VPN trực tiếp FortiGate/GlobalProtect (VPN cơ quan, không
+  phải "đổi IP"; chế độ toàn-bộ-lưu-lượng của chúng vẫn chưa chặn IPv6).
+
+**Test**:
+- `vpn_tests` 372/0 (thêm ~120 ca): dải/địa chỉ (mép `2000::/3`, Teredo, 6to4, NAT64, ULA, link-local, IPv4 ánh xạ), `assess()`
+  trên dữ liệu dựng sẵn (card tắt, loopback, có địa chỉ không có tuyến, đường hầm so không phân biệt hoa thường...), `snapshot()`
+  THẬT (máy build: 11 card, không có IPv6 ra Internet), `WfpBlock` THẬT không Admin phải từ chối sạch ("cần quyền Administrator
+  (mã 5)"), vòng đời tiến trình phụ, luồng `Ipv6GuardSession` với ảnh chụp giả (không cần chặn -> không UAC; IPv6 xuất hiện
+  giữa phiên -> tự chặn; release khi đang chờ), tiến trình phụ THẬT `OneForAll.exe --ipv6-guard` không nâng quyền (kênh + mã
+  xác thực + báo thiếu quyền về đúng `ready(false)` sau ~1 giây, không tiến trình nào sót lại), `PublicIpv6Checker` với máy chủ
+  giả 127.0.0.1 (JSON, văn bản trơn, điểm dự phòng, trả IPv4, tất cả không tới được, tra vị trí lỗi), `SplitTunneling`.
+- `disk_vpn_stress_tests` 7345/0; 200.000 địa chỉ, 100.000 chuỗi, 50.000 bộ card ngẫu nhiên, 0 sai (mục H mới: so dải với cách so từng bit, khứ hồi địa chỉ, `assess()` so với định nghĩa, vòng đời, chữ hiển thị).
+- `vpn_ui_tests` 47/0: ô chặn bật sẵn ở cả hai tab; dòng IPv6 thật về kết quả ("máy không ra Internet bằng IPv6" - đúng máy build).
+- `ipv6_guard_real_check` (KIỂM TRA TAY, cần Admin): 26/0 - ĐÃ CHẠY THẬT với quyền Administrator (16/11/2026). Bộ lọc chặn thật `[::1]` (vật thử) - kết nối TCP bị Windows từ chối WSAEACCES 10013, IPv4 `127.0.0.1` không bị đụng; cho phép qua card loopback (thay cho card đường hầm) và cho phép theo địa chỉ máy chủ đều thông lại; `close()` gỡ ngay. Qua TIẾN TRÌNH PHỤ THẬT `--ipv6-guard`: Active thì chặn, `release` gỡ ngay; ứng dụng đóng kênh (không release) + kết nối VPN không tồn tại -> tiến trình phụ tự thoát trong ~3 giây và bộ lọc biến mất, không tiến trình nào sót lại; GIẾT cưỡng bức tiến trình phụ -> Windows tự gỡ bộ lọc (phiên động) và ứng dụng chuyển "KHÔNG chặn được". Địa chỉ Internet `[2001:4860:4860::8888]` báo 10051 cả trước lẫn trong khi chặn (máy không có tuyến IPv6 nên gói không tới tầng ALE) - riêng dải `2000::/3` chưa quan sát được trên máy này, cùng cơ chế điều kiện địa chỉ đích như ca `::1/128` đã chặn thật.
+- **CHƯA kiểm chứng**: kết nối VPN Gate/VPN hệ thống THẬT trên một mạng CÓ IPv6 (máy build không có IPv6 công khai - không tái hiện
+  được rò rỉ thật), VPN có cấp IPv6 (đường "cho phép qua card đường hầm"), máy chủ SSTP có bản ghi AAAA.
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
@@ -3449,6 +3505,7 @@ Quy tắc đứng nằm ở `CLAUDE.md` (gốc dự án). Tóm tắt - mỗi l�
 | 2026-10-22 | VPN: bỏ OpenVPN -> SSTP; sửa lỗi gốc quay số RAS; kết nối trực tiếp FortiGate/GlobalProtect (v1.19.31) | Mục 4zq. OpenVPN treo vì lời nhắc `ENTER PASSWORD:` không bị xóa khỏi bộ đệm (không gửi `hold release`) + rò `openvpn.exe` nâng quyền khi hết giờ -> gỡ hẳn. VPN Gate nối SSTP (RAS gốc, `<HostName>.opengw.net` khớp chứng chỉ Let's Encrypt). Lỗi gốc `VpnConnector`: mã 6 TẠM THỜI của `RasGetConnectStatusW` ở +16ms bị coi là thất bại -> mọi lần quay số qua app hỏng (cả "Lỗi 6" người dùng gặp từ đầu); `dwNotifierType` sửa lại 1 (v1.19.27 đổi nhầm 2). Đã đổi IP THẬT bằng code của app (VN -> Tokyo). Kết nối trực tiếp FortiGate SSL-VPN/GlobalProtect: client giao thức tự viết (PPP/LCP/IPCP, đăng nhập/OTP/cấu hình), adapter wintun.dll + iphlpapi, tiến trình phụ nâng quyền `--vpn-helper` (pipe + mã một lần, tự dọn khi pipe đóng), ghim vân tay chứng chỉ tự ký. `vpn_tests` 219/0, `vpn_ui_tests` 7/0, `vpn_direct_tests` 150/0 (mới; máy chủ FortiGate/GP giả đầu-cuối). Đã chạy thật: adapter wintun Admin 10/10, thăm dò 3/3 máy chủ thật (không đăng nhập). CHƯA kiểm chứng: đăng nhập + đường hầm bằng tài khoản cơ quan thật. Chỉ push code, KHÔNG tag/Release. |
 | 2026-10-22 | Lấy IP chậm sau khi nối VPN + rà giao diện bằng ảnh chụp thật (v1.19.32) | Mục 4zr. Kết nối HTTPS keep-alive cũ kẹt sau khi tuyến đổi -> 8 s rồi hủy; `clearConnectionCache()` + thử lại 1 lần -> 1093 ms. Công cụ `ui_snapshot` (offscreen hoặc kiểu gốc không hiện màn hình) rà 8 công cụ: sửa cắt chữ hàng điều khiển VPN Gate (2 hàng, NAT chỉ khi L2TP), ô Cổng, nút Android, nhóm ghép đôi Connect bị ép. Nhật ký chẩn đoán kết nối trực tiếp. vpn 219/7, vpn_direct 150, android 153/30, connect_ui 17. Chỉ push code, KHÔNG tag/Release. |
 | 2026-10-23..24 | Kết nối trực tiếp FortiClient IPsec: client IKEv1 tự viết (v1.19.33→39) | Mục 4zs-4zv. v1.19.33: kết nối trực tiếp CHẠY THẬT với FortiGate người dùng + lưu tài khoản + sửa DNS nội bộ. v1.19.34: GlobalProtect nộp HIP (sửa rớt ~60s). v1.19.35: GlobalProtect kênh ESP (gateway bắt buộc). **v1.19.36**: hồ sơ FortiClient IPsec (VPN_CVTLT) nối trực tiếp bằng client **IKEv1 tự viết** (`IkeCrypto`+`IsakmpMessage`+`IkeKeys`+`IkeSession`, dựa BCrypt): Aggressive+PSK+XAuth+Mode-config+Quick Mode+ESP; IKE+ESP chung socket UDP (NAT-T 4500). Test `ike_crypto_check` 47/0, `ike_session_check` 24/0 (bắt tay TRỌN VẸN offline với responder giả, khớp khóa ESP hai bên), `vpn_direct_tests` 357/0. **v1.19.37**: dò thật gateway (`ike_real_probe`, không đăng nhập) xác nhận gateway dùng **nhóm 20 ECP-384 + AES-256 + SHA-256 + XAUTHPSK + NAT-T** → thêm ECDH (nhóm 19/20/21) vào IkeCrypto, IkeSession chào nhiều transform + đọc transform gateway chọn; `ike_crypto_check` 59/0. **v1.19.38**: với PSK + tài khoản thật, `ike_real_connect` hoàn tất **bắt tay IKEv1 đầu-cuối THẬT** (Phase 1→XAuth→Mode-config cấp IP→Quick Mode→khóa ESP). Sửa: mã thuộc tính XAuth (STATUS=16527/MESSAGE=16524), PFS nhóm 20, nhiều transform ESP + đọc transform gateway chọn (AES-256-CBC+SHA1), đóng gói Tunnel(1) (FortiGate từ chối UDP-Tunnel 3/61443), proxy 0/0, ESP seq=1. **v1.19.39**: bắt gói (`pktmon`) so với FortiClient -> client+app nay khớp FortiClient trên dây (UDP 4500↔4500 từ cổng 4500, NAT-T từ msg1, NAT-D). Tầng DỮ LIỆU ESP VẪN CHẶN: gói ESP ra đúng (giống FortiClient) mà gateway im (thử 5 biến thể KEYMAT); SA đã cài; cần nhật ký phía FortiGate. Chỉ push code, KHÔNG tag/Release. |
+| 2026-11-16 | VPN: chặn rò rỉ IPv6 khi "đổi IP" (v1.29.0) | Mục 4zzh. Ô "Chặn rò rỉ IPv6" (bật sẵn) ở tab Đổi IP theo quốc gia + VPN hệ thống (không chia tuyến): mạng có IPv6 thì trước khi quay số, tiến trình phụ nâng quyền `--ipv6-guard` đặt bộ lọc WFP động chặn `2000::/3` + NAT64 (trừ card VPN và máy chủ VPN), tự gỡ khi phiên đóng, giữ tới khi VPN ngắt. Dòng "IPv6" kiểm thật qua dịch vụ chỉ có IPv6. CHƯA kiểm chứng trên mạng có IPv6 thật. |
 | 2026-11-13 | Security Gateway: "Mở PowerShell & dán lệnh" chạy THẬT + rà soát toàn bộ (v1.28.1) | Mục 4zzg. Nút mở PowerShell CHƯA BAO GIỜ dán được: `QProcess::startDetached` (Qt 6.11, app GUI) tạo console KHÔNG cửa sổ + để lại powershell.exe ẩn. Nay CreateProcessW + CREATE_NEW_CONSOLE, dán bằng tiến trình phụ `--console-paste` ghi Ctrl+V vào bộ đệm nhập của đúng console rồi đọc lại màn hình để xác nhận (không SendInput); lệnh nhiều dòng không dòng nào chạy (đo thật). Test mới `command_launcher_tests` 136/0 (PowerShell thật, console ẩn, Clipboard khôi phục). Sửa 7 lỗi tab Bảo vệ Web/Quét mã độc ("✓ Đã tắt" giả khi đọc lại lỗi, quét mồ côi khi thoát, nút quét kẹt, Xóa nhầm tên miền...) và ~35 ca phân loại sai của CommandAnalyzer (thành test). |
 | 2026-11-12 | QR: quét mọi góc xoay + tự chuyển tab Authenticator (v1.28.0) | Mục 4zzf. Leo đồi 4 góc có bước ghép; ô căn chỉnh góc dưới-phải + phép chiếu 4 điểm; giai đoạn 3 tự dò ô định vị (1:1:3:1:1) khi quirc bỏ sót; PNG nền trong suốt thử nền đen; `otpFound` -> QRWindow tự thêm tài khoản + chuyển tab; `decode(quick)` cho camera. |
 | 2026-11-12 | QR: đọc mã của nhiều ứng dụng + tab Authenticator (v1.27.0) | Mục 4zze. Giai đoạn 2 của `QRCodec::decode()` dựng lại lưới từ TÂM 3 ô định vị (trọng tâm, đối xứng 180°) và chấm điểm mọi cỡ lưới; ghép tay bộ ba ô định vị khi quirc không ghép được; lượt đóng hình thái học cho ô tách rời; đệm theo màu nền cho viền không trắng. Tab Authenticator (`Authenticator.*`, `AuthenticatorStore.cpp`, `AuthenticatorTab.*`): `otpauth://` + `otpauth-migration://` (Google Authenticator), TOTP/HOTP, DPAPI. Ma trận kiểu app 770/942 → 942/942 (mở rộng thêm 198 ca khó hơn: 1138/1140); bộ ngẫu nhiên 366/400 ở lần đo đầu → 390/400. | `src/tools/qr/*`<br>`tests/{qr_tests,qr_ui_tests,qr_style_matrix,qr_decode_probe}.cpp`<br>`tests/QrAppStyles.h`<br>`CMakeLists.txt`<br>`VERSION` |

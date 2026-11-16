@@ -17,6 +17,9 @@ struct VpnConnectionStatus
     QString connectionStatus; // "Connected" / "Disconnected"
     QString countryLabel;     // nhãn tự đặt, rỗng nếu chưa đặt
     QString username;         // tên đăng nhập đã lưu (điền sẵn lúc kết nối), rỗng nếu chưa lưu - KHÔNG có mật khẩu
+    /// Chia tuyến (SplitTunneling của Windows): chỉ mạng nội bộ đi qua VPN, Internet vẫn đi thẳng - kiểu VPN cơ quan,
+    /// không "đổi IP". false (mặc định của Add-VpnConnection) = toàn bộ lưu lượng qua VPN -> cần chặn rò rỉ IPv6.
+    bool splitTunneling{false};
 
     bool isConnected() const { return connectionStatus.compare("Connected", Qt::CaseInsensitive) == 0; }
 };

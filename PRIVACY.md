@@ -54,9 +54,14 @@ này - muốn xóa sạch dữ liệu, tự xóa thư mục đó.
   VPN KHÔNG được ghi ra đĩa dưới bất kỳ hình thức nào.
 - **Đổi IP theo quốc gia (VPN Gate)**: ứng dụng tạo một hồ sơ VPN TẠM của Windows ("OneForAll-VPNGate") tới máy chủ
   bạn chọn - SSTP (mặc định từ 1.19.31) hoặc L2TP/IPsec - với tài khoản CÔNG KHAI của VPN Gate ("vpn"), và tự xóa hồ sơ
-  khi ngắt. Không cần quyền Administrator, không chạy chương trình ngoài. Khi kết nối, TOÀN BỘ lưu lượng mạng của bạn đi
+  khi ngắt. Không cần quyền Administrator (trừ bước chặn rò rỉ IPv6 bên dưới), không chạy chương trình ngoài. Khi kết nối, TOÀN BỘ lưu lượng mạng của bạn đi
   qua máy chủ tình nguyện của VPN Gate (bên thứ ba) - đây là bản chất của mọi VPN công cộng miễn phí; chỉ dùng khi bạn
   chấp nhận điều đó. (Bản 1.19.30 từng chạy `openvpn.exe` đóng gói kèm - đã gỡ hoàn toàn ở 1.19.31.)
+- **Chặn rò rỉ IPv6 (từ 1.29.0)**: khi bạn kết nối ở tab "Đổi IP theo quốc gia" hoặc một VPN hệ thống kiểu "toàn bộ lưu
+  lượng qua VPN" mà mạng của bạn có IPv6, ứng dụng xin quyền Administrator (một hộp thoại UAC) để chạy một tiến trình phụ
+  đặt bộ lọc Windows Filtering Platform chặn IPv6 ra Internet trong suốt phiên VPN. Bộ lọc nằm trong một phiên WFP ĐỘNG:
+  Windows tự gỡ khi VPN ngắt, khi tiến trình phụ thoát hay bị tắt - không sửa tường lửa, card mạng hay bảng định tuyến,
+  không ghi gì ra đĩa. Bạn có thể bỏ tích "Chặn rò rỉ IPv6" để không dùng.
 - **Downloader**: cài đặt (`profiles\downloader_settings.json`: thư mục tải xuống, số tệp đồng thời, giới hạn mục, bật/tắt trình duyệt ẩn, chế độ cookie cùng TÊN trình duyệt hoặc ĐƯỜNG DẪN tệp `cookies.txt` - ứng dụng KHÔNG đọc hay lưu nội dung cookie) và lịch sử tải (`profiles\downloader_history.json`, tối đa 2000 mục: tên, đường dẫn tệp, link nguồn, link tệp, thời gian, kích thước, kết quả). Link nguồn có thể chứa mã/token của trang bạn đã tải - xóa từng mục hoặc toàn bộ trong tab "Lịch sử". Các tệp đã tải nằm ở thư mục bạn chọn, không bị xóa khi xóa lịch sử.
 - **Log ứng dụng**: `logs\*.log` - nhật ký hoạt động/chẩn đoán lỗi, ở lại trên máy bạn, không gửi đi đâu
   (trừ khi chính bạn chủ động gửi để báo lỗi). Log không ghi nội dung văn bản Auto Click gõ hộ bạn.
@@ -75,6 +80,7 @@ phải máy chủ của nhóm phát triển, và chỉ gọi khi bạn chủ đ�
 |---|---|---|
 | Tự kiểm tra bản cập nhật (1 lần/lúc mở ứng dụng) | GitHub Releases API (`api.github.com`); khi bạn bấm "Cập nhật ngay" thì tải tệp cài đặt từ `github.com` | Không gì ngoài yêu cầu HTTP tiêu chuẩn (không gửi kèm thông tin máy/định danh) |
 | VPN & Location - xem vị trí theo IP; QR Tools - nút "Lấy vị trí hiện tại" khi tạo mã QR Vị trí | `ipwho.is` (dịch vụ tra cứu IP công khai) | Địa chỉ IP công khai hiện tại của bạn (vốn đã lộ với MỌI trang web bạn truy cập, không riêng gì tính năng này) |
+| VPN & Location - dòng "IPv6" của khung vị trí (từ 1.29.0) | `api6.ipify.org`, dự phòng `ipv6.icanhazip.com` (dịch vụ "IP của tôi" CHỈ có IPv6), rồi `ipwho.is/<địa chỉ IPv6 đó>` để tra quốc gia | Địa chỉ IPv6 công khai của bạn (nếu có) - để cho bạn thấy trang web đang thấy IPv6 nào; máy không có/đã chặn IPv6 thì yêu cầu không đi được và không gửi gì |
 | QR Tools - dán link RÚT GỌN Google Maps ở trang tạo mã QR Vị trí | `maps.app.goo.gl` (và các địa chỉ thuộc Google mà link chuyển hướng tới, tối đa 5 bước) | Chính đường dẫn rút gọn bạn dán (là nội dung yêu cầu HTTP) + địa chỉ IP công khai của bạn; chỉ đọc header chuyển hướng, không tải nội dung trang |
 | QR Tools - nút "Mở bản đồ" cho mã QR Vị trí | `google.com/maps` (mở bằng trình duyệt mặc định của bạn, không gọi ngầm) | Tọa độ nằm trong đường dẫn được mở - giống bấm vào bất kỳ liên kết Google Maps nào khác |
 | VPN & Location - tab "Đổi IP theo quốc gia" (từ 1.19.26) | `www.vpngate.net` (API công khai của VPN Gate - ĐH Tsukuba) khi bấm "Tải thêm máy chủ"; khi KẾT NỐI, lưu lượng của bạn đi qua máy chủ relay TÌNH NGUYỆN bạn chọn (như mọi VPN). Tab "Kiểm tra kết nối" mở một kết nối TCP tới đúng máy chủ+cổng BẠN nhập | Một yêu cầu HTTP(S) tải danh sách (không kèm định danh máy). Khi đã kết nối, traffic của bạn đi qua máy chủ của tình nguyện viên - họ có thể thấy lưu lượng như bất kỳ máy chủ VPN nào; chỉ dùng relay công cộng cho việc bạn chấp nhận rủi ro đó. Danh sách máy chủ đã tải được lưu cục bộ tại `profiles/vpngate_servers.json` |

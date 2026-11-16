@@ -4,9 +4,12 @@
 
 #include <functional>
 
+#include "engine/Ipv6GuardSession.h"
 #include "engine/PublicIpChecker.h"
+#include "engine/PublicIpv6Checker.h"
 #include "engine/VpnController.h"
 
+class QCheckBox;
 class QLabel;
 class QPushButton;
 class QTableWidget;
@@ -65,6 +68,9 @@ private slots:
     void onCheckLocationClicked();
     void onIpResult(PublicIpInfo info);
     void onIpError(QString message);
+    void onIpv6Result(PublicIpv6Info info);
+    void onGuardReady(bool ok, QString message);
+    void onGuardStateChanged(Ipv6GuardSession::State state, QString text);
 
 private:
     void buildUi();
@@ -76,6 +82,8 @@ private:
     /// Bật/tắt các nút theo dòng đang chọn + trạng thái bận (đang kết nối/ngắt kết nối hoặc có việc nền).
     void updateButtons();
     const VpnConnectionStatus* selectedConnection() const;
+    /// Hủy lần kết nối đang chờ chặn IPv6 (chưa quay số): xóa trắng mật khẩu đã nạp, gỡ việc chặn.
+    void abortGuardWait();
 
     QTableWidget* m_table{nullptr}; // [Tên][Quốc gia][Giao thức][Trạng thái]
     QPushButton* m_refreshBtn{nullptr};
@@ -87,7 +95,10 @@ private:
 
     QLabel* m_locationIpLabel{nullptr};
     QLabel* m_locationPlaceLabel{nullptr};
+    QLabel* m_locationIpv6Label{nullptr};
     QPushButton* m_refreshLocationBtn{nullptr};
+    QCheckBox* m_ipv6GuardCheck{nullptr};
+    QLabel* m_ipv6GuardLabel{nullptr};
 
     QList<VpnConnectionStatus> m_connections;
     VpnConnector* m_connector{nullptr};
@@ -96,4 +107,10 @@ private:
     QString m_pendingConnectionName;
     QString m_pendingUsername;
     PublicIpChecker* m_ipChecker{nullptr};
+    PublicIpv6Checker* m_ipv6Checker{nullptr};
+    /// Chặn rò rỉ IPv6 cho kết nối "toàn bộ lưu lượng qua VPN" (không chia tuyến) - xem Ipv6GuardSession.h.
+    Ipv6GuardSession* m_ipv6Guard{nullptr};
+    bool m_waitingGuard{false}; ///< đã nạp tài khoản vào VpnConnector, chờ chặn IPv6 xong mới quay số
+    QString m_guardedConnection; ///< tên kết nối đang được chặn IPv6 (rỗng = không có)
+    QString m_disconnectingName; ///< kết nối đang được ngắt (để biết lần ngắt nào kết thúc phiên được chặn)
 };

@@ -5,6 +5,7 @@
 // vẫn là kết quả HỢP LỆ, không phải lỗi. KHÔNG BAO GIỜ tự động thêm/xóa/kết nối VPN thật trong test -
 // đó là thao tác cần tài khoản VPN thật và cần người dùng tự kiểm tra tay.
 #include <QApplication>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QElapsedTimer>
 #include <QLabel>
@@ -21,6 +22,7 @@
 #include "tools/vpn/AddVpnProfileDialog.h"
 #include "tools/vpn/ThirdPartyVpnTab.h"
 #include "tools/vpn/VpnControlWindow.h"
+#include "tools/vpn/VpnGateTab.h"
 #include "tools/vpn/VpnTab.h"
 #include "tools/vpn/engine/DirectProfileStore.h"
 #include "tools/vpn/engine/VpnController.h"
@@ -66,6 +68,43 @@ int main(int argc, char** argv)
 
         const auto labels = vpnTab->findChildren<QLabel*>();
         CHECK(labels.size() >= 2); // vị trí IP + thành phố/quốc gia
+
+        // Chặn rò rỉ IPv6: ô tích có sẵn và BẬT mặc định; dòng "IPv6" của khung vị trí tự kiểm tra (dịch vụ chỉ có IPv6)
+        auto* guard = vpnTab->findChild<QCheckBox*>();
+        CHECK(guard != nullptr && guard->isChecked() && guard->text().contains("IPv6"));
+        QLabel* ipv6Line = nullptr;
+        QElapsedTimer v6Timer;
+        v6Timer.start();
+        while (v6Timer.elapsed() < 30000)
+        {
+            for (QLabel* l : vpnTab->findChildren<QLabel*>())
+                if (l->text().startsWith("IPv6") && !l->text().contains(QString::fromUtf8("đang kiểm tra")))
+                    ipv6Line = l;
+            if (ipv6Line)
+                break;
+            app.processEvents(QEventLoop::AllEvents, 50);
+        }
+        CHECK(ipv6Line != nullptr); // kết quả thật đã về (có hoặc không có IPv6 đều hợp lệ)
+        if (ipv6Line)
+            std::printf("Dong IPv6 tab VPN he thong: %s\n", ipv6Line->text().toLocal8Bit().constData());
+    }
+
+    // ---- Tab "Đổi IP theo quốc gia" (VPN Gate): ô Chặn rò rỉ IPv6 bật sẵn, chưa chặn gì khi chưa kết nối ----
+    {
+        auto* gate = win.findChild<VpnGateTab*>();
+        CHECK(gate != nullptr);
+        if (gate)
+        {
+            auto* guard = gate->findChild<QCheckBox*>();
+            CHECK(guard != nullptr && guard->isChecked() && guard->text().contains("IPv6"));
+            CHECK(guard != nullptr && guard->isEnabled()); // chưa nối VPN -> đổi được
+            CHECK(!gate->isBusy());
+            bool guardTextEmpty = true; // chưa bấm Kết nối thì chưa có trạng thái chặn nào
+            for (QLabel* l : gate->findChildren<QLabel*>())
+                if (l->text().contains(QString::fromUtf8("🛡")) || l->text().contains(QString::fromUtf8("KHÔNG chặn")))
+                    guardTextEmpty = false;
+            CHECK(guardTextEmpty);
+        }
     }
 
     // ---- Hộp thoại "Thêm hồ sơ VPN" có 3 chế độ: Thường / GlobalProtect / FortiClient ----

@@ -2,6 +2,7 @@
 // THUẦN (phân tích output Get-VpnConnection mẫu dựng sẵn, dựng script PowerShell) tách riêng khỏi phần
 // gọi PowerShell/RAS API thật, giống mẫu đã dùng cho PartitionManager/AdbController.
 #include <QCoreApplication>
+#include <QDir>
 #include <QFile>
 #include <QTemporaryDir>
 #include "TestDataDir.h"
@@ -11,6 +12,11 @@
 #include "core/PowerShellRunner.h"
 #include "tools/vpn/engine/DirectProfileStore.h"
 #include "tools/vpn/engine/PublicIpChecker.h"
+#include "tools/vpn/engine/PublicIpv6Checker.h"
+#include "tools/vpn/engine/Ipv6LeakGuard.h"
+#include "tools/vpn/engine/Ipv6GuardHelper.h"
+#include "tools/vpn/engine/Ipv6GuardSession.h"
+#include "core/WinElevation.h"
 #include "tools/vpn/engine/VpnConnector.h"
 #include "tools/vpn/engine/VpnController.h"
 #include "tools/vpn/engine/VpnGateCache.h"
@@ -867,6 +873,453 @@ SERVICE_NAME: WireGuardTunnel$NL-Proton
         CHECK(load().size() == 2);
         CHECK(remove(DirectProtocol::FortinetSsl, "VPN GP") && remove(DirectProtocol::FortinetIpsec, "VPN_CVTLT"));
         CHECK(load().isEmpty());
+    }
+
+    // ================= Chặn rò rỉ IPv6 (Ipv6LeakGuard / Ipv6GuardHelper / Ipv6GuardSession / PublicIpv6Checker) =================
+    // KHÔNG đặt bộ lọc WFP thật nào: WFP cần quyền Administrator; test chạy KHÔNG quyền Admin nên mọi lời gọi thật chỉ được
+    // phép thất bại sạch. Nếu lỡ chạy test với quyền Admin thì các ca gọi thật bị BỎ QUA (quy tắc 5 - không đổi mạng thật).
+    {
+        using namespace Ipv6LeakGuard;
+        auto addr = [](const char* text) {
+            Addr16 a{};
+            const bool ok = parseAddress(QString::fromLatin1(text), &a);
+            if (!ok)
+                std::printf("  (parseAddress that bai: %s)\n", text);
+            return a;
+        };
+        // ---- Địa chỉ / dải ----
+        Addr16 a{};
+        CHECK(parseAddress("2001:db8::1", &a) && formatAddress(a) == "2001:db8::1");
+        CHECK(!parseAddress("203.0.113.7", &a));   // IPv4 - không nhận
+        CHECK(!parseAddress("not-an-ip", &a));
+        CHECK(!parseAddress("", &a));
+        Prefix p;
+        CHECK(parsePrefix("2000::/3", &p) && p.length == 3);
+        CHECK(parsePrefix("::1/128", &p) && p.length == 128 && formatAddress(p.addr) == "::1");
+        CHECK(!parsePrefix("2000::", &p));      // thiếu độ dài
+        CHECK(!parsePrefix("2000::/129", &p));  // quá 128
+        CHECK(!parsePrefix("2000::/-1", &p));
+        CHECK(!parsePrefix("10.0.0.0/8", &p));  // IPv4
+        CHECK(!parsePrefix("/3", &p));
+
+        CHECK(isGlobalUnicast(addr("2001:db8::1")));
+        CHECK(isGlobalUnicast(addr("2405:4802:1::1")));       // dạng IPv6 nhà mạng VN
+        CHECK(isGlobalUnicast(addr("3fff:ffff:ffff::1")));    // mép trên 2000::/3
+        CHECK(!isGlobalUnicast(addr("4000::1")));
+        CHECK(!isGlobalUnicast(addr("1fff:ffff::1")));
+        CHECK(!isGlobalUnicast(addr("fe80::1")));
+        CHECK(!isGlobalUnicast(addr("fd7a:115c:a1e0::53"))); // ULA (Tailscale)
+        CHECK(!isGlobalUnicast(addr("::1")));
+        CHECK(isBlockedDestination(addr("2001::1")));         // Teredo
+        CHECK(isBlockedDestination(addr("2002:c000:204::1"))); // 6to4
+        CHECK(isBlockedDestination(addr("64:ff9b::808:808"))); // NAT64 tới 8.8.8.8
+        CHECK(isBlockedDestination(addr("64:ff9b:1::1")));
+        CHECK(!isBlockedDestination(addr("64:ff9b:2::1")));
+        CHECK(!isBlockedDestination(addr("::1")));
+        CHECK(!isBlockedDestination(addr("fe80::1234")));
+        CHECK(!isBlockedDestination(addr("ff02::1")));          // multicast (khám phá hàng xóm)
+        CHECK(!isBlockedDestination(addr("fd00::1")));
+        CHECK(!isBlockedDestination(addr("::ffff:8.8.8.8")));   // IPv4 ánh xạ - không phải IPv6 ra Internet
+        Prefix all;
+        CHECK(parsePrefix("::/0", &all) && inPrefix(addr("fe80::1"), all) && inPrefix(addr("2001::1"), all));
+        Prefix exact;
+        CHECK(parsePrefix("2001:db8::5/128", &exact) && inPrefix(addr("2001:db8::5"), exact) &&
+              !inPrefix(addr("2001:db8::6"), exact));
+        Prefix odd;
+        CHECK(parsePrefix("2001:db8:8000::/33", &odd) && inPrefix(addr("2001:db8:8000::1"), odd) &&
+              inPrefix(addr("2001:db8:ffff::1"), odd) && !inPrefix(addr("2001:db8:7fff::1"), odd));
+        Prefix bad;
+        bad.length = 200;
+        CHECK(!inPrefix(addr("2001::1"), bad));
+
+        // ---- assess(): đánh giá "máy có lộ IPv6 không" trên dữ liệu dựng sẵn ----
+        auto itf = [&](const char* alias, quint64 luid, quint32 type, bool up, QList<Addr16> globals, bool route) {
+            InterfaceInfo i;
+            i.alias = QString::fromUtf8(alias);
+            i.luid = luid;
+            i.ifType = type;
+            i.up = up;
+            i.globalAddresses = globals;
+            i.hasDefaultRoute = route;
+            return i;
+        };
+        const Addr16 g1 = addr("2405:4802:1:2::10");
+        const Addr16 g2 = addr("2001:ee0:4f1::7");
+        Assessment r = assess({}, QString());
+        CHECK(r.exposure == Exposure::NoIpv6 && r.exposedInterfaces.isEmpty() && r.tunnelLuid == 0);
+        r = assess({itf("Wi-Fi", 1, 71, true, {g1}, true)}, QString());
+        CHECK(r.exposure == Exposure::Exposed && r.exposedInterfaces == QStringList{"Wi-Fi"});
+        r = assess({itf("Wi-Fi", 1, 71, true, {g1}, false)}, QString()); // có địa chỉ nhưng không có tuyến ra
+        CHECK(r.exposure == Exposure::NoIpv6);
+        r = assess({itf("Ethernet", 2, 6, true, {}, true)}, QString()); // có tuyến nhưng chỉ có địa chỉ nội bộ
+        CHECK(r.exposure == Exposure::NoIpv6);
+        r = assess({itf("Ethernet", 2, 6, false, {g1}, true)}, QString()); // card đang tắt
+        CHECK(r.exposure == Exposure::NoIpv6);
+        r = assess({itf("Loopback Pseudo-Interface 1", 3, 24, true, {g1}, true)}, QString());
+        CHECK(r.exposure == Exposure::NoIpv6);
+        // Đường hầm VPN (tên kết nối RAS, so không phân biệt hoa thường) KHÔNG tính là "lộ"
+        r = assess({itf("Wi-Fi", 1, 71, true, {g1}, true), itf("OneForAll-VPNGate", 77, 23, true, {g2}, true)},
+                   "oneforall-vpngate");
+        CHECK(r.exposure == Exposure::Exposed && r.exposedInterfaces == QStringList{"Wi-Fi"});
+        CHECK(r.tunnelLuid == 77 && r.tunnelHasIpv6);
+        r = assess({itf("OneForAll-VPNGate", 78, 23, true, {}, false)}, "OneForAll-VPNGate");
+        CHECK(r.exposure == Exposure::NoIpv6 && r.tunnelLuid == 78 && !r.tunnelHasIpv6);
+        r = assess({itf("OneForAll-VPNGate", 79, 23, false, {g2}, true)}, "OneForAll-VPNGate"); // đường hầm chưa lên
+        CHECK(r.tunnelLuid == 0 && !r.tunnelHasIpv6);
+        r = assess({itf("Wi-Fi", 1, 71, true, {g1}, true), itf("Ethernet", 2, 6, true, {g2}, true),
+                    itf("Tailscale", 9, 53, true, {}, true)},
+                   QString());
+        CHECK(r.exposedInterfaces == (QStringList{"Wi-Fi", "Ethernet"}));
+
+        // ---- snapshot() THẬT (chỉ đọc, không cần Admin) ----
+        QString snapError;
+        const QList<InterfaceInfo> real = snapshot(&snapError);
+        CHECK(snapError.isEmpty());
+        CHECK(!real.isEmpty());
+        bool sawLoopback = false;
+        for (const InterfaceInfo& i : real)
+            if (i.ifType == 24)
+                sawLoopback = true;
+        CHECK(sawLoopback);
+        const Assessment realA = assess(real, QString());
+        std::printf("IPv6 that cua may: %d card, %s%s\n", static_cast<int>(real.size()),
+                    realA.exposure == Exposure::Exposed ? "CO IPv6 ra Internet qua: " : "khong co IPv6 ra Internet",
+                    qPrintable(realA.exposedInterfaces.join(", ")));
+
+        // ---- describeError ----
+        CHECK(describeError(5).contains("Administrator"));
+        CHECK(describeError(0x80320009u).contains("0x80320009"));
+        CHECK(describeError(2).contains("2"));
+
+        // ---- WfpBlock THẬT khi KHÔNG có quyền Admin: phải từ chối sạch, không để lại gì ----
+        if (!WinElevation::isElevated())
+        {
+            WfpBlock block;
+            QString err;
+            CHECK(!block.apply(WfpBlock::Config{}, &err));
+            CHECK(err.contains("Administrator") || err.contains("WFP") || err.contains("Filtering"));
+            CHECK(!block.isActive() && block.filterCount() == 0);
+            block.close();
+            block.close(); // đóng hai lần không sao
+            CHECK(!block.isActive());
+            std::printf("WfpBlock khong quyen Admin: %s\n", qPrintable(err));
+        }
+        else
+        {
+            std::printf("BO QUA ca WfpBlock that: test dang chay voi quyen Admin (se chan IPv6 that).\n");
+        }
+
+        // ---- Vòng đời tiến trình phụ ----
+        using Ipv6GuardHelper::internal::shouldKeepGuarding;
+        CHECK(!shouldKeepGuarding(true, true, 0));          // ứng dụng báo gỡ -> thôi ngay
+        CHECK(!shouldKeepGuarding(true, false, 0));
+        CHECK(shouldKeepGuarding(false, true, 0));          // ứng dụng còn
+        CHECK(shouldKeepGuarding(false, true, 999999));     // ứng dụng còn thì không tự bỏ dù VPN vắng
+        CHECK(shouldKeepGuarding(false, false, 0));         // ứng dụng đóng nhưng VPN còn -> VẪN chặn
+        CHECK(shouldKeepGuarding(false, false, Ipv6GuardHelper::kGoneGraceMs - 1));
+        CHECK(!shouldKeepGuarding(false, false, Ipv6GuardHelper::kGoneGraceMs)); // mất cả hai đủ lâu -> thoát
+
+        // ---- Chữ hiển thị ----
+        using S = Ipv6GuardSession::State;
+        CHECK(Ipv6GuardSession::describe(S::Idle, false, {}, {}).isEmpty());
+        CHECK(Ipv6GuardSession::describe(S::NotNeeded, false, {}, {}).contains("không có IPv6"));
+        CHECK(Ipv6GuardSession::describe(S::Starting, false, {}, {}).contains("UAC"));
+        CHECK(Ipv6GuardSession::describe(S::Active, false, {"Wi-Fi"}, {}).contains("Wi-Fi"));
+        CHECK(Ipv6GuardSession::describe(S::Active, true, {"Wi-Fi"}, {}).contains("qua VPN"));
+        CHECK(Ipv6GuardSession::describe(S::Failed, false, {}, "bạn đã từ chối").contains("bạn đã từ chối"));
+        CHECK(Ipv6GuardSession::describe(S::Failed, false, {}, {}).contains("KHÔNG"));
+        PublicIpv6Info v6;
+        bool warn = true;
+        CHECK(Ipv6GuardSession::describePublicIpv6(v6, true, S::Active, false, &warn).contains("không lộ") && !warn);
+        CHECK(Ipv6GuardSession::describePublicIpv6(v6, false, S::Idle, false, &warn).contains("không ra Internet") && !warn);
+        v6.reachable = true;
+        v6.ip = "2405:4802:1::10";
+        v6.country = "Vietnam";
+        v6.city = "Hanoi";
+        QString line = Ipv6GuardSession::describePublicIpv6(v6, false, S::Idle, false, &warn);
+        CHECK(line.contains("2405:4802:1::10") && line.contains("Hanoi, Vietnam") && line.contains("thật") && !warn);
+        line = Ipv6GuardSession::describePublicIpv6(v6, true, S::NotNeeded, false, &warn);
+        CHECK(line.contains("vẫn lộ") && warn); // VPN đã nối mà IPv6 vẫn ra Internet -> cảnh báo đỏ
+        line = Ipv6GuardSession::describePublicIpv6(v6, true, S::Active, false, &warn);
+        CHECK(line.contains("vẫn lộ") && warn); // đã "chặn" mà vẫn ra được -> bộ lọc không tác dụng, phải báo
+        line = Ipv6GuardSession::describePublicIpv6(v6, true, S::Active, true, &warn);
+        CHECK(line.contains("qua VPN") && !warn);
+        v6.city.clear();
+        v6.country.clear();
+        line = Ipv6GuardSession::describePublicIpv6(v6, false, S::Idle, false, &warn);
+        CHECK(!line.contains("📍"));
+    }
+
+    // ---- Ipv6GuardSession: luồng quyết định với ảnh chụp card mạng GIẢ (không UAC, không bộ lọc thật) ----
+    {
+        using namespace Ipv6LeakGuard;
+        Addr16 g{};
+        parseAddress("2405:4802:1:2::10", &g);
+        InterfaceInfo wifi;
+        wifi.alias = "Wi-Fi";
+        wifi.luid = 1;
+        wifi.ifType = 71;
+        wifi.up = true;
+        wifi.globalAddresses = {g};
+        wifi.hasDefaultRoute = true;
+        bool exposed = false;
+
+        auto waitReady = [](Ipv6GuardSession& s, int ms, bool* ok, QString* msg) {
+            QEventLoop loop;
+            bool got = false;
+            const auto c = QObject::connect(&s, &Ipv6GuardSession::ready, &loop, [&](bool k, QString m) {
+                *ok = k;
+                *msg = m;
+                got = true;
+                loop.quit();
+            });
+            QTimer::singleShot(ms, &loop, &QEventLoop::quit);
+            if (!got)
+                loop.exec();
+            QObject::disconnect(c);
+            return got;
+        };
+        auto spin = [](int ms) {
+            QEventLoop loop;
+            QTimer::singleShot(ms, &loop, &QEventLoop::quit);
+            loop.exec();
+        };
+        const QString missingHelper = QDir(dataDir.path()).filePath("khong-ton-tai.exe");
+
+        // 1) Không có IPv6 -> sẵn sàng ngay, KHÔNG chạy tiến trình phụ (đường dẫn giả mà chạy thì sẽ báo lỗi)
+        {
+            Ipv6GuardSession s;
+            Ipv6GuardSession::TestHooks h;
+            h.snapshot = [&]() { return exposed ? QList<InterfaceInfo>{wifi} : QList<InterfaceInfo>{}; };
+            h.helperProgram = missingHelper;
+            h.launchWithoutElevation = true;
+            h.monitorIntervalMs = 150;
+            s.setTestHooks(h);
+            QList<Ipv6GuardSession::State> states;
+            QObject::connect(&s, &Ipv6GuardSession::stateChanged, [&](Ipv6GuardSession::State st, QString) { states << st; });
+            exposed = false;
+            bool ok = false;
+            QString msg;
+            s.begin("OneForAll-VPNGate", {});
+            CHECK(waitReady(s, 2000, &ok, &msg) && ok && msg.isEmpty());
+            CHECK(s.state() == Ipv6GuardSession::State::NotNeeded);
+            // 2) IPv6 xuất hiện GIỮA PHIÊN -> tự chặn (ở đây tiến trình phụ không tồn tại -> Failed, có báo)
+            exposed = true;
+            spin(600);
+            CHECK(states.contains(Ipv6GuardSession::State::Starting));
+            CHECK(s.state() == Ipv6GuardSession::State::Failed);
+            CHECK(s.statusText().contains("KHÔNG"));
+            s.release();
+            CHECK(s.state() == Ipv6GuardSession::State::Idle);
+            const int before = static_cast<int>(states.size());
+            spin(400); // đã gỡ: bộ dò không còn chạy
+            CHECK(states.size() == before);
+        }
+        // 3) Có IPv6 + không khởi chạy được tiến trình phụ -> ready(false) (nơi gọi KHÔNG được quay số)
+        {
+            Ipv6GuardSession s;
+            Ipv6GuardSession::TestHooks h;
+            h.snapshot = [&]() { return QList<InterfaceInfo>{wifi}; };
+            h.helperProgram = missingHelper;
+            h.launchWithoutElevation = true;
+            s.setTestHooks(h);
+            bool ok = true;
+            QString msg;
+            s.begin("OneForAll-VPNGate", {});
+            CHECK(waitReady(s, 2000, &ok, &msg) && !ok && msg.contains("IPv6"));
+            CHECK(s.state() == Ipv6GuardSession::State::Failed);
+        }
+        // 4) release() khi đang chờ: không phát ready() nữa
+        {
+            Ipv6GuardSession s;
+            Ipv6GuardSession::TestHooks h;
+            h.snapshot = [&]() { return QList<InterfaceInfo>{}; };
+            s.setTestHooks(h);
+            bool ok = false;
+            QString msg;
+            s.begin("X", {});
+            s.release(); // trước khi ready() kịp phát (singleShot 0)
+            CHECK(!waitReady(s, 300, &ok, &msg));
+            CHECK(s.state() == Ipv6GuardSession::State::Idle);
+        }
+        // 5) Tiến trình phụ THẬT (OneForAll.exe --ipv6-guard) KHÔNG nâng quyền: kênh điều khiển + mã xác thực + báo lỗi
+        //    thiếu quyền về đúng ready(false) - trọn đường đi trừ đúng bước WFP cần Admin.
+        const QString exe = QCoreApplication::applicationDirPath() + "/OneForAll.exe";
+        if (WinElevation::isElevated())
+        {
+            std::printf("BO QUA ca tien trinh phu that: dang co quyen Admin (se chan IPv6 that).\n");
+        }
+        else if (!QFile::exists(exe))
+        {
+            std::printf("BO QUA ca tien trinh phu that: chua build %s\n", qPrintable(exe));
+        }
+        else
+        {
+            Ipv6GuardSession s;
+            Ipv6GuardSession::TestHooks h;
+            h.snapshot = [&]() { return QList<InterfaceInfo>{wifi}; };
+            h.helperProgram = exe;
+            h.launchWithoutElevation = true;
+            h.helperTimeoutMs = 15000;
+            s.setTestHooks(h);
+            bool ok = true;
+            QString msg;
+            QElapsedTimer t;
+            t.start();
+            s.begin("OneForAll-VPNGate-test", {"2001:db8::1"});
+            CHECK(waitReady(s, 20000, &ok, &msg));
+            CHECK(!ok);
+            CHECK(msg.contains("Administrator"));
+            CHECK(s.state() == Ipv6GuardSession::State::Failed);
+            std::printf("Tien trinh phu --ipv6-guard khong Admin: %lld ms -> %s\n", static_cast<long long>(t.elapsed()),
+                        qPrintable(msg));
+            // Tiến trình phụ tự thoát sau khi báo không chặn được (không ở lại vô ích): đếm tiến trình còn chạy với đúng
+            // tham số này qua WMI là quá nặng - kiểm gián tiếp: kênh điều khiển đã đóng phía nó.
+            spin(800);
+            CHECK(s.state() == Ipv6GuardSession::State::Failed);
+        }
+    }
+
+    // ---- PublicIpv6Checker: máy chủ HTTP GIẢ trên 127.0.0.1 (định tuyến theo đường dẫn) ----
+    {
+        CHECK(PublicIpv6Checker::parseEchoBody(R"({"ip":"2001:db8::7"})") == "2001:db8::7");
+        CHECK(PublicIpv6Checker::parseEchoBody("2001:db8::8\n") == "2001:db8::8");
+        CHECK(PublicIpv6Checker::parseEchoBody("  2001:DB8::9  ") == "2001:db8::9");
+        CHECK(PublicIpv6Checker::parseEchoBody(R"({"ip":"203.0.113.7"})").isEmpty()); // IPv4 - không phải IPv6
+        CHECK(PublicIpv6Checker::parseEchoBody("203.0.113.7").isEmpty());
+        CHECK(PublicIpv6Checker::parseEchoBody("<html>error</html>").isEmpty());
+        CHECK(PublicIpv6Checker::parseEchoBody("").isEmpty());
+        CHECK(PublicIpv6Checker::parseEchoBody(QByteArray(5000, 'a')).isEmpty());
+
+        QTcpServer server;
+        CHECK(server.listen(QHostAddress::LocalHost, 0));
+        QStringList paths;
+        QObject::connect(&server, &QTcpServer::newConnection, [&] {
+            while (QTcpSocket* socket = server.nextPendingConnection())
+            {
+                QObject::connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+                QObject::connect(socket, &QTcpSocket::readyRead, socket, [socket, &paths] {
+                    if (socket->property("answered").toBool() || !socket->peek(65536).contains("\r\n\r\n"))
+                        return;
+                    socket->setProperty("answered", true);
+                    const QByteArray head = socket->readAll();
+                    const QString path = QString::fromLatin1(head.split(' ').value(1));
+                    paths << path;
+                    int code = 200;
+                    QByteArray body;
+                    if (path.startsWith("/json"))
+                        body = R"({"ip":"2001:db8::7"})";
+                    else if (path.startsWith("/plain"))
+                        body = "2001:db8::8\n";
+                    else if (path.startsWith("/v4"))
+                        body = "203.0.113.7";
+                    else if (path.startsWith("/geo/"))
+                        body = R"({"success":true,"country":"Testland","city":"Thu"})";
+                    else if (path.startsWith("/geofail/"))
+                        code = 500;
+                    else
+                        code = 500;
+                    socket->write("HTTP/1.1 " + QByteArray::number(code) + (code == 200 ? " OK" : " ERR") +
+                                  "\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: " +
+                                  QByteArray::number(body.size()) + "\r\n\r\n" + body);
+                    socket->disconnectFromHost();
+                });
+            }
+        });
+        // Cổng chắc chắn đóng: mở rồi đóng một máy chủ để lấy số cổng trống.
+        quint16 closedPort = 0;
+        {
+            QTcpServer tmp;
+            tmp.listen(QHostAddress::LocalHost, 0);
+            closedPort = tmp.serverPort();
+        }
+        const QString base = QString("http://127.0.0.1:%1").arg(server.serverPort());
+        const QUrl closed(QString("http://127.0.0.1:%1/json").arg(closedPort));
+        auto run = [](PublicIpv6Checker& c) {
+            PublicIpv6Info out;
+            QEventLoop loop;
+            bool got = false;
+            const auto conn = QObject::connect(&c, &PublicIpv6Checker::result, &loop, [&](PublicIpv6Info i) {
+                out = i;
+                got = true;
+                loop.quit();
+            });
+            QTimer::singleShot(8000, &loop, &QEventLoop::quit);
+            c.check();
+            if (!got)
+                loop.exec();
+            QObject::disconnect(conn);
+            if (!got)
+                out.error = "TIMEOUT";
+            return out;
+        };
+        {
+            PublicIpv6Checker c;
+            c.setEndpointsForTest({QUrl(base + "/json")}, QUrl(base + "/geo/"), 2000);
+            const PublicIpv6Info i = run(c);
+            CHECK(i.reachable && i.ip == "2001:db8::7" && i.country == "Testland" && i.city == "Thu");
+            CHECK(paths.contains("/geo/2001:db8::7"));
+        }
+        {
+            // Điểm thứ nhất không tới được (cổng đóng) -> dùng điểm dự phòng (văn bản trơn)
+            PublicIpv6Checker c;
+            c.setEndpointsForTest({closed, QUrl(base + "/plain")}, QUrl(base + "/geo/"), 2000);
+            const PublicIpv6Info i = run(c);
+            CHECK(i.reachable && i.ip == "2001:db8::8" && i.country == "Testland");
+        }
+        {
+            // Trả về IPv4 (không phải IPv6) ở mọi điểm -> coi là không có IPv6
+            PublicIpv6Checker c;
+            c.setEndpointsForTest({QUrl(base + "/v4"), QUrl(base + "/v4")}, QUrl(base + "/geo/"), 2000);
+            const PublicIpv6Info i = run(c);
+            CHECK(!i.reachable && i.ip.isEmpty() && !i.error.isEmpty() && i.error != "TIMEOUT");
+        }
+        {
+            // Không điểm nào tới được (giống khi IPv6 bị chặn / máy không có IPv6) -> reachable=false, có lỗi
+            PublicIpv6Checker c;
+            c.setEndpointsForTest({closed, closed}, QUrl(base + "/geo/"), 2000);
+            const PublicIpv6Info i = run(c);
+            CHECK(!i.reachable && !i.error.isEmpty() && i.error != "TIMEOUT");
+        }
+        {
+            // Tra vị trí lỗi: vẫn báo có IPv6 (đó mới là điều quan trọng), quốc gia để trống
+            PublicIpv6Checker c;
+            c.setEndpointsForTest({QUrl(base + "/json")}, QUrl(base + "/geofail/"), 2000);
+            const PublicIpv6Info i = run(c);
+            CHECK(i.reachable && i.ip == "2001:db8::7" && i.country.isEmpty());
+        }
+        {
+            // Gọi check() hai lần liền: lần hai bị bỏ qua (đang chạy), chỉ một kết quả
+            PublicIpv6Checker c;
+            c.setEndpointsForTest({QUrl(base + "/json")}, QUrl(base + "/geo/"), 2000);
+            int results = 0;
+            QObject::connect(&c, &PublicIpv6Checker::result, [&](PublicIpv6Info) { ++results; });
+            c.check();
+            CHECK(c.isRunning());
+            c.check();
+            QEventLoop loop;
+            QTimer::singleShot(1500, &loop, &QEventLoop::quit);
+            loop.exec();
+            CHECK(results == 1 && !c.isRunning());
+        }
+    }
+
+    // ---- SplitTunneling trong danh sách VPN của Windows ----
+    {
+        QString err;
+        const auto list = VpnController::internal::parseConnectionsJson(
+            R"([{"Name":"A","ServerAddress":"a","TunnelType":"Sstp","ConnectionStatus":"Connected","SplitTunneling":true},
+                {"Name":"B","ServerAddress":"b","TunnelType":"Ikev2","ConnectionStatus":"Disconnected","SplitTunneling":false},
+                {"Name":"C","ServerAddress":"c","TunnelType":"Ikev2","ConnectionStatus":"Disconnected"}])",
+            &err);
+        CHECK(err.isEmpty() && list.size() == 3);
+        if (list.size() == 3)
+        {
+            CHECK(list[0].splitTunneling);
+            CHECK(!list[1].splitTunneling);
+            CHECK(!list[2].splitTunneling); // thiếu trường (bản cũ) -> mặc định toàn bộ lưu lượng (an toàn: có chặn)
+        }
+        CHECK(VpnController::internal::buildListConnectionsScript().contains("SplitTunneling"));
     }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);

@@ -405,6 +405,15 @@ add_library(vpn_core STATIC
     src/tools/vpn/engine/VpnConnector.cpp
     src/tools/vpn/engine/PublicIpChecker.h
     src/tools/vpn/engine/PublicIpChecker.cpp
+    # Chặn rò rỉ IPv6 khi đổi IP bằng VPN của Windows: bộ lọc WFP động trong tiến trình phụ nâng quyền "--ipv6-guard".
+    src/tools/vpn/engine/PublicIpv6Checker.h
+    src/tools/vpn/engine/PublicIpv6Checker.cpp
+    src/tools/vpn/engine/Ipv6LeakGuard.h
+    src/tools/vpn/engine/Ipv6LeakGuard.cpp
+    src/tools/vpn/engine/Ipv6GuardHelper.h
+    src/tools/vpn/engine/Ipv6GuardHelper.cpp
+    src/tools/vpn/engine/Ipv6GuardSession.h
+    src/tools/vpn/engine/Ipv6GuardSession.cpp
     src/tools/vpn/model/WireGuardTunnel.h
     src/tools/vpn/engine/WireGuardController.h
     src/tools/vpn/engine/WireGuardController.cpp
@@ -453,7 +462,7 @@ add_library(vpn_core STATIC
     src/tools/vpn/direct/CredentialStore.cpp
 )
 target_include_directories(vpn_core PUBLIC src)
-target_link_libraries(vpn_core PUBLIC Qt6::Core Qt6::Network advapi32 shell32 rasapi32 iphlpapi ws2_32 bcrypt core_shared)
+target_link_libraries(vpn_core PUBLIC Qt6::Core Qt6::Network advapi32 shell32 rasapi32 iphlpapi ws2_32 bcrypt fwpuclnt rpcrt4 core_shared)
 
 # qr_ui dùng lại PublicIpChecker của vpn_core cho nút "Lấy vị trí hiện tại" (ước lượng gần đúng theo IP
 # công khai) ở trang tạo mã QR Vị trí (Geo) - cùng lý do/khuôn mẫu đã thêm cho wifi_ui ở trên.
@@ -496,6 +505,11 @@ target_link_libraries(ike_real_connect PRIVATE vpn_core Qt6::Network)
 # ---- KIỂM TRA TAY: chạy CHÍNH TunnelEngine (FortiGate IPsec) với gateway THẬT, chế độ noAdapterForTest (không Admin): tunnel_engine_real_check ----
 add_executable(tunnel_engine_real_check EXCLUDE_FROM_ALL tests/tunnel_engine_real_check.cpp)
 target_link_libraries(tunnel_engine_real_check PRIVATE vpn_core Qt6::Network)
+
+# ---- KIỂM TRA TAY (cần Administrator, KHÔNG chạy tự động): bộ lọc chặn rò rỉ IPv6 chặn THẬT + tự gỡ khi phiên/tiến
+# trình giữ nó kết thúc (dùng [::1] làm vật thử vì máy build không có IPv6): ipv6_guard_real_check <log> ----
+add_executable(ipv6_guard_real_check EXCLUDE_FROM_ALL tests/ipv6_guard_real_check.cpp)
+target_link_libraries(ipv6_guard_real_check PRIVATE vpn_core)
 
 # ---- KIỂM TRA TAY đầu-cuối với ADAPTER THẬT (UAC): DirectVpnSession + helper nâng quyền + ping/curl của HĐH: directvpn_real_e2e ----
 add_executable(directvpn_real_e2e EXCLUDE_FROM_ALL tests/directvpn_real_e2e.cpp)

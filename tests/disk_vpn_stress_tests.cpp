@@ -58,6 +58,10 @@
 #include "tools/diskcleanup/engine/RecycleBinOps.h"
 #include "tools/vpn/engine/VpnConnector.h"
 #include "tools/vpn/engine/VpnController.h"
+#include "tools/vpn/engine/Ipv6GuardHelper.h"
+#include "tools/vpn/engine/Ipv6GuardSession.h"
+#include "tools/vpn/engine/Ipv6LeakGuard.h"
+#include "tools/vpn/engine/PublicIpv6Checker.h"
 
 static int g_fail = 0, g_pass = 0;
 #define CHECK(cond)                                                            \
@@ -2318,6 +2322,169 @@ int main(int argc, char** argv)
             CHECK(true); // tới được đây = không crash
         }
         say("G. xong (%lld ms)\n", static_cast<long long>(sectionTimer.elapsed()));
+    }
+
+    // H. Chặn rò rỉ IPv6: fuzz các hàm THUẦN (phân tích địa chỉ/dải, so dải, đánh giá card mạng, vòng đời, chữ hiển thị).
+    // Không đặt bộ lọc WFP thật nào (cần Admin + đổi mạng thật - quy tắc 5).
+    {
+        QElapsedTimer sectionTimer;
+        sectionTimer.start();
+        say("H. IPv6 leak guard:\n");
+        using namespace Ipv6LeakGuard;
+        auto randomAddr = []() {
+            Addr16 a{};
+            for (auto& b : a)
+                b = static_cast<quint8>(rnd(256));
+            // Dồn xác suất vào các vùng quan trọng: mép 2000::/3, NAT64, loopback
+            switch (rnd(6))
+            {
+            case 0: a[0] = static_cast<quint8>(0x1F + rnd(3)); break; // 1f/20/21 - mép dưới
+            case 1: a[0] = static_cast<quint8>(0x3F + rnd(3)); break; // 3f/40/41 - mép trên
+            case 2: a = Addr16{0, 0x64, 0xff, 0x9b}; a[5] = static_cast<quint8>(rnd(3)); a[15] = static_cast<quint8>(rnd(256)); break;
+            case 3: a = Addr16{}; a[15] = static_cast<quint8>(rnd(3)); break;
+            default: break;
+            }
+            return a;
+        };
+        auto naiveIn = [](const Addr16& a, const Prefix& p) {
+            for (int bit = 0; bit < p.length; ++bit)
+            {
+                const int byte = bit / 8, shift = 7 - bit % 8;
+                if (((a[byte] >> shift) & 1) != ((p.addr[byte] >> shift) & 1))
+                    return false;
+            }
+            return true;
+        };
+        int prefixMismatch = 0, roundTripBad = 0, classifyBad = 0;
+        for (int i = 0; i < scaled(200000); ++i)
+        {
+            const Addr16 a = randomAddr();
+            Prefix p;
+            p.addr = randomAddr();
+            p.length = static_cast<int>(rnd(129));
+            if (rnd(4) == 0)
+                p.addr = a; // ép trùng phần đầu để có nhiều ca "nằm trong"
+            if (inPrefix(a, p) != naiveIn(a, p))
+                ++prefixMismatch;
+            Addr16 back{};
+            if (!parseAddress(formatAddress(a), &back) || back != a)
+                ++roundTripBad;
+            if (isGlobalUnicast(a) != ((a[0] & 0xE0) == 0x20))
+                ++classifyBad;
+            const bool nat64 = (a[0] == 0 && a[1] == 0x64 && a[2] == 0xff && a[3] == 0x9b &&
+                                ((a[4] == 0 && a[5] == 0 && a[6] == 0 && a[7] == 0 && a[8] == 0 && a[9] == 0 && a[10] == 0 &&
+                                  a[11] == 0) ||
+                                 (a[4] == 0 && a[5] == 1)));
+            if (isBlockedDestination(a) != (isGlobalUnicast(a) || nat64))
+                ++classifyBad;
+        }
+        say("  so dai/khu hoi/phan loai: %d / %d / %d sai\n", prefixMismatch, roundTripBad, classifyBad);
+        CHECK(prefixMismatch == 0);
+        CHECK(roundTripBad == 0);
+        CHECK(classifyBad == 0);
+
+        // Chuỗi ngẫu nhiên vào bộ phân tích: không crash; dải nhận được phải hợp lệ và chứa chính địa chỉ của nó.
+        const QString alphabet = QString::fromUtf8("0123456789abcdefABCDEF:::./ %-xXáĐ\t\n[]{}\"ip");
+        int prefixAccepted = 0, prefixBad = 0, echoBad = 0;
+        for (int i = 0; i < scaled(100000); ++i)
+        {
+            QString text;
+            const int len = static_cast<int>(rnd(48));
+            for (int k = 0; k < len; ++k)
+                text += alphabet[static_cast<int>(rnd(static_cast<quint64>(alphabet.size())))];
+            if (rnd(3) == 0)
+                text = formatAddress(randomAddr()) + "/" + QString::number(static_cast<int>(rnd(140)) - 5);
+            Prefix p;
+            if (parsePrefix(text, &p))
+            {
+                ++prefixAccepted;
+                if (p.length < 0 || p.length > 128 || !inPrefix(p.addr, p))
+                    ++prefixBad;
+            }
+            Addr16 a{};
+            parseAddress(text, &a);
+            const QString echo = PublicIpv6Checker::parseEchoBody(text.toUtf8());
+            if (!echo.isEmpty() && !parseAddress(echo, &a))
+                ++echoBad;
+        }
+        say("  chuoi ngau nhien: %d dai hop le, %d sai; phan hoi IP sai %d\n", prefixAccepted, prefixBad, echoBad);
+        CHECK(prefixAccepted > 0);
+        CHECK(prefixBad == 0);
+        CHECK(echoBad == 0);
+
+        // assess(): so với định nghĩa trực tiếp trên danh sách card ngẫu nhiên.
+        const QStringList names{"Wi-Fi", "Ethernet", "OneForAll-VPNGate", "oneforall-vpngate", "Tailscale", "Loopback", "VPN A"};
+        int assessBad = 0;
+        for (int i = 0; i < scaled(50000); ++i)
+        {
+            QList<InterfaceInfo> list;
+            const int n = static_cast<int>(rnd(7));
+            for (int k = 0; k < n; ++k)
+            {
+                InterfaceInfo itf;
+                itf.alias = names[static_cast<int>(rnd(static_cast<quint64>(names.size())))];
+                itf.luid = rnd(1000) + 1;
+                itf.ifType = rnd(5) == 0 ? 24 : static_cast<quint32>(rnd(80));
+                itf.up = rnd(4) != 0;
+                if (rnd(2))
+                    itf.globalAddresses << randomAddr();
+                itf.hasDefaultRoute = rnd(2) != 0;
+                list << itf;
+            }
+            const QString tunnel = rnd(3) == 0 ? QString() : QStringLiteral("OneForAll-VPNGate");
+            const Assessment r = assess(list, tunnel);
+            QStringList expected;
+            quint64 tunnelLuid = 0;
+            bool tunnelV6 = false;
+            for (const InterfaceInfo& itf : list)
+            {
+                if (!itf.up || itf.ifType == 24)
+                    continue;
+                const bool reaches = !itf.globalAddresses.isEmpty() && itf.hasDefaultRoute;
+                if (!tunnel.isEmpty() && itf.alias.compare(tunnel, Qt::CaseInsensitive) == 0)
+                {
+                    tunnelLuid = itf.luid;
+                    tunnelV6 = reaches;
+                    continue;
+                }
+                if (reaches)
+                    expected << itf.alias;
+            }
+            if (r.exposedInterfaces != expected || r.tunnelLuid != tunnelLuid || r.tunnelHasIpv6 != tunnelV6 ||
+                (r.exposure == Exposure::Exposed) != !expected.isEmpty())
+                ++assessBad;
+        }
+        say("  assess() sai %d\n", assessBad);
+        CHECK(assessBad == 0);
+
+        // Vòng đời tiến trình phụ + chữ hiển thị.
+        int lifeBad = 0, textBad = 0;
+        for (int i = 0; i < scaled(50000); ++i)
+        {
+            const bool released = rnd(2), app = rnd(2);
+            const qint64 absent = static_cast<qint64>(rnd(10000));
+            const bool keep = Ipv6GuardHelper::internal::shouldKeepGuarding(released, app, absent);
+            if (keep != (!released && (app || absent < Ipv6GuardHelper::kGoneGraceMs)))
+                ++lifeBad;
+            PublicIpv6Info info;
+            info.reachable = rnd(2);
+            info.ip = info.reachable ? formatAddress(randomAddr()) : QString();
+            info.country = rnd(2) ? QStringLiteral("Japan") : QString();
+            const bool connected = rnd(2), tunnelV6 = rnd(2);
+            const auto state = static_cast<Ipv6GuardSession::State>(rnd(5));
+            bool warn = false;
+            const QString line = Ipv6GuardSession::describePublicIpv6(info, connected, state, tunnelV6, &warn);
+            const bool expectWarn =
+                connected && info.reachable && !(state == Ipv6GuardSession::State::Active && tunnelV6);
+            if (warn != expectWarn || line.isEmpty() || (info.reachable && !line.contains(info.ip)))
+                ++textBad;
+            if (Ipv6GuardSession::describe(state, tunnelV6, {}, {}).isEmpty() != (state == Ipv6GuardSession::State::Idle))
+                ++textBad;
+        }
+        say("  vong doi sai %d, chu hien thi sai %d\n", lifeBad, textBad);
+        CHECK(lifeBad == 0);
+        CHECK(textBad == 0);
+        say("H. xong (%lld ms)\n", static_cast<long long>(sectionTimer.elapsed()));
     }
 
     // Dọn thư mục tạm bằng API thô (tên có dấu chấm cuối/đường dẫn dài QTemporaryDir không tự xóa được).

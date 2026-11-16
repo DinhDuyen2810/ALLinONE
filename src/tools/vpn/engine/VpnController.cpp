@@ -281,6 +281,7 @@ QString buildListConnectionsScript()
         "      ServerAddress = [string]$_.ServerAddress\n"
         "      TunnelType = [string]$_.TunnelType\n"
         "      ConnectionStatus = [string]$_.ConnectionStatus\n"
+        "      SplitTunneling = [bool]$_.SplitTunneling\n"
         "    }\n"
         "  })\n"
         "  $result | ConvertTo-Json -Compress -Depth 4\n"
@@ -338,6 +339,7 @@ VpnConnectionStatus connectionFromJsonObject(const QJsonObject& o)
     c.serverAddress = o.value("ServerAddress").toString();
     c.tunnelType = o.value("TunnelType").toString();
     c.connectionStatus = o.value("ConnectionStatus").toString();
+    c.splitTunneling = o.value("SplitTunneling").toBool(false);
     return c;
 }
 } // namespace

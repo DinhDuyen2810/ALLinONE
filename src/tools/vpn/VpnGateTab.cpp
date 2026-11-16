@@ -7,8 +7,10 @@
 #include "engine/VpnGateClient.h"
 #include "model/VpnProfile.h"
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QGroupBox>
+#include <QHostInfo>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
@@ -58,6 +60,12 @@ VpnGateTab::VpnGateTab(QWidget* parent)
     connect(m_ipChecker, &PublicIpChecker::result, this, &VpnGateTab::onIpResult);
     connect(m_ipChecker, &PublicIpChecker::errorOccurred, this, &VpnGateTab::onIpError);
 
+    m_ipv6Checker = new PublicIpv6Checker(this);
+    connect(m_ipv6Checker, &PublicIpv6Checker::result, this, &VpnGateTab::onIpv6Result);
+    m_ipv6Guard = new Ipv6GuardSession(this);
+    connect(m_ipv6Guard, &Ipv6GuardSession::ready, this, &VpnGateTab::onGuardReady);
+    connect(m_ipv6Guard, &Ipv6GuardSession::stateChanged, this, &VpnGateTab::onGuardStateChanged);
+
     // Nạp danh sách đã TÍCH LŨY từ những lần tải trước (API chỉ trả ~100 máy chủ/lần - gộp lại để có nhiều hơn).
     m_allServers = VpnGateCache::load();
     if (!m_allServers.isEmpty())
@@ -82,11 +90,18 @@ VpnGateTab::~VpnGateTab()
 
 bool VpnGateTab::isBusy() const
 {
-    return (m_connector && m_connector->isRunning()) || m_backgroundThread != nullptr;
+    return (m_connector && m_connector->isRunning()) || m_backgroundThread != nullptr || m_waitingGuard;
 }
 
 void VpnGateTab::cancelAndWait(int waitMs)
 {
+    if (m_waitingGuard)
+    {
+        // Chưa quay số - bỏ luôn việc chặn IPv6 đang chuẩn bị (tiến trình phụ, nếu đã chạy, tự thoát).
+        m_waitingGuard = false;
+        m_phase = Phase::Idle;
+        m_ipv6Guard->release();
+    }
     if (m_connector && m_connector->isRunning())
     {
         m_connector->requestCancel();
@@ -97,6 +112,12 @@ void VpnGateTab::cancelAndWait(int waitMs)
 
 void VpnGateTab::requestCancelNoWait()
 {
+    if (m_waitingGuard)
+    {
+        m_waitingGuard = false;
+        m_phase = Phase::Idle;
+        m_ipv6Guard->release();
+    }
     if (m_connector && m_connector->isRunning())
         m_connector->requestCancel();
 }
@@ -110,7 +131,8 @@ void VpnGateTab::buildUi()
     auto* hint = new QLabel(
         "Đổi IP ra quốc gia khác qua máy chủ CÔNG CỘNG MIỄN PHÍ của VPN Gate (dự án ĐH Tsukuba, Nhật Bản) - relay "
         "do tình nguyện viên chia sẻ, tốc độ/độ ổn định không được bảo đảm, bạn tự chịu trách nhiệm khi dùng. Kết nối "
-        "bằng VPN có sẵn của Windows (mặc định SSTP qua cổng 443) - không cần cài thêm gì, không cần quyền Administrator.",
+        "bằng VPN có sẵn của Windows (mặc định SSTP qua cổng 443) - không cần cài thêm gì. Mạng có IPv6 thì IPv6 thật "
+        "được chặn trong lúc nối (một lần hỏi quyền Administrator) để trang web không thấy vị trí thật qua IPv6.",
         this);
     hint->setWordWrap(true);
     hint->setStyleSheet(VpnUi::bannerStyle("warn"));
@@ -128,8 +150,13 @@ void VpnGateTab::buildUi()
     m_locationPlaceLabel = new QLabel("", this);
     m_locationPlaceLabel->setStyleSheet("color: #57606a; font-size: 12px;");
     m_locationPlaceLabel->setWordWrap(true);
+    m_locationIpv6Label = new QLabel("", this);
+    m_locationIpv6Label->setStyleSheet("color: #57606a; font-size: 12px;");
+    m_locationIpv6Label->setWordWrap(true);
+    m_locationIpv6Label->setTextInteractionFlags(Qt::TextSelectableByMouse);
     locTextLayout->addWidget(m_locationIpLabel);
     locTextLayout->addWidget(m_locationPlaceLabel);
+    locTextLayout->addWidget(m_locationIpv6Label);
     locLayout->addLayout(locTextLayout, 1);
     m_refreshLocationBtn = new QPushButton("🔄 Kiểm tra lại", this);
     m_refreshLocationBtn->setStyleSheet(VpnUi::buttonStyle());
@@ -222,6 +249,21 @@ void VpnGateTab::buildUi()
     connect(m_disconnectBtn, &QPushButton::clicked, this, &VpnGateTab::onDisconnectClicked);
     actionRow->addWidget(m_disconnectBtn);
     root->addLayout(actionRow);
+
+    // ---- Chặn rò rỉ IPv6 (xem Ipv6GuardSession.h) ----
+    auto* guardRow = new QHBoxLayout();
+    m_ipv6GuardCheck = new QCheckBox("🛡 Chặn rò rỉ IPv6 (khuyến nghị)", this);
+    m_ipv6GuardCheck->setChecked(true);
+    m_ipv6GuardCheck->setToolTip(
+        "Máy chủ VPN Gate chỉ đổi IPv4. Nếu mạng của bạn có IPv6, IPv6 thật vẫn đi thẳng ra Internet và trang web thấy vị trí "
+        "thật.\nBật ô này: ứng dụng chặn IPv6 ra Internet trong suốt phiên VPN (bộ lọc Windows Filtering Platform tự gỡ khi "
+        "VPN ngắt) - cần quyền Administrator MỘT lần lúc kết nối, chỉ khi mạng thật sự có IPv6.");
+    guardRow->addWidget(m_ipv6GuardCheck);
+    m_ipv6GuardLabel = new QLabel("", this);
+    m_ipv6GuardLabel->setWordWrap(true);
+    m_ipv6GuardLabel->setStyleSheet("color: #57606a; font-size: 12px;");
+    guardRow->addWidget(m_ipv6GuardLabel, 1);
+    root->addLayout(guardRow);
 
     // ---- Bảng máy chủ ----
     m_table = new QTableWidget(0, 5, this);
@@ -366,6 +408,7 @@ void VpnGateTab::updateButtons()
     m_disconnectBtn->setVisible(connected);
     m_disconnectBtn->setEnabled(!busy && connected);
     m_checkBtn->setEnabled(s != nullptr);
+    m_ipv6GuardCheck->setEnabled(!busy && !connected); // quyết định lúc bấm Kết nối - đổi giữa phiên không có tác dụng
     if (m_natFixBtn)
         m_natFixBtn->setEnabled(!busy);
 }
@@ -421,11 +464,62 @@ void VpnGateTab::onConnectClicked()
         p.l2tpPsk = kVpnGatePsk;
     }
 
-    const QString country = s->countryLong;
-    m_connectedCountry = country;
+    m_connectedCountry = s->countryLong;
     m_connectedMethod = useSstp ? QStringLiteral("SSTP") : QStringLiteral("L2TP");
     m_phase = Phase::Connecting;
+    m_pendingProfile = p;
 
+    if (!m_ipv6GuardCheck->isChecked())
+    {
+        proceedConnect();
+        return;
+    }
+    // Chặn IPv6 TRƯỚC khi quay số. Địa chỉ IPv6 (nếu có) của chính máy chủ VPN được chừa ra để đường hầm vẫn dựng
+    // được qua IPv6; tra DNS bất đồng bộ (tên miền SSTP), L2TP dùng thẳng IPv4 nên không có gì để chừa.
+    m_waitingGuard = true;
+    m_statusLabel->setText("⏳ Đang kiểm tra IPv6 của máy trước khi kết nối...");
+    updateButtons();
+    QHostInfo::lookupHost(p.serverAddress, this, [this](const QHostInfo& info) {
+        if (!m_waitingGuard || m_phase != Phase::Connecting)
+            return; // đã hủy trong lúc tra DNS
+        QStringList v6;
+        for (const QHostAddress& a : info.addresses())
+            if (a.protocol() == QAbstractSocket::IPv6Protocol)
+                v6 << a.toString();
+        m_ipv6Guard->begin(kTempProfileName, v6);
+    });
+}
+
+void VpnGateTab::onGuardReady(bool ok, QString message)
+{
+    if (!m_waitingGuard || m_phase != Phase::Connecting)
+        return;
+    m_waitingGuard = false;
+    if (!ok)
+    {
+        m_phase = Phase::Idle;
+        m_ipv6Guard->release();
+        m_statusLabel->setText("⚠ " + message + " Chưa kết nối VPN để IPv6 thật không bị lộ. Bỏ tích \"Chặn rò rỉ IPv6\" "
+                               "nếu vẫn muốn kết nối không chặn.");
+        updateButtons();
+        return;
+    }
+    proceedConnect();
+}
+
+void VpnGateTab::onGuardStateChanged(Ipv6GuardSession::State state, QString text)
+{
+    m_ipv6GuardLabel->setText(text);
+    const char* color = state == Ipv6GuardSession::State::Failed   ? "#cf222e"
+                        : state == Ipv6GuardSession::State::Active ? "#1a7f37"
+                                                                   : "#57606a";
+    m_ipv6GuardLabel->setStyleSheet(QString("color: %1; font-size: 12px;").arg(color));
+}
+
+void VpnGateTab::proceedConnect()
+{
+    const VpnProfile p = m_pendingProfile;
+    const QString country = m_connectedCountry;
     auto ok = std::make_shared<bool>(false);
     auto error = std::make_shared<QString>();
     runInBackground(
@@ -435,6 +529,7 @@ void VpnGateTab::onConnectClicked()
             if (!*ok)
             {
                 m_phase = Phase::Idle;
+                m_ipv6Guard->release();
                 m_statusLabel->setText("⚠ Không tạo được kết nối tạm: " + *error);
                 return;
             }
@@ -472,6 +567,7 @@ void VpnGateTab::onConnectorFinished(bool success, QString message)
         else
         {
             m_phase = Phase::Idle;
+            m_ipv6Guard->release(); // không có phiên VPN nào - gỡ chặn IPv6 ngay
             m_statusLabel->setText(
                 "⚠ Không kết nối được máy chủ này qua " + m_connectedMethod + " (" +
                 (message.isEmpty() ? QString("thất bại") : message) + "). Máy chủ có thể không bật " +
@@ -483,6 +579,10 @@ void VpnGateTab::onConnectorFinished(bool success, QString message)
     else if (m_phase == Phase::Disconnecting)
     {
         m_phase = Phase::Idle;
+        // Ngắt xong thì gỡ chặn IPv6. Ngắt THẤT BẠI (VPN có thể vẫn nối) thì KHÔNG gỡ: tiến trình phụ giữ chặn - nó tự dò
+        // kết nối mỗi giây và chỉ thôi chặn khi VPN đã ngắt thật (xem Ipv6GuardHelper.h).
+        if (success)
+            m_ipv6Guard->release();
         m_statusLabel->setText(success ? "Đã ngắt kết nối." : ("⚠ " + (message.isEmpty() ? QString("Ngắt kết nối thất bại.") : message)));
         onCheckLocationClicked();
         removeTempProfileInBackground();
@@ -551,6 +651,20 @@ void VpnGateTab::onCheckLocationClicked()
     m_locationIpLabel->setText("⏳ Đang kiểm tra...");
     m_locationPlaceLabel->clear();
     m_ipChecker->check();
+    if (!m_ipv6Checker->isRunning())
+    {
+        m_locationIpv6Label->setStyleSheet("color: #57606a; font-size: 12px;");
+        m_locationIpv6Label->setText("IPv6: ⏳ đang kiểm tra...");
+        m_ipv6Checker->check();
+    }
+}
+
+void VpnGateTab::onIpv6Result(PublicIpv6Info info)
+{
+    bool warn = false;
+    m_locationIpv6Label->setText(Ipv6GuardSession::describePublicIpv6(
+        info, m_phase == Phase::Connected, m_ipv6Guard->state(), m_ipv6Guard->tunnelHasIpv6(), &warn));
+    m_locationIpv6Label->setStyleSheet(QString("color: %1; font-size: 12px;").arg(warn ? "#cf222e" : "#57606a"));
 }
 
 void VpnGateTab::onIpResult(PublicIpInfo info)

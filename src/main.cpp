@@ -9,6 +9,7 @@
 #include "tools/diskcleanup/engine/PartitionRelocator.h"
 #include "tools/security/engine/ConsolePaste.h"
 #include "tools/vpn/direct/VpnHelperMain.h"
+#include "tools/vpn/engine/Ipv6GuardHelper.h"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -26,6 +27,11 @@ int main(int argc, char* argv[])
     // mở rồi đọc lại màn hình để xác nhận - không dựng giao diện, không giữ mutex; xem ConsolePaste.h.
     if (argc >= 3 && std::strcmp(argv[1], ConsolePaste::kHelperSwitch) == 0)
         return ConsolePaste::runHelperMode(argc, argv);
+
+    // Tiến trình phụ NÂNG QUYỀN chặn rò rỉ IPv6 khi đổi IP bằng VPN của Windows (bộ lọc WFP động) - không dựng giao
+    // diện, không giữ mutex; giữ chặn tới khi VPN ngắt (kể cả khi ứng dụng đã đóng) - xem Ipv6GuardHelper.h.
+    if (argc >= 4 && std::strcmp(argv[1], Ipv6GuardHelper::kSwitch) == 0)
+        return Ipv6GuardHelper::run(argc, argv);
 
 #ifdef _WIN32
     // Thiết lập Per-Monitor DPI Awareness V2 theo mục 68 trong tài liệu thiết kế
