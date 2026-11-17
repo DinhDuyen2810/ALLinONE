@@ -87,6 +87,10 @@ clean_exes.bat
 
 :: Đủ 4 file phát hành
 build_installer.bat /nopause
+
+:: Gói MSIX nộp Microsoft Store (KHÔNG ký, KHÔNG phải file phát hành GitHub; danh tính gói ở installer\msix\store_identity.txt)
+:: - chỉ dựng khi chuẩn bị nộp Store. Chi tiết: PROJECT_OVERVIEW.md mục 4zzi
+build_msix.bat /nobuild /nopause
 ```
 
 Các bộ test: `qr`, `wifi`, `connect`, `diskcleanup`, `android`, `vpn`, `security`, `downloader` (mỗi bộ có

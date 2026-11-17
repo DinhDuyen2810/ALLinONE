@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Mẫu manifest gói MSIX của One for ALL (bản nộp Microsoft Store). KHÔNG sửa tay các chuỗi @...@:
+  installer\msix\build_msix.ps1 thay bằng giá trị thật (phiên bản lấy từ tệp VERSION, danh tính gói
+  lấy từ installer\msix\store_identity.txt). Lý do từng khai báo: PROJECT_OVERVIEW.md mục 4zzi.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap rescap">
+
+  <Identity Name="@IDENTITY_NAME@"
+            Publisher="@PUBLISHER@"
+            Version="@VERSION4@"
+            ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>One for ALL</DisplayName>
+    <PublisherDisplayName>@PUBLISHER_DISPLAY_NAME@</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <Description>Bộ 9 công cụ tiện ích cho Windows: Auto Click, QR, WiFi, Connect Together, Disk Cleanup, điều khiển Android, VPN, Security Gateway, Downloader.</Description>
+  </Properties>
+
+  <Dependencies>
+    <!-- Windows 10 2004 (19041) trở lên. Bản Qt 6 MinGW tự mang theo runtime (libstdc++/libgcc/winpthread)
+         trong gói nên không cần gói khung Microsoft.VCLibs. -->
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="vi-VN" />
+  </Resources>
+
+  <Applications>
+    <Application Id="OneForAll" Executable="OneForAll.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+          DisplayName="One for ALL"
+          Description="Bộ 9 công cụ tiện ích cho Windows"
+          BackgroundColor="transparent"
+          Square150x150Logo="Assets\Square150x150Logo.png"
+          Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <!-- Ứng dụng Win32 (Qt) chạy toàn quyền như bản cài đặt thường. -->
+    <rescap:Capability Name="runFullTrust" />
+    <!-- Các tính năng cần quyền Administrator (UAC) qua ShellExecute "runas": phân vùng ổ đĩa, WireGuard,
+         VPN trực tiếp (adapter wintun), chặn rò rỉ IPv6 (WFP), NAT-T cho L2TP, chặn web bằng hosts, quét mã
+         độc. Store chỉ duyệt khả năng này "theo tiêu chí nghiêm ngặt" - xem PROJECT_OVERVIEW.md mục 4zzi. -->
+    <rescap:Capability Name="allowElevation" />
+  </Capabilities>
+</Package>

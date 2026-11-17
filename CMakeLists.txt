@@ -52,6 +52,8 @@ add_library(core_shared STATIC
     src/core/WinElevation.cpp
     src/core/PowerShellRunner.h
     src/core/PowerShellRunner.cpp
+    src/core/PackageIdentity.h
+    src/core/PackageIdentity.cpp
 )
 target_include_directories(core_shared PUBLIC src)
 # winprocess_core: PowerShellRunner dừng cả tiến trình cháu của script khi hủy/hết giờ (WinProcessTree).

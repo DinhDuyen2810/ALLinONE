@@ -4,6 +4,7 @@
 #include "tools/downloader/model/DownloadItem.h"
 #include "core/AppPaths.h"
 #include "core/Logger.h"
+#include "core/PackageIdentity.h"
 #include "core/PowerShellRunner.h"
 #include "core/ToolManager.h"
 
@@ -94,6 +95,13 @@ QString UpdateInstaller::consumePreviousUpdateFailure()
 
 void UpdateInstaller::downloadAndInstall(const UpdateInfo& info)
 {
+    // Bản Microsoft Store (gói MSIX): chạy Setup.exe/.msi từ đây chỉ cài THÊM một bản thường thứ hai, không
+    // nâng cấp gói - và chính sách Store không cho cập nhật ngoài Store. Không bao giờ tải/chạy trình cài đặt.
+    if (PackageIdentity::isPackaged())
+    {
+        emit downloadFailed("Bản Microsoft Store được cập nhật qua Microsoft Store, không tự cài bản từ GitHub.");
+        return;
+    }
     m_kind = detectInstallKind();
 
     QString url = info.downloadUrl;

@@ -8,6 +8,7 @@
 #include "core/update/UpdateChecker.h"
 #include "core/update/UpdateInstaller.h"
 #include "core/AppPaths.h"
+#include "core/PackageIdentity.h"
 #include "core/PowerShellRunner.h"
 
 #include <QDir>
@@ -296,6 +297,43 @@ int main(int argc, char** argv)
         CHECK(UpdateInstaller::consumePreviousUpdateFailure() == "ExitCode=1223");
         CHECK(!QFile::exists(markerPath)); // đã bị xóa - không báo lặp lại mãi ở các lần gọi sau
         CHECK(UpdateInstaller::consumePreviousUpdateFailure().isEmpty());
+    }
+
+    // ---- Bản Microsoft Store (gói MSIX, mục 4zzi): không hỏi GitHub, không bao giờ tải/chạy trình cài đặt ----
+    {
+        // Test chạy ngoài gói: đọc THẬT phải ra "không trong gói".
+        CHECK(!PackageIdentity::isPackaged());
+        CHECK(PackageIdentity::packageFullName().isEmpty());
+
+        PackageIdentity::setPackagedOverrideForTest(1);
+        CHECK(PackageIdentity::isPackaged());
+
+        UpdateChecker checker;
+        QString checkErr;
+        bool gotUpdate = false;
+        QObject::connect(&checker, &UpdateChecker::checkFailed, [&](QString e) { checkErr = e; });
+        QObject::connect(&checker, &UpdateChecker::updateAvailable, [&](UpdateInfo) { gotUpdate = true; });
+        checker.checkNow(); // trong gói: báo ngay, không gửi yêu cầu mạng nào
+        CHECK(checkErr.contains("Microsoft Store"));
+        CHECK(!gotUpdate);
+
+        UpdateInfo info;
+        info.version = "99.0.0";
+        info.downloadUrl = "https://github.com/x/y/releases/download/v99.0.0/OneForAll_Setup.exe";
+        info.msiUrl = "https://github.com/x/y/releases/download/v99.0.0/OneForAll_Setup.msi";
+        UpdateInstaller installer;
+        QString dlErr;
+        bool restarting = false;
+        QObject::connect(&installer, &UpdateInstaller::downloadFailed, [&](QString e) { dlErr = e; });
+        QObject::connect(&installer, &UpdateInstaller::aboutToRestart, [&] { restarting = true; });
+        installer.downloadAndInstall(info);
+        CHECK(dlErr.contains("Microsoft Store"));
+        CHECK(!restarting);
+
+        PackageIdentity::setPackagedOverrideForTest(0);
+        CHECK(!PackageIdentity::isPackaged());
+        PackageIdentity::setPackagedOverrideForTest(-1); // về đọc thật
+        CHECK(!PackageIdentity::isPackaged());
     }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);

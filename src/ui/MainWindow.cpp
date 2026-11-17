@@ -9,10 +9,12 @@
 #include "../tools/security/SecurityGatewayTool.h"
 #include "../tools/downloader/DownloaderTool.h"
 #include "core/IconHelper.h"
+#include "core/PackageIdentity.h"
 #include "core/Version.h"
 #include "core/update/UpdateInstaller.h"
 #include "ui/widgets/ItemHoverCursor.h"
 #include <QApplication>
+#include <QDesktopServices>
 #include <QHBoxLayout>
 #include <QVBoxLayout>
 #include <QSplitter>
@@ -55,10 +57,15 @@ MainWindow::MainWindow(QWidget* parent)
     // Releases, không lặp định kỳ - theo đúng yêu cầu người dùng, xem UpdateChecker.h). Thất bại (mất
     // mạng, GitHub lỗi...) chỉ ghi log (xem UpdateChecker.cpp), không làm phiền bằng hộp thoại lỗi - đây
     // là việc chạy ngầm, không phải thao tác người dùng tự yêu cầu.
-    m_updateChecker = new UpdateChecker(this);
-    connect(m_updateChecker, &UpdateChecker::updateAvailable, this, &MainWindow::onUpdateAvailable);
-    connect(m_updateChecker, &UpdateChecker::upToDate, this, &MainWindow::onUpdateUpToDate);
-    connect(m_updateChecker, &UpdateChecker::checkFailed, this, &MainWindow::onUpdateCheckFailed);
+    // Bản Microsoft Store (chạy trong gói MSIX): KHÔNG hỏi GitHub - Store tự cập nhật gói, chạy Setup.exe từ
+    // trong gói chỉ cài thêm một bản thường thứ hai (PROJECT_OVERVIEW.md mục 4zzi).
+    if (!PackageIdentity::isPackaged())
+    {
+        m_updateChecker = new UpdateChecker(this);
+        connect(m_updateChecker, &UpdateChecker::updateAvailable, this, &MainWindow::onUpdateAvailable);
+        connect(m_updateChecker, &UpdateChecker::upToDate, this, &MainWindow::onUpdateUpToDate);
+        connect(m_updateChecker, &UpdateChecker::checkFailed, this, &MainWindow::onUpdateCheckFailed);
+    }
 
     // Lưới an toàn CHUNG cho toàn bộ 9 tool: mỗi cửa sổ tool (AndroidControlWindow, DownloaderWindow...)
     // là một đối tượng KHÔNG cha (new Xxx() không gắn parent, giữ qua QPointer trong từng *Tool, tái
@@ -183,7 +190,9 @@ void MainWindow::setupUi()
     versionLabel->setAlignment(Qt::AlignCenter);
     sidebarLayout->addWidget(versionLabel);
 
-    m_checkUpdateButton = new QPushButton("🔄 Kiểm tra cập nhật", this);
+    m_checkUpdateButton = new QPushButton(PackageIdentity::isPackaged() ? "🛍 Cập nhật qua Microsoft Store"
+                                                                        : "🔄 Kiểm tra cập nhật",
+                                          this);
     m_checkUpdateButton->setCursor(Qt::PointingHandCursor);
     m_checkUpdateButton->setStyleSheet(
         "QPushButton { background-color: transparent; color: #57606a; border: 1px solid #d0d7de; "
@@ -344,6 +353,11 @@ void MainWindow::onOpenToolClicked()
 
 void MainWindow::onCheckUpdateClicked()
 {
+    if (!m_updateChecker) // bản Microsoft Store: mở trang "Thư viện/Cập nhật" của Store
+    {
+        QDesktopServices::openUrl(QUrl(QStringLiteral("ms-windows-store://downloadsandupdates")));
+        return;
+    }
     m_manualUpdateCheckPending = true;
     m_checkUpdateButton->setEnabled(false);
     m_checkUpdateButton->setText("⏳ Đang kiểm tra...");

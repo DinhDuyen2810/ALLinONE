@@ -2,6 +2,7 @@
 #include "core/Version.h"
 
 #include "core/Logger.h"
+#include "core/PackageIdentity.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -31,6 +32,13 @@ UpdateChecker::UpdateChecker(QObject* parent)
 
 void UpdateChecker::checkNow()
 {
+    // Bản Microsoft Store tự cập nhật qua Store - không hỏi GitHub (MainWindow đã không tạo UpdateChecker
+    // trong gói; chặn thêm ở đây cho chắc, kể cả lượt hẹn giờ lúc khởi động).
+    if (PackageIdentity::isPackaged())
+    {
+        emit checkFailed(QStringLiteral("Bản Microsoft Store được cập nhật qua Microsoft Store."));
+        return;
+    }
     const QUrl url(QString("https://api.github.com/repos/%1/releases/latest").arg(APP_GITHUB_REPO));
     QNetworkRequest req(url);
     // API GitHub từ chối request không có User-Agent hợp lệ - bắt buộc phải đặt.

@@ -21,9 +21,10 @@ if exist build\scrcpy rd /s /q build\scrcpy
 if exist build\yt-dlp rd /s /q build\yt-dlp
 if exist obj\msi_stage rd /s /q obj\msi_stage
 if exist obj\msi_obj rd /s /q obj\msi_obj
+if exist obj\msix_stage rd /s /q obj\msix_stage
 
 if /i "%~1"=="/dist" (
-    del /q dist\OneForAll_Setup.exe dist\OneForAll_Setup.msi dist\OneForAll_Setup_exe.zip dist\OneForAll_Setup_msi.zip 2>nul
+    del /q dist\OneForAll_Setup.exe dist\OneForAll_Setup.msi dist\OneForAll_Setup_exe.zip dist\OneForAll_Setup_msi.zip dist\OneForAll_Store.msix 2>nul
     echo Da don bo cai trong dist\.
 )
 

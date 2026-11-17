@@ -1,0 +1,14 @@
+# Danh tính gói MSIX trên Microsoft Store - build_msix.bat đọc tệp này.
+#
+# Lấy ĐÚNG 3 giá trị ở Partner Center (partner.microsoft.com) > Apps and games > <ứng dụng> >
+# Product management > Product identity, sau khi đã giữ chỗ tên ứng dụng (reserve name):
+#   Package/Identity/Name                  -> IdentityName
+#   Package/Identity/Publisher             -> Publisher            (dạng CN=XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX)
+#   Package/Properties/PublisherDisplayName -> PublisherDisplayName
+# Đây là thông tin CÔNG KHAI của gói trên Store (không phải bí mật), commit được.
+#
+# Để trống = dùng danh tính THỬ NGHIỆM cục bộ (OneForAll.LocalTest) - gói vẫn dựng được để kiểm tra
+# manifest/cài thử, nhưng Partner Center sẽ TỪ CHỐI khi tải lên.
+IdentityName=
+Publisher=
+PublisherDisplayName=

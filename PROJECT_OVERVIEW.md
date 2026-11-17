@@ -3322,6 +3322,88 @@ Windows/Mullvad) là CHẶN IPv6 ra Internet suốt phiên VPN để mọi kết
 - **CHƯA kiểm chứng**: kết nối VPN Gate/VPN hệ thống THẬT trên một mạng CÓ IPv6 (máy build không có IPv6 công khai - không tái hiện
   được rò rỉ thật), VPN có cấp IPv6 (đường "cho phép qua card đường hầm"), máy chủ SSTP có bản ghi AAAA.
 
+## 4zzi. Microsoft Store: đóng gói MSIX để qua Smart App Control (v1.30.0, 17/11/2026)
+
+**Yêu cầu người dùng**: Smart App Control (SAC) trên máy Windows 11 chặn ứng dụng; muốn "ký 10 năm" bản tự build/Setup.
+**Đã làm rõ trước khi làm, có nguồn**: tài liệu Microsoft
+[Sign your app for Smart App Control compliance](https://learn.microsoft.com/en-us/windows/apps/develop/smart-app-control/code-signing-for-smart-app-control)
+ghi "Code can be signed with any certificate, but Smart App Control only considers certificates issued by trusted providers" ->
+chứng chỉ TỰ KÝ (10 năm hay bao lâu, kể cả đã thêm vào kho tin cậy cục bộ) KHÔNG qua được SAC, nên KHÔNG ký gì (quy tắc 3 giữ
+nguyên). Artifact Signing (Trusted Signing) chỉ cấp cho cá nhân ở Mỹ/Canada và tổ chức ở một số nước - không có Việt Nam
+([quickstart](https://learn.microsoft.com/en-us/azure/artifact-signing/quickstart)). Hai hướng thật: (1) mua chứng chỉ ký mã OV của CA
+trong Microsoft Trusted Root Program, (2) Microsoft Store - Store tự ký lại gói MSIX. Người dùng chọn: **thử hướng 2 (Store) trước,
+không được thì hướng 1**.
+
+**Vướng lớn đã báo người dùng TRƯỚC khi làm** - tài liệu
+[Prepare to package a desktop application](https://learn.microsoft.com/en-us/windows/msix/desktop/desktop-to-uwp-prepare):
+"If you plan on publishing your app to the Microsoft Store, apps that require elevation for any part of their functionality won't be
+accepted into the Store." Khả năng ngoại lệ `allowElevation`: "For Microsoft Store submissions, this capability is subject to approval
+under strict criteria" ([App capability declarations](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/app-capability-declarations)).
+One for ALL cần quyền Administrator ở: phân vùng ổ đĩa (Disk Cleanup), tab WireGuard, VPN trực tiếp FortiGate/GlobalProtect/IPsec
+(adapter wintun), chặn rò rỉ IPv6 (WFP), NAT-T cho L2TP, chặn web bằng hosts, quét Defender. Người dùng chọn nộp ĐỦ tính năng kèm
+`allowElevation` để thử; bị từ chối thì chuyển hướng 1.
+
+**Đã làm**:
+- `build_msix.bat` (+ `installer/msix/build_msix.ps1`) -> `dist\OneForAll_Store.msix`, KHÔNG ký (Store ký lại khi phát hành). Mặc định
+  gọi `build_app.bat` trước; `/nobuild` dùng `OneForAll_Release\` đang có. Không phải một trong 4 file phát hành GitHub - chỉ để tải lên
+  Partner Center. Chép `OneForAll_Release\` (bỏ `logs\`, `profiles\` cá nhân - chỉ giữ `profiles\default.json`, giống bộ cài .msi; bỏ 2
+  script tiện ích `open_a_terminal_here.bat`/`scrcpy-noconsole.vbs` của scrcpy mà ứng dụng không gọi), thêm logo + manifest rồi
+  `makeappx pack`. Phiên bản gói = `VERSION` + ".0" (Store bắt buộc phần thứ tư = 0).
+- `installer/msix/AppxManifest.xml.in`: `Windows.FullTrustApplication`, `runFullTrust` + `allowElevation`, `MinVersion` 10.0.19041.0
+  (Windows 10 2004), ngôn ngữ `vi-VN` (trang Store phải có mô tả tiếng Việt), không cần gói khung `Microsoft.VCLibs` (bản Qt MinGW tự mang
+  `libstdc++`/`libgcc`/`winpthread`). KHÔNG dùng `unvirtualizedResources`/`desktop6:FileSystemWriteVirtualization` - Microsoft ghi rõ
+  "designed for certain types of desktop PC games ... not intended to be used for other scenarios".
+- `installer/msix/store_identity.txt`: 3 giá trị danh tính gói lấy từ Partner Center (công khai, commit được). Để trống -> danh tính thử
+  nghiệm `OneForAll.LocalTest` (dựng được để kiểm, Partner Center sẽ từ chối) và script in cảnh báo.
+- `installer/msix/Assets/*.png` sinh từ khung 256 px của `assets/app_icon.ico` bằng `scripts/gen_msix_assets.py` (Pillow; chạy lại khi đổi
+  biểu tượng - máy build không cần Pillow vì ảnh đã commit).
+- `makeappx.exe` lấy từ gói NuGet chính thức `Microsoft.Windows.SDK.BuildTools` 10.0.28000.2957 vào `vendor\sdk-buildtools\x64\` (không
+  commit); đã kiểm chữ ký Authenticode `makeappx.exe`/`appxpackaging.dll`/`opcservices.dll` = Valid, "CN=Microsoft Corporation". Script
+  tìm theo thứ tự `MAKEAPPX_EXE` -> `vendor\sdk-buildtools\x64` -> Windows SDK đã cài.
+- Mã nguồn: `src/core/PackageIdentity.*` (trong `core_shared`) - `isPackaged()` qua `GetCurrentPackageFullName` (nạp động). Khi chạy
+  trong gói: KHÔNG hỏi GitHub (MainWindow không tạo `UpdateChecker`; `UpdateChecker::checkNow()` và `UpdateInstaller::downloadAndInstall()`
+  cũng tự từ chối cho chắc), nút bên trái đổi thành "🛍 Cập nhật qua Microsoft Store" mở `ms-windows-store://downloadsandupdates`. Lý do:
+  chạy `OneForAll_Setup.exe` từ trong gói chỉ cài THÊM một bản thường thứ hai, không nâng cấp gói; chính sách Store 10.2.2 cấm thay đổi
+  chức năng bằng mã tải về. Bản thường (Setup.exe/.msi) không đổi hành vi.
+
+**Đã kiểm chứng THẬT trên máy này**: `makeappx pack` thành công (kiểm manifest theo schema thật, cả `allowElevation`); thử âm tính - xóa
+một logo -> makeappx báo "The package manifest is not valid" và script dừng `[LOI]`; so danh sách tệp trong gói với `OneForAll_Release\`
+khớp (51 tệp + 4 logo + manifest + `profiles/default.json`); manifest trong gói đúng phiên bản/danh tính/khả năng. `update_tests` 104/0
+(thêm: ngoài gói đọc thật = không trong gói; ép "trong gói" -> `checkNow()` báo ngay không gửi mạng, `downloadAndInstall()` từ chối, không
+`aboutToRestart`).
+
+**CHƯA kiểm chứng (ghi rõ)**:
+- Cài và chạy gói: máy build là Windows 10, chưa bật Developer Mode; gói không ký chỉ cài được bằng `Add-AppxPackage -AllowUnsigned` trên
+  **Windows 11** với quyền Administrator và danh tính có OID đặc biệt
+  ([Create an unsigned MSIX package](https://learn.microsoft.com/en-us/windows/msix/package/unsigned-package)), hoặc
+  `Add-AppxPackage -Register AppxManifest.xml` khi bật Developer Mode. Cả hai đổi thiết lập/cài gói vào máy thật -> cần người dùng đồng ý.
+- Hành vi trong gói chưa thử: (a) AppData/HKCU bị Windows ảo hóa riêng cho gói -> dữ liệu bản Store tách khỏi bản cài thường; tiến trình
+  con (PowerShell) chạy trong ngữ cảnh gói nên danh bạ VPN hệ thống (`rasphone.pbk` trong AppData\Roaming) có thể bị ảo hóa - VPN hệ thống/
+  VPN Gate có thể không chạy đúng; (b) nâng quyền qua `runas` khi có `allowElevation`; (c) dời phân vùng chép bộ chạy sang `%TEMP%` rồi chạy
+  nâng quyền; (d) `wintun.dll` cài driver Wintun lúc chạy - MSIX "doesn't support Windows drivers" và chính sách Store 10.2.4 yêu cầu khai
+  báo phụ thuộc driver ngoài Microsoft trong ghi chú chứng nhận.
+- Kết quả xét duyệt Store (allowElevation, tab tải video yt-dlp, ứng dụng gọi PowerShell - tài liệu trên khuyên "Avoid starting command
+  utilities such as PowerShell and Cmd.exe").
+- Bản cài từ Store có qua SAC thật trên máy Windows 11 bật SAC hay không (gói do Store ký - theo tài liệu là qua, chưa thử).
+
+**Việc người dùng cần làm (không làm thay được - cần danh tính thật)**:
+1. Tạo tài khoản nhà phát triển CÁ NHÂN miễn phí (`storedeveloper.microsoft.com`, xác minh giấy tờ + selfie - mục 4r).
+2. Partner Center > Apps and games > New product > MSIX or PWA app > giữ chỗ tên (vd "One for ALL" - nếu đã có người dùng thì chọn tên khác).
+3. Product management > Product identity: chép `Package/Identity/Name`, `Package/Identity/Publisher`, `Package/Properties/PublisherDisplayName`
+   vào `installer\msix\store_identity.txt` -> `build_msix.bat` -> tải `dist\OneForAll_Store.msix` lên mục Packages của bản nộp.
+4. Properties: URL chính sách quyền riêng tư = `PRIVACY.md` trên GitHub (Store bắt buộc với ứng dụng Win32 - chính sách 10.5.1).
+5. Submission options > Restricted capabilities: giải trình `runFullTrust` + `allowElevation` (mẫu tiếng Anh bên dưới); Notes for
+   certification: khai báo driver Wintun (WHQL, WireGuard LLC) chỉ cài khi người dùng tự mở VPN trực tiếp.
+
+Mẫu giải trình `allowElevation` (dán vào Partner Center): "One for ALL is a Win32 (Qt/C++) utility suite that runs as a standard user
+(asInvoker). A few optional features ask for elevation on demand through the standard UAC prompt (ShellExecute "runas"), only after the
+user explicitly starts them: resizing/moving disk partitions, managing WireGuard tunnels, creating a Wintun virtual adapter for direct VPN
+connections, adding temporary Windows Filtering Platform filters that block IPv6 leaks while a VPN is connected (removed automatically when
+the session ends), setting the L2TP NAT-T registry value, editing the hosts file for web blocking, and starting Microsoft Defender scans.
+Nothing elevates at launch, there is no UAC bypass, and no service is installed."
+
+**Bị Store từ chối thì**: chuyển hướng 1 (mua chứng chỉ OV) - đã thống nhất với người dùng; ghi lý do từ chối vào mục này.
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
@@ -3505,6 +3587,7 @@ Quy tắc đứng nằm ở `CLAUDE.md` (gốc dự án). Tóm tắt - mỗi l�
 | 2026-10-22 | VPN: bỏ OpenVPN -> SSTP; sửa lỗi gốc quay số RAS; kết nối trực tiếp FortiGate/GlobalProtect (v1.19.31) | Mục 4zq. OpenVPN treo vì lời nhắc `ENTER PASSWORD:` không bị xóa khỏi bộ đệm (không gửi `hold release`) + rò `openvpn.exe` nâng quyền khi hết giờ -> gỡ hẳn. VPN Gate nối SSTP (RAS gốc, `<HostName>.opengw.net` khớp chứng chỉ Let's Encrypt). Lỗi gốc `VpnConnector`: mã 6 TẠM THỜI của `RasGetConnectStatusW` ở +16ms bị coi là thất bại -> mọi lần quay số qua app hỏng (cả "Lỗi 6" người dùng gặp từ đầu); `dwNotifierType` sửa lại 1 (v1.19.27 đổi nhầm 2). Đã đổi IP THẬT bằng code của app (VN -> Tokyo). Kết nối trực tiếp FortiGate SSL-VPN/GlobalProtect: client giao thức tự viết (PPP/LCP/IPCP, đăng nhập/OTP/cấu hình), adapter wintun.dll + iphlpapi, tiến trình phụ nâng quyền `--vpn-helper` (pipe + mã một lần, tự dọn khi pipe đóng), ghim vân tay chứng chỉ tự ký. `vpn_tests` 219/0, `vpn_ui_tests` 7/0, `vpn_direct_tests` 150/0 (mới; máy chủ FortiGate/GP giả đầu-cuối). Đã chạy thật: adapter wintun Admin 10/10, thăm dò 3/3 máy chủ thật (không đăng nhập). CHƯA kiểm chứng: đăng nhập + đường hầm bằng tài khoản cơ quan thật. Chỉ push code, KHÔNG tag/Release. |
 | 2026-10-22 | Lấy IP chậm sau khi nối VPN + rà giao diện bằng ảnh chụp thật (v1.19.32) | Mục 4zr. Kết nối HTTPS keep-alive cũ kẹt sau khi tuyến đổi -> 8 s rồi hủy; `clearConnectionCache()` + thử lại 1 lần -> 1093 ms. Công cụ `ui_snapshot` (offscreen hoặc kiểu gốc không hiện màn hình) rà 8 công cụ: sửa cắt chữ hàng điều khiển VPN Gate (2 hàng, NAT chỉ khi L2TP), ô Cổng, nút Android, nhóm ghép đôi Connect bị ép. Nhật ký chẩn đoán kết nối trực tiếp. vpn 219/7, vpn_direct 150, android 153/30, connect_ui 17. Chỉ push code, KHÔNG tag/Release. |
 | 2026-10-23..24 | Kết nối trực tiếp FortiClient IPsec: client IKEv1 tự viết (v1.19.33→39) | Mục 4zs-4zv. v1.19.33: kết nối trực tiếp CHẠY THẬT với FortiGate người dùng + lưu tài khoản + sửa DNS nội bộ. v1.19.34: GlobalProtect nộp HIP (sửa rớt ~60s). v1.19.35: GlobalProtect kênh ESP (gateway bắt buộc). **v1.19.36**: hồ sơ FortiClient IPsec (VPN_CVTLT) nối trực tiếp bằng client **IKEv1 tự viết** (`IkeCrypto`+`IsakmpMessage`+`IkeKeys`+`IkeSession`, dựa BCrypt): Aggressive+PSK+XAuth+Mode-config+Quick Mode+ESP; IKE+ESP chung socket UDP (NAT-T 4500). Test `ike_crypto_check` 47/0, `ike_session_check` 24/0 (bắt tay TRỌN VẸN offline với responder giả, khớp khóa ESP hai bên), `vpn_direct_tests` 357/0. **v1.19.37**: dò thật gateway (`ike_real_probe`, không đăng nhập) xác nhận gateway dùng **nhóm 20 ECP-384 + AES-256 + SHA-256 + XAUTHPSK + NAT-T** → thêm ECDH (nhóm 19/20/21) vào IkeCrypto, IkeSession chào nhiều transform + đọc transform gateway chọn; `ike_crypto_check` 59/0. **v1.19.38**: với PSK + tài khoản thật, `ike_real_connect` hoàn tất **bắt tay IKEv1 đầu-cuối THẬT** (Phase 1→XAuth→Mode-config cấp IP→Quick Mode→khóa ESP). Sửa: mã thuộc tính XAuth (STATUS=16527/MESSAGE=16524), PFS nhóm 20, nhiều transform ESP + đọc transform gateway chọn (AES-256-CBC+SHA1), đóng gói Tunnel(1) (FortiGate từ chối UDP-Tunnel 3/61443), proxy 0/0, ESP seq=1. **v1.19.39**: bắt gói (`pktmon`) so với FortiClient -> client+app nay khớp FortiClient trên dây (UDP 4500↔4500 từ cổng 4500, NAT-T từ msg1, NAT-D). Tầng DỮ LIỆU ESP VẪN CHẶN: gói ESP ra đúng (giống FortiClient) mà gateway im (thử 5 biến thể KEYMAT); SA đã cài; cần nhật ký phía FortiGate. Chỉ push code, KHÔNG tag/Release. |
+| 2026-11-17 | Microsoft Store: đóng gói MSIX (v1.30.0) | Mục 4zzi. Tự ký không qua được SAC (tài liệu Microsoft) -> thử Store trước. `build_msix.bat` -> `dist\OneForAll_Store.msix` không ký (Store ký lại), full trust + `allowElevation`, danh tính từ `installer/msix/store_identity.txt`; chạy trong gói thì tắt tự cập nhật GitHub. Rủi ro đã báo: Store không nhận gói cần Admin, `allowElevation` duyệt nghiêm ngặt. CHƯA cài/chạy thử gói (Win10, chưa bật Developer Mode), chưa nộp Store. |
 | 2026-11-16 | VPN: chặn rò rỉ IPv6 khi "đổi IP" (v1.29.0) | Mục 4zzh. Ô "Chặn rò rỉ IPv6" (bật sẵn) ở tab Đổi IP theo quốc gia + VPN hệ thống (không chia tuyến): mạng có IPv6 thì trước khi quay số, tiến trình phụ nâng quyền `--ipv6-guard` đặt bộ lọc WFP động chặn `2000::/3` + NAT64 (trừ card VPN và máy chủ VPN), tự gỡ khi phiên đóng, giữ tới khi VPN ngắt. Dòng "IPv6" kiểm thật qua dịch vụ chỉ có IPv6. CHƯA kiểm chứng trên mạng có IPv6 thật. |
 | 2026-11-13 | Security Gateway: "Mở PowerShell & dán lệnh" chạy THẬT + rà soát toàn bộ (v1.28.1) | Mục 4zzg. Nút mở PowerShell CHƯA BAO GIỜ dán được: `QProcess::startDetached` (Qt 6.11, app GUI) tạo console KHÔNG cửa sổ + để lại powershell.exe ẩn. Nay CreateProcessW + CREATE_NEW_CONSOLE, dán bằng tiến trình phụ `--console-paste` ghi Ctrl+V vào bộ đệm nhập của đúng console rồi đọc lại màn hình để xác nhận (không SendInput); lệnh nhiều dòng không dòng nào chạy (đo thật). Test mới `command_launcher_tests` 136/0 (PowerShell thật, console ẩn, Clipboard khôi phục). Sửa 7 lỗi tab Bảo vệ Web/Quét mã độc ("✓ Đã tắt" giả khi đọc lại lỗi, quét mồ côi khi thoát, nút quét kẹt, Xóa nhầm tên miền...) và ~35 ca phân loại sai của CommandAnalyzer (thành test). |
 | 2026-11-12 | QR: quét mọi góc xoay + tự chuyển tab Authenticator (v1.28.0) | Mục 4zzf. Leo đồi 4 góc có bước ghép; ô căn chỉnh góc dưới-phải + phép chiếu 4 điểm; giai đoạn 3 tự dò ô định vị (1:1:3:1:1) khi quirc bỏ sót; PNG nền trong suốt thử nền đen; `otpFound` -> QRWindow tự thêm tài khoản + chuyển tab; `decode(quick)` cho camera. |
