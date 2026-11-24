@@ -3,9 +3,16 @@
 #include <QElapsedTimer>
 #include <QWidget>
 
-#include "engine/PartitionRelocator.h"
+#include <atomic>
+#include <functional>
 
+#include "engine/PartitionRelocator.h"
+#include "engine/VolumeHolders.h"
+
+class QFrame;
 class QLabel;
+class QTableWidget;
+class QThread;
 class QProgressBar;
 class QPushButton;
 class QTimer;
@@ -35,6 +42,11 @@ public:
     /// Bấm "Bắt đầu" (dùng cho test/đường tự động hóa hiếm gặp) - chỉ có tác dụng khi nút đang bật.
     void start();
 
+    /// CHỈ cho test UI: hiện bảng "đang giữ ổ" với kết quả dựng sẵn (không quét hệ thống thật).
+    void setHoldersForTest(const VolumeHolders::Report& report);
+    /// Đang quét/dừng chương trình giữ ổ (luồng nền).
+    bool holdersBusy() const { return m_holdersBusy; }
+
 protected:
     void closeEvent(QCloseEvent* event) override;
 
@@ -44,9 +56,17 @@ private slots:
     void onFinished(bool ok, bool resumable, QString message, int failedStep);
     void onPause();
     void onReopen();
+    /// Quét (luồng nền) các chương trình/dịch vụ đang giữ ổ của kế hoạch - xem VolumeHolders.
+    void scanHolders();
+    void onStopHolder(int row);
+    void onStopAllHolders();
 
 private:
     void scheduleCleanup();
+    void showHolders(const VolumeHolders::Report& report);
+    void setHoldersBusy(bool busy, const QString& text);
+    void runInBackground(std::function<void()> work, std::function<void()> done);
+    bool confirm(const QString& title, const QString& text);
 
     PartitionRelocator::Plan m_plan;
     quint32 m_waitPid{0};
@@ -62,6 +82,17 @@ private:
     QTimer* m_poll{nullptr};
     PartitionMover::PlanWorker* m_planWorker{nullptr};
     PartitionMover::MoveWorker* m_resumeWorker{nullptr};
+    // Bảng "chương trình/dịch vụ đang giữ ổ" (v1.33.0): tên + dịch vụ, PID, đang giữ gì, nút Dừng từng dòng + Dừng tất cả.
+    QFrame* m_holdersPanel{nullptr};
+    QLabel* m_holdersLabel{nullptr};
+    QTableWidget* m_holdersTable{nullptr};
+    QPushButton* m_holdersBtn{nullptr};
+    QPushButton* m_rescanBtn{nullptr};
+    QPushButton* m_stopAllBtn{nullptr};
+    VolumeHolders::Report m_holders;
+    QThread* m_holdersThread{nullptr};
+    std::atomic_bool m_holdersStop{false};
+    bool m_holdersBusy{false};
     QElapsedTimer m_waited;
     QElapsedTimer m_copyTimer;
     qint64 m_copyBase{0};

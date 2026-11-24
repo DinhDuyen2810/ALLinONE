@@ -312,6 +312,8 @@ add_library(diskcleanup_core STATIC
     src/tools/diskcleanup/engine/LeftoverFinder.cpp
     src/tools/diskcleanup/engine/CleanupSystem.h
     src/tools/diskcleanup/engine/CleanupSystem.cpp
+    src/tools/diskcleanup/engine/VolumeHolders.h
+    src/tools/diskcleanup/engine/VolumeHolders.cpp
 )
 target_include_directories(diskcleanup_core PUBLIC src)
 target_link_libraries(diskcleanup_core PUBLIC Qt6::Core shell32 advapi32 psapi ole32 core_shared)
@@ -503,6 +505,10 @@ target_link_libraries(folder_tree_real_check PRIVATE diskcleanup_core)
 # ---- KIEM TRA TAY - CHI DOC: quet THAT cac hang muc don dep cua may nay (khong xoa gi) - xem dau tests/cleanup_scan_real_check.cpp ----
 add_executable(cleanup_scan_real_check EXCLUDE_FROM_ALL tests/cleanup_scan_real_check.cpp)
 target_link_libraries(cleanup_scan_real_check PRIVATE diskcleanup_core)
+
+# ---- KIEM TRA TAY - CHI DOC: liet ke chuong trinh/dich vu dang GIU mot o (khong dung gi) - xem dau tests/volume_holders_real_check.cpp ----
+add_executable(volume_holders_real_check EXCLUDE_FROM_ALL tests/volume_holders_real_check.cpp)
+target_link_libraries(volume_holders_real_check PRIVATE diskcleanup_core)
 
 # ---- KIỂM TRA TAY (chỉ đọc): lấy mẫu THẬT tiến trình/RAM/CPU bằng ProcessSampler để đối chiếu với Get-Process ----
 add_executable(process_monitor_real_check EXCLUDE_FROM_ALL tests/process_monitor_real_check.cpp)

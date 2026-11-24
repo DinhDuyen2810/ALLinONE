@@ -3,6 +3,7 @@
 #include "core/AppPaths.h"
 #include "core/Logger.h"
 #include "ProcessMonitor.h"
+#include "VolumeHolders.h"
 
 #include <QCoreApplication>
 #include <QDateTime>
@@ -250,10 +251,25 @@ public:
                 QString msg = QStringLiteral("Không khóa được ổ%1 - đang có chương trình giữ ổ này (cửa sổ Explorer/Terminal/VS Code đang mở ở ổ, chương trình đang chạy từ ổ, "
                                              "tệp đang mở, pagefile, phần mềm quét/đồng bộ...). Hãy đóng chúng rồi thử lại. (%2)")
                                   .arg(driveLetter.isEmpty() ? QString() : (" " + driveLetter.left(1).toUpper() + ":"), winError(code));
-                const QStringList procs = processesRunningFromDrive(driveLetter);
-                if (!procs.isEmpty())
-                    msg += QStringLiteral("\nChương trình đang chạy từ ổ %1: %2").arg(driveLetter.left(1).toUpper(), procs.mid(0, 12).join(", ")) +
-                           (procs.size() > 12 ? QStringLiteral(" (và %1 chương trình khác)").arg(procs.size() - 12) : QString());
+                // v1.33.0: chỉ ra ĐÚNG ai đang giữ ổ - kể cả chương trình chỉ MỞ TỆP trên ổ (phần mềm đồng bộ, trình đánh chỉ mục, dịch vụ...),
+                // không chỉ chương trình chạy từ ổ. Cửa sổ dời phân vùng còn có bảng để dừng từng cái (VolumeHolders).
+                const VolumeHolders::Report holders = VolumeHolders::scan(driveLetter);
+                QStringList names;
+                for (const VolumeHolders::Holder& h : holders.holders)
+                    if (!h.self)
+                        names << QStringLiteral("%1 (PID %2)").arg(h.name).arg(h.pid);
+                if (!names.isEmpty())
+                    msg += QStringLiteral("\nĐang giữ ổ %1: %2").arg(driveLetter.left(1).toUpper(), names.mid(0, 12).join(", ")) +
+                           (names.size() > 12 ? QStringLiteral(" (và %1 chương trình khác)").arg(names.size() - 12) : QString());
+                else
+                {
+                    const QStringList procs = processesRunningFromDrive(driveLetter);
+                    if (!procs.isEmpty())
+                        msg += QStringLiteral("\nChương trình đang chạy từ ổ %1: %2").arg(driveLetter.left(1).toUpper(), procs.mid(0, 12).join(", ")) +
+                               (procs.size() > 12 ? QStringLiteral(" (và %1 chương trình khác)").arg(procs.size() - 12) : QString());
+                }
+                if (holders.pagefileOnDrive)
+                    msg += QStringLiteral("\nỔ này có tệp hoán trang (pagefile) - phải tắt bộ nhớ ảo trên ổ rồi khởi động lại máy.");
                 *error = msg;
             }
             m_h.reset();

@@ -5,6 +5,7 @@
 // viễn TOÀN BỘ Thùng rác thật của người dùng, kể cả các mục không liên quan tới test).
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QElapsedTimer>
 #include <QDir>
 #include <QEventLoop>
 #include <QFile>
@@ -49,6 +50,7 @@
 #include "tools/diskcleanup/engine/RecycleBinOps.h"
 #include "tools/diskcleanup/engine/SafePurge.h"
 #include "tools/diskcleanup/engine/TreeDeleteGuard.h"
+#include "tools/diskcleanup/engine/VolumeHolders.h"
 
 static int g_fail = 0, g_pass = 0;
 #define CHECK(cond)                                                            \
@@ -3343,6 +3345,92 @@ int main(int argc, char** argv)
         CleanupCategory hib;
         hib.kind = CleanupKind::Hibernation;
         CHECK(CleanupTask::forItem(hib, it).mode == CleanupTask::Mode::TurnOffHibernation);
+    }
+
+    // ---- VolumeHolders (v1.33.0): ai đang GIỮ một ổ + dừng. Chỉ dừng tiến trình CON do chính test tạo (quy tắc 5) ----
+    {
+        CHECK(VolumeHolders::isCriticalProcessName("csrss.exe") && VolumeHolders::isCriticalProcessName("LSASS.EXE"));
+        CHECK(VolumeHolders::isCriticalProcessName("System") && VolumeHolders::isCriticalProcessName("winlogon.exe"));
+        CHECK(!VolumeHolders::isCriticalProcessName("nextcloud.exe") && !VolumeHolders::isCriticalProcessName("explorer.exe"));
+        CHECK(!VolumeHolders::scan("").error.isEmpty());
+        CHECK(!VolumeHolders::scan("#").error.isEmpty());
+        CHECK(!VolumeHolders::scan("DX").error.isEmpty());
+
+        VolumeHolders::Holder sys;
+        sys.pid = 4;
+        sys.name = "System";
+        sys.critical = true;
+        QString err;
+        CHECK(!sys.stoppable() && !VolumeHolders::stop(sys, &err) && err.contains("hệ thống"));
+        VolumeHolders::Holder me;
+        me.pid = GetCurrentProcessId();
+        me.name = "diskcleanup_tests.exe";
+        me.self = true;
+        CHECK(!me.stoppable() && !VolumeHolders::stop(me, &err));
+        VolumeHolders::Holder sum;
+        sum.openHandles = 2;
+        sum.samplePaths = {"C:\\A\\b.db"};
+        sum.moduleOnDrive = true;
+        CHECK(sum.holdingSummary() == "nạp DLL từ ổ · 2 tệp/thư mục đang mở: C:\\A\\b.db");
+
+        // Tiến trình con đứng (thư mục làm việc) trong thư mục tạm của test -> giữ ổ đó qua handle thư mục.
+        QTemporaryDir tmp;
+        CHECK(tmp.isValid());
+        QDir(tmp.path()).mkpath("giu_o");
+        const QString holdDir = tmp.path() + "/giu_o";
+        writeFile(holdDir + "/dang_mo.txt", 10);
+        QProcess child;
+        child.setWorkingDirectory(holdDir);
+        child.start(AppPaths::systemExecutable("cmd.exe"), {"/k"}); // chờ đọc stdin (ống dẫn) mãi - vừa giữ ổ vừa thử truy vấn "ống dẫn treo"
+        CHECK(child.waitForStarted(10000));
+        const quint32 childPid = static_cast<quint32>(child.processId());
+        QThread::msleep(500);
+        const QString letter = QDir::toNativeSeparators(holdDir).left(1);
+        QElapsedTimer t;
+        t.start();
+        const VolumeHolders::Report r = VolumeHolders::scan(letter);
+        std::printf("VolumeHolders::scan(%s): %d chuong trinh giu o, %d khong doc duoc, %lld ms, day du=%d\n", qPrintable(letter),
+                    static_cast<int>(r.holders.size()), static_cast<int>(r.unreadable.size()), static_cast<long long>(t.elapsed()),
+                    r.handleScanComplete ? 1 : 0);
+        CHECK(r.error.isEmpty());
+        const VolumeHolders::Holder* found = nullptr;
+        for (const VolumeHolders::Holder& h : r.holders)
+            if (h.pid == childPid)
+                found = &h;
+        CHECK(found != nullptr);
+        if (found)
+        {
+            CHECK(found->name.compare("cmd.exe", Qt::CaseInsensitive) == 0);
+            CHECK(found->openHandles >= 1 && found->stoppable() && !found->critical && !found->self);
+            bool sawDir = false;
+            for (const QString& p : found->samplePaths)
+                if (p.compare(QDir::toNativeSeparators(holdDir), Qt::CaseInsensitive) == 0)
+                    sawDir = true;
+            CHECK(sawDir);
+            CHECK(found->serviceNames.isEmpty());
+            CHECK(!found->imagePath.isEmpty());
+            // Dừng đúng tiến trình con (kiểm lại đường dẫn exe để tránh PID bị tái dùng).
+            QString stopErr;
+            CHECK(VolumeHolders::stop(*found, &stopErr));
+            CHECK(child.waitForFinished(5000));
+            // PID đã thoát -> dừng lần nữa không lỗi (coi như đã xong) hoặc báo PID không còn là chương trình đó.
+            VolumeHolders::Holder gone = *found;
+            QString goneErr;
+            const bool goneOk = VolumeHolders::stop(gone, &goneErr);
+            CHECK(goneOk || !goneErr.isEmpty());
+        }
+        if (child.state() != QProcess::NotRunning)
+        {
+            child.kill();
+            child.waitForFinished(3000);
+        }
+        // PID bị tái dùng: đường dẫn exe khác -> từ chối, không diệt nhầm.
+        VolumeHolders::Holder wrong;
+        wrong.pid = GetCurrentProcessId();
+        wrong.name = "khac.exe";
+        wrong.imagePath = "C:\\khong\\phai\\toi.exe";
+        QString wrongErr;
+        CHECK(!VolumeHolders::stop(wrong, &wrongErr) && wrongErr.contains("không còn là"));
     }
 
     // ---- CacheLocator: libraryfolders.vdf của Steam + nhận diện hồ sơ Chromium ----

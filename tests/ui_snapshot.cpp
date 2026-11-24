@@ -12,6 +12,7 @@
 #include "tools/connect/ConnectWindow.h"
 #include "tools/diskcleanup/CleanupTab.h"
 #include "tools/diskcleanup/DiskCleanupWindow.h"
+#include "tools/diskcleanup/PartitionRunWindow.h"
 #include "tools/downloader/DownloaderWindow.h"
 #include "tools/qr/QRWindow.h"
 #include "tools/security/SecurityGatewayWindow.h"
@@ -143,6 +144,46 @@ int main(int argc, char** argv)
         {"diskcleanup", [] { return new DiskCleanupWindow(); }},
         {"qr", [] { return new QRWindow(); }},
         {"connect", [] { return new ConnectWindow(); }},
+        // Cửa sổ dời phân vùng (bản sao tạm) với bảng "đang giữ ổ" dữ liệu MẪU - không quét/dừng gì thật.
+        {"partitionrun", [] {
+             PartitionRelocator::Plan plan;
+             plan.disk = 0;
+             plan.partition = 4;
+             plan.letter = "D";
+             plan.description = "Dời/đổi mép trái ổ D: (mẫu)";
+             auto* w = new PartitionRunWindow(plan, 0, QString());
+             w->setQuietForTest(true);
+             VolumeHolders::Report r;
+             r.elevated = true;
+             VolumeHolders::Holder a;
+             a.pid = 10760;
+             a.name = "nextcloud.exe";
+             a.openHandles = 6;
+             a.samplePaths = {"D:\\V2NextCloud\\.sync_d218eee7e5a5.db"};
+             VolumeHolders::Holder b;
+             b.pid = 4120;
+             b.name = "SearchIndexer.exe";
+             b.serviceNames = {"WSearch"};
+             b.serviceLabels = {"Windows Search (WSearch)"};
+             b.openHandles = 3;
+             b.samplePaths = {"D:\\System Volume Information\\IndexerVolumeGuid"};
+             VolumeHolders::Holder c;
+             c.pid = 6112;
+             c.name = "Code.exe";
+             c.openHandles = 2;
+             c.samplePaths = {"D:\\ALLinONE"};
+             VolumeHolders::Holder d;
+             d.pid = 700;
+             d.name = "csrss.exe";
+             d.critical = true;
+             d.openHandles = 1;
+             d.samplePaths = {"D:\\"};
+             r.holders = {a, b, c, d};
+             r.unreadable = {"MsMpEng.exe (PID 3000)"};
+             w->setHoldersForTest(r);
+             w->resize(820, 620);
+             return static_cast<QWidget*>(w);
+         }},
     };
     // Hộp thoại "Thêm hồ sơ VPN" ở cả 3 chế độ (Thường / GlobalProtect / FortiClient; FortiClient cả SSL-VPN lẫn IPsec).
     if (want("vpn_dialog"))

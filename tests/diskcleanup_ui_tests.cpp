@@ -20,6 +20,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMouseEvent>
+#include <QProcess>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRegularExpression>
@@ -686,6 +687,84 @@ int main(int argc, char** argv)
         CHECK(!w2.startEnabled());
         QMetaObject::invokeMethod(&w2, "onFinished", Qt::DirectConnection, Q_ARG(bool, true), Q_ARG(bool, false), Q_ARG(QString, QString("xong")), Q_ARG(int, -1));
         CHECK(!w2.startEnabled() && !w2.isRunning());
+        // v1.33.0: bảng "chương trình/dịch vụ đang giữ ổ" + nút Dừng / Dừng tất cả. Dữ liệu dựng sẵn; nút Dừng chỉ bấm trên tiến trình CON của test.
+        {
+            PartitionRelocator::Plan noLetter = plan;
+            noLetter.letter.clear(); // không có chữ ổ -> không tự quét hệ thống thật sau khi dừng
+            PartitionRunWindow hw(noLetter, 0, QString());
+            hw.setQuietForTest(true);
+            auto* holdersBtn = hw.findChild<QPushButton*>("runHoldersButton");
+            CHECK(holdersBtn != nullptr && holdersBtn->isHidden());
+            CHECK(hw.findChild<QPushButton*>("runHoldersButton") != nullptr);
+            CHECK(w.findChild<QPushButton*>("runHoldersButton") != nullptr && !w.findChild<QPushButton*>("runHoldersButton")->isHidden());
+            QProcess child;
+            child.setWorkingDirectory(QDir::tempPath());
+            child.start(AppPaths::systemExecutable("cmd.exe"), {"/k"});
+            CHECK(child.waitForStarted(10000));
+            VolumeHolders::Report rep;
+            rep.elevated = true;
+            VolumeHolders::Holder c;
+            c.pid = static_cast<quint32>(child.processId());
+            c.name = "cmd.exe";
+            c.openHandles = 1;
+            c.samplePaths = {QDir::toNativeSeparators(QDir::tempPath())};
+            VolumeHolders::Holder svc;
+            svc.pid = 999999;
+            svc.name = "svchost.exe";
+            svc.serviceNames = {"WSearch"};
+            svc.serviceLabels = {"Windows Search (WSearch)"};
+            svc.openHandles = 3;
+            VolumeHolders::Holder crit;
+            crit.pid = 700;
+            crit.name = "csrss.exe";
+            crit.critical = true;
+            rep.holders = {c, svc, crit};
+            rep.unreadable = {"MsMpEng.exe (PID 3000)"};
+            rep.pagefileOnDrive = true;
+            hw.setHoldersForTest(rep);
+            auto* table = hw.findChild<QTableWidget*>("runHoldersTable");
+            CHECK(table != nullptr && table->rowCount() == 3);
+            if (table && table->rowCount() == 3)
+            {
+                CHECK(table->item(0, 1)->text() == QString::number(c.pid));
+                CHECK(table->item(1, 0)->text().contains("Windows Search (WSearch)"));
+                auto* b0 = table->cellWidget(0, 3) ? table->cellWidget(0, 3)->findChild<QPushButton*>() : nullptr;
+                auto* b1 = table->cellWidget(1, 3) ? table->cellWidget(1, 3)->findChild<QPushButton*>() : nullptr;
+                auto* b2 = table->cellWidget(2, 3) ? table->cellWidget(2, 3)->findChild<QPushButton*>() : nullptr;
+                CHECK(b0 && b0->isEnabled() && b0->text().contains("Dừng") && b0->toolTip().contains("Buộc dừng cmd.exe"));
+                CHECK(b1 && b1->isEnabled() && b1->text().contains("Dừng") && b1->toolTip().contains("Dừng dịch vụ: Windows Search (WSearch)"));
+                CHECK(b2 && !b2->isEnabled() && b2->text() == "Hệ thống");
+            }
+            auto* stopAll = hw.findChild<QPushButton*>("runHoldersStopAll");
+            CHECK(stopAll && stopAll->isEnabled());
+            auto* label = hw.findChild<QLabel*>("runHoldersLabel");
+            CHECK(label && label->text().contains("pagefile") && label->text().contains("MsMpEng.exe"));
+            // Bấm "Dừng" dòng đầu (tiến trình con của test) -> nó thoát thật.
+            const bool invoked = QMetaObject::invokeMethod(&hw, "onStopHolder", Qt::DirectConnection, Q_ARG(int, 0));
+            CHECK(invoked && hw.holdersBusy()); // đang dừng ở luồng nền
+            QElapsedTimer waitStop;
+            waitStop.start();
+            while (hw.holdersBusy() && waitStop.elapsed() < 15000)
+                app.processEvents(QEventLoop::AllEvents, 50);
+            CHECK(!hw.holdersBusy());
+            // waitForFinished() trả false với tiến trình ĐÃ kết thúc (vòng sự kiện ở trên có thể đã nhận tín hiệu thoát).
+            CHECK(child.state() == QProcess::NotRunning || child.waitForFinished(5000));
+            if (child.state() != QProcess::NotRunning)
+            {
+                child.kill();
+                child.waitForFinished(3000);
+            }
+            // Chỉ hệ thống còn lại -> Dừng tất cả tắt.
+            VolumeHolders::Report onlyCrit;
+            onlyCrit.holders = {crit};
+            onlyCrit.elevated = true;
+            hw.setHoldersForTest(onlyCrit);
+            CHECK(stopAll && !stopAll->isEnabled());
+            VolumeHolders::Report none;
+            none.elevated = true;
+            hw.setHoldersForTest(none);
+            CHECK(table && table->rowCount() == 0 && label && label->text().contains("Không thấy"));
+        }
         // Chờ ứng dụng gốc: PID đang sống (chính test) -> chưa cho bắt đầu.
         PartitionRunWindow w3(plan, GetCurrentProcessId(), QString());
         app.processEvents();

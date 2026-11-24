@@ -8,16 +8,21 @@
 #include <QCloseEvent>
 #include <QDir>
 #include <QFileInfo>
+#include <QFrame>
 #include <QHBoxLayout>
+#include <QHeaderView>
 #include <QLabel>
 #include <QMessageBox>
 #include <QProcess>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QTableWidget>
+#include <QThread>
 #include <QTimer>
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <memory>
 
 PartitionRunWindow::PartitionRunWindow(const PartitionRelocator::Plan& plan, quint32 waitPid, const QString& cleanupDir, QWidget* parent)
     : QWidget(parent)
@@ -68,6 +73,55 @@ PartitionRunWindow::PartitionRunWindow(const PartitionRelocator::Plan& plan, qui
     m_progressLabel->setWordWrap(true);
     m_progressLabel->setTextFormat(Qt::PlainText);
     root->addWidget(m_progressLabel);
+
+    // ---- Chương trình/dịch vụ đang giữ ổ: hiện khi khóa ổ thất bại hoặc khi bấm nút kiểm tra ----
+    m_holdersPanel = new QFrame(this);
+    m_holdersPanel->setObjectName("runHoldersPanel");
+    m_holdersPanel->setStyleSheet("#runHoldersPanel { background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 8px; }");
+    m_holdersPanel->setVisible(false);
+    auto* hp = new QVBoxLayout(m_holdersPanel);
+    hp->setContentsMargins(10, 8, 10, 8);
+    hp->setSpacing(6);
+    m_holdersLabel = new QLabel(m_holdersPanel);
+    m_holdersLabel->setObjectName("runHoldersLabel");
+    m_holdersLabel->setWordWrap(true);
+    m_holdersLabel->setTextFormat(Qt::PlainText);
+    m_holdersLabel->setStyleSheet("background: transparent; border: none;");
+    hp->addWidget(m_holdersLabel);
+    m_holdersTable = new QTableWidget(0, 4, m_holdersPanel);
+    m_holdersTable->setObjectName("runHoldersTable");
+    m_holdersTable->setHorizontalHeaderLabels({"Chương trình / dịch vụ", "PID", "Đang giữ", ""});
+    m_holdersTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Interactive);
+    m_holdersTable->horizontalHeader()->resizeSection(0, 260);
+    m_holdersTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    m_holdersTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    m_holdersTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Fixed);
+    m_holdersTable->horizontalHeader()->resizeSection(3, 120);
+    m_holdersTable->verticalHeader()->setVisible(false);
+    m_holdersTable->verticalHeader()->setDefaultSectionSize(38);
+    m_holdersTable->setSelectionMode(QAbstractItemView::NoSelection);
+    m_holdersTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_holdersTable->setWordWrap(false);
+    m_holdersTable->setTextElideMode(Qt::ElideMiddle);
+    m_holdersTable->setStyleSheet(DiskUi::tableStyle());
+    hp->addWidget(m_holdersTable, 1);
+    auto* hrow = new QHBoxLayout();
+    m_rescanBtn = new QPushButton("🔍 Quét lại", m_holdersPanel);
+    m_rescanBtn->setObjectName("runHoldersRescan");
+    m_rescanBtn->setStyleSheet(DiskUi::buttonStyle());
+    m_rescanBtn->setCursor(Qt::PointingHandCursor);
+    connect(m_rescanBtn, &QPushButton::clicked, this, &PartitionRunWindow::scanHolders);
+    hrow->addWidget(m_rescanBtn);
+    hrow->addStretch();
+    m_stopAllBtn = new QPushButton("⛔ Dừng tất cả", m_holdersPanel);
+    m_stopAllBtn->setObjectName("runHoldersStopAll");
+    m_stopAllBtn->setStyleSheet(DiskUi::dangerButtonStyle());
+    m_stopAllBtn->setCursor(Qt::PointingHandCursor);
+    m_stopAllBtn->setEnabled(false);
+    connect(m_stopAllBtn, &QPushButton::clicked, this, &PartitionRunWindow::onStopAllHolders);
+    hrow->addWidget(m_stopAllBtn);
+    hp->addLayout(hrow);
+    root->addWidget(m_holdersPanel, 1);
     root->addStretch();
 
     auto* row = new QHBoxLayout();
@@ -85,6 +139,16 @@ PartitionRunWindow::PartitionRunWindow(const PartitionRelocator::Plan& plan, qui
     m_pauseBtn->setVisible(false);
     connect(m_pauseBtn, &QPushButton::clicked, this, &PartitionRunWindow::onPause);
     row->addWidget(m_pauseBtn);
+    m_holdersBtn = new QPushButton(m_plan.letter.isEmpty() ? QStringLiteral("🔍 Chương trình đang giữ ổ")
+                                                            : QStringLiteral("🔍 Chương trình đang giữ ổ %1:").arg(m_plan.letter.left(1).toUpper()),
+                                   this);
+    m_holdersBtn->setObjectName("runHoldersButton");
+    m_holdersBtn->setStyleSheet(DiskUi::buttonStyle());
+    m_holdersBtn->setCursor(Qt::PointingHandCursor);
+    m_holdersBtn->setToolTip("Liệt kê chương trình/dịch vụ đang mở tệp trên ổ này (làm ổ không khóa được) - có nút Dừng từng cái và Dừng tất cả.");
+    m_holdersBtn->setVisible(!m_plan.letter.isEmpty());
+    connect(m_holdersBtn, &QPushButton::clicked, this, &PartitionRunWindow::scanHolders);
+    row->addWidget(m_holdersBtn);
     row->addStretch();
     m_reopenBtn = new QPushButton("Mở lại One for ALL", this);
     m_reopenBtn->setObjectName("runReopenButton");
@@ -120,6 +184,9 @@ PartitionRunWindow::PartitionRunWindow(const PartitionRelocator::Plan& plan, qui
 
 PartitionRunWindow::~PartitionRunWindow()
 {
+    m_holdersStop = true;
+    if (m_holdersThread)
+        m_holdersThread->wait();
     if (m_planWorker && m_planWorker->isRunning())
         m_planWorker->wait();
     if (m_resumeWorker && m_resumeWorker->isRunning())
@@ -166,8 +233,15 @@ void PartitionRunWindow::start()
 {
     if (m_running || !m_startBtn->isEnabled())
         return;
+    if (m_holdersBusy)
+        return; // đang dừng/quét chương trình giữ ổ - đợi xong
     m_running = true;
     m_startBtn->setEnabled(false);
+    m_holdersBtn->setEnabled(false);
+    m_rescanBtn->setEnabled(false);
+    m_stopAllBtn->setEnabled(false);
+    for (QPushButton* b : m_holdersTable->findChildren<QPushButton*>())
+        b->setEnabled(false);
     m_pauseBtn->setVisible(true);
     m_pauseBtn->setEnabled(true);
     m_closeBtn->setEnabled(false);
@@ -239,6 +313,7 @@ void PartitionRunWindow::onFinished(bool ok, bool resumable, QString message, in
     m_pauseBtn->setVisible(false);
     m_closeBtn->setEnabled(true);
     m_reopenBtn->setVisible(true);
+    m_holdersBtn->setEnabled(true);
     m_statusLabel->setText(ok ? QStringLiteral("✓ Hoàn tất")
                               : failedStep == -2 ? QStringLiteral("⚠ Chưa bắt đầu - kiểm tra trước không đạt (chưa có gì bị thay đổi)")
                                                  : QString("⚠ Dừng%1").arg(failedStep >= 0 ? QString(" ở bước %1").arg(failedStep + 1) : QString()));
@@ -255,6 +330,9 @@ void PartitionRunWindow::onFinished(bool ok, bool resumable, QString message, in
         // Chưa đổi gì (kiểm tra trước không đạt, hoặc bước ĐẦU TIÊN lỗi trước khi ghi): đóng các chương trình đang giữ ổ rồi thử lại NGAY, khỏi mở lại ứng dụng.
         m_startBtn->setText("🔄 Thử lại (sau khi đã đóng các chương trình giữ ổ)");
         m_startBtn->setEnabled(true);
+        // Thường là ổ không khóa được: tự liệt kê ngay ai đang giữ ổ, kèm nút Dừng (không tự dừng gì).
+        if (!m_quiet)
+            scanHolders();
     }
     if (m_quiet)
         return;
@@ -295,4 +373,246 @@ void PartitionRunWindow::closeEvent(QCloseEvent* event)
     }
     scheduleCleanup();
     event->accept();
+}
+
+// ======================= Chương trình/dịch vụ đang giữ ổ (v1.33.0) =======================
+
+bool PartitionRunWindow::confirm(const QString& title, const QString& text)
+{
+    if (m_quiet)
+        return true; // test UI: không hiện hộp thoại
+    return QMessageBox::question(this, title, text, QMessageBox::Yes | QMessageBox::No, QMessageBox::No) == QMessageBox::Yes;
+}
+
+void PartitionRunWindow::runInBackground(std::function<void()> work, std::function<void()> done)
+{
+    QThread* t = QThread::create(std::move(work));
+    m_holdersThread = t;
+    connect(t, &QThread::finished, this, [this, t, done]() {
+        if (m_holdersThread == t)
+            m_holdersThread = nullptr;
+        t->deleteLater();
+        done();
+    });
+    t->start();
+}
+
+void PartitionRunWindow::setHoldersBusy(bool busy, const QString& text)
+{
+    m_holdersBusy = busy;
+    m_holdersBtn->setEnabled(!busy && !m_running);
+    m_rescanBtn->setEnabled(!busy && !m_running);
+    if (busy)
+        m_stopAllBtn->setEnabled(false);
+    for (QPushButton* b : m_holdersTable->findChildren<QPushButton*>())
+        if (busy)
+            b->setEnabled(false);
+    if (!text.isEmpty())
+        m_holdersLabel->setText(text);
+}
+
+void PartitionRunWindow::scanHolders()
+{
+    if (m_holdersBusy || m_running || m_plan.letter.isEmpty())
+        return;
+    m_holdersPanel->setVisible(true);
+    if (height() < 600)
+        resize(std::max(width(), 820), 620);
+    const QString letter = m_plan.letter.left(1).toUpper();
+    setHoldersBusy(true, QStringLiteral("⏳ Đang tìm chương trình/dịch vụ đang giữ ổ %1: (vài giây)...").arg(letter));
+    m_holdersStop = false;
+    auto result = std::make_shared<VolumeHolders::Report>();
+    runInBackground([this, result, letter]() { *result = VolumeHolders::scan(letter, &m_holdersStop); },
+                    [this, result]() {
+                        setHoldersBusy(false, QString());
+                        showHolders(*result);
+                    });
+}
+
+void PartitionRunWindow::setHoldersForTest(const VolumeHolders::Report& report)
+{
+    m_holdersPanel->setVisible(true);
+    showHolders(report);
+}
+
+void PartitionRunWindow::showHolders(const VolumeHolders::Report& report)
+{
+    m_holders = report;
+    const QString letter = m_plan.letter.isEmpty() ? QStringLiteral("?") : m_plan.letter.left(1).toUpper();
+    m_holdersTable->setRowCount(0);
+    int stoppable = 0;
+    for (int i = 0; i < report.holders.size(); ++i)
+    {
+        const VolumeHolders::Holder& h = report.holders[i];
+        m_holdersTable->insertRow(i);
+        QString name = h.name;
+        if (!h.serviceLabels.isEmpty())
+            name += QStringLiteral(" — dịch vụ: ") + h.serviceLabels.join(", ");
+        auto* nameItem = new QTableWidgetItem(name);
+        QString tip = h.name + (h.imagePath.isEmpty() ? QString() : "\n" + QDir::toNativeSeparators(h.imagePath));
+        if (!h.serviceLabels.isEmpty())
+            tip += "\nDịch vụ: " + h.serviceLabels.join(", ");
+        if (!h.samplePaths.isEmpty())
+            tip += "\n\nĐang mở:\n  " + h.samplePaths.join("\n  ");
+        nameItem->setToolTip(tip);
+        m_holdersTable->setItem(i, 0, nameItem);
+        auto* pidItem = new QTableWidgetItem(QString::number(h.pid));
+        pidItem->setTextAlignment(Qt::AlignCenter);
+        m_holdersTable->setItem(i, 1, pidItem);
+        auto* holdItem = new QTableWidgetItem(h.holdingSummary());
+        holdItem->setToolTip(tip);
+        m_holdersTable->setItem(i, 2, holdItem);
+
+        // Nút nằm trong một khung có lề để không bị cắt theo chiều cao dòng; kiểu gọn (kiểu nút đỏ chung có padding lớn hơn dòng bảng).
+        auto* cell = new QWidget(m_holdersTable);
+        cell->setStyleSheet("background: transparent;");
+        auto* cellLayout = new QHBoxLayout(cell);
+        cellLayout->setContentsMargins(6, 0, 6, 0);
+        auto* btn = new QPushButton(cell);
+        btn->setFixedHeight(26);
+        cellLayout->addWidget(btn);
+        btn->setStyleSheet("QPushButton { background-color: #ffffff; color: #57606a; border: 1px solid #d0d7de; border-radius: 6px; padding: 0px 8px; "
+                           "font-size: 12px; }");
+        btn->setObjectName(QStringLiteral("runHolderStop_%1").arg(i));
+        btn->setCursor(Qt::PointingHandCursor);
+        if (h.self)
+        {
+            btn->setText("Ứng dụng này");
+            btn->setEnabled(false);
+        }
+        else if (!h.stoppable())
+        {
+            btn->setText("Hệ thống");
+            btn->setEnabled(false);
+            btn->setToolTip("Tiến trình hệ thống của Windows - không được dừng.");
+        }
+        else
+        {
+            btn->setText(QStringLiteral("⛔ Dừng"));
+            btn->setToolTip(h.serviceNames.isEmpty() ? QStringLiteral("Buộc dừng %1 (PID %2)").arg(h.name).arg(h.pid)
+                                                     : QStringLiteral("Dừng dịch vụ: %1").arg(h.serviceLabels.join(", ")));
+            btn->setStyleSheet("QPushButton { background-color: #cf222e; color: white; border: none; border-radius: 6px; padding: 0px 8px; "
+                               "font-size: 12px; font-weight: bold; }"
+                               "QPushButton:hover { background-color: #a40e26; }"
+                               "QPushButton:disabled { background-color: #eaeef2; color: #8c959f; }");
+            btn->setEnabled(!m_running);
+            ++stoppable;
+            connect(btn, &QPushButton::clicked, this, [this, i]() { onStopHolder(i); });
+        }
+        m_holdersTable->setCellWidget(i, 3, cell);
+    }
+    m_stopAllBtn->setEnabled(stoppable > 0 && !m_running);
+
+    QStringList lines;
+    if (!report.error.isEmpty())
+        lines << "⚠ " + report.error;
+    else if (report.holders.isEmpty())
+        lines << QStringLiteral("Không thấy chương trình/dịch vụ nào đang mở tệp trên ổ %1:. Bấm \"Thử lại\".").arg(letter);
+    else
+        lines << QStringLiteral("%1 chương trình/dịch vụ đang giữ ổ %2: - bấm \"Dừng\" từng cái (hoặc \"Dừng tất cả\") rồi bấm \"Thử lại\". "
+                                "Dừng chương trình thường = buộc thoát (mất dữ liệu chưa lưu); dịch vụ được dừng đúng cách và chạy lại khi khởi "
+                                "động lại máy. Phần mềm đồng bộ (OneDrive/Google Drive/Nextcloud...) sẽ tự chạy lại sau khi khởi động lại.")
+                     .arg(report.holders.size())
+                     .arg(letter);
+    if (report.pagefileOnDrive)
+        lines << QStringLiteral("⚠ Ổ %1: có tệp hoán trang (pagefile/swapfile) - Windows không bao giờ nhả ổ này khi đang chạy. Tắt bộ nhớ ảo trên ổ %1: "
+                                "(Hệ thống > Cài đặt hệ thống nâng cao > Hiệu năng > Nâng cao > Bộ nhớ ảo) rồi khởi động lại máy.")
+                     .arg(letter);
+    if (!report.handleScanComplete)
+        lines << QStringLiteral("Lưu ý: chưa quét hết được mọi tệp đang mở (một số truy vấn bị treo) - danh sách có thể thiếu.");
+    if (!report.unreadable.isEmpty())
+        lines << QStringLiteral("Không đọc được %1 tiến trình được bảo vệ (vd phần mềm diệt virus: %2) - nếu sau khi dừng hết vẫn không khóa được ổ, "
+                                "hãy tạm tắt bảo vệ thời gian thực/phần mềm đó.")
+                     .arg(report.unreadable.size())
+                     .arg(report.unreadable.mid(0, 4).join(", ") + (report.unreadable.size() > 4 ? ", ..." : ""));
+    if (!report.elevated && report.error.isEmpty())
+        lines << QStringLiteral("(Đang chạy không có quyền Administrator - chỉ thấy chương trình của tài khoản này.)");
+    m_holdersLabel->setText(lines.join("\n"));
+}
+
+void PartitionRunWindow::onStopHolder(int row)
+{
+    if (m_holdersBusy || m_running || row < 0 || row >= m_holders.holders.size())
+        return;
+    const VolumeHolders::Holder h = m_holders.holders[row];
+    if (!h.stoppable())
+        return;
+    QString text;
+    if (!h.serviceNames.isEmpty())
+        text = QStringLiteral("Dừng dịch vụ: %1 (PID %2)?\n\nDịch vụ được dừng đúng cách qua Windows (kèm các dịch vụ phụ thuộc đang chạy) và sẽ chạy "
+                              "lại khi khởi động lại máy, hoặc bật lại trong services.msc.")
+                   .arg(h.serviceLabels.join(", "))
+                   .arg(h.pid);
+    else if (h.name.compare(QLatin1String("explorer.exe"), Qt::CaseInsensitive) == 0)
+        text = QStringLiteral("Buộc dừng Windows Explorer (PID %1)?\n\nThanh tác vụ và các cửa sổ thư mục sẽ biến mất vài giây rồi Windows tự mở lại "
+                              "Explorer.")
+                   .arg(h.pid);
+    else
+        text = QStringLiteral("Buộc dừng %1 (PID %2)?\n\nDữ liệu CHƯA LƯU của chương trình này sẽ MẤT. Nên tự đóng chương trình đó nếu được.")
+                   .arg(h.name)
+                   .arg(h.pid);
+    if (!confirm(QStringLiteral("Dừng chương trình giữ ổ"), text))
+        return;
+    setHoldersBusy(true, QStringLiteral("⏳ Đang dừng %1...").arg(h.name));
+    auto error = std::make_shared<QString>();
+    auto ok = std::make_shared<bool>(false);
+    Logger::instance().info("PartitionRun", QStringLiteral("Dừng chương trình giữ ổ: %1 PID %2 dịch vụ [%3]").arg(h.name).arg(h.pid).arg(h.serviceNames.join(",")));
+    runInBackground([h, error, ok]() { *ok = VolumeHolders::stop(h, error.get()); },
+                    [this, h, error, ok]() {
+                        setHoldersBusy(false, QString());
+                        if (!*ok)
+                        {
+                            Logger::instance().warning("PartitionRun", QStringLiteral("Không dừng được %1: %2").arg(h.name, *error));
+                            if (!m_quiet)
+                                QMessageBox::warning(this, QStringLiteral("Không dừng được"), *error);
+                        }
+                        scanHolders(); // xem lại còn ai giữ ổ
+                    });
+}
+
+void PartitionRunWindow::onStopAllHolders()
+{
+    if (m_holdersBusy || m_running)
+        return;
+    QList<VolumeHolders::Holder> targets;
+    QStringList names;
+    for (const VolumeHolders::Holder& h : m_holders.holders)
+        if (h.stoppable())
+        {
+            targets << h;
+            names << QStringLiteral("%1 (PID %2)%3")
+                         .arg(h.name)
+                         .arg(h.pid)
+                         .arg(h.serviceLabels.isEmpty() ? QString() : QStringLiteral(" - dịch vụ: ") + h.serviceLabels.join(", "));
+        }
+    if (targets.isEmpty())
+        return;
+    if (!confirm(QStringLiteral("Dừng tất cả"),
+                 QStringLiteral("Dừng %1 chương trình/dịch vụ đang giữ ổ?\n\n  • %2\n\nChương trình thường bị BUỘC thoát (mất dữ liệu chưa lưu); dịch vụ "
+                                "được dừng đúng cách. Tiến trình hệ thống không bị đụng tới.")
+                     .arg(targets.size())
+                     .arg(names.join("\n  • "))))
+        return;
+    setHoldersBusy(true, QStringLiteral("⏳ Đang dừng %1 chương trình/dịch vụ...").arg(targets.size()));
+    auto errors = std::make_shared<QStringList>();
+    Logger::instance().info("PartitionRun", QStringLiteral("Dừng tất cả chương trình giữ ổ: %1").arg(names.join("; ")));
+    runInBackground(
+        [targets, errors]() {
+            for (const VolumeHolders::Holder& h : targets)
+            {
+                QString e;
+                if (!VolumeHolders::stop(h, &e))
+                    *errors << e;
+            }
+        },
+        [this, errors]() {
+            setHoldersBusy(false, QString());
+            if (!errors->isEmpty())
+            {
+                Logger::instance().warning("PartitionRun", QStringLiteral("Dừng tất cả: %1 lỗi").arg(errors->size()));
+                if (!m_quiet)
+                    QMessageBox::warning(this, QStringLiteral("Có mục không dừng được"), errors->join("\n"));
+            }
+            scanHolders();
+        });
 }
