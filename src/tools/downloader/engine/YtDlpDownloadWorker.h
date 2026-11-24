@@ -36,6 +36,7 @@ public:
         QString destDir;
         QString outputBaseName;
         QStringList extraArgs;
+        bool extractAudioMp3{false}; ///< Trích âm thanh ra .mp3 (`-x --audio-format mp3`) - cần ffmpeg
     };
     void startWithOptions(const Options& options);
     void cancel();

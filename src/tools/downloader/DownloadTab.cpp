@@ -172,7 +172,9 @@ void DownloadTab::buildUi()
         m_qualityCombo->addItem(DownloaderSettings::videoQualityLabel(key), key);
     m_qualityCombo->setCurrentIndex(qMax(0, m_qualityCombo->findData(m_settings->videoQuality())));
     m_qualityCombo->setToolTip("Áp dụng cho video tải bằng yt-dlp (Facebook/TikTok/YouTube...); tệp và ảnh tải thẳng không bị ảnh "
-                               "hưởng.\nMuốn chọn riêng cho một video: bấm phải vào dòng đó -> \"Chọn chất lượng khác...\".");
+                               "hưởng.\n\"Chỉ âm thanh (mp3)\": lấy tiếng của video thành tệp .mp3.\nMuốn chọn riêng cho từng "
+                               "dòng (có thể chọn nhiều dòng): bấm phải -> \"Chỉ tải âm thanh\" / \"Tải video\" / \"Chọn chất "
+                               "lượng khác...\".");
     connect(m_qualityCombo, &QComboBox::currentIndexChanged, this, &DownloadTab::onQualityChanged);
     optionRow->addWidget(m_qualityCombo);
     root->addLayout(optionRow);
@@ -388,7 +390,10 @@ void DownloadTab::fillRow(int row, int id)
 
     const bool ok = it->check == QueueItem::Check::Ok;
     QTableWidgetItem* typeItem = m_table->item(row, kType);
-    typeItem->setText(ok && !it->media.mediaType.isEmpty() ? it->media.mediaType : QString("—"));
+    QString typeText = ok && !it->media.mediaType.isEmpty() ? it->media.mediaType : QString("—");
+    if (ok && DownloaderSettings::isAudioFormatSelector(it->formatSelector))
+        typeText = QStringLiteral("Âm thanh"); // đã chọn riêng "chỉ âm thanh" - sẽ ra tệp .mp3
+    typeItem->setText(typeText);
     typeItem->setToolTip(it->formatLabel.isEmpty() ? QString() : "Chất lượng đã chọn: " + it->formatLabel);
     m_table->item(row, kSize)->setText(ok ? (it->total > 0 ? DownloaderUi::formatBytes(it->total) : QString("?")) : QString("—"));
 
@@ -679,6 +684,27 @@ void DownloadTab::onTableContextMenu(const QPoint& pos)
     QAction* cancelAct = ModernMenu::addAction(menu, "Hủy tải");
     QAction* recheckAct = ModernMenu::addAction(menu, "Kiểm tra lại link");
     QAction* formatAct = ModernMenu::addAction(menu, "Chọn chất lượng khác...");
+    // Video hay chỉ âm thanh - áp cho MỌI dòng đã chọn (vd chọn hết kết quả tìm kiếm TikTok rồi lấy tiếng).
+    QList<int> ytIds;
+    bool anyTikTok = false, anyCustom = false;
+    for (int id : ids)
+    {
+        const QueueItem* q = m_queue->item(id);
+        if (!q || q->check != QueueItem::Check::Ok || q->media.kind != ResolvedMedia::Kind::YtDlp ||
+            q->state == QueueItem::State::Downloading || q->state == QueueItem::State::Queued || q->state == QueueItem::State::Completed)
+            continue;
+        ytIds << id;
+        anyTikTok = anyTikTok || LinkResolverCore::siteOf(q->media.url) == LinkResolverCore::Site::TikTok;
+        anyCustom = anyCustom || !q->formatSelector.isEmpty();
+    }
+    QAction* audioAct = ModernMenu::addAction(menu, "🎵 Chỉ tải âm thanh (mp3)");
+    QAction* musicAct = anyTikTok ? ModernMenu::addAction(menu, "🎶 Nhạc nền gốc TikTok (mp3)") : nullptr;
+    QAction* videoAct = ModernMenu::addAction(menu, "🎬 Tải video (theo chất lượng chung)");
+    audioAct->setEnabled(!ytIds.isEmpty() && YtDlpController::hasFfmpeg());
+    audioAct->setToolTip("Tiếng của chính video, trích ra tệp .mp3");
+    if (musicAct)
+        musicAct->setEnabled(audioAct->isEnabled());
+    videoAct->setEnabled(anyCustom);
     menu.addSeparator();
     QAction* openLinkAct = ModernMenu::addAction(menu, "Mở link trên trình duyệt");
     QAction* openSourceAct = ModernMenu::addAction(menu, "Mở trang nguồn trên trình duyệt");
@@ -710,6 +736,18 @@ void DownloadTab::onTableContextMenu(const QPoint& pos)
     else if (chosen == cancelAct) { for (int id : ids) m_queue->cancel(id); }
     else if (chosen == recheckAct) { for (int id : ids) m_queue->recheck(id); }
     else if (chosen == formatAct) pickFormatFor(ids.first());
+    else if (chosen == audioAct || (musicAct && chosen == musicAct) || chosen == videoAct)
+    {
+        QString selector, label;
+        if (chosen == audioAct)
+            selector = DownloaderSettings::audioFormatSelector(), label = "Chỉ âm thanh (mp3)";
+        else if (chosen == musicAct)
+            selector = DownloaderSettings::tiktokMusicFormatSelector(), label = "Nhạc nền gốc TikTok (mp3)";
+        for (int id : ytIds)
+            m_queue->setItemFormat(id, selector, label); // selector rỗng = về video theo chất lượng chung
+        setMessage(selector.isEmpty() ? QString("%1 mục: tải video theo chất lượng chung.").arg(ytIds.size())
+                                      : QString("%1 mục: %2 - bấm \"Tải\" để tải.").arg(ytIds.size()).arg(label));
+    }
     else if (chosen == openLinkAct) openLinkOfId(ids.first());
     else if (chosen == openSourceAct)
     {

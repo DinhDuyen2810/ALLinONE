@@ -47,14 +47,29 @@ QString DownloaderSettings::videoQualityLabel(const QString& key)
     if (key == "auto")
         return QStringLiteral("Tự động - tốt nhất");
     if (key == "audio")
-        return QStringLiteral("Chỉ âm thanh");
+        return QStringLiteral("Chỉ âm thanh (mp3)");
     return videoQualityKeys().contains(key) ? key + "p" : videoQualityLabel("auto");
+}
+
+QString DownloaderSettings::audioFormatSelector()
+{
+    return QStringLiteral("ba[format_id!=audio]/b[format_id!=audio]/ba/b");
+}
+
+QString DownloaderSettings::tiktokMusicFormatSelector()
+{
+    return QStringLiteral("audio/ba/b");
+}
+
+bool DownloaderSettings::isAudioFormatSelector(const QString& selector)
+{
+    return selector == audioFormatSelector() || selector == tiktokMusicFormatSelector();
 }
 
 QString DownloaderSettings::formatSelectorForQuality(const QString& key)
 {
     if (key == "audio")
-        return QStringLiteral("ba/b");
+        return audioFormatSelector();
     if (!videoQualityKeys().contains(key) || key == "auto")
         return {};
     // Giới hạn chiều cao; không có định dạng nào đủ thấp thì lấy tốt nhất có thể (đỡ báo "Requested format is not available").

@@ -353,6 +353,27 @@ int main(int argc, char** argv)
             CHECK(queue->item(ytId) && queue->item(ytId)->formatSelector == "137+bestaudio/best");
             queue->setItemFormat(ytId, QString(), QString());
             CHECK(queue->item(ytId) && queue->item(ytId)->formatSelector.isEmpty() && queue->item(ytId)->formatLabel.isEmpty());
+
+            // "Chỉ tải âm thanh (mp3)" (menu chuột phải): cột Loại của dòng đổi thành "Âm thanh", về video thì lại là "Video"
+            auto typeOfRow = [&](const QString& name) -> QString {
+                auto* table = downloadTab->findChild<QTableWidget*>();
+                if (!table)
+                    return {};
+                for (int r = 0; r < table->rowCount(); ++r)
+                    if (table->item(r, 1) && table->item(r, 1)->text().contains(name))
+                        return table->item(r, 2) ? table->item(r, 2)->text() : QString();
+                return {};
+            };
+            CHECK(typeOfRow("Video thu") == "Video");
+            queue->setItemFormat(ytId, DownloaderSettings::audioFormatSelector(), "Chỉ âm thanh (mp3)");
+            QCoreApplication::processEvents();
+            CHECK(typeOfRow("Video thu") == "Âm thanh");
+            queue->setItemFormat(ytId, DownloaderSettings::tiktokMusicFormatSelector(), "Nhạc nền gốc TikTok (mp3)");
+            QCoreApplication::processEvents();
+            CHECK(typeOfRow("Video thu") == "Âm thanh");
+            queue->setItemFormat(ytId, QString(), QString());
+            QCoreApplication::processEvents();
+            CHECK(typeOfRow("Video thu") == "Video");
             ResolvedMedia fileMedia;
             fileMedia.url = "https://example.invalid/a.png";
             const int fileId = queue->addResolved(fileMedia);

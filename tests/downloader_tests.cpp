@@ -156,6 +156,19 @@ int main(int argc, char** argv)
 
         const auto infoArgs = YtDlpInfoWorkerInternal::buildArguments("https://youtu.be/abc");
         CHECK(infoArgs == QStringList({"--ignore-config", "--no-playlist", "--simulate", "-j", "--", "https://youtu.be/abc"}));
+
+        // Chỉ âm thanh: -x --audio-format mp3 (ffmpeg trích tiếng), vẫn trước "--"; không bật thì không có -x
+        YtDlpDownloadWorker::Options ao;
+        ao.url = "https://www.tiktok.com/@a/video/1";
+        ao.formatSelector = DownloaderSettings::audioFormatSelector();
+        ao.destDir = "D:/x";
+        ao.extractAudioMp3 = true;
+        const auto audioArgs = YtDlpDownloadWorkerInternal::buildArgumentsEx(ao, "D:/yt-dlp");
+        CHECK(audioArgs.contains("-x") && audioArgs.indexOf("--audio-format") + 1 == audioArgs.indexOf("mp3"));
+        CHECK(audioArgs.indexOf("-x") < audioArgs.indexOf("--") && audioArgs.last() == ao.url);
+        CHECK(audioArgs.indexOf("-f") + 1 == audioArgs.indexOf(DownloaderSettings::audioFormatSelector()));
+        ao.extractAudioMp3 = false;
+        CHECK(!YtDlpDownloadWorkerInternal::buildArgumentsEx(ao, "D:/yt-dlp").contains("-x"));
     }
 
     // ---- YtDlpController::isSupportedVideoUrl: chỉ http(s)://, không khoảng trắng/ký tự điều khiển ----
@@ -799,6 +812,17 @@ int main(int argc, char** argv)
         CHECK(isLikelyProfileOrCollectionUrl("https://www.tiktok.com/@kiue.oahn"));
         CHECK(!isLikelyProfileOrCollectionUrl("https://www.tiktok.com/@kiue.oahn/photo/7683433150571121940"));
         CHECK(!isLikelyProfileOrCollectionUrl("https://www.tiktok.com/@kiue.oahn/video/7696088359294291220"));
+        // Trang liệt kê bài của NHIỀU tài khoản (yt-dlp "Unsupported URL") - đúng link người dùng báo (v1.30.1)
+        const QString ttSearch = "https://www.tiktok.com/search?q=%C4%91%E1%BA%A1i%20v%C6%B0%C6%A1ng%20sai%20ta%20%C4%91i%20tu%E1%BA%A7n%20n%C3%BAi&t=1795489177562";
+        CHECK(isTikTokListingUrl(ttSearch) && isLikelyProfileOrCollectionUrl(ttSearch));
+        CHECK(isTikTokListingUrl("https://www.tiktok.com/search/video?q=abc") && isTikTokListingUrl("https://www.tiktok.com/tag/trekking"));
+        CHECK(isTikTokListingUrl("https://www.tiktok.com/music/am-thanh-goc-7612345") && isTikTokListingUrl("https://www.tiktok.com/explore"));
+        CHECK(isTikTokListingUrl("https://www.tiktok.com/discover/yen-tu"));
+        CHECK(!isTikTokListingUrl("https://www.tiktok.com/@kiue.oahn") && !isTikTokListingUrl("https://www.tiktok.com/searching"));
+        CHECK(!isTikTokListingUrl("https://www.youtube.com/search?q=a") && !isTikTokListingUrl("https://example.com/search?q=a"));
+        // Video mở TỪ trang tìm kiếm (link mang ?q=...&t=...) vẫn là MỘT video, không phải danh sách
+        const QString ttVideoFromSearch = "https://www.tiktok.com/@iiiemm/video/7615199525942086920?q=%C4%91%E1%BA%A1i%20v%C6%B0%C6%A1ng&t=1795489177562";
+        CHECK(!isTikTokListingUrl(ttVideoFromSearch) && !isLikelyProfileOrCollectionUrl(ttVideoFromSearch));
         CHECK(isLikelyProfileOrCollectionUrl("https://www.youtube.com/@YouTube/videos"));
         CHECK(isLikelyProfileOrCollectionUrl("https://www.youtube.com/channel/UC123456"));
         CHECK(isLikelyProfileOrCollectionUrl("https://www.youtube.com/playlist?list=PL123"));
@@ -1195,11 +1219,19 @@ int main(int argc, char** argv)
             CHECK(DownloaderSettings::formatSelectorForQuality("auto").isEmpty()); // rỗng = yt-dlp tự chọn
             CHECK(DownloaderSettings::formatSelectorForQuality("khong-biet").isEmpty());
             CHECK(DownloaderSettings::formatSelectorForQuality("720") == "bv*[height<=720]+ba/b[height<=720]/b");
-            CHECK(DownloaderSettings::formatSelectorForQuality("audio") == "ba/b");
+            // "Chỉ âm thanh" = tiếng của CHÍNH video: bỏ định dạng "audio" (nhạc nền gốc TikTok, dài/khác video - đo thật 32,9 s so
+            // với video 8 s) trước, không có luồng chỉ-âm-thanh thì lấy video rồi trích; bài chỉ có nhạc mới rơi về "ba".
+            CHECK(DownloaderSettings::formatSelectorForQuality("audio") == DownloaderSettings::audioFormatSelector());
+            CHECK(DownloaderSettings::audioFormatSelector() == "ba[format_id!=audio]/b[format_id!=audio]/ba/b");
+            CHECK(DownloaderSettings::tiktokMusicFormatSelector().startsWith("audio/"));
+            CHECK(DownloaderSettings::isAudioFormatSelector(DownloaderSettings::audioFormatSelector()));
+            CHECK(DownloaderSettings::isAudioFormatSelector(DownloaderSettings::tiktokMusicFormatSelector()));
+            CHECK(!DownloaderSettings::isAudioFormatSelector("") && !DownloaderSettings::isAudioFormatSelector("137+140") &&
+                  !DownloaderSettings::isAudioFormatSelector(DownloaderSettings::formatSelectorForQuality("720")));
             CHECK(DownloaderSettings::formatSelectorForQuality("720]; calc").isEmpty()); // chuỗi lạ không bao giờ lọt vào "-f"
             for (const QString& key : DownloaderSettings::videoQualityKeys())
                 CHECK(key == "auto" || DownloaderSettings::formatSelectorForQuality(key).contains(key == "audio" ? "ba" : key));
-            CHECK(DownloaderSettings::videoQualityLabel("720") == "720p" && DownloaderSettings::videoQualityLabel("audio") == "Chỉ âm thanh");
+            CHECK(DownloaderSettings::videoQualityLabel("720") == "720p" && DownloaderSettings::videoQualityLabel("audio") == "Chỉ âm thanh (mp3)");
             CHECK(DownloaderSettings::videoQualityLabel("lung tung") == DownloaderSettings::videoQualityLabel("auto"));
             int changes = 0;
             QObject::connect(&s, &DownloaderSettings::changed, [&] { ++changes; });
@@ -1469,6 +1501,34 @@ int main(int argc, char** argv)
         const QString igDom = R"(<a href="/p/CxYz_1-2/">a</a><a href="/someone/reel/ABC123/">b</a><a href="/explore/">c</a><a href="/accounts/login/">d</a>)";
         const QList<PostRef> ig = postLinksFromDom(igDom, "https://www.instagram.com/someone/", 80);
         CHECK(ig.size() == 2 && !ig[0].photo && ig[0].url == "https://www.instagram.com/p/CxYz_1-2/" && ig[1].id == "ABC123");
+
+        // Hồ sơ vẫn ghi tài khoản đăng bài
+        CHECK(tt.size() == 3 && tt[0].owner == "@kiue.oahn");
+        // Trang TÌM KIẾM: bài của MỌI tài khoản (mẫu theo DOM thật của link người dùng báo: 19 /video/ + 3 /photo/ của nhiều người)
+        const QString searchDom = R"(
+            <a href="https://www.tiktok.com/@iiiemm/video/7615199525942086920">kết quả 1</a>
+            <a href="https://www.tiktok.com/@_buffalo.1401_/photo/7705307486479273217">bài ảnh</a>
+            <a href="https://www.tiktok.com/@vpa120804/video/7617452054042119432">kết quả 2</a>
+            <a href="/@iiiemm/video/7615199525942086920?is_from_webapp=1">trùng</a>
+            <a href="https://www.tiktok.com/@iiiemm">trang hồ sơ - không phải bài</a>
+            <a href="https://www.tiktok.com/search?q=yen%20tu">tìm kiếm khác</a>)";
+        const QString searchUrl = "https://www.tiktok.com/search?q=%C4%91%E1%BA%A1i%20v%C6%B0%C6%A1ng&t=1795489177562";
+        const QList<PostRef> found = postLinksFromDom(searchDom, searchUrl, 80);
+        CHECK(found.size() == 3);
+        if (found.size() == 3)
+        {
+            CHECK(!found[0].photo && found[0].owner == "@iiiemm" && found[0].url == "https://www.tiktok.com/@iiiemm/video/7615199525942086920");
+            CHECK(found[1].photo && found[1].owner == "@_buffalo.1401_" && found[1].id == "7705307486479273217");
+            CHECK(!found[2].photo && found[2].owner == "@vpa120804");
+        }
+        CHECK(postLinksFromDom(searchDom, searchUrl, 2).size() == 2); // giới hạn số bài
+        // Cùng DOM nhưng là HỒ SƠ @iiiemm: chỉ bài của chính người đó
+        CHECK(postLinksFromDom(searchDom, "https://www.tiktok.com/@iiiemm", 80).size() == 1);
+
+        CHECK(tiktokVideoUrlFromPhotoUrl("https://www.tiktok.com/@_buffalo.1401_/photo/7705307486479273217?lang=vi") ==
+              "https://www.tiktok.com/@_buffalo.1401_/video/7705307486479273217");
+        CHECK(tiktokVideoUrlFromPhotoUrl("https://www.tiktok.com/@a/video/1").isEmpty());
+        CHECK(tiktokVideoUrlFromPhotoUrl("https://example.com/@a/photo/1").isEmpty());
 
         // Trang không phải mạng xã hội hỗ trợ: không trả gì
         CHECK(postLinksFromDom(fbDom, "https://example.com/trang", 80).isEmpty());

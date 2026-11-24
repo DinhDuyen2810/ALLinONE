@@ -874,11 +874,33 @@ void LinkResolver::onPageDom(const QString& dom, const QByteArray& netLog)
     if (photoPost || profile || items.isEmpty())
         for (const MediaLink& l : LinkResolverCore::photosFromDom(dom, pageUrl))
             addMedia(l.url, MediaLink::Type::Image, "trình duyệt ẩn (ảnh)");
+    // Bài ẢNH TikTok còn có nhạc nền: yt-dlp đọc địa chỉ /video/<id> của chính bài đó ra định dạng duy nhất là mp3 (đã đo thật,
+    // mục 4zg) - thêm thành một mục "Âm thanh" để người dùng lấy được cả nhạc chứ không chỉ ảnh.
+    if (photoPost && !items.isEmpty() && LinkResolverCore::siteOf(workUrl()) == LinkResolverCore::Site::TikTok)
+    {
+        const QString musicUrl = LinkResolverCore::tiktokVideoUrlFromPhotoUrl(workUrl());
+        if (!musicUrl.isEmpty() && !seen.contains(musicUrl))
+        {
+            seen.insert(musicUrl);
+            ResolvedMedia m;
+            m.kind = ResolvedMedia::Kind::YtDlp;
+            m.url = musicUrl;
+            m.title = QString("Nhạc nền bài ảnh %1").arg(LinkResolverCore::tiktokPostId(musicUrl));
+            m.fileName = FileDownloaderInternal::sanitizeFileName(m.title);
+            m.mediaType = "Âm thanh";
+            m.referer = pageUrl;
+            m.note = "nhạc nền bài ảnh (yt-dlp)";
+            items << m;
+        }
+    }
 
     if (profile)
     {
-        m_warning = "Chỉ lấy được phần công khai nhìn thấy khi chưa đăng nhập (không phải toàn bộ bài đăng của hồ sơ). "
-                    "Facebook/Instagram yêu cầu đăng nhập để xem đầy đủ.";
+        const bool listing = LinkResolverCore::isTikTokListingUrl(workUrl());
+        m_warning = listing ? QString("Chỉ lấy các bài hiện ở trang đầu khi chưa đăng nhập (không phải toàn bộ kết quả tìm kiếm). "
+                                      "Video tải ở chất lượng đã chọn; muốn chỉ lấy tiếng: chọn dòng -> bấm phải -> \"Chỉ tải âm thanh\".")
+                            : QString("Chỉ lấy được phần công khai nhìn thấy khi chưa đăng nhập (không phải toàn bộ bài đăng của hồ sơ). "
+                                      "Facebook/Instagram yêu cầu đăng nhập để xem đầy đủ.");
         if (!m_ytError.isEmpty() && !m_ytUnsupported)
             m_warning += " yt-dlp báo: " + m_ytError;
 
@@ -902,11 +924,13 @@ void LinkResolver::onPageDom(const QString& dom, const QByteArray& netLog)
                     {
                         sl.fixed.kind = ResolvedMedia::Kind::YtDlp;
                         sl.fixed.url = post.url;
-                        sl.fixed.title = QString("Video %1").arg(post.id);
+                        // Trang tìm kiếm có bài của nhiều người - ghi kèm tài khoản để phân biệt.
+                        sl.fixed.title = listing && !post.owner.isEmpty() ? QString("%1 - video %2").arg(post.owner, post.id)
+                                                                          : QString("Video %1").arg(post.id);
                         sl.fixed.fileName = FileDownloaderInternal::sanitizeFileName(sl.fixed.title);
                         sl.fixed.mediaType = "Video";
                         sl.fixed.referer = pageUrl;
-                        sl.fixed.note = "bài đăng trong hồ sơ";
+                        sl.fixed.note = listing ? "kết quả trên trang TikTok" : "bài đăng trong hồ sơ";
                     }
                     plan << sl;
                 }

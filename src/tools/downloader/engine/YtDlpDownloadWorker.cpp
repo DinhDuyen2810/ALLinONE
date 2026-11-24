@@ -201,6 +201,10 @@ QStringList buildArgumentsEx(const YtDlpDownloadWorker::Options& options, const 
     {
         args << "-f" << formatSelector;
     }
+    // Chỉ âm thanh: tải luồng đã chọn rồi để ffmpeg trích tiếng ra mp3 (chất lượng VBR cao nhất); tệp video trung gian bị
+    // yt-dlp xóa sau khi trích, chỉ còn <tên>.mp3.
+    if (options.extractAudioMp3)
+        args << "-x" << "--audio-format" << "mp3" << "--audio-quality" << "0";
     args << options.extraArgs;
     args << "--" << url; // sau "--" chỉ còn địa chỉ - không bao giờ bị hiểu là tùy chọn
     return args;

@@ -872,10 +872,13 @@ void DownloadQueue::startYtWorker(int id)
     o.outputBaseName = it.ytBase;
     o.formatSelector = it.formatSelector.isEmpty() ? DownloaderSettings::formatSelectorForQuality(m_settings->videoQuality())
                                                    : it.formatSelector;
+    const bool audioOnly = DownloaderSettings::isAudioFormatSelector(o.formatSelector);
     // Phân tích link chỉ cần yt-dlp.exe nên mục video vẫn OK khi thiếu ffmpeg.exe - nhưng bộ chọn "hình+tiếng"
     // (bv*+ba, "<id>+bestaudio") cần ffmpeg để ghép: thiếu thì ra hai tệp rời/lỗi. Dùng định dạng MỘT tệp sẵn có.
+    // Chỉ âm thanh mà thiếu ffmpeg: không trích được mp3 - lấy luồng chỉ-âm-thanh có sẵn (giữ định dạng gốc).
     if (!YtDlpController::hasFfmpeg())
-        o.formatSelector = QStringLiteral("b/best");
+        o.formatSelector = audioOnly ? QStringLiteral("ba/b") : QStringLiteral("b/best");
+    o.extractAudioMp3 = audioOnly && YtDlpController::hasFfmpeg();
     o.extraArgs = m_settings->ytDlpExtraArguments();
     if (!it.media.referer.isEmpty())
         o.extraArgs << "--referer" << it.media.referer;

@@ -3404,6 +3404,53 @@ Nothing elevates at launch, there is no UAC bypass, and no service is installed.
 
 **Bị Store từ chối thì**: chuyển hướng 1 (mua chứng chỉ OV) - đã thống nhất với người dùng; ghi lý do từ chối vào mục này.
 
+## 4zzj. Downloader: link tìm kiếm TikTok ra video thay vì ảnh bìa + chọn "chỉ âm thanh" theo từng dòng (v1.31.0, 24/11/2026)
+
+**Yêu cầu người dùng**: dán link tìm kiếm TikTok (`https://www.tiktok.com/search?q=...&t=...`) mà "toàn ra ảnh" trong khi muốn video
+hoặc chỉ âm thanh; nói rõ thêm: "cập nhật thêm tải âm thanh" cho video `@iiiemm/video/7615199525942086920?q=...`.
+
+**Nguyên nhân thật (đo bằng công cụ mới `link_resolve_probe`, chạy ĐÚNG `LinkResolver` của app)**:
+- Link TÌM KIẾM: yt-dlp báo `Unsupported URL` (yt-dlp 2026.08.19 không có trình trích cho trang tìm kiếm TikTok; `tiktok:tag`/
+  `tiktok:sound` đang "CURRENTLY BROKEN") -> rơi xuống trình duyệt ẩn -> `photosFromDom` nhặt **8 ảnh bìa** `photomode-zoomcover`
+  của các kết quả. Trong khi DOM trang (lưu bằng `link_resolve_probe --dom`) có sẵn **22 liên kết bài**: 19 `/@<người>/video/<id>`
+  + 3 `/@<người>/photo/<id>` của nhiều tài khoản, gồm đúng video người dùng gửi.
+- Link VIDEO (kể cả mang `?q=...&t=...` khi mở từ trang tìm kiếm): app ra đúng 1 mục Video (yt-dlp nhận ổn định 4/4 lần). "Chỉ âm
+  thanh" đã có (ô "Chất lượng video" + "Chọn chất lượng khác...") nhưng với TikTok `-f ba/b` lấy định dạng `audio` = **bản nhạc nền gốc**
+  ("âm thanh gốc - <tác giả>"): tải thật ra mp3 **32,9 giây** trong khi video chỉ **8 giây** - không phải tiếng của video.
+
+**Đã sửa**:
+- `LinkResolverCore::isTikTokListingUrl()`: `/search...`, `/tag/`, `/music/`, `/discover/`, `/explore` của TikTok = trang liệt kê bài
+  của NHIỀU tài khoản; nằm trong `isLikelyProfileOrCollectionUrl()` nên đi đúng đường "hồ sơ": trình duyệt ẩn đọc DOM ->
+  `postLinksFromDom()` (trang liệt kê KHÔNG lọc chủ bài; `PostRef.owner` mới ghi `@người đăng`) -> video thành mục yt-dlp (tên
+  "`@người - video <id>`"), bài ảnh được dựng riêng lấy ảnh đầy đủ. Ảnh bìa chỉ còn là phương án dự phòng khi không quét được bài nào.
+  Lưu ý hiện trên dòng: chỉ lấy các bài hiện ở trang đầu khi chưa đăng nhập.
+- "Chỉ âm thanh" = tiếng của CHÍNH video: `DownloaderSettings::audioFormatSelector()` = `ba[format_id!=audio]/b[format_id!=audio]/ba/b`
+  (bỏ định dạng nhạc nền `audio` của TikTok trước; trang không có luồng chỉ-âm-thanh thì lấy video rồi trích) + `-x --audio-format mp3
+  --audio-quality 0` (`YtDlpDownloadWorker::Options::extractAudioMp3`, cần ffmpeg; thiếu ffmpeg thì lấy luồng `ba/b` giữ định dạng gốc).
+  Nhãn ô chất lượng: "Chỉ âm thanh (mp3)".
+- Menu chuột phải hàng đợi (áp cho MỌI dòng đang chọn, vd chọn hết kết quả tìm kiếm): "🎵 Chỉ tải âm thanh (mp3)", "🎶 Nhạc nền gốc TikTok
+  (mp3)" (chỉ hiện khi có dòng TikTok; `tiktokMusicFormatSelector()` = `audio/ba/b`), "🎬 Tải video (theo chất lượng chung)". Cột "Loại"
+  của dòng đã chọn âm thanh hiện "Âm thanh".
+- Bài ẢNH TikTok có thêm mục "Nhạc nền bài ảnh <id>" (yt-dlp đọc `/video/<id>` của bài ảnh ra mp3 - mục 4zg) cạnh các ảnh
+  (`tiktokVideoUrlFromPhotoUrl()`).
+- Công cụ kiểm tra tay `link_resolve_probe <url> [--no-browser] [--max N] [--dom <tệp>] [--download <thư mục> [--audio|--music]]` (mạng
+  thật, không chạy tự động): in đúng kết quả `LinkResolver`; `--dom` lưu DOM trình duyệt ẩn; `--download` tải thật một link qua chính
+  `DownloadQueue` vào thư mục người kiểm chọn. Cần `yt-dlp\` cạnh tệp chạy (chép từ `OneForAll_Release\yt-dlp`).
+
+**Kiểm chứng THẬT (mạng thật, 24/11/2026)**:
+- Link tìm kiếm của người dùng: trước 8 ảnh bìa; sau **59 mục = 19 video + 38 ảnh đầy đủ (2/3 bài ảnh) + 2 mục nhạc nền** (~70 s; 1 bài
+  ảnh không lấy được ảnh lần này - báo trong lưu ý, cùng cơ chế bài ảnh cũ).
+- Tải thật qua `DownloadQueue` video `@iiiemm/video/7615199525942086920?q=...`: "Chỉ âm thanh" -> mp3 **8,76 s** (đúng tiếng video);
+  "Nhạc nền gốc" -> mp3 **32,9 s**; video -> mp4 HEVC 1080×1920 + AAC 8,75 s (lần đầu TikTok ngắt kết nối "Connection was reset", lần
+  sau OK - lỗi mạng tạm thời, app báo lỗi và cho tải lại). Bài ảnh `@_buffalo.1401_/photo/7705307486479273217`: 7 ảnh + nhạc nền mp3
+  54 s. YouTube "Me at the zoo" "Chỉ âm thanh" -> mp3 19 s (bộ chọn mới không làm hỏng trang có luồng âm thanh riêng).
+- `downloader_tests` 726/0, `downloader_ui_tests` 104/0 (cột Loại "Âm thanh"/"Video" khi đổi lựa chọn), `secdl_stress_tests` 1.866.770/0.
+
+- Trang hashtag `https://www.tiktok.com/tag/trekking` (`--max 20`): 20 video của nhiều tài khoản (~52 s).
+
+**CHƯA kiểm chứng**: bấm chuột phải thật trên giao diện (menu chạy `QMenu::exec` - test chỉ kiểm `setItemFormat` + cột Loại); trang
+`/music/`, `/discover/`, `/explore` (đã thử thật `/search` và `/tag/`); khi đã đăng nhập TikTok (cookie) có lấy thêm kết quả không.
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
@@ -3587,6 +3634,7 @@ Quy tắc đứng nằm ở `CLAUDE.md` (gốc dự án). Tóm tắt - mỗi l�
 | 2026-10-22 | VPN: bỏ OpenVPN -> SSTP; sửa lỗi gốc quay số RAS; kết nối trực tiếp FortiGate/GlobalProtect (v1.19.31) | Mục 4zq. OpenVPN treo vì lời nhắc `ENTER PASSWORD:` không bị xóa khỏi bộ đệm (không gửi `hold release`) + rò `openvpn.exe` nâng quyền khi hết giờ -> gỡ hẳn. VPN Gate nối SSTP (RAS gốc, `<HostName>.opengw.net` khớp chứng chỉ Let's Encrypt). Lỗi gốc `VpnConnector`: mã 6 TẠM THỜI của `RasGetConnectStatusW` ở +16ms bị coi là thất bại -> mọi lần quay số qua app hỏng (cả "Lỗi 6" người dùng gặp từ đầu); `dwNotifierType` sửa lại 1 (v1.19.27 đổi nhầm 2). Đã đổi IP THẬT bằng code của app (VN -> Tokyo). Kết nối trực tiếp FortiGate SSL-VPN/GlobalProtect: client giao thức tự viết (PPP/LCP/IPCP, đăng nhập/OTP/cấu hình), adapter wintun.dll + iphlpapi, tiến trình phụ nâng quyền `--vpn-helper` (pipe + mã một lần, tự dọn khi pipe đóng), ghim vân tay chứng chỉ tự ký. `vpn_tests` 219/0, `vpn_ui_tests` 7/0, `vpn_direct_tests` 150/0 (mới; máy chủ FortiGate/GP giả đầu-cuối). Đã chạy thật: adapter wintun Admin 10/10, thăm dò 3/3 máy chủ thật (không đăng nhập). CHƯA kiểm chứng: đăng nhập + đường hầm bằng tài khoản cơ quan thật. Chỉ push code, KHÔNG tag/Release. |
 | 2026-10-22 | Lấy IP chậm sau khi nối VPN + rà giao diện bằng ảnh chụp thật (v1.19.32) | Mục 4zr. Kết nối HTTPS keep-alive cũ kẹt sau khi tuyến đổi -> 8 s rồi hủy; `clearConnectionCache()` + thử lại 1 lần -> 1093 ms. Công cụ `ui_snapshot` (offscreen hoặc kiểu gốc không hiện màn hình) rà 8 công cụ: sửa cắt chữ hàng điều khiển VPN Gate (2 hàng, NAT chỉ khi L2TP), ô Cổng, nút Android, nhóm ghép đôi Connect bị ép. Nhật ký chẩn đoán kết nối trực tiếp. vpn 219/7, vpn_direct 150, android 153/30, connect_ui 17. Chỉ push code, KHÔNG tag/Release. |
 | 2026-10-23..24 | Kết nối trực tiếp FortiClient IPsec: client IKEv1 tự viết (v1.19.33→39) | Mục 4zs-4zv. v1.19.33: kết nối trực tiếp CHẠY THẬT với FortiGate người dùng + lưu tài khoản + sửa DNS nội bộ. v1.19.34: GlobalProtect nộp HIP (sửa rớt ~60s). v1.19.35: GlobalProtect kênh ESP (gateway bắt buộc). **v1.19.36**: hồ sơ FortiClient IPsec (VPN_CVTLT) nối trực tiếp bằng client **IKEv1 tự viết** (`IkeCrypto`+`IsakmpMessage`+`IkeKeys`+`IkeSession`, dựa BCrypt): Aggressive+PSK+XAuth+Mode-config+Quick Mode+ESP; IKE+ESP chung socket UDP (NAT-T 4500). Test `ike_crypto_check` 47/0, `ike_session_check` 24/0 (bắt tay TRỌN VẸN offline với responder giả, khớp khóa ESP hai bên), `vpn_direct_tests` 357/0. **v1.19.37**: dò thật gateway (`ike_real_probe`, không đăng nhập) xác nhận gateway dùng **nhóm 20 ECP-384 + AES-256 + SHA-256 + XAUTHPSK + NAT-T** → thêm ECDH (nhóm 19/20/21) vào IkeCrypto, IkeSession chào nhiều transform + đọc transform gateway chọn; `ike_crypto_check` 59/0. **v1.19.38**: với PSK + tài khoản thật, `ike_real_connect` hoàn tất **bắt tay IKEv1 đầu-cuối THẬT** (Phase 1→XAuth→Mode-config cấp IP→Quick Mode→khóa ESP). Sửa: mã thuộc tính XAuth (STATUS=16527/MESSAGE=16524), PFS nhóm 20, nhiều transform ESP + đọc transform gateway chọn (AES-256-CBC+SHA1), đóng gói Tunnel(1) (FortiGate từ chối UDP-Tunnel 3/61443), proxy 0/0, ESP seq=1. **v1.19.39**: bắt gói (`pktmon`) so với FortiClient -> client+app nay khớp FortiClient trên dây (UDP 4500↔4500 từ cổng 4500, NAT-T từ msg1, NAT-D). Tầng DỮ LIỆU ESP VẪN CHẶN: gói ESP ra đúng (giống FortiClient) mà gateway im (thử 5 biến thể KEYMAT); SA đã cài; cần nhật ký phía FortiGate. Chỉ push code, KHÔNG tag/Release. |
+| 2026-11-24 | Downloader: link tìm kiếm TikTok ra video + "chỉ âm thanh" đúng tiếng video (v1.31.0) | Mục 4zzj. Trang tìm kiếm/hashtag/âm nhạc TikTok (yt-dlp không hỗ trợ) trước chỉ ra ảnh bìa -> nay lấy từng bài như hồ sơ (link người dùng: 19 video + 38 ảnh + 2 nhạc nền). "Chỉ âm thanh" với TikTok trước lấy nhầm nhạc nền gốc (32,9 s) -> nay trích tiếng của chính video ra mp3 (8,76 s); menu chuột phải chọn âm thanh/nhạc nền/video cho nhiều dòng. Công cụ tay `link_resolve_probe`. `downloader_tests` 726/0, `downloader_ui_tests` 104/0, `secdl_stress_tests` 1.866.770/0. CHƯA: bấm menu thật, /music/, khi đăng nhập. |
 | 2026-11-17 | Microsoft Store: đóng gói MSIX (v1.30.0) | Mục 4zzi. Tự ký không qua được SAC (tài liệu Microsoft) -> thử Store trước. `build_msix.bat` -> `dist\OneForAll_Store.msix` không ký (Store ký lại), full trust + `allowElevation`, danh tính từ `installer/msix/store_identity.txt`; chạy trong gói thì tắt tự cập nhật GitHub. Rủi ro đã báo: Store không nhận gói cần Admin, `allowElevation` duyệt nghiêm ngặt. CHƯA cài/chạy thử gói (Win10, chưa bật Developer Mode), chưa nộp Store. |
 | 2026-11-16 | VPN: chặn rò rỉ IPv6 khi "đổi IP" (v1.29.0) | Mục 4zzh. Ô "Chặn rò rỉ IPv6" (bật sẵn) ở tab Đổi IP theo quốc gia + VPN hệ thống (không chia tuyến): mạng có IPv6 thì trước khi quay số, tiến trình phụ nâng quyền `--ipv6-guard` đặt bộ lọc WFP động chặn `2000::/3` + NAT64 (trừ card VPN và máy chủ VPN), tự gỡ khi phiên đóng, giữ tới khi VPN ngắt. Dòng "IPv6" kiểm thật qua dịch vụ chỉ có IPv6. CHƯA kiểm chứng trên mạng có IPv6 thật. |
 | 2026-11-13 | Security Gateway: "Mở PowerShell & dán lệnh" chạy THẬT + rà soát toàn bộ (v1.28.1) | Mục 4zzg. Nút mở PowerShell CHƯA BAO GIỜ dán được: `QProcess::startDetached` (Qt 6.11, app GUI) tạo console KHÔNG cửa sổ + để lại powershell.exe ẩn. Nay CreateProcessW + CREATE_NEW_CONSOLE, dán bằng tiến trình phụ `--console-paste` ghi Ctrl+V vào bộ đệm nhập của đúng console rồi đọc lại màn hình để xác nhận (không SendInput); lệnh nhiều dòng không dòng nào chạy (đo thật). Test mới `command_launcher_tests` 136/0 (PowerShell thật, console ẩn, Clipboard khôi phục). Sửa 7 lỗi tab Bảo vệ Web/Quét mã độc ("✓ Đã tắt" giả khi đọc lại lỗi, quét mồ côi khi thoát, nút quét kẹt, Xóa nhầm tên miền...) và ~35 ca phân loại sai của CommandAnalyzer (thành test). |

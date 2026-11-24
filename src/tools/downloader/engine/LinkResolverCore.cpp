@@ -315,6 +315,17 @@ DriveViewerName driveViewerName(const QString& pageTitle)
 }
 
 // ---------------------------------------------------------------------------------------------- Loại link
+bool isTikTokListingUrl(const QString& url)
+{
+    if (siteOf(url) != Site::TikTok)
+        return false;
+    // /search, /search/video, /search/photo... (kết quả tìm kiếm), /tag/<x> (hashtag), /music/<tên>-<id> (cùng âm thanh),
+    // /discover/<x>, /explore: trang liệt kê bài của NHIỀU tài khoản - yt-dlp báo "Unsupported URL" (đã thử thật).
+    static const QRegularExpression rx(QStringLiteral("^/(?:search|tag|music|discover|explore)(?:/|$)"),
+                                       QRegularExpression::CaseInsensitiveOption);
+    return rx.match(QUrl(url.trimmed()).path()).hasMatch();
+}
+
 bool isLikelyProfileOrCollectionUrl(const QString& url)
 {
     const QUrl u(url.trimmed());
@@ -332,7 +343,7 @@ bool isLikelyProfileOrCollectionUrl(const QString& url)
         case Site::TikTok:
         {
             static const QRegularExpression rx(QStringLiteral("^/@[^/]+/?$"));
-            return rx.match(path).hasMatch();
+            return rx.match(path).hasMatch() || isTikTokListingUrl(url);
         }
         case Site::Instagram:
         {
@@ -661,6 +672,21 @@ QString tiktokPhotoUrlFromVideoUrl(const QString& url)
     return u.toString();
 }
 
+QString tiktokVideoUrlFromPhotoUrl(const QString& url)
+{
+    if (siteOf(url) != Site::TikTok)
+        return {};
+    QUrl u(url.trimmed());
+    static const QRegularExpression rx(QStringLiteral("^(/@[^/]+)/photo/(\\d+)"));
+    const auto m = rx.match(u.path());
+    if (!m.hasMatch())
+        return {};
+    u.setPath(m.captured(1) + QStringLiteral("/video/") + m.captured(2));
+    u.setQuery(QString());
+    u.setFragment(QString());
+    return u.toString();
+}
+
 QList<PostRef> postLinksFromDom(const QString& dom, const QString& pageUrl, int maxCount)
 {
     QList<PostRef> out;
@@ -670,9 +696,11 @@ QList<PostRef> postLinksFromDom(const QString& dom, const QString& pageUrl, int 
     if (pageSite != Site::Facebook && pageSite != Site::TikTok && pageSite != Site::Instagram)
         return out;
 
-    // Hồ sơ TikTok: chỉ lấy bài của CHÍNH người dùng này (trang còn có gợi ý tài khoản khác).
+    // Hồ sơ TikTok: chỉ lấy bài của CHÍNH người dùng này (trang còn có gợi ý tài khoản khác). Trang tìm kiếm/hashtag/âm nhạc
+    // (isTikTokListingUrl) liệt kê bài của nhiều tài khoản - lấy hết, không lọc chủ.
     QString tiktokOwner;
-    if (pageSite == Site::TikTok)
+    const bool tiktokListing = isTikTokListingUrl(pageUrl);
+    if (pageSite == Site::TikTok && !tiktokListing)
     {
         static const QRegularExpression ownerRx(QStringLiteral("^/(@[^/]+)"));
         const auto om = ownerRx.match(base.path());
@@ -686,7 +714,7 @@ QList<PostRef> postLinksFromDom(const QString& dom, const QString& pageUrl, int 
     static const QRegularExpression fbPostRx(QStringLiteral("^/([^/]+)/posts/([A-Za-z0-9]+)"));
     static const QRegularExpression igRx(QStringLiteral("^/(?:[^/]+/)?(p|reel|tv)/([A-Za-z0-9_\\-]+)"));
 
-    auto push = [&](const QString& url, const QString& id, bool photo) {
+    auto push = [&](const QString& url, const QString& id, bool photo, const QString& owner = QString()) {
         const QString key = (photo ? QStringLiteral("p:") : QStringLiteral("v:")) + id;
         if (id.isEmpty() || seen.contains(key) || out.size() >= maxCount)
             return;
@@ -695,6 +723,7 @@ QList<PostRef> postLinksFromDom(const QString& dom, const QString& pageUrl, int 
         r.url = url;
         r.id = id;
         r.photo = photo;
+        r.owner = owner;
         out << r;
     };
 
@@ -715,10 +744,11 @@ QList<PostRef> postLinksFromDom(const QString& dom, const QString& pageUrl, int 
         if (pageSite == Site::TikTok)
         {
             const auto m = tiktokRx.match(path);
-            if (!m.hasMatch() || m.captured(1).toLower() != tiktokOwner)
+            if (!m.hasMatch() || (!tiktokListing && m.captured(1).toLower() != tiktokOwner))
                 continue;
             const bool photo = m.captured(2) == QLatin1String("photo");
-            push(QStringLiteral("https://www.tiktok.com/%1/%2/%3").arg(m.captured(1), m.captured(2), m.captured(3)), m.captured(3), photo);
+            push(QStringLiteral("https://www.tiktok.com/%1/%2/%3").arg(m.captured(1), m.captured(2), m.captured(3)), m.captured(3), photo,
+                 m.captured(1));
         }
         else if (pageSite == Site::Facebook)
         {

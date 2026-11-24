@@ -58,6 +58,15 @@ public:
     /// Giá trị `-f` của yt-dlp cho một mức chất lượng ("auto"/khóa lạ -> rỗng = để yt-dlp tự chọn). Thuần chuỗi, test được.
     static QString formatSelectorForQuality(const QString& key);
 
+    /// "Chỉ âm thanh": tiếng của CHÍNH video, yt-dlp trích ra mp3 (DownloadQueue thêm `-x`). Định dạng "audio" của TikTok là
+    /// bản NHẠC NỀN gốc (đo thật: video 8 giây, nhạc 32,9 giây) nên bị loại trước; trang không có luồng chỉ-âm-thanh thì lấy
+    /// video tốt nhất rồi trích tiếng; bài chỉ có nhạc (bài ảnh TikTok) mới rơi về định dạng nhạc đó.
+    static QString audioFormatSelector();
+    /// Nhạc nền gốc của bài TikTok (định dạng "audio" của yt-dlp) - bài khác không có thì như audioFormatSelector().
+    static QString tiktokMusicFormatSelector();
+    /// Bộ chọn có phải một trong hai kiểu "chỉ âm thanh" ở trên không (-> tải ra mp3, cột Loại hiện "Âm thanh").
+    static bool isAudioFormatSelector(const QString& selector);
+
     /// Trình duyệt hợp lệ cho `--cookies-from-browser`.
     static QStringList supportedCookieBrowsers();
 

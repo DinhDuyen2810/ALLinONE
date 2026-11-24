@@ -681,6 +681,9 @@ target_link_libraries(downloader_core PUBLIC Qt6::Core Qt6::Network winprocess_c
 # ---- Kiểm thử lõi Downloader: cmake --build build --target downloader_tests ----
 add_executable(downloader_tests EXCLUDE_FROM_ALL tests/downloader_tests.cpp)
 target_link_libraries(downloader_tests PRIVATE downloader_core)
+# Công cụ KIỂM TRA TAY (mạng thật + yt-dlp + trình duyệt ẩn): link_resolve_probe <url> - in đúng những gì LinkResolver trả về.
+add_executable(link_resolve_probe EXCLUDE_FROM_ALL tests/link_resolve_probe.cpp)
+target_link_libraries(link_resolve_probe PRIVATE downloader_core)
 
 # ---- Lõi tự cập nhật (hỏi GitHub Releases API + tải/cài bản mới) - dùng lại FileDownloader của
 # downloader_core thay vì viết lại logic tải HTTP, xem UpdateInstaller.h ----

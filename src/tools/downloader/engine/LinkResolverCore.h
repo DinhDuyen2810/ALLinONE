@@ -53,6 +53,9 @@ DriveViewerName driveViewerName(const QString& pageTitle);
 /// Hồ sơ/kênh/danh sách phát (nhiều bài đăng): YouTube @kênh/channel/playlist, TikTok @user, Instagram trang cá
 /// nhân, Facebook trang/hồ sơ (kể cả /videos, /reels).
 bool isLikelyProfileOrCollectionUrl(const QString& url);
+/// Trang TikTok liệt kê bài của NHIỀU tài khoản: kết quả tìm kiếm (/search...), hashtag (/tag/), âm nhạc (/music/), /discover/,
+/// /explore. yt-dlp không hỗ trợ - lấy danh sách bài từ DOM trình duyệt ẩn như hồ sơ (nằm trong isLikelyProfileOrCollectionUrl).
+bool isTikTokListingUrl(const QString& url);
 /// Bài đăng ẢNH mà yt-dlp không hỗ trợ: Facebook /photo, /photos/, fbid=; TikTok /photo/.
 bool isPhotoPostUrl(const QString& url);
 bool isManifestUrl(const QString& url); ///< .m3u8 / .mpd (luồng HLS/DASH - tải bằng yt-dlp)
@@ -85,16 +88,21 @@ struct PostRef
     QString url;
     QString id;
     bool photo{false};
+    QString owner; ///< TikTok: "@<người dùng>" đăng bài (trang tìm kiếm có bài của nhiều người); nơi khác rỗng
 };
 /// Các liên kết bài đăng (cùng trang, không trùng, theo thứ tự xuất hiện) trong DOM đã dựng của một trang hồ sơ:
 ///  - Facebook: /photo/?fbid=..., /photo.php?fbid=... (ảnh); /posts/<mã> (bài, có thể có ảnh); /<tên>/videos/<id>, /reel/<id>, /watch/?v=<id> (video).
-///  - TikTok: /@<người dùng>/photo/<id> (ảnh), /@<người dùng>/video/<id> (video) - chỉ của CHÍNH hồ sơ đang xem.
+///  - TikTok: /@<người dùng>/photo/<id> (ảnh), /@<người dùng>/video/<id> (video) - hồ sơ: chỉ của CHÍNH hồ sơ đang xem;
+///    trang tìm kiếm/hashtag/âm nhạc (isTikTokListingUrl): của mọi tài khoản.
 ///  - Instagram: /p/<mã>, /reel/<mã>, /tv/<mã> (đưa cho yt-dlp).
 QList<PostRef> postLinksFromDom(const QString& dom, const QString& pageUrl, int maxCount = 80);
 /// Mã số bài TikTok trong .../video/<id> hoặc .../photo/<id>; rỗng nếu không phải.
 QString tiktokPostId(const QString& url);
 /// .../@user/video/<id> -> .../@user/photo/<id>; rỗng nếu không phải link /video/ của TikTok.
 QString tiktokPhotoUrlFromVideoUrl(const QString& url);
+/// .../@user/photo/<id> -> .../@user/video/<id> (bỏ query); rỗng nếu không phải link /photo/ của TikTok. yt-dlp đọc địa chỉ này
+/// của một bài ảnh ra nhạc nền (mp3).
+QString tiktokVideoUrlFromPhotoUrl(const QString& url);
 
 // ---------------------------------------------------------------- Trình duyệt ẩn (Edge/Chrome không giao diện)
 /// URL media (m3u8/mpd/mp4/webm/mp3/m4a/flv) mà trang đã yêu cầu, lấy từ tệp NetLog của trình duyệt. Luồng
