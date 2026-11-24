@@ -46,6 +46,7 @@
 #include "tools/diskcleanup/engine/LargeFileScanner.h"
 #include "tools/diskcleanup/engine/LeftoverFinder.h"
 #include "tools/diskcleanup/engine/PartitionManager.h"
+#include "tools/diskcleanup/engine/PartitionMover.h"
 #include "tools/diskcleanup/engine/ProcessMonitor.h"
 #include "tools/diskcleanup/engine/RecycleBinOps.h"
 #include "tools/diskcleanup/engine/SafePurge.h"
@@ -3390,6 +3391,13 @@ int main(int argc, char** argv)
         CHECK(VolumeHolders::systemHoldHint("D:\\pagefile.sys").contains("hoán trang"));
         CHECK(VolumeHolders::systemHoldHint("D:\\Users\\a\\NTUSER.DAT").contains("registry"));
         CHECK(VolumeHolders::systemHoldHint("D:\\docs\\a.txt").isEmpty());
+        CHECK(VolumeHolders::systemHoldHint("D:\\Tools\\drv\\filter.sys").contains("trình điều khiển"));
+        // Cờ "buộc tháo ổ" (chkdsk /x) của bộ dời: mặc định TẮT, bật/tắt được (đặt lại tắt sau khi kiểm).
+        CHECK(!PartitionMover::forceDismountAllowed());
+        PartitionMover::setForceDismountAllowed(true);
+        CHECK(PartitionMover::forceDismountAllowed());
+        PartitionMover::setForceDismountAllowed(false);
+        CHECK(!PartitionMover::forceDismountAllowed());
         CHECK(VolumeHolders::isCriticalProcessName("vmmemWSL") && VolumeHolders::isCriticalProcessName("vmwp.exe"));
         VolumeHolders::Holder sum;
         sum.openHandles = 2;
@@ -3459,6 +3467,45 @@ int main(int argc, char** argv)
         {
             child.kill();
             child.waitForFinished(3000);
+        }
+        // v1.33.2: hai cách giữ ổ mà bản trước KHÔNG thấy - (1) handle mở THẲNG cả ổ ("\\.\X:", đọc thô: GetVolumeInformationByHandleW và
+        // GetFinalPathNameByHandleW đều thất bại, chỉ tên đối tượng nhân cho biết), (2) tệp ÁNH XẠ vào bộ nhớ sau khi đã đóng mọi handle tệp.
+        // Dựng cả hai NGAY trong tiến trình test (an toàn, tự dọn) rồi quét nhanh ổ chứa thư mục tạm.
+        {
+            const QString raw = QStringLiteral("\\\\.\\") + letter + QLatin1Char(':');
+            const HANDLE vol = CreateFileW(reinterpret_cast<const wchar_t*>(raw.utf16()), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                           nullptr, OPEN_EXISTING, 0, nullptr);
+            CHECK(vol != INVALID_HANDLE_VALUE);
+            const QString mappedPath = holdDir + "/anh_xa.bin";
+            writeFile(mappedPath, 8192);
+            const HANDLE mf = CreateFileW(reinterpret_cast<const wchar_t*>(QDir::toNativeSeparators(mappedPath).utf16()), GENERIC_READ,
+                                          FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+            const HANDLE section = mf != INVALID_HANDLE_VALUE ? CreateFileMappingW(mf, nullptr, PAGE_READONLY, 0, 0, nullptr) : nullptr;
+            void* view = section ? MapViewOfFile(section, FILE_MAP_READ, 0, 0, 0) : nullptr;
+            CHECK(view != nullptr);
+            if (section)
+                CloseHandle(section);
+            if (mf != INVALID_HANDLE_VALUE)
+                CloseHandle(mf); // chỉ còn view - không còn handle tệp nào
+            const VolumeHolders::Report r2 = VolumeHolders::scan(letter, nullptr, false);
+            const VolumeHolders::Holder* me = nullptr;
+            for (const VolumeHolders::Holder& h : r2.holders)
+                if (h.self)
+                    me = &h;
+            CHECK(me != nullptr);
+            if (me)
+            {
+                CHECK(!me->stoppable());
+                CHECK(me->mappedOnDrive);
+                CHECK(me->holdingSummary().contains("ánh xạ tệp vào bộ nhớ"));
+                CHECK(me->hint.contains("mở THẲNG cả ổ")); // nhận ra handle đọc thô qua tên đối tượng
+                // Đường dẫn tệp ánh xạ có trong danh sách (tối đa 5 mẫu - có thể bị đẩy ra bởi tệp khác của test; kiểm số lượng >= 2)
+                CHECK(me->openHandles >= 2);
+            }
+            if (view)
+                UnmapViewOfFile(view);
+            if (vol != INVALID_HANDLE_VALUE)
+                CloseHandle(vol);
         }
         // PID bị tái dùng: đường dẫn exe khác -> từ chối, không diệt nhầm.
         VolumeHolders::Holder wrong;

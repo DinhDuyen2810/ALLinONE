@@ -3587,6 +3587,56 @@ Quét thật ổ D: (không Admin) ~9,8 giây, nhận ra 4 bản Linux WSL trên
 **CHƯA kiểm chứng**: chạy thật với quyền Administrator trên máy người dùng (UAC); "Tắt WSL" và "Tháo ổ ảo" thật (sẽ tắt WSL/tháo ổ của người dùng - quy
 tắc 5); bản sao bóng có thật sự chặn FSCTL_LOCK_VOLUME hay không; trình điều khiển lọc của phần mềm diệt virus/mã hóa (không chương trình nào thấy được).
 
+## 4zzn. Dời phân vùng: thứ giữ ổ "vô hình" (mở thẳng cả ổ, ánh xạ bộ nhớ, driver), buộc tháo ổ, giữ chữ ổ MBR + kiểm thật trên VHDX GPT/MBR (v1.33.2, 24/11/2026)
+
+**Yêu cầu người dùng**: (1) ảnh v1.33.1 chạy với Admin - "đã kiểm kỹ mà KHÔNG thấy" nhưng vẫn "Không khóa được ổ D: (mã 5)" - "sao nó cứ báo như này, trong
+khi rõ ràng check không còn gì"; (2) "tham khảo cách các mã nguồn mở trên git thay đổi kích thước cũng như dịch chuyển ổ, sau đó nâng cấp và test nhiều đợt
+để nó hoạt động đúng, nhất là quá trình xác định tiến trình đang chứa, dừng hết, copy qua chỗ mới và mapping chuẩn".
+
+**Tham khảo mã nguồn mở** (đọc mã, KHÔNG chép - xem `THIRD_PARTY.md`): GParted (`Copy_Blocks.cc`, `GParted_Core.cc` move/rollback, `ntfs.cc`), KPMcore
+(`movefilesystemjob`, `externalcommandhelper` CopyFileData, `fs/ntfs.cpp`), ntfs-3g `ntfsresize.c`, Rufus (`process.c` SearchProcess, `drive.c`
+GetHandle/MountVolume/RefreshLayout). Đối chiếu: app ĐÃ an toàn hơn GParted/KPMcore ở phần chép (nhật ký phục hồi sau mất điện, đọc lại so từng khối,
+lỗi đọc là dừng - GParted coi lỗi đọc là "đã chép", rollback của KPMcore không chép gì vì bộ đếm byte luôn 0; chép đúng chiều khi chồng lấn; vá HiddenSectors
+cả boot sector chính lẫn bản sao; đổi bảng bằng một lệnh `IOCTL_DISK_SET_DRIVE_LAYOUT_EX` rồi `UPDATE_PROPERTIES`, tìm lại ổ theo vị trí). Rufus dò "ai giữ
+ổ" bằng TÊN đối tượng nhân (`\Device\HarddiskVolumeN`) sau khi lọc `GetFileType` - đúng chỗ app còn thiếu; Rufus cũng tự gán lại chữ ổ (kiểm ổ nào đang giữ
+chữ rồi gỡ + gán) - đúng lỗi chữ ổ MBR.
+
+**Nguyên nhân "kiểm kỹ không thấy gì" (đo thật trên máy build)**: handle mở THẲNG cả ổ (`\\.\D:` - phần mềm bảo mật/EDR, sao lưu, công cụ tìm tệp đọc
+thô ổ) làm cả `GetVolumeInformationByHandleW` lẫn `GetFinalPathNameByHandleW` thất bại (mã 1) nên bước nhân bản handle bỏ qua nó; bước hỏi "PID nào đang mở"
+trên `\\.\D:` lại trả MỌI tiến trình nên đã bị bỏ. Tệp dữ liệu ÁNH XẠ vào bộ nhớ (chương trình đã đóng handle tệp, còn view) và driver `.sys` nạp từ ổ
+cũng không để lại handle nào - NTFS không xả được nên từ chối khóa.
+
+**Đã làm**:
+- `VolumeHolders`: handle không hỏi được sê-ri ổ -> so TÊN đối tượng (`NtQueryObject`, trên luồng phụ có hạn giờ) với `\Device\HarddiskVolumeN` của ổ
+  (khớp đúng ranh giới - tránh lỗi `Volume1` khớp nhầm `Volume12` của Rufus) -> "X: (cả ổ - đọc thô)" + gợi ý "phần mềm bảo mật/EDR, sao lưu, Everything";
+  quét bộ nhớ mọi tiến trình (`VirtualQueryEx` + `GetMappedFileNameW` - MEM_MAPPED = "ánh xạ tệp vào bộ nhớ", MEM_IMAGE = DLL), driver từ ổ
+  (`EnumDeviceDrivers`). Sửa so chuỗi tiếng Việt bằng `QLatin1String` (gợi ý không hiện).
+- "Buộc tháo ổ" (giống `chkdsk /x`) - CHỈ khi người dùng bấm nút "⚠ Buộc tháo ổ rồi thử lại" (hiện sau khi khóa ổ thất bại, hỏi xác nhận):
+  `PartitionMover::setForceDismountAllowed` -> khóa thất bại thì `FSCTL_DISMOUNT_VOLUME` (mọi handle cũ vô hiệu), đóng handle, mở lại (ổ gắn sạch) và khóa
+  với cùng độ kiên nhẫn như thường (20 x 250 ms), tối đa 3 lượt; chỉ tiếp tục khi KHÓA ĐƯỢC THẬT. Đợt kiểm thật 1 cho thấy cách cũ (tháo lại mỗi 150 ms)
+  làm ổ liên tục gắn lại nên không bao giờ khóa được.
+- Chữ ổ: đĩa MBR - Windows nhớ chữ ổ theo "chữ ký đĩa + VỊ TRÍ" nên ổ dời xong có thể được gán chữ KHÁC; bản cũ chỉ gán khi ổ không có chữ nào. Mới
+  `internal::decideDriveLetter` (thuần, có test): bỏ chữ Windows tự gán rồi gán lại chữ cũ, không bao giờ giành chữ đang thuộc ổ khác, gán lỗi thì trả lại
+  chữ cũ của ổ.
+- `partition_move_real_check` (VHDX, cần UAC): chạy HAI lượt GPT + MBR; thêm [8] 4 tiến trình con giữ ổ (thư mục làm việc / tệp mở / mở thẳng cả ổ / ánh
+  xạ bộ nhớ) -> khóa phải thất bại, `VolumeHolders::scan` phải dò ra đủ 4 PID, dừng hết -> khóa + dời được; [9] thứ giữ ổ không dừng -> chưa cho buộc tháo
+  thì khóa thất bại, cho buộc tháo thì khóa + dời được; đích căn 1 MiB như giao diện; in tên tệp khác biệt.
+
+**Kiểm chứng THẬT (đĩa ảo VHDX 1500 MB, Administrator, 24/11/2026)**: 3 đợt, mỗi đợt 2 lượt (GPT rồi MBR) x 9 kịch bản (dời phải/trái chồng lấn, nhảy vùng, kéo mép trái hai chiều, tạm dừng + chạy tiếp, từ chối
+chồng lên phân vùng khác, [8] 4 tiến trình giữ ổ, [9] buộc tháo ổ). Đợt 1: 183 đạt / 13 hỏng - (a) bài test lấy đích "vị trí cũ ± N MiB" trong khi MBR do
+diskpart tạo bắt đầu ở vị trí KHÔNG tròn MiB (căn cylinder) -> app từ chối đúng (giao diện luôn bắt dính 1 MiB) -> sửa bài test; (b) "thừa 1-2 tệp" =
+`System Volume Information\IndexerVolumeGuid`, `WPSettings.dat` do Windows tự tạo khi gắn ổ - không phải dữ liệu (thiếu 0, sai hash 0) -> bài test bỏ qua
+thư mục Windows tự quản và in tên tệp khác biệt; (c) buộc tháo ở bước kiểm tra trước vẫn không khóa được (tháo lại mỗi 150 ms) -> sửa thành tháo một lần,
+mở lại, khóa kiên nhẫn. Đợt 2: **218 đạt / 0 hỏng**. Đợt 3 (lặp lại, cùng bản): **218 đạt / 0 hỏng**. Mỗi kịch bản kiểm: SHA-256 của 373-374 tệp y nguyên,
+vị trí/kích thước đúng, GIỮ ĐÚNG chữ ổ (cả MBR), "Hidden sectors" = vị trí mới, chkdsk (chỉ đọc) sạch. [8]: khóa ổ thất bại khi còn 4 tiến trình giữ ổ,
+`VolumeHolders::scan` dò ra ĐỦ 4 PID (gồm "cả ổ - đọc thô" và "ánh xạ tệp vào bộ nhớ") trong 4,1-4,6 giây, dừng được cả 4, khóa được, dời xong.
+[9]: chưa cho buộc tháo thì khóa thất bại; cho buộc tháo thì khóa ĐẠT ngay ở bước kiểm tra trước và dời xong khi 3 tiến trình giữ ổ vẫn chạy.
+
+**Test tự động**: `partition_move_tests` 346/0 (thêm `decideDriveLetter`), `diskcleanup_tests` 4945/0 (thêm: handle đọc thô + view ánh xạ trong chính tiến
+trình test được dò ra, cờ buộc tháo), `diskcleanup_ui_tests` 403/0 (nút "Buộc tháo ổ" chỉ hiện khi lỗi khóa ổ), `disk_vpn_stress_tests` 7345/0.
+
+**CHƯA kiểm chứng**: ổ vật lý thật của người dùng (D: trên NVMe) với phần mềm bảo mật thật đang giữ ổ; driver nạp từ ổ (không dựng được trong test).
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
@@ -3770,6 +3820,7 @@ Quy tắc đứng nằm ở `CLAUDE.md` (gốc dự án). Tóm tắt - mỗi l�
 | 2026-10-22 | VPN: bỏ OpenVPN -> SSTP; sửa lỗi gốc quay số RAS; kết nối trực tiếp FortiGate/GlobalProtect (v1.19.31) | Mục 4zq. OpenVPN treo vì lời nhắc `ENTER PASSWORD:` không bị xóa khỏi bộ đệm (không gửi `hold release`) + rò `openvpn.exe` nâng quyền khi hết giờ -> gỡ hẳn. VPN Gate nối SSTP (RAS gốc, `<HostName>.opengw.net` khớp chứng chỉ Let's Encrypt). Lỗi gốc `VpnConnector`: mã 6 TẠM THỜI của `RasGetConnectStatusW` ở +16ms bị coi là thất bại -> mọi lần quay số qua app hỏng (cả "Lỗi 6" người dùng gặp từ đầu); `dwNotifierType` sửa lại 1 (v1.19.27 đổi nhầm 2). Đã đổi IP THẬT bằng code của app (VN -> Tokyo). Kết nối trực tiếp FortiGate SSL-VPN/GlobalProtect: client giao thức tự viết (PPP/LCP/IPCP, đăng nhập/OTP/cấu hình), adapter wintun.dll + iphlpapi, tiến trình phụ nâng quyền `--vpn-helper` (pipe + mã một lần, tự dọn khi pipe đóng), ghim vân tay chứng chỉ tự ký. `vpn_tests` 219/0, `vpn_ui_tests` 7/0, `vpn_direct_tests` 150/0 (mới; máy chủ FortiGate/GP giả đầu-cuối). Đã chạy thật: adapter wintun Admin 10/10, thăm dò 3/3 máy chủ thật (không đăng nhập). CHƯA kiểm chứng: đăng nhập + đường hầm bằng tài khoản cơ quan thật. Chỉ push code, KHÔNG tag/Release. |
 | 2026-10-22 | Lấy IP chậm sau khi nối VPN + rà giao diện bằng ảnh chụp thật (v1.19.32) | Mục 4zr. Kết nối HTTPS keep-alive cũ kẹt sau khi tuyến đổi -> 8 s rồi hủy; `clearConnectionCache()` + thử lại 1 lần -> 1093 ms. Công cụ `ui_snapshot` (offscreen hoặc kiểu gốc không hiện màn hình) rà 8 công cụ: sửa cắt chữ hàng điều khiển VPN Gate (2 hàng, NAT chỉ khi L2TP), ô Cổng, nút Android, nhóm ghép đôi Connect bị ép. Nhật ký chẩn đoán kết nối trực tiếp. vpn 219/7, vpn_direct 150, android 153/30, connect_ui 17. Chỉ push code, KHÔNG tag/Release. |
 | 2026-10-23..24 | Kết nối trực tiếp FortiClient IPsec: client IKEv1 tự viết (v1.19.33→39) | Mục 4zs-4zv. v1.19.33: kết nối trực tiếp CHẠY THẬT với FortiGate người dùng + lưu tài khoản + sửa DNS nội bộ. v1.19.34: GlobalProtect nộp HIP (sửa rớt ~60s). v1.19.35: GlobalProtect kênh ESP (gateway bắt buộc). **v1.19.36**: hồ sơ FortiClient IPsec (VPN_CVTLT) nối trực tiếp bằng client **IKEv1 tự viết** (`IkeCrypto`+`IsakmpMessage`+`IkeKeys`+`IkeSession`, dựa BCrypt): Aggressive+PSK+XAuth+Mode-config+Quick Mode+ESP; IKE+ESP chung socket UDP (NAT-T 4500). Test `ike_crypto_check` 47/0, `ike_session_check` 24/0 (bắt tay TRỌN VẸN offline với responder giả, khớp khóa ESP hai bên), `vpn_direct_tests` 357/0. **v1.19.37**: dò thật gateway (`ike_real_probe`, không đăng nhập) xác nhận gateway dùng **nhóm 20 ECP-384 + AES-256 + SHA-256 + XAUTHPSK + NAT-T** → thêm ECDH (nhóm 19/20/21) vào IkeCrypto, IkeSession chào nhiều transform + đọc transform gateway chọn; `ike_crypto_check` 59/0. **v1.19.38**: với PSK + tài khoản thật, `ike_real_connect` hoàn tất **bắt tay IKEv1 đầu-cuối THẬT** (Phase 1→XAuth→Mode-config cấp IP→Quick Mode→khóa ESP). Sửa: mã thuộc tính XAuth (STATUS=16527/MESSAGE=16524), PFS nhóm 20, nhiều transform ESP + đọc transform gateway chọn (AES-256-CBC+SHA1), đóng gói Tunnel(1) (FortiGate từ chối UDP-Tunnel 3/61443), proxy 0/0, ESP seq=1. **v1.19.39**: bắt gói (`pktmon`) so với FortiClient -> client+app nay khớp FortiClient trên dây (UDP 4500↔4500 từ cổng 4500, NAT-T từ msg1, NAT-D). Tầng DỮ LIỆU ESP VẪN CHẶN: gói ESP ra đúng (giống FortiClient) mà gateway im (thử 5 biến thể KEYMAT); SA đã cài; cần nhật ký phía FortiGate. Chỉ push code, KHÔNG tag/Release. |
+| 2026-11-24 | Dời phân vùng: thứ giữ ổ vô hình + buộc tháo ổ + giữ chữ ổ MBR, kiểm thật VHDX (v1.33.2) | Mục 4zzn. Handle mở thẳng cả ổ (đọc thô) bị bỏ sót vì không hỏi được sê-ri/đường dẫn -> so tên đối tượng; thêm ánh xạ bộ nhớ + driver; nút "Buộc tháo ổ" (chkdsk /x, có xác nhận); MBR trả lại đúng chữ ổ (`decideDriveLetter`). Tham khảo GParted/KPMcore/ntfs-3g/Rufus. `partition_move_real_check` chạy THẬT lần đầu: GPT + MBR x 9 kịch bản, đợt 2 và 3 đều 218/0. `partition_move_tests` 346/0, `diskcleanup_tests` 4945/0, `diskcleanup_ui_tests` 403/0. CHƯA: ổ D: thật với EDR thật. |
 | 2026-11-24 | Dời phân vùng: kiểm KỸ ai đang giữ ổ (v1.33.1) | Mục 4zzm. Dừng hết bảng v1.33.0 vẫn không khóa được: thứ giữ ổ là nhân Windows/WSL/máy ảo/tiến trình được bảo vệ (máy build: 4 bản Linux WSL trên D:). Hỏi "PID nào đang mở" (FileProcessIdsUsingFileInformation, ~22 ms/tệp) cho tệp có khả năng bị giữ, song song, ~9,8 giây ổ D:; nút Tắt WSL / Tháo ổ ảo; gợi ý cho bản sao bóng/hive/pagefile. `diskcleanup_tests` 4918/0, `diskcleanup_ui_tests` 399/0, `partition_move_tests` 340/0. CHƯA: chạy thật với Admin, Tắt WSL/Tháo ổ ảo thật. |
 | 2026-11-24 | Dời phân vùng: liệt kê + dừng chương trình/dịch vụ giữ ổ (v1.33.0) | Mục 4zzl. "Không khóa được ổ (mã 5)" dù đã đóng VS Code: thủ phạm là chương trình chỉ mở tệp trên ổ (máy build: `nextcloud.exe`), bản cũ không dò ra. `VolumeHolders` dò handle tệp toàn hệ thống + DLL + dịch vụ + pagefile; cửa sổ dời có bảng Tên/dịch vụ - PID - Đang giữ - Dừng + Dừng tất cả. `diskcleanup_tests` 4899/0, `diskcleanup_ui_tests` 390/0, `partition_move_tests` 340/0. CHƯA: chạy thật với Admin, dừng dịch vụ thật. |
 | 2026-11-24 | Disk Cleanup: nâng cấp dọn dẹp theo hạng mục theo roomy (v1.32.0) | Mục 4zzk. Sửa 3 lỗi thật (Chrome chỉ hồ sơ Default - bỏ sót 667,8 MB; Delivery Optimization sai đường dẫn trên Win10/11; Firefox cache2 sai chỗ) + cache vào Thùng rác không giải phóng gì. 43 hạng mục/6 nhóm (trình duyệt mọi hồ sơ, ứng dụng, Electron/WebView2, shader, lập trình, dump, Thùng rác, ngủ đông, bộ cài cũ, tệp tải về lớn, thư mục còn sót); `SafePurge` xóa hẳn từng tệp có kiểm đường dẫn thật trên handle; giao diện cây. Quét thật 20,07 GB, tick sẵn 3,52 GB. `diskcleanup_tests` 4877/0, `diskcleanup_ui_tests` 373/0, `disk_vpn_stress_tests` 7345/0. CHƯA: dọn thật trên cache thật, làm trống Thùng rác/tắt ngủ đông thật. |

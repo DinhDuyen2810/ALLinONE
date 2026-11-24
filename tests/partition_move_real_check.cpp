@@ -6,10 +6,15 @@
 //   1. dời PHẢI (chồng lấn, chép lùi)     2. dời TRÁI (chồng lấn, chép tiến)    3. nhảy sang vùng trống KHÁC (không chồng)
 //   4. kéo mép TRÁI sang trái (dời + mở rộng mép phải)                          5. kéo mép TRÁI sang phải (thu nhỏ mép phải + dời)
 //   6. tạm dừng giữa chừng rồi chạy tiếp từ nhật ký
+//   7. từ chối dời chồng lên phân vùng khác
+//   8. (v1.33.2) 4 tiến trình con GIỮ ổ - đứng trong thư mục, mở tệp, mở thẳng cả ổ (đọc thô), ánh xạ tệp vào bộ nhớ: khóa ổ phải THẤT BẠI,
+//      VolumeHolders::scan phải dò ra ĐỦ 4 PID, dừng được cả 4, rồi khóa + dời được
+//   9. (v1.33.2) thứ giữ ổ KHÔNG dừng: chưa cho buộc tháo thì khóa thất bại; cho "buộc tháo ổ" (như chkdsk /x) thì khóa + dời được
+// Chạy HAI lượt: đĩa GPT và đĩa MBR (MBR: Windows nhớ chữ ổ theo vị trí - kiểm chữ ổ cũ được trả lại sau mỗi lần dời).
 // Sau mỗi kịch bản: dữ liệu (SHA-256 từng tệp) phải y nguyên, vị trí/kích thước đúng, ổ gắn lại có chữ ổ cũ, "Hidden sectors" của boot sector
 // = vị trí mới, và chkdsk (chỉ đọc) báo sạch.
 //
-// Dùng: partition_move_real_check <tệp-nhật-ký.txt>      (nên chạy qua:  Start-Process <exe> -ArgumentList <log> -Verb RunAs -Wait)
+// Dùng: partition_move_real_check <tệp-nhật-ký.txt> [gpt|mbr]   (nên chạy qua:  Start-Process <exe> -ArgumentList <log> -Verb RunAs -Wait)
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDir>
@@ -33,6 +38,7 @@
 #include "tools/diskcleanup/engine/PartitionManager.h"
 #include "tools/diskcleanup/engine/PartitionMoveCore.h"
 #include "tools/diskcleanup/engine/PartitionMover.h"
+#include "tools/diskcleanup/engine/VolumeHolders.h"
 
 #include <windows.h>
 
@@ -246,17 +252,46 @@ void verify(const Env& env, const QMap<QString, QByteArray>& manifest, qint64 wa
     check(p.driveLetter.compare(env.letter, Qt::CaseInsensitive) == 0, QString("giữ chữ ổ %1: (thực tế \"%2\")").arg(env.letter, p.driveLetter));
     check(p.fileSystem == "NTFS", "hệ thống tệp vẫn là NTFS");
     const QString root = env.letter + ":/";
+    auto windowsManaged = [](const QString& rel) {
+        return rel.startsWith(QLatin1String("System Volume Information"), Qt::CaseInsensitive) ||
+               rel.startsWith(QLatin1String("$RECYCLE.BIN"), Qt::CaseInsensitive);
+    };
     const auto after = hashTree(root);
-    int bad = 0, missing = 0;
+    int bad = 0, missing = 0, extra = 0;
+    QStringList names;
     for (auto it = manifest.begin(); it != manifest.end(); ++it)
     {
+        if (windowsManaged(it.key()))
+            continue;
         if (!after.contains(it.key()))
+        {
             ++missing;
+            names << "thiếu " + it.key();
+        }
         else if (after[it.key()] != it.value())
+        {
             ++bad;
+            names << "sai " + it.key();
+        }
     }
-    check(missing == 0 && bad == 0 && after.size() == manifest.size(), QString("dữ liệu y nguyên: %1 tệp, thiếu %2, sai hash %3, thừa %4")
-                                                                         .arg(manifest.size()).arg(missing).arg(bad).arg(after.size() - manifest.size()));
+    QStringList windowsExtras;
+    for (auto it = after.begin(); it != after.end(); ++it)
+        if (!manifest.contains(it.key()))
+        {
+            if (windowsManaged(it.key()))
+                windowsExtras << it.key();
+            else
+            {
+                ++extra;
+                names << "thừa " + it.key();
+            }
+        }
+    if (!names.isEmpty())
+        say("    tệp khác biệt: " + names.mid(0, 8).join(", "));
+    if (!windowsExtras.isEmpty())
+        say("    (Windows tự tạo, không tính: " + windowsExtras.mid(0, 4).join(", ") + ")");
+    check(missing == 0 && bad == 0 && extra == 0, QString("dữ liệu y nguyên: %1 tệp, thiếu %2, sai hash %3, thừa %4")
+                                                     .arg(manifest.size()).arg(missing).arg(bad).arg(extra));
     // Hidden sectors trong boot sector = vị trí / 512.
     {
         const HANDLE h = CreateFileW(reinterpret_cast<LPCWSTR>(QString("\\\\.\\%1:").arg(env.letter).utf16()), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
@@ -325,6 +360,12 @@ bool executePlan(Env& env, const DiskLayout::ChangePlan& plan, qint64 pauseAfter
     return true;
 }
 
+/// Làm tròn tới bội số 1 MiB gần nhất - giao diện thật luôn "bắt dính" vị trí mới vào lưới 1 MiB (DiskLayout::snapMoveStart).
+qint64 alignMiB(qint64 bytes)
+{
+    return ((bytes + MiB / 2) / MiB) * MiB;
+}
+
 DiskLayout::ChangePlan makePlan(const Env& env, qint64 newStart, qint64 newSize)
 {
     const auto parts = diskPartitions(env.disk);
@@ -348,30 +389,100 @@ void detachAndDelete(const QString& vhd)
     diskpart(QString("select vdisk file=\"%1\"\ndetach vdisk\n").arg(QDir::toNativeSeparators(vhd)));
     QFile::remove(vhd);
 }
-} // namespace
-
-int main(int argc, char** argv)
+/// Tiến trình con GIỮ ổ thử (chính exe này với "--hold"): đứng trong thư mục / mở tệp / mở thẳng cả ổ / ánh xạ tệp vào bộ nhớ rồi ngủ.
+struct Holder
 {
-    QCoreApplication app(argc, argv);
-    if (argc < 2)
-    {
-        std::printf("Dùng: partition_move_real_check <tệp-nhật-ký.txt>\n");
-        return 2;
-    }
-    g_log.setFileName(QString::fromLocal8Bit(argv[1]));
-    g_log.open(QIODevice::WriteOnly | QIODevice::Truncate);
-    say("partition_move_real_check - dời phân vùng THẬT trên ổ đĩa ảo (VHDX) tạm");
-    if (!PartitionManager::isElevated())
-    {
-        say("CẦN quyền Administrator (chạy bằng Start-Process -Verb RunAs).");
-        say("RESULT: SKIPPED");
-        return 2;
-    }
-    QTemporaryDir dataDir; // nhật ký phục hồi của lần chạy này nằm trong thư mục tạm riêng
-    AppPaths::setDataDirOverride(dataDir.path());
+    QProcess* proc{nullptr};
+    QString mode;
+    quint32 pid{0};
+};
 
+Holder startHolder(const QString& mode, const QString& target, int seconds = 600)
+{
+    Holder h;
+    h.mode = mode;
+    h.proc = new QProcess();
+    h.proc->setProcessChannelMode(QProcess::MergedChannels);
+    h.proc->start(QCoreApplication::applicationFilePath(), {"--hold", mode, target, QString::number(seconds)});
+    if (!h.proc->waitForStarted(10000))
+        return h;
+    QElapsedTimer t;
+    t.start();
+    QByteArray out;
+    while (t.elapsed() < 15000 && !out.contains("READY"))
+    {
+        h.proc->waitForReadyRead(500);
+        out += h.proc->readAll();
+    }
+    if (out.contains("READY"))
+        h.pid = static_cast<quint32>(h.proc->processId());
+    say(QString("    giữ ổ kiểu %1: PID %2 - %3").arg(mode).arg(h.pid).arg(QString::fromLocal8Bit(out).simplified().left(160)));
+    return h;
+}
+
+void killHolder(Holder& h)
+{
+    if (!h.proc)
+        return;
+    if (h.proc->state() != QProcess::NotRunning)
+    {
+        h.proc->kill();
+        h.proc->waitForFinished(5000);
+    }
+    delete h.proc;
+    h.proc = nullptr;
+}
+
+int holdMain(const QString& mode, const QString& target, int seconds)
+{
+    // Không cần quyền Administrator. In "READY" khi đã giữ xong.
+    if (mode == "cwd")
+    {
+        if (!SetCurrentDirectoryW(reinterpret_cast<LPCWSTR>(QDir::toNativeSeparators(target).utf16())))
+            return 3;
+    }
+    else if (mode == "file")
+    {
+        const HANDLE h = CreateFileW(reinterpret_cast<LPCWSTR>(QDir::toNativeSeparators(target).utf16()), GENERIC_READ,
+                                     FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+        if (h == INVALID_HANDLE_VALUE)
+            return 3;
+    }
+    else if (mode == "raw")
+    {
+        const QString dev = QStringLiteral("\\\\.\\") + target.left(1) + QLatin1Char(':');
+        const HANDLE h = CreateFileW(reinterpret_cast<LPCWSTR>(dev.utf16()), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                                     OPEN_EXISTING, 0, nullptr);
+        if (h == INVALID_HANDLE_VALUE)
+            return 3;
+    }
+    else if (mode == "map")
+    {
+        const HANDLE f = CreateFileW(reinterpret_cast<LPCWSTR>(QDir::toNativeSeparators(target).utf16()), GENERIC_READ,
+                                     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+        if (f == INVALID_HANDLE_VALUE)
+            return 3;
+        const HANDLE m = CreateFileMappingW(f, nullptr, PAGE_READONLY, 0, 0, nullptr);
+        void* v = m ? MapViewOfFile(m, FILE_MAP_READ, 0, 0, 0) : nullptr;
+        if (m)
+            CloseHandle(m);
+        CloseHandle(f); // chỉ còn view - không còn handle tệp nào
+        if (!v)
+            return 3;
+    }
+    else
+        return 2;
+    std::printf("READY %s\n", qPrintable(mode));
+    std::fflush(stdout);
+    Sleep(static_cast<DWORD>(seconds) * 1000);
+    return 0;
+}
+
+/// Một lượt dời trên VHDX (style "gpt" hoặc "mbr"): 7 kịch bản cũ + [8] chương trình giữ ổ (dò + dừng) + [9] buộc tháo ổ.
+void runSuite(const QString& style)
+{
     Env env;
-    env.vhd = QDir::toNativeSeparators(QDir::tempPath() + "/oneforall_move_test.vhdx");
+    env.vhd = QDir::toNativeSeparators(QDir::tempPath() + "/oneforall_move_test_" + style + ".vhdx");
     QFile::remove(env.vhd);
     // Chọn chữ ổ trống từ Y xuống.
     QStringList used;
@@ -386,18 +497,19 @@ int main(int argc, char** argv)
     if (env.letter.isEmpty())
     {
         say("Không còn chữ ổ trống.");
-        say("RESULT: SKIPPED");
-        return 2;
+        ++g_failed;
+        return;
     }
 
+    say("\n==================== LƯỢT " + style.toUpper() + " ====================");
     say("Tạo VHDX 1500 MB rồi gắn vào máy (chưa phân vùng)");
     const QString dpOut = diskpart(QString("create vdisk file=\"%1\" maximum=1500 type=expandable\nselect vdisk file=\"%1\"\nattach vdisk\n").arg(env.vhd));
     say("  diskpart: " + dpOut.simplified().left(300));
     if (!QFile::exists(env.vhd))
     {
         say("Không tạo được VHDX.");
-        say("RESULT: FAIL");
-        return 1;
+        ++g_failed;
+        return;
     }
 
     // Số đĩa của VHDX + KHÓA AN TOÀN: phải là đĩa ảo "File Backed Virtual" VÀ đúng là đĩa của tệp VHDX này, rồi mới phân vùng (select disk N tường minh).
@@ -411,14 +523,15 @@ int main(int argc, char** argv)
     {
         say("KHÔNG xác nhận được đây là đĩa ảo của VHDX - DỪNG, không đụng gì.");
         detachAndDelete(env.vhd);
-        say("RESULT: FAIL");
-        return 1;
+        ++g_failed;
+        return;
     }
-    say("Phân vùng đĩa ảo: FILLER 200 MB + MOVETEST 300 MB (NTFS), chữ ổ " + env.letter + ":");
-    const QString dp2 = diskpart(QString("select disk %1\nconvert gpt\ncreate partition primary size=200\nformat fs=ntfs quick label=FILLER\n"
+    say("Phân vùng đĩa ảo (" + style.toUpper() + "): FILLER 200 MB + MOVETEST 300 MB (NTFS), chữ ổ " + env.letter + ":");
+    const QString dp2 = diskpart(QString("select disk %1\nconvert %3\ncreate partition primary size=200\nformat fs=ntfs quick label=FILLER\n"
                                          "create partition primary size=300\nformat fs=ntfs quick label=MOVETEST\nassign letter=%2\n")
                                      .arg(env.disk)
-                                     .arg(env.letter));
+                                     .arg(env.letter)
+                                     .arg(style));
     say("  diskpart: " + dp2.simplified().left(400));
     for (const auto& p : diskPartitions(env.disk))
         if (p.driveLetter.compare(env.letter, Qt::CaseInsensitive) == 0)
@@ -427,8 +540,7 @@ int main(int argc, char** argv)
     if (env.partition <= 0)
     {
         detachAndDelete(env.vhd);
-        say("RESULT: FAIL");
-        return 1;
+        return;
     }
     {
         const auto p = findPartition(env);
@@ -447,25 +559,27 @@ int main(int argc, char** argv)
     // ---- 1. Dời PHẢI 100 MiB (chồng lấn, chép lùi) ----
     {
         say("\n[1] Dời PHẢI 100 MiB (chồng lấn)");
-        const auto plan = makePlan(env, s0 + 100 * MiB, size0);
+        const qint64 dst1 = alignMiB(s0 + 100 * MiB);
+        const auto plan = makePlan(env, dst1, size0);
         say("  " + DiskLayout::describePlan(env.letter + ":", plan).replace("\n", "\n  "));
         check(plan.blockReason.isEmpty() && plan.needsMove(), "kế hoạch hợp lệ");
         if (plan.blockReason.isEmpty())
         {
             check(executePlan(env, plan), "thực hiện xong");
-            verify(env, manifest, s0 + 100 * MiB, size0, "sau khi dời phải");
+            verify(env, manifest, dst1, size0, "sau khi dời phải");
         }
     }
     // ---- 2. Dời TRÁI 40 MiB (chồng lấn, chép tiến) ----
     {
         say("\n[2] Dời TRÁI 40 MiB (chồng lấn)");
         const auto cur = findPartition(env);
-        const auto plan = makePlan(env, cur.offsetBytes - 40 * MiB, cur.sizeBytes);
+        const qint64 dst2 = alignMiB(cur.offsetBytes - 40 * MiB);
+        const auto plan = makePlan(env, dst2, cur.sizeBytes);
         check(plan.blockReason.isEmpty() && plan.needsMove(), "kế hoạch hợp lệ " + plan.blockReason);
         if (plan.blockReason.isEmpty())
         {
             check(executePlan(env, plan), "thực hiện xong");
-            verify(env, manifest, cur.offsetBytes - 40 * MiB, size0, "sau khi dời trái");
+            verify(env, manifest, dst2, size0, "sau khi dời trái");
         }
     }
     // ---- 3. Nhảy sang vùng trống KHÁC (không chồng lấn) ----
@@ -515,7 +629,8 @@ int main(int argc, char** argv)
     {
         say("\n[6] Tạm dừng giữa chừng rồi chạy tiếp từ nhật ký");
         const auto cur = findPartition(env);
-        const auto plan = makePlan(env, cur.offsetBytes - 30 * MiB, cur.sizeBytes);
+        const qint64 dst6 = alignMiB(cur.offsetBytes - 30 * MiB);
+        const auto plan = makePlan(env, dst6, cur.sizeBytes);
         check(plan.blockReason.isEmpty() && plan.needsMove(), "kế hoạch hợp lệ " + plan.blockReason);
         if (plan.blockReason.isEmpty())
         {
@@ -534,7 +649,7 @@ int main(int argc, char** argv)
                 say(QString("    kết quả chạy tiếp: ok=%1 resumable=%2 - %3").arg(r.ok).arg(r.resumable).arg(r.message.left(300)));
                 check(r.ok, "chạy tiếp xong");
                 check(!QFile::exists(PartitionMover::journalPath()), "nhật ký đã được xóa sau khi xong");
-                verify(env, manifest, cur.offsetBytes - 30 * MiB, cur.sizeBytes, "sau khi chạy tiếp");
+                verify(env, manifest, dst6, cur.sizeBytes, "sau khi chạy tiếp");
             }
         }
     }
@@ -556,10 +671,112 @@ int main(int argc, char** argv)
         check(!QFile::exists(PartitionMover::journalPath()), "không để lại nhật ký");
         verify(env, manifest, cur.offsetBytes, cur.sizeBytes, "dữ liệu vẫn nguyên sau khi bị từ chối");
     }
+    // ---- 8. Chương trình GIỮ ổ: dò ra ĐỦ (cả 4 kiểu khó thấy), dừng hết, rồi khóa + dời được ----
+    {
+        say("\n[8] Chương trình giữ ổ: thư mục làm việc, tệp đang mở, mở thẳng cả ổ, ánh xạ bộ nhớ -> dò + dừng hết -> dời");
+        const QString root = env.letter + ":/";
+        QList<Holder> holders;
+        holders << startHolder("cwd", root + "data/sub") << startHolder("file", root + "data/f1.bin") << startHolder("raw", env.letter)
+                << startHolder("map", root + "data/sub/big0.bin");
+        bool allStarted = true;
+        for (const Holder& h : holders)
+            allStarted = allStarted && h.pid != 0;
+        check(allStarted, "4 tiến trình giữ ổ đã chạy");
+        const QString blocked = PartitionMover::preflightMove(env.disk, env.partition, env.letter);
+        check(blocked.contains("Không khóa được"), "khóa ổ THẤT BẠI khi còn chương trình giữ ổ: " + blocked.left(160));
+        QElapsedTimer t;
+        t.start();
+        const VolumeHolders::Report rep = VolumeHolders::scan(env.letter, nullptr, true);
+        say(QString("    VolumeHolders::scan: %1 thứ giữ ổ, %2 ms, kiểm kỹ %3 tệp").arg(rep.holders.size()).arg(t.elapsed()).arg(rep.filesChecked));
+        for (const VolumeHolders::Holder& vh : rep.holders)
+            say(QString("      %1 PID %2 - %3").arg(vh.name).arg(vh.pid).arg(vh.holdingSummary().left(160)));
+        for (const Holder& h : holders)
+        {
+            const VolumeHolders::Holder* found = nullptr;
+            for (const VolumeHolders::Holder& vh : rep.holders)
+                if (vh.pid == h.pid)
+                    found = &vh;
+            check(found != nullptr && found->stoppable(), QString("dò ra tiến trình giữ ổ kiểu %1 (PID %2)").arg(h.mode).arg(h.pid));
+            if (found)
+            {
+                QString err;
+                check(VolumeHolders::stop(*found, &err), QString("dừng được kiểu %1 %2").arg(h.mode, err));
+            }
+        }
+        for (Holder& h : holders)
+            if (h.proc)
+                h.proc->waitForFinished(5000);
+        const QString after = PartitionMover::preflightMove(env.disk, env.partition, env.letter);
+        check(after.isEmpty(), "khóa ổ ĐƯỢC sau khi dừng hết: " + after.left(160));
+        for (Holder& h : holders)
+            killHolder(h);
+        const auto cur = findPartition(env);
+        const qint64 dst8 = alignMiB(cur.offsetBytes + 20 * MiB);
+        const auto plan = makePlan(env, dst8, cur.sizeBytes);
+        check(plan.blockReason.isEmpty(), "kế hoạch hợp lệ " + plan.blockReason);
+        if (plan.blockReason.isEmpty())
+        {
+            check(executePlan(env, plan), "dời PHẢI 20 MiB sau khi dừng hết");
+            verify(env, manifest, dst8, cur.sizeBytes, "sau khi dừng chương trình giữ ổ rồi dời");
+        }
+    }
+    // ---- 9. Thứ giữ ổ KHÔNG dừng (giả lập phần mềm tự bảo vệ): BUỘC THÁO ổ (như chkdsk /x) rồi dời ----
+    {
+        say("\n[9] Buộc tháo ổ khi còn thứ giữ ổ không dừng được (mở thẳng cả ổ + tệp đang mở + thư mục làm việc)");
+        const QString root = env.letter + ":/";
+        QList<Holder> holders;
+        holders << startHolder("raw", env.letter) << startHolder("file", root + "data/f2.bin") << startHolder("cwd", root + "data");
+        PartitionMover::setForceDismountAllowed(false);
+        const QString blocked = PartitionMover::preflightMove(env.disk, env.partition, env.letter);
+        check(blocked.contains("Không khóa được"), "chưa cho buộc tháo: khóa thất bại như mong đợi");
+        PartitionMover::setForceDismountAllowed(true);
+        const QString forced = PartitionMover::preflightMove(env.disk, env.partition, env.letter);
+        check(forced.isEmpty(), "cho buộc tháo: kiểm tra trước (khóa) ĐẠT: " + forced.left(200));
+        const auto cur = findPartition(env);
+        const qint64 dst9 = alignMiB(cur.offsetBytes - 20 * MiB);
+        const auto plan = makePlan(env, dst9, cur.sizeBytes);
+        check(plan.blockReason.isEmpty(), "kế hoạch hợp lệ " + plan.blockReason);
+        if (plan.blockReason.isEmpty())
+            check(executePlan(env, plan), "dời TRÁI 20 MiB với buộc tháo ổ (tiến trình giữ ổ vẫn chạy)");
+        PartitionMover::setForceDismountAllowed(false);
+        for (Holder& h : holders)
+            killHolder(h);
+        if (plan.blockReason.isEmpty())
+            verify(env, manifest, dst9, cur.sizeBytes, "sau khi buộc tháo ổ rồi dời");
+    }
 
     say("\nDọn dẹp: tháo và xóa VHDX tạm...");
     detachAndDelete(env.vhd);
     check(!QFile::exists(env.vhd), "đã xóa VHDX tạm");
+}
+} // namespace
+
+int main(int argc, char** argv)
+{
+    QCoreApplication app(argc, argv);
+    if (argc >= 5 && QString::fromLocal8Bit(argv[1]) == "--hold")
+        return holdMain(QString::fromLocal8Bit(argv[2]), QString::fromLocal8Bit(argv[3]), QString::fromLocal8Bit(argv[4]).toInt());
+    if (argc < 2)
+    {
+        std::printf("Dùng: partition_move_real_check <tệp-nhật-ký.txt> [gpt|mbr]\n");
+        return 2;
+    }
+    g_log.setFileName(QString::fromLocal8Bit(argv[1]));
+    g_log.open(QIODevice::WriteOnly | QIODevice::Truncate);
+    say("partition_move_real_check - dời phân vùng THẬT trên ổ đĩa ảo (VHDX) tạm");
+    if (!PartitionManager::isElevated())
+    {
+        say("CẦN quyền Administrator (chạy bằng Start-Process -Verb RunAs).");
+        say("RESULT: SKIPPED");
+        return 2;
+    }
+    QTemporaryDir dataDir; // nhật ký phục hồi của lần chạy này nằm trong thư mục tạm riêng
+    AppPaths::setDataDirOverride(dataDir.path());
+    QStringList styles{"gpt", "mbr"};
+    if (argc >= 3)
+        styles = QStringList{QString::fromLocal8Bit(argv[2]).toLower()};
+    for (const QString& style : styles)
+        runSuite(style);
     say(QString("\nTỔNG KẾT: %1 đạt, %2 hỏng").arg(g_passed).arg(g_failed));
     say(g_failed == 0 ? "RESULT: PASS" : "RESULT: FAIL");
     return g_failed == 0 ? 0 : 1;

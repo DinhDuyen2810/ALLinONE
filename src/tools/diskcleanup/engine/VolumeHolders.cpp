@@ -94,6 +94,31 @@ QString stripWin32Prefix(QString s)
     return s;
 }
 
+/// Tên đối tượng nhân của một handle (NtQueryObject ObjectNameInformation), vd "\Device\HarddiskVolume4\thu muc\tep". Có thể TREO với ống dẫn
+/// đồng bộ đang chờ - chỉ gọi trên luồng phụ có hạn giờ.
+std::wstring objectName(HANDLE h)
+{
+    using NtQueryObjectFn = LONG(NTAPI*)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+    static const auto query =
+        reinterpret_cast<NtQueryObjectFn>(reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryObject")));
+    if (!query)
+        return {};
+    struct UnicodeString
+    {
+        USHORT Length;
+        USHORT MaximumLength;
+        PWSTR Buffer;
+    };
+    alignas(8) BYTE buf[4096];
+    ULONG ret = 0;
+    if (query(h, 1 /*ObjectNameInformation*/, buf, sizeof(buf), &ret) != 0)
+        return {};
+    const auto* u = reinterpret_cast<const UnicodeString*>(buf);
+    if (!u->Buffer || u->Length == 0)
+        return {};
+    return std::wstring(u->Buffer, u->Length / sizeof(wchar_t));
+}
+
 /// Một truy vấn handle trên luồng phụ có hạn giờ: GetFileType / GetVolumeInformationByHandleW / GetFinalPathNameByHandleW trên một handle ống dẫn
 /// đồng bộ đang chờ đọc có thể chặn VÔ HẠN (khóa đối tượng tệp). Luồng treo bị BỎ LẠI cùng đối tượng của nó (rò rỉ có chủ ý, có trần).
 class QueryThread
@@ -103,8 +128,11 @@ public:
     {
         HANDLE handle{nullptr};
         DWORD targetSerial{0};
+        const std::wstring* targetDevice{nullptr}; // "\Device\HarddiskVolumeN" của ổ cần tìm
         bool onTarget{false};
-        std::wstring path;
+        bool wholeVolume{false}; // handle mở thẳng CẢ ổ (đọc thô) - không có đường dẫn tệp
+        std::wstring path;       // "\\?\X:\..." (GetFinalPathNameByHandleW) hoặc phần sau tên thiết bị (theo tên đối tượng)
+        bool pathRelativeToDevice{false};
     };
 
     QueryThread()
@@ -115,11 +143,12 @@ public:
     }
     bool valid() const { return m_request && m_done && m_thread; }
     /// false = hết giờ: luồng đang kẹt, đối tượng này phải bị bỏ lại (KHÔNG xóa).
-    bool run(HANDLE h, DWORD targetSerial, DWORD timeoutMs, Job* result)
+    bool run(HANDLE h, DWORD targetSerial, const std::wstring* targetDevice, DWORD timeoutMs, Job* result)
     {
         m_job = Job{};
         m_job.handle = h;
         m_job.targetSerial = targetSerial;
+        m_job.targetDevice = targetDevice;
         SetEvent(m_request);
         if (WaitForSingleObject(m_done, timeoutMs) != WAIT_OBJECT_0)
             return false;
@@ -149,14 +178,32 @@ private:
             if (GetFileType(j.handle) == FILE_TYPE_DISK)
             {
                 DWORD serial = 0;
-                if (GetVolumeInformationByHandleW(j.handle, nullptr, 0, &serial, nullptr, nullptr, nullptr, 0) &&
-                    serial == j.targetSerial)
+                if (GetVolumeInformationByHandleW(j.handle, nullptr, 0, &serial, nullptr, nullptr, nullptr, 0))
                 {
-                    j.onTarget = true;
-                    wchar_t buf[1024];
-                    const DWORD n = GetFinalPathNameByHandleW(j.handle, buf, 1024, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
-                    if (n > 0 && n < 1024)
-                        j.path.assign(buf, n);
+                    if (serial == j.targetSerial)
+                    {
+                        j.onTarget = true;
+                        wchar_t buf[1024];
+                        const DWORD n = GetFinalPathNameByHandleW(j.handle, buf, 1024, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+                        if (n > 0 && n < 1024)
+                            j.path.assign(buf, n);
+                    }
+                }
+                else if (j.targetDevice && !j.targetDevice->empty())
+                {
+                    // Handle mở THẲNG thiết bị ổ ("\\.\X:" - phần mềm bảo mật/EDR, sao lưu, công cụ tìm tệp đọc thô ổ): đo thật, cả
+                    // GetVolumeInformationByHandleW lẫn GetFinalPathNameByHandleW đều thất bại (mã 1) - chỉ TÊN đối tượng
+                    // ("\Device\HarddiskVolumeN") cho biết nó thuộc ổ nào. Loại handle này chặn khóa ổ mà bản cũ không thấy.
+                    const std::wstring name = objectName(j.handle);
+                    const std::wstring& dev = *j.targetDevice;
+                    if (!name.empty() && name.size() >= dev.size() && _wcsnicmp(name.c_str(), dev.c_str(), dev.size()) == 0 &&
+                        (name.size() == dev.size() || name[dev.size()] == L'\\'))
+                    {
+                        j.onTarget = true;
+                        j.wholeVolume = name.size() == dev.size();
+                        j.path = name.substr(dev.size());
+                        j.pathRelativeToDevice = true;
+                    }
                 }
             }
             SetEvent(t->m_done);
@@ -198,30 +245,6 @@ bool processIsCritical(quint32 pid)
     const bool ok = fn(h, &critical) != 0;
     CloseHandle(h);
     return ok && critical;
-}
-
-/// Có DLL/exe nạp từ ổ 'prefix' ("D:\") không.
-bool hasModuleOnDrive(quint32 pid, const QString& prefix)
-{
-    const HANDLE h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
-    if (!h)
-        return false;
-    std::vector<HMODULE> mods(1024);
-    DWORD needed = 0;
-    bool found = false;
-    if (EnumProcessModulesEx(h, mods.data(), static_cast<DWORD>(mods.size() * sizeof(HMODULE)), &needed, LIST_MODULES_ALL))
-    {
-        const size_t count = std::min<size_t>(mods.size(), needed / sizeof(HMODULE));
-        wchar_t buf[2048];
-        for (size_t i = 0; i < count && !found; ++i)
-        {
-            const DWORD n = GetModuleFileNameExW(h, mods[i], buf, 2048);
-            if (n > 0 && QString::fromWCharArray(buf, static_cast<int>(n)).startsWith(prefix, Qt::CaseInsensitive))
-                found = true;
-        }
-    }
-    CloseHandle(h);
-    return found;
 }
 
 struct ServiceInfo
@@ -560,6 +583,8 @@ QString Holder::holdingSummary() const
         parts << QStringLiteral("chạy từ ổ");
     else if (moduleOnDrive)
         parts << QStringLiteral("nạp DLL từ ổ");
+    if (mappedOnDrive)
+        parts << QStringLiteral("ánh xạ tệp vào bộ nhớ");
     if (openHandles > 0)
     {
         QString s = QStringLiteral("%1 tệp/thư mục đang mở").arg(openHandles);
@@ -604,6 +629,10 @@ QString systemHoldHint(const QString& path)
     if (name.compare(QLatin1String("pagefile.sys"), Qt::CaseInsensitive) == 0 ||
         name.compare(QLatin1String("swapfile.sys"), Qt::CaseInsensitive) == 0)
         return QStringLiteral("tệp hoán trang (bộ nhớ ảo) - tắt bộ nhớ ảo trên ổ này rồi khởi động lại máy");
+    if (name.endsWith(QLatin1String(".sys"), Qt::CaseInsensitive))
+        return QStringLiteral("trình điều khiển (driver) nạp từ ổ này - gỡ phần mềm đó (hoặc cài lại sang ổ khác) rồi khởi động lại máy");
+    if (p.contains(QStringLiteral("(cả ổ")))
+        return QStringLiteral("thành phần của Windows mở thẳng cả ổ");
     if (name.compare(QLatin1String("ext4.vhdx"), Qt::CaseInsensitive) == 0)
         return QStringLiteral("ổ đĩa của một bản Linux WSL - tắt WSL (wsl --shutdown)");
     if (isDiskImagePath(p))
@@ -653,6 +682,26 @@ Report scan(const QString& driveLetter, const std::atomic_bool* stopFlag, bool d
     report.elevated = WinElevation::isElevated();
     if (report.elevated)
         enableDebugPrivilege();
+    // "\Device\HarddiskVolumeN" của ổ - để nhận ra handle mở thẳng cả ổ, tệp ánh xạ bộ nhớ, trình điều khiển, registry hive.
+    std::wstring targetDevice;
+    {
+        wchar_t dev[512] = {};
+        const std::wstring drive = (letter + QLatin1Char(':')).toStdWString();
+        if (QueryDosDeviceW(drive.c_str(), dev, 512))
+            targetDevice = dev;
+    }
+    const QString deviceName = QString::fromStdWString(targetDevice);
+    // Đường dẫn dạng thiết bị -> "X:\..." (rỗng nếu không thuộc ổ này).
+    auto fromDevicePath = [&](const QString& devPath) -> QString {
+        if (deviceName.isEmpty() || !devPath.startsWith(deviceName, Qt::CaseInsensitive))
+            return {};
+        const QString rest = devPath.mid(deviceName.size());
+        if (rest.isEmpty())
+            return QStringLiteral("%1: (cả ổ - đọc thô)").arg(letter);
+        if (!rest.startsWith(QLatin1Char('\\')))
+            return {};
+        return letter + QLatin1Char(':') + rest;
+    };
     for (const char* name : {"pagefile.sys", "swapfile.sys"})
     {
         const FsSafety::RawInfo info = FsSafety::rawInfo(prefix + QString::fromLatin1(name));
@@ -708,7 +757,8 @@ Report scan(const QString& driveLetter, const std::atomic_bool* stopFlag, bool d
             h.samplePaths << path;
     };
 
-    // 1) exe / DLL nạp từ ổ.
+    // 1) exe nằm trên ổ + mọi thứ ÁNH XẠ vào bộ nhớ từ ổ: DLL/exe (MEM_IMAGE) và tệp dữ liệu ánh xạ (MEM_MAPPED - giữ ổ kể cả khi chương
+    //    trình đã đóng handle tệp; NTFS không xả được nên từ chối khóa ổ). VirtualQueryEx + GetMappedFileNameW (như Process Explorer).
     for (auto it = names.constBegin(); it != names.constEnd(); ++it)
     {
         if (stopped())
@@ -719,8 +769,70 @@ Report scan(const QString& driveLetter, const std::atomic_bool* stopFlag, bool d
         const QString image = processImagePath(pid);
         if (!image.isEmpty() && image.startsWith(prefix, Qt::CaseInsensitive))
             holderFor(pid).imageOnDrive = true;
-        else if (hasModuleOnDrive(pid, prefix))
-            holderFor(pid).moduleOnDrive = true;
+        if (targetDevice.empty())
+            continue;
+        const HANDLE proc = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
+        if (!proc)
+            continue;
+        MEMORY_BASIC_INFORMATION mbi;
+        const char* addr = nullptr;
+        const void* lastBase = nullptr;
+        int regions = 0;
+        while (VirtualQueryEx(proc, addr, &mbi, sizeof(mbi)) == sizeof(mbi) && ++regions < 200000)
+        {
+            if ((mbi.Type == MEM_MAPPED || mbi.Type == MEM_IMAGE) && mbi.AllocationBase != lastBase)
+            {
+                lastBase = mbi.AllocationBase;
+                wchar_t mapped[1024];
+                const DWORD n = GetMappedFileNameW(proc, mbi.BaseAddress, mapped, 1024);
+                if (n > 0 && n < 1024)
+                {
+                    const QString path = fromDevicePath(QString::fromWCharArray(mapped, static_cast<int>(n)));
+                    if (!path.isEmpty())
+                    {
+                        Holder& h = holderFor(pid);
+                        if (mbi.Type == MEM_IMAGE)
+                        {
+                            if (path.compare(image, Qt::CaseInsensitive) != 0)
+                                h.moduleOnDrive = true;
+                        }
+                        else
+                        {
+                            h.mappedOnDrive = true;
+                            addPath(pid, path);
+                        }
+                    }
+                }
+            }
+            const char* next = static_cast<const char*>(mbi.BaseAddress) + mbi.RegionSize;
+            if (next <= addr)
+                break;
+            addr = next;
+        }
+        CloseHandle(proc);
+    }
+
+    // 1b) trình điều khiển (driver .sys) nạp từ ổ - nhân Windows giữ ảnh của nó.
+    {
+        std::vector<LPVOID> drivers(2048);
+        DWORD needed = 0;
+        if (EnumDeviceDrivers(drivers.data(), static_cast<DWORD>(drivers.size() * sizeof(LPVOID)), &needed))
+        {
+            const size_t count = std::min<size_t>(drivers.size(), needed / sizeof(LPVOID));
+            for (size_t i = 0; i < count; ++i)
+            {
+                wchar_t file[1024];
+                const DWORD n = GetDeviceDriverFileNameW(drivers[i], file, 1024);
+                if (n == 0 || n >= 1024)
+                    continue;
+                QString p = QString::fromWCharArray(file, static_cast<int>(n));
+                if (p.startsWith(QLatin1String("\\??\\")))
+                    p = p.mid(4);
+                QString onDrive = p.startsWith(prefix, Qt::CaseInsensitive) ? p : fromDevicePath(p);
+                if (!onDrive.isEmpty())
+                    addPath(4, onDrive);
+            }
+        }
     }
 
     // 2) handle tệp/thư mục trên ổ (nhân bản handle - thấy được tiến trình thường).
@@ -779,7 +891,7 @@ Report scan(const QString& driveLetter, const std::atomic_bool* stopFlag, bool d
                     if (!DuplicateHandle(proc, reinterpret_cast<HANDLE>(e.HandleValue), GetCurrentProcess(), &dup, 0, FALSE,
                                          DUPLICATE_SAME_ACCESS))
                         continue;
-                    if (!worker->run(dup, targetSerial, 300, &job))
+                    if (!worker->run(dup, targetSerial, &targetDevice, 300, &job))
                     {
                         // Treo (ống dẫn đồng bộ đang chờ): bỏ lại luồng + handle nhân bản, dùng luồng mới. Có trần để không rò rỉ vô hạn.
                         worker = ++abandoned <= 12 ? new QueryThread() : nullptr;
@@ -793,7 +905,12 @@ Report scan(const QString& driveLetter, const std::atomic_bool* stopFlag, bool d
                 }
                 if (!job.onTarget)
                     continue;
-                addPath(pid, job.path.empty() ? QStringLiteral("%1: (cả ổ)").arg(letter) : stripWin32Prefix(QString::fromStdWString(job.path)));
+                if (job.wholeVolume)
+                    addPath(pid, QStringLiteral("%1: (cả ổ - đọc thô)").arg(letter));
+                else if (job.pathRelativeToDevice)
+                    addPath(pid, letter + QLatin1Char(':') + QString::fromStdWString(job.path));
+                else
+                    addPath(pid, job.path.empty() ? QStringLiteral("%1: (cả ổ)").arg(letter) : stripWin32Prefix(QString::fromStdWString(job.path)));
             }
             if (worker)
             {
@@ -978,13 +1095,8 @@ Report scan(const QString& driveLetter, const std::atomic_bool* stopFlag, bool d
     }
 
     // 4) registry hive nạp từ ổ (nhân Windows giữ).
-    {
-        wchar_t dev[512] = {};
-        const std::wstring drive = (letter + QLatin1Char(':')).toStdWString();
-        const QString deviceName = QueryDosDeviceW(drive.c_str(), dev, 512) ? QString::fromWCharArray(dev) : QString();
-        for (const QString& hive : hivesOnDevice(deviceName, letter))
-            addPath(4, hive);
-    }
+    for (const QString& hive : hivesOnDevice(deviceName, letter))
+        addPath(4, hive);
 
     // 5) WSL: bản Linux nằm trên ổ + máy ảo WSL đang chạy.
     {
@@ -1071,6 +1183,9 @@ Report scan(const QString& driveLetter, const std::atomic_bool* stopFlag, bool d
             continue;
         }
         h.imagePath = processImagePath(h.pid);
+        for (const QString& p : pathsByPid.value(h.pid))
+            if (p.contains(QStringLiteral("(cả ổ - đọc thô)")))
+                h.hint = QStringLiteral("mở THẲNG cả ổ (đọc thô) - thường là phần mềm bảo mật/EDR, sao lưu, đồng bộ hoặc tìm tệp (Everything)");
         for (const ServiceInfo& s : services.value(h.pid))
         {
             h.serviceNames << s.name;

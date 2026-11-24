@@ -114,6 +114,15 @@ PartitionRunWindow::PartitionRunWindow(const PartitionRelocator::Plan& plan, qui
     connect(m_rescanBtn, &QPushButton::clicked, this, &PartitionRunWindow::scanHolders);
     hrow->addWidget(m_rescanBtn);
     hrow->addStretch();
+    m_forceBtn = new QPushButton("⚠ Buộc tháo ổ rồi thử lại", m_holdersPanel);
+    m_forceBtn->setObjectName("runForceDismountButton");
+    m_forceBtn->setStyleSheet(DiskUi::buttonStyle());
+    m_forceBtn->setCursor(Qt::PointingHandCursor);
+    m_forceBtn->setToolTip("Giống \"chkdsk /x\": tháo cưỡng bức ổ - mọi chương trình còn mở tệp trên ổ mất quyền truy cập tệp đó - rồi khóa ổ ngay. "
+                           "Dùng khi đã dừng hết những gì dừng được mà vẫn không khóa được.");
+    m_forceBtn->setVisible(false);
+    connect(m_forceBtn, &QPushButton::clicked, this, &PartitionRunWindow::onForceDismount);
+    hrow->addWidget(m_forceBtn);
     m_stopAllBtn = new QPushButton("⛔ Dừng tất cả", m_holdersPanel);
     m_stopAllBtn->setObjectName("runHoldersStopAll");
     m_stopAllBtn->setStyleSheet(DiskUi::dangerButtonStyle());
@@ -241,6 +250,7 @@ void PartitionRunWindow::start()
     m_holdersBtn->setEnabled(false);
     m_rescanBtn->setEnabled(false);
     m_stopAllBtn->setEnabled(false);
+    m_forceBtn->setEnabled(false);
     for (QPushButton* b : m_holdersTable->findChildren<QPushButton*>())
         b->setEnabled(false);
     m_pauseBtn->setVisible(true);
@@ -315,6 +325,12 @@ void PartitionRunWindow::onFinished(bool ok, bool resumable, QString message, in
     m_closeBtn->setEnabled(true);
     m_reopenBtn->setVisible(true);
     m_holdersBtn->setEnabled(true);
+    m_forceBtn->setEnabled(true);
+    // Khóa ổ thất bại (chưa đổi gì): cho phép "Buộc tháo ổ" - trừ khi lượt này ĐÃ buộc tháo mà vẫn không được.
+    const bool lockFailed = !ok && (failedStep == -2 || failedStep == 0) && message.contains(QStringLiteral("Không khóa được"));
+    m_forceBtn->setVisible(lockFailed && !PartitionMover::forceDismountAllowed());
+    if (lockFailed)
+        m_holdersPanel->setVisible(true);
     m_statusLabel->setText(ok ? QStringLiteral("✓ Hoàn tất")
                               : failedStep == -2 ? QStringLiteral("⚠ Chưa bắt đầu - kiểm tra trước không đạt (chưa có gì bị thay đổi)")
                                                  : QString("⚠ Dừng%1").arg(failedStep >= 0 ? QString(" ở bước %1").arg(failedStep + 1) : QString()));
@@ -377,6 +393,25 @@ void PartitionRunWindow::closeEvent(QCloseEvent* event)
 }
 
 // ======================= Chương trình/dịch vụ đang giữ ổ (v1.33.0) =======================
+
+void PartitionRunWindow::onForceDismount()
+{
+    if (m_running || m_holdersBusy || !m_startBtn->isEnabled())
+        return;
+    const QString letter = m_plan.letter.isEmpty() ? QStringLiteral("?") : m_plan.letter.left(1).toUpper();
+    if (!confirm(QStringLiteral("Buộc tháo ổ"),
+                 QStringLiteral("Buộc tháo ổ %1: rồi thử lại (giống \"chkdsk /x\")?\n\n"
+                                "Mọi chương trình còn đang mở tệp trên %1: sẽ MẤT quyền truy cập tệp đó ngay lập tức - dữ liệu chưa lưu của chúng có thể "
+                                "mất, phần mềm có thể báo lỗi (phần mềm bảo mật thường tự mở lại sau). Ổ được gắn lại bình thường sau khi dời xong.\n\n"
+                                "Chỉ dùng khi đã dừng hết những gì dừng được mà vẫn không khóa được. KHÔNG dùng nếu đang chạy máy ảo/WSL/ổ đĩa ảo từ "
+                                "ổ %1: (tắt chúng trước).")
+                     .arg(letter)))
+        return;
+    Logger::instance().warning("PartitionRun", QStringLiteral("Người dùng chọn BUỘC THÁO ổ %1: rồi thử lại").arg(letter));
+    PartitionMover::setForceDismountAllowed(true);
+    m_forceBtn->setVisible(false);
+    start();
+}
 
 bool PartitionRunWindow::confirm(const QString& title, const QString& text)
 {

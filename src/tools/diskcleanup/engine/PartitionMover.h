@@ -43,6 +43,13 @@ QStringList processesRunningFromDrive(const QString& driveLetter);
 /// Lý do KHÔNG thể tháo ổ này vì chính ứng dụng đang chạy từ đó (thư mục chứa exe hoặc thư mục dữ liệu nằm trên ổ); rỗng nếu không. Thư mục làm việc
 /// hiện tại nằm trên ổ thì KHÔNG phải lý do (ứng dụng tự chuyển nó sang thư mục tạm khi chuẩn bị dời - xem preflightMove).
 QString runningFromDriveReason(const QString& driveLetter);
+/// Cho phép BUỘC THÁO ổ (giống "chkdsk /x") khi khóa ổ thất bại vì vẫn có thứ giữ ổ mà không dừng được (phần mềm bảo mật tự bảo vệ, trình điều
+/// khiển...): tháo cưỡng bức - MỌI handle đang mở trên ổ trở thành vô hiệu (chương trình đang giữ mất quyền truy cập tệp của nó) - rồi khóa lại
+/// NGAY. CHỈ bật khi người dùng đồng ý rõ ràng (nút "Buộc tháo ổ" của cửa sổ dời phân vùng); mặc định TẮT. Áp dụng cho mọi lần khóa ổ sau đó
+/// trong tiến trình này (cả bước kiểm tra trước lẫn bước chép). v1.33.2.
+void setForceDismountAllowed(bool allowed);
+bool forceDismountAllowed();
+
 /// Kiểm tra TRƯỚC khi đổi bất cứ thứ gì (kể cả bước thu nhỏ của Windows): ổ có khóa được không (thử khóa rồi mở khóa ngay, KHÔNG tháo), cờ bẩn,
 /// ứng dụng không chạy từ ổ này. Rỗng nếu ổn; ngược lại là lý do rõ ràng (kèm danh sách chương trình đang giữ ổ). Cần quyền Administrator; không ghi gì xuống đĩa.
 QString preflightMove(int diskNumber, int partitionNumber, const QString& driveLetter);
@@ -61,6 +68,17 @@ bool canAbandon(const PartitionMove::JournalState& state);
 // ---- Lõi thuần của việc đổi bảng phân vùng (test được bằng bộ đệm dựng tay, không cần đĩa) ----
 namespace internal
 {
+/// Quyết định trả lại chữ ổ sau khi dời (thuần - test được): want = chữ ổ cũ ("D"), currentLetters = chữ ổ hiện có của ổ ở vị trí mới,
+/// wantOwnerVolume = "\\?\Volume{...}\" đang giữ chữ 'want' (rỗng nếu chữ đó đang trống), selfVolume = ổ vừa dời.
+/// assign=false + note khi chữ đang thuộc ổ KHÁC (không bao giờ giành). removeLetters = chữ Windows tự gán cần bỏ trước khi gán lại chữ cũ.
+struct LetterAction
+{
+    bool assign{false};
+    QStringList removeLetters;
+    QString note;
+};
+LetterAction decideDriveLetter(const QString& want, const QStringList& currentLetters, const QString& wantOwnerVolume, const QString& selfVolume);
+
 /// Bộ đệm DRIVE_LAYOUT_INFORMATION_EX do IOCTL_DISK_GET_DRIVE_LAYOUT_EX trả về.
 struct LayoutView
 {

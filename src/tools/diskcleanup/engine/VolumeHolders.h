@@ -11,9 +11,11 @@
  * cửa sổ dời phân vùng (v1.33.0, kiểm KỸ từ v1.33.1).
  *
  * Các bước (đều CHỈ ĐỌC):
- *  1. exe/DLL nạp từ ổ (EnumProcessModulesEx).
+ *  1. exe nằm trên ổ + mọi thứ ÁNH XẠ vào bộ nhớ từ ổ (VirtualQueryEx + GetMappedFileNameW): DLL/exe và tệp dữ liệu ánh xạ - giữ ổ cả khi chương
+ *     trình đã đóng handle tệp (v1.33.2). Trình điều khiển (.sys) nạp từ ổ (EnumDeviceDrivers).
  *  2. Toàn bộ handle của hệ thống (NtQuerySystemInformation SystemExtendedHandleInformation) loại "File": nhân bản về rồi hỏi số sê-ri ổ + đường dẫn trên
- *     một luồng phụ có hạn giờ (hỏi một ống dẫn đồng bộ đang chờ đọc có thể treo vô hạn). Không thấy được handle của nhân Windows (PID 4) và của tiến
+ *     một luồng phụ có hạn giờ (hỏi một ống dẫn đồng bộ đang chờ đọc có thể treo vô hạn). Handle mở THẲNG cả ổ ("\\.\X:" - đọc thô) thì hai câu hỏi
+ *     đó đều thất bại (đo thật, mã 1) -> so TÊN đối tượng nhân với "\Device\HarddiskVolumeN" của ổ (v1.33.2 - bản trước bỏ sót loại này). Không thấy được handle của nhân Windows (PID 4) và của tiến
  *     trình được bảo vệ (csrss, phần mềm diệt virus, vmmem của WSL...) vì không nhân bản được.
  *  3. (v1.33.1) KIỂM KỸ: mở chỉ để đọc thuộc tính (chia sẻ toàn phần - không cản ai, không đọc nội dung) rồi hỏi Windows "PID nào đang mở tệp này"
  *     (NtQueryInformationFile FileProcessIdsUsingFileInformation) - thấy CẢ nhân Windows (PID 4 - ổ ảo VHDX/ISO đang gắn, bản sao bóng, registry
@@ -47,6 +49,7 @@ struct Holder
     int openHandles{0};        // số tệp/thư mục KHÁC NHAU trên ổ đang mở
     bool imageOnDrive{false};  // exe nằm trên ổ
     bool moduleOnDrive{false}; // nạp DLL từ ổ
+    bool mappedOnDrive{false}; // ánh xạ tệp dữ liệu trên ổ vào bộ nhớ (giữ ổ cả khi đã đóng handle tệp)
     bool critical{false};      // tiến trình hệ thống - KHÔNG cho dừng
     bool self{false};          // chính ứng dụng này
     QString hint;              // giải thích vì sao nó giữ ổ / cách gỡ (vd "bản sao bóng (VSS) của ổ")

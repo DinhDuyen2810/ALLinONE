@@ -675,6 +675,15 @@ int main(int argc, char** argv)
         };
         finished(false, false, -2); // kiểm tra trước không đạt (chưa đổi gì) -> THỬ LẠI được ngay
         CHECK(w.startEnabled() && w.startButtonText().contains("Thử lại"));
+        // v1.33.2: nút "Buộc tháo ổ" CHỈ hiện khi lỗi là KHÔNG KHÓA ĐƯỢC ổ (và lượt này chưa buộc tháo) - KHÔNG bấm (sẽ chạy dời thật).
+        auto* forceBtn = w.findChild<QPushButton*>("runForceDismountButton");
+        CHECK(forceBtn != nullptr && forceBtn->isHidden()); // lỗi khác -> ẩn
+        QMetaObject::invokeMethod(&w, "onFinished", Qt::DirectConnection, Q_ARG(bool, false), Q_ARG(bool, false),
+                                  Q_ARG(QString, QString("Không khóa được ổ D: - đang có chương trình giữ ổ này... (Access is denied. (mã 5))")),
+                                  Q_ARG(int, -2));
+        CHECK(forceBtn && !forceBtn->isHidden() && forceBtn->isEnabled());
+        CHECK(w.findChild<QFrame*>("runHoldersPanel") && !w.findChild<QFrame*>("runHoldersPanel")->isHidden());
+        CHECK(!PartitionMover::forceDismountAllowed());
         finished(false, false, 0);   // bước đầu lỗi trước khi ghi -> thử lại được
         CHECK(w.startEnabled() && w.startButtonText().contains("Thử lại"));
         finished(false, true, 1);    // dừng giữa lúc chép (có nhật ký) -> TIẾP TỤC

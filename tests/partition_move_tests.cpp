@@ -1055,6 +1055,24 @@ int main(int argc, char** argv)
         AppPaths::setDataDirOverride(QString());
     }
 
+    // ---- v1.33.2: trả lại ĐÚNG chữ ổ sau khi dời (đĩa MBR: Windows nhớ chữ ổ theo vị trí nên ổ dời xong có thể bị gán chữ khác) ----
+    {
+        using PartitionMover::internal::decideDriveLetter;
+        const QString self = "\\\\?\\Volume{aaaa}\\";
+        auto a = decideDriveLetter("D", {"D"}, self, self); // đã đúng chữ
+        CHECK(!a.assign && a.removeLetters.isEmpty() && a.note.isEmpty());
+        a = decideDriveLetter("D", {}, "", self); // không có chữ nào, D: trống -> gán D:
+        CHECK(a.assign && a.removeLetters.isEmpty());
+        a = decideDriveLetter("d", {"E"}, "", self); // Windows tự gán E: -> bỏ E:, gán lại D:
+        CHECK(a.assign && a.removeLetters == QStringList{"E"});
+        a = decideDriveLetter("D", {"E"}, "\\\\?\\Volume{bbbb}\\", self); // D: đang thuộc ổ KHÁC -> không giành
+        CHECK(!a.assign && a.note.contains("ổ khác") && a.note.contains("E"));
+        a = decideDriveLetter("D", {"E"}, "\\\\?\\volume{AAAA}", self); // D: vẫn trỏ về chính ổ này (khác hoa/thường, thiếu "\") -> gán
+        CHECK(a.assign && a.removeLetters == QStringList{"E"});
+        a = decideDriveLetter("", {"E"}, "", self); // không biết chữ cũ -> để nguyên
+        CHECK(!a.assign);
+    }
+
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

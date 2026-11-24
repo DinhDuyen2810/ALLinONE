@@ -60,6 +60,8 @@ private slots:
     void scanHolders();
     void onStopHolder(int row);
     void onStopAllHolders();
+    /// "Buộc tháo ổ rồi thử lại" (như chkdsk /x) - chỉ sau khi khóa ổ thất bại, hỏi xác nhận trước.
+    void onForceDismount();
 
 private:
     void scheduleCleanup();
@@ -89,6 +91,7 @@ private:
     QPushButton* m_holdersBtn{nullptr};
     QPushButton* m_rescanBtn{nullptr};
     QPushButton* m_stopAllBtn{nullptr};
+    QPushButton* m_forceBtn{nullptr};
     VolumeHolders::Report m_holders;
     QThread* m_holdersThread{nullptr};
     std::atomic_bool m_holdersStop{false};

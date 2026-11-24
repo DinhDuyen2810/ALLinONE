@@ -222,6 +222,8 @@ QString findVolume(int diskNumber, qint64 start, qint64 length)
     return found;
 }
 
+std::atomic_bool g_forceDismountAllowed{false};
+
 /// Ổ đã khóa + tháo: giữ tay cầm mở cho tới khi hủy đối tượng (khi đó mở khóa) - nên không chương trình nào gắn lại ổ trong lúc đang ghi.
 class LockedVolume
 {
@@ -237,15 +239,56 @@ public:
             return false;
         }
         bool locked = false;
+        DWORD code = ERROR_SUCCESS;
         for (int attempt = 0; attempt < 20 && !locked; ++attempt)
         {
             locked = ioctl(m_h.get(), FSCTL_LOCK_VOLUME, nullptr, 0, nullptr, 0);
             if (!locked)
+            {
+                code = GetLastError();
                 Sleep(500);
+            }
+        }
+        bool forced = false;
+        if (!locked && g_forceDismountAllowed.load())
+        {
+            // Người dùng đã đồng ý BUỘC THÁO (như chkdsk /x): FSCTL_DISMOUNT_VOLUME khi chưa khóa được vẫn thực hiện - mọi handle đang mở trên ổ
+            // thành vô hiệu (chúng thuộc lần gắn CŨ) - rồi mở handle MỚI (ổ gắn lại sạch) và khóa với cùng độ kiên nhẫn như đường thường: ngay
+            // khi ổ gắn lại, các thành phần Windows (Explorer, chống virus, chỉ mục...) mở ổ rồi tự nhả khi nhận thông báo khóa - cần vài trăm ms.
+            // Đo thật trên VHDX (v1.33.2): tháo lại mỗi 150 ms làm ổ liên tục gắn lại nên KHÔNG BAO GIỜ khóa được. Chỉ tháo lại (tối đa 2 lần)
+            // khi cả loạt thử khóa vẫn thất bại. Chỉ tiếp tục khi KHÓA ĐƯỢC THẬT; không thì báo lỗi như thường, không ghi gì.
+            forced = true;
+            Logger::instance().warning("PartitionMover", QStringLiteral("Khóa ổ thất bại (%1) - BUỘC THÁO ổ theo yêu cầu người dùng").arg(winError(code)));
+            for (int pass = 0; pass < 3 && !locked; ++pass)
+            {
+                if (!ioctl(m_h.get(), FSCTL_DISMOUNT_VOLUME, nullptr, 0, nullptr, 0))
+                {
+                    code = GetLastError();
+                    break; // vd ổ chứa pagefile - Windows không cho tháo
+                }
+                m_h.reset(); // đóng handle ở lần gắn cũ TRƯỚC khi mở lại
+                m_h.reset(CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                                      FILE_FLAG_NO_BUFFERING, nullptr));
+                if (!m_h.valid())
+                {
+                    code = GetLastError();
+                    break;
+                }
+                for (int attempt = 0; attempt < 20 && !locked; ++attempt)
+                {
+                    locked = ioctl(m_h.get(), FSCTL_LOCK_VOLUME, nullptr, 0, nullptr, 0);
+                    if (!locked)
+                    {
+                        code = GetLastError();
+                        Sleep(250);
+                    }
+                }
+            }
+            Logger::instance().info("PartitionMover", locked ? QStringLiteral("Buộc tháo ổ: đã khóa được ổ")
+                                                             : QStringLiteral("Buộc tháo ổ: vẫn không khóa được (%1)").arg(winError(code)));
         }
         if (!locked)
         {
-            const DWORD code = GetLastError();
             if (error)
             {
                 QString msg = QStringLiteral("Không khóa được ổ%1 - đang có chương trình giữ ổ này (cửa sổ Explorer/Terminal/VS Code đang mở ở ổ, chương trình đang chạy từ ổ, "
@@ -270,6 +313,9 @@ public:
                 }
                 if (holders.pagefileOnDrive)
                     msg += QStringLiteral("\nỔ này có tệp hoán trang (pagefile) - phải tắt bộ nhớ ảo trên ổ rồi khởi động lại máy.");
+                if (forced)
+                    msg += QStringLiteral("\nĐã thử BUỘC THÁO ổ (như chkdsk /x) nhưng vẫn không khóa được - thường do pagefile, ổ đĩa ảo/máy ảo đang chạy từ "
+                                          "ổ này, hoặc trình điều khiển giữ ổ. Khởi động lại máy rồi dời ngay.");
                 *error = msg;
             }
             m_h.reset();
@@ -392,18 +438,53 @@ bool volumeMountsAsNtfs(const QString& volumePath, QString* detail)
     return true;
 }
 
-/// Gán lại chữ ổ nếu Windows làm mất (đĩa MBR định danh ổ theo vị trí nên chữ ổ cũ không đi theo).
-void ensureDriveLetter(const QString& volumePath, const QString& letter)
+/// Trả lại ĐÚNG chữ ổ cũ cho ổ ở vị trí mới. Đĩa MBR: Windows (MountedDevices) nhớ chữ ổ theo "chữ ký đĩa + VỊ TRÍ bắt đầu" - dời xong
+/// ổ thành "ổ mới", Windows có thể không gán chữ nào hoặc tự gán chữ KHÁC (E:, F:...) - bản cũ chỉ gán khi ổ KHÔNG có chữ nào nên để
+/// nguyên chữ lạ. GPT nhớ theo GUID phân vùng (không đổi khi dời) nên thường giữ được chữ cũ. Không bao giờ giành chữ đang thuộc ổ KHÁC.
+/// Trả về ghi chú khi không trả lại được (rỗng nếu ổn).
+QString ensureDriveLetter(const QString& volumePath, const QString& letter)
 {
     if (letter.isEmpty())
-        return;
-    const std::wstring vol = volumePath.toStdWString() + L"\\";
-    wchar_t names[1024] = {};
-    DWORD len = 0;
-    if (GetVolumePathNamesForVolumeNameW(vol.c_str(), names, 1024, &len) && names[0] != L'\0')
-        return; // đã có điểm gắn (thường là chữ ổ cũ)
-    const std::wstring mount = letter.left(1).toUpper().toStdWString() + L":\\";
-    SetVolumeMountPointW(mount.c_str(), vol.c_str());
+        return {};
+    std::wstring vol = volumePath.toStdWString();
+    if (vol.empty() || vol.back() != L'\\')
+        vol += L'\\';
+    const QString want = letter.left(1).toUpper();
+    const std::wstring mount = want.toStdWString() + L":\\";
+    QStringList current;
+    {
+        std::vector<wchar_t> names(4096, L'\0');
+        DWORD len = 0;
+        if (GetVolumePathNamesForVolumeNameW(vol.c_str(), names.data(), static_cast<DWORD>(names.size()), &len))
+            for (const wchar_t* p = names.data(); *p; p += wcslen(p) + 1)
+            {
+                const QString n = QString::fromWCharArray(p);
+                if (n.size() == 3 && n.at(1) == QLatin1Char(':'))
+                    current << n.left(1).toUpper();
+            }
+    }
+    QString owner;
+    {
+        wchar_t guid[MAX_PATH] = {};
+        if (GetVolumeNameForVolumeMountPointW(mount.c_str(), guid, MAX_PATH))
+            owner = QString::fromWCharArray(guid);
+    }
+    const internal::LetterAction act = internal::decideDriveLetter(want, current, owner, QString::fromStdWString(vol));
+    if (!act.assign)
+        return act.note;
+    for (const QString& l : act.removeLetters)
+        DeleteVolumeMountPointW((l + QStringLiteral(":\\")).toStdWString().c_str());
+    DeleteVolumeMountPointW(mount.c_str()); // bản ghi cũ trỏ tới ổ (ở vị trí cũ) không còn nữa - bỏ qua lỗi
+    if (SetVolumeMountPointW(mount.c_str(), vol.c_str()))
+    {
+        Logger::instance().info("PartitionMover", QStringLiteral("Trả lại chữ ổ %1: cho ổ ở vị trí mới (bỏ %2)").arg(want, act.removeLetters.join(",")));
+        return {};
+    }
+    const DWORD code = GetLastError();
+    for (const QString& l : act.removeLetters) // không gán được chữ cũ: trả lại chữ Windows đã gán để ổ không mất chữ
+        SetVolumeMountPointW((l + QStringLiteral(":\\")).toStdWString().c_str(), vol.c_str());
+    return QStringLiteral("Không trả lại được chữ ổ %1: (%2) - ổ đang dùng chữ %3.")
+        .arg(want, winError(code), act.removeLetters.isEmpty() ? QStringLiteral("(không có)") : act.removeLetters.join(", "));
 }
 
 QString letterOfPath(const QString& path)
@@ -546,6 +627,16 @@ QString preflightMove(int diskNumber, int partitionNumber, const QString& driveL
     return {};
 }
 
+void setForceDismountAllowed(bool allowed)
+{
+    g_forceDismountAllowed = allowed;
+}
+
+bool forceDismountAllowed()
+{
+    return g_forceDismountAllowed.load();
+}
+
 // ------------------------------------------------------------------------------------------------ nhật ký
 
 QString journalPath()
@@ -644,6 +735,33 @@ size_t layoutByteSize(const std::vector<char>& raw)
 {
     const auto* l = asLayout(raw);
     return l ? offsetof(DRIVE_LAYOUT_INFORMATION_EX, PartitionEntry) + static_cast<size_t>(l->PartitionCount) * sizeof(PARTITION_INFORMATION_EX) : 0;
+}
+
+LetterAction decideDriveLetter(const QString& want, const QStringList& currentLetters, const QString& wantOwnerVolume, const QString& selfVolume)
+{
+    LetterAction a;
+    if (want.isEmpty())
+        return a;
+    const QString w = want.left(1).toUpper();
+    if (currentLetters.contains(w, Qt::CaseInsensitive))
+        return a; // đã đúng chữ
+    auto norm = [](QString v) {
+        v = v.trimmed().toLower();
+        while (v.endsWith(QLatin1Char('\\')))
+            v.chop(1);
+        return v;
+    };
+    if (!wantOwnerVolume.isEmpty() && norm(wantOwnerVolume) != norm(selfVolume))
+    {
+        a.note = QStringLiteral("chữ ổ %1: đang thuộc một ổ khác nên không lấy lại%2.")
+                     .arg(w, currentLetters.isEmpty() ? QString() : QStringLiteral(" - ổ vừa dời đang dùng chữ ") + currentLetters.join(", "));
+        return a;
+    }
+    a.assign = true;
+    for (const QString& l : currentLetters)
+        if (l.compare(w, Qt::CaseInsensitive) != 0)
+            a.removeLetters << l.left(1).toUpper();
+    return a;
 }
 
 LayoutView inspectLayout(const std::vector<char>& raw)
@@ -1041,9 +1159,10 @@ void MoveWorker::run()
                                            "nếu vẫn lỗi, chạy chkdsk trên ổ này.").arg(detail));
         return;
     }
-    ensureDriveLetter(newVolume, letter);
+    const QString letterNote = ensureDriveLetter(newVolume, letter);
     discardJournal();
-    finish(true, false, QStringLiteral("Đã dời xong và kiểm tra: ổ ở vị trí mới gắn được và đọc được thư mục gốc."));
+    finish(true, false, QStringLiteral("Đã dời xong và kiểm tra: ổ ở vị trí mới gắn được và đọc được thư mục gốc.") +
+                            (letterNote.isEmpty() ? QString() : QStringLiteral("\nLưu ý: ") + letterNote));
 }
 
 // ------------------------------------------------------------------------------------------------ cả kế hoạch
