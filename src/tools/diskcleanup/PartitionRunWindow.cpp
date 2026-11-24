@@ -548,6 +548,8 @@ void PartitionRunWindow::showHolders(const VolumeHolders::Report& report)
         m_holdersTable->setCellWidget(i, 3, cell);
     }
     m_stopAllBtn->setEnabled(stoppable > 0 && !m_running);
+    // Không còn gì để dừng: nút "Buộc tháo ổ" là đường duy nhất còn lại - làm nổi bật.
+    m_forceBtn->setStyleSheet(stoppable == 0 && report.error.isEmpty() ? DiskUi::dangerButtonStyle() : DiskUi::buttonStyle());
 
     QStringList lines;
     bool anyStoppable = false;
@@ -556,10 +558,10 @@ void PartitionRunWindow::showHolders(const VolumeHolders::Report& report)
     if (!report.error.isEmpty())
         lines << "⚠ " + report.error;
     else if (report.holders.isEmpty())
-        lines << QStringLiteral("Đã kiểm kỹ mà KHÔNG thấy chương trình/dịch vụ/thành phần Windows nào đang mở tệp trên ổ %1:. Bấm \"Thử lại\". Nếu vẫn "
-                                "không khóa được: (1) tạm tắt bảo vệ thời gian thực của phần mềm diệt virus/mã hóa/sao lưu (trình điều khiển của chúng "
-                                "giữ tệp mà không ứng dụng nào thấy được); (2) tắt \"Bảo vệ hệ thống\" (điểm khôi phục) cho ổ %1:; (3) khởi động lại "
-                                "máy rồi dời NGAY, trước khi mở chương trình khác.")
+        lines << QStringLiteral("Đã kiểm kỹ mà KHÔNG thấy chương trình/dịch vụ/thành phần Windows nào đang mở tệp trên ổ %1: - thứ chặn khóa ổ đang ở "
+                                "mức DRIVER/tiến trình được bảo vệ (phần mềm diệt virus như Defender, EDR, ổ đĩa ảo/WSL2...) mà không ứng dụng nào nhìn "
+                                "thấy được. Cách nhanh nhất: bấm \"⚠ Buộc tháo ổ rồi thử lại\" (như chkdsk /x). Nếu vẫn không được: khởi động lại máy "
+                                "rồi dời NGAY, chưa mở WSL/Docker/VS Code/phần mềm đồng bộ.")
                      .arg(letter);
     else if (!anyStoppable)
         lines << QStringLiteral("Ổ %1: đang bị giữ bởi thành phần của Windows (không dừng được từ đây) - xem cột \"Đang giữ\" để biết cách gỡ, rồi bấm "
@@ -579,6 +581,16 @@ void PartitionRunWindow::showHolders(const VolumeHolders::Report& report)
         lines << QStringLiteral("Lưu ý: chưa quét hết được mọi tệp đang mở (một số truy vấn bị treo) - danh sách có thể thiếu.");
     for (const QString& note : report.notes)
         lines << note;
+    if (!report.filters.isEmpty())
+    {
+        QStringList hints;
+        for (const QString& f : report.filters)
+            if (const QString h = VolumeHolders::filterHint(f); !h.isEmpty())
+                hints << "• " + h;
+        lines << QStringLiteral("Driver lọc đang gắn vào ổ %1: %2").arg(letter, report.filters.join(", "));
+        if (!hints.isEmpty() && (report.holders.isEmpty() || !anyStoppable))
+            lines << hints.join("\n");
+    }
     if (report.deepScanDone)
         lines << QStringLiteral("Đã kiểm kỹ: liệt kê %1 tệp/thư mục, hỏi \"ai đang mở\" %2 tệp có khả năng bị giữ%3.")
                      .arg(report.entriesListed)

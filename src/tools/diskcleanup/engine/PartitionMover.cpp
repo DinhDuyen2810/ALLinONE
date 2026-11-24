@@ -313,6 +313,9 @@ public:
                 }
                 if (holders.pagefileOnDrive)
                     msg += QStringLiteral("\nỔ này có tệp hoán trang (pagefile) - phải tắt bộ nhớ ảo trên ổ rồi khởi động lại máy.");
+                if (!forced && names.isEmpty())
+                    msg += QStringLiteral("\nKhông chương trình nào thấy được đang giữ ổ - thứ giữ ổ ở mức driver/tiến trình được bảo vệ. Dùng nút "
+                                          "\"⚠ Buộc tháo ổ rồi thử lại\" (như chkdsk /x) trong cửa sổ dời phân vùng.");
                 if (forced)
                     msg += QStringLiteral("\nĐã thử BUỘC THÁO ổ (như chkdsk /x) nhưng vẫn không khóa được - thường do pagefile, ổ đĩa ảo/máy ảo đang chạy từ "
                                           "ổ này, hoặc trình điều khiển giữ ổ. Khởi động lại máy rồi dời ngay.");

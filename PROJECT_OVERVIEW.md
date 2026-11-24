@@ -3637,6 +3637,40 @@ trình test được dò ra, cờ buộc tháo), `diskcleanup_ui_tests` 403/0 (n
 
 **CHƯA kiểm chứng**: ổ vật lý thật của người dùng (D: trên NVMe) với phần mềm bảo mật thật đang giữ ổ; driver nạp từ ổ (không dựng được trong test).
 
+## 4zzo. Dời phân vùng: chẩn đoán thật "không thấy ai mà vẫn không khóa được ổ D:" - driver lọc gắn vào ổ, nút "Buộc tháo ổ" nổi bật (v1.33.3, 2026-11-25)
+
+**Yêu cầu người dùng** (kèm ảnh, sau v1.33.2): "vẫn k đc, check xem" - cửa sổ dời phân vùng vẫn báo "Đã kiểm kỹ mà KHÔNG thấy chương trình/dịch vụ/
+thành phần Windows nào đang mở tệp trên ổ D:" (hỏi 729 tệp) với 15 tiến trình được bảo vệ không đọc được, và khóa ổ D: vẫn "Access is denied (mã 5)".
+
+**Chẩn đoán thật trên máy người dùng** - công cụ kiểm tra tay mới `volume_lock_diagnose <ổ> <log>` (cần Administrator, CHỈ ĐỌC: thử khóa rồi mở khóa
+ngay, không tháo/dời/dừng gì):
+- Thử khóa D: -> mã 5 (lỗi còn nguyên).
+- `VolumeHolders::scan` (đúng hàm của app): chỉ còn các tiến trình của phiên làm việc (Code.exe, claude.exe, bash, powershell) đang mở `D:\ALLinONE`.
+- Hỏi "PID nào đang mở" cho **TOÀN BỘ 131.111 tệp/thư mục** của D: (12 luồng, 772 giây): đúng các tiến trình trên; **không có PID 4 (nhân Windows)**,
+  không có tệp bị giữ ĐỘC QUYỀN, không mở hỏng tệp nào -> bước kiểm kỹ có giới hạn của app (729-741 tệp) KHÔNG bỏ sót gì so với quét hết.
+- `vssadmin list shadows/shadowstorage`: không có bản sao bóng; `fsutil dirty query`: ổ không bẩn; không ổ ảo nào (VHDX/ISO trên D:) đang gắn; WSL tắt.
+- `fltmc instances -v D:`: **FsDepends, UCPD, WdFilter, CldFlt, Wof, FileInfo**.
+- Kết luận: thứ chặn khóa ổ ở mức DRIVER hoặc tiến trình được bảo vệ (MsMpEng/MpDefenderCoreService của Defender, csrss...) - không để lại handle mà ứng
+  dụng (kể cả Admin + SeDebugPrivilege) đọc được. Ứng viên: WdFilter/Defender, CldFlt (D:\V2NextCloud là thư mục đồng bộ), FsDepends (ổ chứa tệp đĩa
+  ảo WSL2; Windows gắn nó vào ổ có đĩa ảo đang/từng được gắn). CHƯA xác định được cái nào - không tắt thử Defender/đồng bộ trên máy người dùng (quy tắc 5).
+
+**Sửa**:
+- `VolumeHolders::scan` (khi có Admin, bước 5b): chạy `fltmc instances -v X:` (`AppPaths::systemExecutable`), `Report::filters` = tên driver lọc.
+  Hàm thuần `parseFltmcInstances` (đọc các dòng sau dòng gạch ngang - chịu được tiêu đề Windows bản địa hóa) và `filterHint` (FsDepends -> đĩa ảo/WSL2,
+  WdFilter -> Defender, CldFlt -> đồng bộ đám mây; driver Windows quen thuộc như FileInfo/Wof/UCPD/luafv/bindflt -> bỏ qua; driver lạ -> có thể là
+  EDR/sao lưu/mã hóa).
+- `PartitionRunWindow::showHolders`: dòng "Driver lọc đang gắn vào ổ D:: ..." + giải thích (khi bảng trống hoặc không còn gì dừng được); văn bản "không
+  thấy ai" viết lại: thứ chặn ở mức driver -> bấm "⚠ Buộc tháo ổ rồi thử lại" (như chkdsk /x) trước, không được thì khởi động lại máy rồi dời NGAY, chưa
+  mở WSL/Docker/VS Code/phần mềm đồng bộ. Nút buộc tháo đổi sang kiểu `dangerButtonStyle` (đỏ) khi không còn gì dừng được.
+- `PartitionMover` - thông báo "Không khóa được ổ": khi bảng nhanh không thấy ai và chưa buộc tháo, chỉ tới nút "Buộc tháo ổ rồi thử lại".
+
+**Kiểm**: `diskcleanup_tests` 4938/0 (+11 - đầu ra thật của `fltmc` trên D:, không quyền, rỗng, giải thích từng driver), `diskcleanup_ui_tests` 407/0
+(+4), `partition_move_tests` 346/0, `disk_vpn_stress_tests` 7345/0. Thật: `volume_holders_real_check D: --quick` với Admin in đúng 6 driver lọc
++ giải thích (1,6 giây).
+
+**CHƯA kiểm chứng**: "Buộc tháo ổ" trên ổ D: thật (NVMe) của người dùng; driver nào thực sự chặn khóa ổ. Lời khuyên cho người dùng: đóng VS Code/
+Claude/terminal đang mở thư mục trên D:, bấm "Buộc tháo ổ rồi thử lại"; nếu vẫn lỗi thì khởi động lại và dời ngay.
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
@@ -3820,6 +3854,7 @@ Quy tắc đứng nằm ở `CLAUDE.md` (gốc dự án). Tóm tắt - mỗi l�
 | 2026-10-22 | VPN: bỏ OpenVPN -> SSTP; sửa lỗi gốc quay số RAS; kết nối trực tiếp FortiGate/GlobalProtect (v1.19.31) | Mục 4zq. OpenVPN treo vì lời nhắc `ENTER PASSWORD:` không bị xóa khỏi bộ đệm (không gửi `hold release`) + rò `openvpn.exe` nâng quyền khi hết giờ -> gỡ hẳn. VPN Gate nối SSTP (RAS gốc, `<HostName>.opengw.net` khớp chứng chỉ Let's Encrypt). Lỗi gốc `VpnConnector`: mã 6 TẠM THỜI của `RasGetConnectStatusW` ở +16ms bị coi là thất bại -> mọi lần quay số qua app hỏng (cả "Lỗi 6" người dùng gặp từ đầu); `dwNotifierType` sửa lại 1 (v1.19.27 đổi nhầm 2). Đã đổi IP THẬT bằng code của app (VN -> Tokyo). Kết nối trực tiếp FortiGate SSL-VPN/GlobalProtect: client giao thức tự viết (PPP/LCP/IPCP, đăng nhập/OTP/cấu hình), adapter wintun.dll + iphlpapi, tiến trình phụ nâng quyền `--vpn-helper` (pipe + mã một lần, tự dọn khi pipe đóng), ghim vân tay chứng chỉ tự ký. `vpn_tests` 219/0, `vpn_ui_tests` 7/0, `vpn_direct_tests` 150/0 (mới; máy chủ FortiGate/GP giả đầu-cuối). Đã chạy thật: adapter wintun Admin 10/10, thăm dò 3/3 máy chủ thật (không đăng nhập). CHƯA kiểm chứng: đăng nhập + đường hầm bằng tài khoản cơ quan thật. Chỉ push code, KHÔNG tag/Release. |
 | 2026-10-22 | Lấy IP chậm sau khi nối VPN + rà giao diện bằng ảnh chụp thật (v1.19.32) | Mục 4zr. Kết nối HTTPS keep-alive cũ kẹt sau khi tuyến đổi -> 8 s rồi hủy; `clearConnectionCache()` + thử lại 1 lần -> 1093 ms. Công cụ `ui_snapshot` (offscreen hoặc kiểu gốc không hiện màn hình) rà 8 công cụ: sửa cắt chữ hàng điều khiển VPN Gate (2 hàng, NAT chỉ khi L2TP), ô Cổng, nút Android, nhóm ghép đôi Connect bị ép. Nhật ký chẩn đoán kết nối trực tiếp. vpn 219/7, vpn_direct 150, android 153/30, connect_ui 17. Chỉ push code, KHÔNG tag/Release. |
 | 2026-10-23..24 | Kết nối trực tiếp FortiClient IPsec: client IKEv1 tự viết (v1.19.33→39) | Mục 4zs-4zv. v1.19.33: kết nối trực tiếp CHẠY THẬT với FortiGate người dùng + lưu tài khoản + sửa DNS nội bộ. v1.19.34: GlobalProtect nộp HIP (sửa rớt ~60s). v1.19.35: GlobalProtect kênh ESP (gateway bắt buộc). **v1.19.36**: hồ sơ FortiClient IPsec (VPN_CVTLT) nối trực tiếp bằng client **IKEv1 tự viết** (`IkeCrypto`+`IsakmpMessage`+`IkeKeys`+`IkeSession`, dựa BCrypt): Aggressive+PSK+XAuth+Mode-config+Quick Mode+ESP; IKE+ESP chung socket UDP (NAT-T 4500). Test `ike_crypto_check` 47/0, `ike_session_check` 24/0 (bắt tay TRỌN VẸN offline với responder giả, khớp khóa ESP hai bên), `vpn_direct_tests` 357/0. **v1.19.37**: dò thật gateway (`ike_real_probe`, không đăng nhập) xác nhận gateway dùng **nhóm 20 ECP-384 + AES-256 + SHA-256 + XAUTHPSK + NAT-T** → thêm ECDH (nhóm 19/20/21) vào IkeCrypto, IkeSession chào nhiều transform + đọc transform gateway chọn; `ike_crypto_check` 59/0. **v1.19.38**: với PSK + tài khoản thật, `ike_real_connect` hoàn tất **bắt tay IKEv1 đầu-cuối THẬT** (Phase 1→XAuth→Mode-config cấp IP→Quick Mode→khóa ESP). Sửa: mã thuộc tính XAuth (STATUS=16527/MESSAGE=16524), PFS nhóm 20, nhiều transform ESP + đọc transform gateway chọn (AES-256-CBC+SHA1), đóng gói Tunnel(1) (FortiGate từ chối UDP-Tunnel 3/61443), proxy 0/0, ESP seq=1. **v1.19.39**: bắt gói (`pktmon`) so với FortiClient -> client+app nay khớp FortiClient trên dây (UDP 4500↔4500 từ cổng 4500, NAT-T từ msg1, NAT-D). Tầng DỮ LIỆU ESP VẪN CHẶN: gói ESP ra đúng (giống FortiClient) mà gateway im (thử 5 biến thể KEYMAT); SA đã cài; cần nhật ký phía FortiGate. Chỉ push code, KHÔNG tag/Release. |
+| 2026-11-25 | Dời phân vùng: chẩn đoán thật ổ D: không khóa được + driver lọc + nút buộc tháo nổi bật (v1.33.3) | Mục 4zzo. Quét HẾT 131.111 tệp/thư mục D: bằng Admin: chỉ phiên VS Code/Claude giữ, không PID 4, không độc quyền/VSS/ổ ảo -> chặn ở mức driver/tiến trình được bảo vệ. App liệt kê driver lọc (`fltmc instances`) kèm giải thích, nút "Buộc tháo ổ" đỏ khi không còn gì dừng được; công cụ tay `volume_lock_diagnose`. CHƯA kiểm buộc tháo trên D: thật. |
 | 2026-11-24 | Dời phân vùng: thứ giữ ổ vô hình + buộc tháo ổ + giữ chữ ổ MBR, kiểm thật VHDX (v1.33.2) | Mục 4zzn. Handle mở thẳng cả ổ (đọc thô) bị bỏ sót vì không hỏi được sê-ri/đường dẫn -> so tên đối tượng; thêm ánh xạ bộ nhớ + driver; nút "Buộc tháo ổ" (chkdsk /x, có xác nhận); MBR trả lại đúng chữ ổ (`decideDriveLetter`). Tham khảo GParted/KPMcore/ntfs-3g/Rufus. `partition_move_real_check` chạy THẬT lần đầu: GPT + MBR x 9 kịch bản, đợt 2 và 3 đều 218/0. `partition_move_tests` 346/0, `diskcleanup_tests` 4945/0, `diskcleanup_ui_tests` 403/0. CHƯA: ổ D: thật với EDR thật. |
 | 2026-11-24 | Dời phân vùng: kiểm KỸ ai đang giữ ổ (v1.33.1) | Mục 4zzm. Dừng hết bảng v1.33.0 vẫn không khóa được: thứ giữ ổ là nhân Windows/WSL/máy ảo/tiến trình được bảo vệ (máy build: 4 bản Linux WSL trên D:). Hỏi "PID nào đang mở" (FileProcessIdsUsingFileInformation, ~22 ms/tệp) cho tệp có khả năng bị giữ, song song, ~9,8 giây ổ D:; nút Tắt WSL / Tháo ổ ảo; gợi ý cho bản sao bóng/hive/pagefile. `diskcleanup_tests` 4918/0, `diskcleanup_ui_tests` 399/0, `partition_move_tests` 340/0. CHƯA: chạy thật với Admin, Tắt WSL/Tháo ổ ảo thật. |
 | 2026-11-24 | Dời phân vùng: liệt kê + dừng chương trình/dịch vụ giữ ổ (v1.33.0) | Mục 4zzl. "Không khóa được ổ (mã 5)" dù đã đóng VS Code: thủ phạm là chương trình chỉ mở tệp trên ổ (máy build: `nextcloud.exe`), bản cũ không dò ra. `VolumeHolders` dò handle tệp toàn hệ thống + DLL + dịch vụ + pagefile; cửa sổ dời có bảng Tên/dịch vụ - PID - Đang giữ - Dừng + Dừng tất cả. `diskcleanup_tests` 4899/0, `diskcleanup_ui_tests` 390/0, `partition_move_tests` 340/0. CHƯA: chạy thật với Admin, dừng dịch vụ thật. |

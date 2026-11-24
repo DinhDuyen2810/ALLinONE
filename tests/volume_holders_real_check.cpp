@@ -53,6 +53,11 @@ int main(int argc, char** argv)
     }
     for (const QString& n : r.notes)
         std::printf("Ghi chu: %s\n", n.toUtf8().constData());
+    if (!r.filters.isEmpty())
+        std::printf("Driver loc gan vao o: %s\n", r.filters.join(", ").toUtf8().constData());
+    for (const QString& f : r.filters)
+        if (const QString h = VolumeHolders::filterHint(f); !h.isEmpty())
+            std::printf("  - %s\n", h.toUtf8().constData());
     if (!r.unreadable.isEmpty())
         std::printf("Khong doc duoc %d tien trinh (duoc bao ve/thieu quyen): %s\n", static_cast<int>(r.unreadable.size()),
                     r.unreadable.mid(0, 15).join(", ").toUtf8().constData());

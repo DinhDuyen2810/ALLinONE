@@ -3392,6 +3392,28 @@ int main(int argc, char** argv)
         CHECK(VolumeHolders::systemHoldHint("D:\\Users\\a\\NTUSER.DAT").contains("registry"));
         CHECK(VolumeHolders::systemHoldHint("D:\\docs\\a.txt").isEmpty());
         CHECK(VolumeHolders::systemHoldHint("D:\\Tools\\drv\\filter.sys").contains("trình điều khiển"));
+
+        // v1.33.3: driver lọc gắn vào ổ - phân tích đúng đầu ra thật của "fltmc instances -v D:" (máy người dùng, 25/11/2026).
+        const QString fltmcOut = QStringLiteral(
+            "Instances for D: volume:\r\n\r\n"
+            "Filter                  Altitude        Instance Name       Frame   SprtFtrs  VlStatus\r\n"
+            "--------------------  ------------  ----------------------  -----   --------  --------\r\n"
+            "FsDepends                407000     FsDepends                 0     00000007  \r\n"
+            "UCPD                     385250.5   UCPD - Top Instance       0     0000000f  \r\n"
+            "WdFilter                 328010     WdFilter Instance         0     00000007  \r\n"
+            "CldFlt                   180451     CldFlt                    0     00000007  \r\n"
+            "Wof                       40700     Wof Instance              0     00000007  \r\n"
+            "FileInfo                  40500     FileInfo                  0     00000007\r\n");
+        const QStringList filters = VolumeHolders::parseFltmcInstances(fltmcOut);
+        CHECK(filters == QStringList({"FsDepends", "UCPD", "WdFilter", "CldFlt", "Wof", "FileInfo"}));
+        CHECK(VolumeHolders::parseFltmcInstances(QString()).isEmpty());
+        CHECK(VolumeHolders::parseFltmcInstances("Access is denied.\r\n").isEmpty()); // không có quyền -> không có bảng
+        CHECK(VolumeHolders::filterHint("FsDepends").contains("đĩa ảo"));
+        CHECK(VolumeHolders::filterHint("WdFilter").contains("Defender"));
+        CHECK(VolumeHolders::filterHint("CldFlt").contains("đồng bộ"));
+        CHECK(VolumeHolders::filterHint("FileInfo").isEmpty() && VolumeHolders::filterHint("Wof").isEmpty() &&
+              VolumeHolders::filterHint("UCPD").isEmpty());
+        CHECK(VolumeHolders::filterHint("SentinelMonitor").startsWith("SentinelMonitor:")); // driver lạ -> cảnh báo
         // Cờ "buộc tháo ổ" (chkdsk /x) của bộ dời: mặc định TẮT, bật/tắt được (đặt lại tắt sau khi kiểm).
         CHECK(!PartitionMover::forceDismountAllowed());
         PartitionMover::setForceDismountAllowed(true);

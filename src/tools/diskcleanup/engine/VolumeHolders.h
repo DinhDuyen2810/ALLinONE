@@ -68,6 +68,7 @@ struct Report
     QList<Holder> holders;           // xếp: gỡ được trước, nhiều tệp trước
     QStringList unreadable;          // tiến trình không nhân bản được handle (được bảo vệ / thiếu quyền)
     QStringList notes;               // ghi chú thêm (vd WSL có bản Linux trên ổ nhưng đang tắt)
+    QStringList filters;             // driver lọc (minifilter) đang gắn vào ổ - "fltmc instances" (chỉ đọc được khi có quyền Administrator)
     bool pagefileOnDrive{false};     // pagefile.sys / swapfile.sys nằm trên ổ
     bool elevated{false};            // quét với quyền Administrator
     bool handleScanComplete{true};   // false nếu quá nhiều truy vấn handle treo phải bỏ dở
@@ -100,6 +101,11 @@ bool isDiskImagePath(const QString& path);
 QList<quint32> processesUsingPath(const QString& path);
 /// Tên các mục trong thư mục, liệt kê qua handle FILE_FLAG_BACKUP_SEMANTICS (đọc được System Volume Information khi có SeBackupPrivilege).
 QStringList directoryEntriesByHandle(const QString& dir);
+
+/// Tên các driver lọc trong kết quả "fltmc instances -v X:" (cột đầu của các dòng sau dòng gạch ngang). Thuần - test được.
+QStringList parseFltmcInstances(const QString& output);
+/// Giải thích một driver lọc có thể giữ/chặn khóa ổ (rỗng nếu là driver hệ thống vô hại đã biết). v1.33.3.
+QString filterHint(const QString& filterName);
 
 /// Bật SeDebugPrivilege + SeBackupPrivilege cho tiến trình này (chỉ có tác dụng khi đang chạy với quyền Administrator).
 bool enableDebugPrivilege();

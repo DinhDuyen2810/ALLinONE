@@ -622,6 +622,49 @@ bool isDiskImagePath(const QString& path)
     return false;
 }
 
+QStringList parseFltmcInstances(const QString& output)
+{
+    QStringList out;
+    bool table = false;
+    for (const QString& raw : output.split(QLatin1Char('\n')))
+    {
+        const QString line = raw.trimmed();
+        if (line.startsWith(QLatin1String("----")))
+        {
+            table = true;
+            continue;
+        }
+        if (!table || line.isEmpty())
+            continue;
+        const QString name = line.section(QLatin1Char(' '), 0, 0, QString::SectionSkipEmpty);
+        if (!name.isEmpty() && !out.contains(name, Qt::CaseInsensitive))
+            out << name;
+    }
+    return out;
+}
+
+QString filterHint(const QString& filterName)
+{
+    const QString f = filterName.trimmed().toLower();
+    if (f == QLatin1String("fsdepends"))
+        return QStringLiteral("FsDepends: Windows ghi nhận ổ này đang/vừa CHỨA tệp đĩa ảo được gắn (VHD/VHDX/ISO, máy ảo WSL2/Docker/Hyper-V) và chặn "
+                              "khóa/tháo ổ chứa nó - tắt WSL (wsl --shutdown)/Docker/máy ảo, tháo ổ ảo; nếu vẫn bị thì khởi động lại máy rồi dời NGAY, "
+                              "đừng mở WSL/Docker trước khi dời xong");
+    if (f == QLatin1String("wdfilter"))
+        return QStringLiteral("WdFilter: Windows Defender quét tệp trên ổ - thường tự nhả khi ổ cần khóa; nếu nghi nó giữ ổ, tạm tắt \"Bảo vệ thời gian "
+                              "thực\" trong Windows Security rồi thử lại");
+    if (f == QLatin1String("cldflt"))
+        return QStringLiteral("CldFlt: ổ có thư mục đồng bộ đám mây dạng \"tệp theo yêu cầu\" (OneDrive/Nextcloud/...) - tắt hẳn ứng dụng đồng bộ đó");
+    // Driver lọc của chính Windows không giữ handle tệp lâu (thông tin tệp, nén WOF, ảo hóa UAC/container, chống sửa liên kết mặc định UCPD...).
+    static const QSet<QString> harmless{"fileinfo", "wof", "ucpd", "luafv", "bindflt", "wcifs", "npsvctrig", "storqosflt", "filecrypt", "bfs",
+                                        "applockerfltr", "dedup", "unionfs", "prjflt", "iorate", "gameflt", "wimmount", "csvflt", "csvnsflt",
+                                        "dfsrro", "sis"};
+    if (harmless.contains(f))
+        return {};
+    return QStringLiteral("%1: driver lọc KHÔNG thuộc nhóm Windows quen thuộc (thường là diệt virus/EDR/sao lưu/mã hóa) - nó có thể giữ ổ ở mức hệ "
+                          "thống mà không chương trình nào thấy được; tạm tắt phần mềm đó hoặc dùng \"Buộc tháo ổ\"").arg(filterName);
+}
+
 QString systemHoldHint(const QString& path)
 {
     const QString p = QDir::toNativeSeparators(path);
@@ -1142,6 +1185,20 @@ Report scan(const QString& driveLetter, const std::atomic_bool* stopFlag, bool d
                                     .arg(onDrive.join(", "));
             }
         }
+    }
+
+    // 5b) driver lọc (minifilter) gắn vào ổ - cần Administrator. Thứ giữ ổ ở mức driver (Defender, EDR, FsDepends của ổ đĩa ảo/WSL2) KHÔNG để lại
+    //     handle nào mà ứng dụng thấy được (đo thật 25/11/2026: quét hết 131.111 mục ổ D: bằng Admin không thấy ai nhưng ổ vẫn không khóa được;
+    //     trên ổ có FsDepends + WdFilter + CldFlt) - liệt kê để người dùng biết nguyên nhân khả dĩ.
+    if (report.elevated && !stopped())
+    {
+        QProcess fltmc;
+        fltmc.setProcessChannelMode(QProcess::MergedChannels);
+        fltmc.start(AppPaths::systemExecutable("fltmc.exe"), {QStringLiteral("instances"), QStringLiteral("-v"), letter + QLatin1Char(':')});
+        if (fltmc.waitForFinished(15000))
+            report.filters = parseFltmcInstances(QString::fromLocal8Bit(fltmc.readAll()));
+        else
+            fltmc.kill();
     }
 
     // 6) dịch vụ + mức "hệ thống" + gợi ý cho thứ nhân Windows giữ; tách ổ ảo thành dòng "Tháo" riêng.

@@ -510,6 +510,10 @@ target_link_libraries(cleanup_scan_real_check PRIVATE diskcleanup_core)
 add_executable(volume_holders_real_check EXCLUDE_FROM_ALL tests/volume_holders_real_check.cpp)
 target_link_libraries(volume_holders_real_check PRIVATE diskcleanup_core)
 
+# ---- KIEM TRA TAY (can Admin) - CHI DOC: chan doan vi sao o khong khoa duoc - hoi "PID nao dang mo" MOI tep tren o, fltmc, vssadmin ----
+add_executable(volume_lock_diagnose EXCLUDE_FROM_ALL tests/volume_lock_diagnose.cpp)
+target_link_libraries(volume_lock_diagnose PRIVATE diskcleanup_core)
+
 # ---- KIỂM TRA TAY (chỉ đọc): lấy mẫu THẬT tiến trình/RAM/CPU bằng ProcessSampler để đối chiếu với Get-Process ----
 add_executable(process_monitor_real_check EXCLUDE_FROM_ALL tests/process_monitor_real_check.cpp)
 target_link_libraries(process_monitor_real_check PRIVATE diskcleanup_core)

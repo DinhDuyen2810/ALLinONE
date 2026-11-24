@@ -44,6 +44,7 @@
 #include "tools/diskcleanup/CleanupTab.h"
 #include "tools/diskcleanup/DiskCleanupWindow.h"
 #include "tools/diskcleanup/DiskMapWidget.h"
+#include "tools/diskcleanup/DiskUiStyle.h"
 #include "tools/diskcleanup/DuplicateFilesTab.h"
 #include "tools/diskcleanup/FolderTreeModel.h"
 #include "tools/diskcleanup/FolderTreeTab.h"
@@ -778,6 +779,16 @@ int main(int argc, char** argv)
             hw.setHoldersForTest(none);
             CHECK(table && table->rowCount() == 0 && label && label->text().contains("KHÔNG thấy"));
             CHECK(label && label->text().contains("130704") && label->text().contains("MsMpEng.exe"));
+            // v1.33.3: không còn gì dừng được -> chỉ "Buộc tháo ổ" + driver lọc gắn vào ổ kèm giải thích; nút buộc tháo nổi bật (kiểu danger).
+            CHECK(label && label->text().contains("Buộc tháo ổ rồi thử lại"));
+            auto* forceBtn2 = hw.findChild<QPushButton*>("runForceDismountButton");
+            CHECK(forceBtn2 && forceBtn2->styleSheet() == DiskUi::dangerButtonStyle());
+            none.filters = {"FsDepends", "WdFilter", "FileInfo"};
+            hw.setHoldersForTest(none);
+            CHECK(label && label->text().contains("FsDepends, WdFilter, FileInfo") && label->text().contains("đĩa ảo") &&
+                  label->text().contains("Defender"));
+            hw.setHoldersForTest(onlyCrit); // còn tiến trình hệ thống (không dừng được) -> vẫn nổi bật
+            CHECK(forceBtn2 && forceBtn2->styleSheet() == DiskUi::dangerButtonStyle());
             // Thứ nhân Windows / WSL / ổ ảo giữ: nút theo loại (KHÔNG bấm - sẽ tắt WSL/tháo ổ thật).
             VolumeHolders::Report special;
             special.elevated = true;
