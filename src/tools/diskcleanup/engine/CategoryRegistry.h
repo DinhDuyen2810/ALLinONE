@@ -15,6 +15,16 @@ struct CleanupEnvironment
     QString localAppData;   // %LOCALAPPDATA%
     QString roamingAppData; // %APPDATA%
 
+    // ---- v1.32.0 ----
+    QString programData;  // %ProgramData%
+    QString userProfile;  // %USERPROFILE% (cho ~/.gradle, ~/.cargo)
+    QString downloadsDir; // thư mục Downloads thật (Known Folder)
+    QString steamDir;     // thư mục cài Steam (HKCU\Software\Valve\Steam\SteamPath)
+    QString systemDrive;  // "C:/" - ổ chứa Windows (tệp ngủ đông)
+    /// Có hỏi hệ thống THẬT cho các hạng mục cần truy vấn sống (Thùng rác, ứng dụng đã cài cho "thư mục mồ côi")
+    /// không. current() bật; môi trường giả của test để tắt -> test không đọc Thùng rác/registry thật.
+    bool liveSystemQueries{false};
+
     /// Thư mục KHÔNG BAO GIỜ được làm thư mục gốc dọn dẹp (hồ sơ người dùng, Program Files...) - xem
     /// FsSafety::unsafeCleanupRootReason(). current() điền từ máy thật; môi trường giả của test để rỗng
     /// (các kiểm tra cơ bản - rỗng/tương đối/gốc ổ đĩa - vẫn luôn áp dụng).
@@ -33,6 +43,12 @@ namespace CategoryRegistry
 /// - CleanupScanner sẽ tự bỏ qua khi quét.
 QList<CleanupCategory> buildCategories(const CleanupEnvironment& env);
 
+/// Hạng mục có gì để quét trên máy này không: FolderContents -> rootPaths không rỗng; kind đặc biệt -> searchRoots.
+bool isAvailable(const CleanupCategory& category);
+
 QString riskName(CleanupRisk risk);
 QString categoryIdKey(CleanupCategoryId id); // định danh ổn định dạng chuỗi, dùng để lưu tùy chọn người dùng
+
+/// Tên các nhóm theo thứ tự hiển thị.
+QStringList groupOrder();
 }

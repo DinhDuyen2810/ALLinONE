@@ -84,6 +84,9 @@ bool walkDirectory(const QString& dir, const std::atomic_bool& stopFlag,
         e.path = fullPath;
         e.sizeBytes = (static_cast<qint64>(data.nFileSizeHigh) << 32) | static_cast<qint64>(data.nFileSizeLow);
         e.lastWriteTime = toInt64(data.ftLastWriteTime);
+        e.attributes = data.dwFileAttributes;
+        e.creationTime = toInt64(data.ftCreationTime);
+        e.lastAccessTime = toInt64(data.ftLastAccessTime);
         onFile(e);
     } while (FindNextFileW(h, &data));
     FindClose(h);
@@ -210,6 +213,9 @@ RawInfo rawInfo(const QString& path)
     info.isLink = isLinkLike(data.dwFileAttributes, data.dwReserved0);
     info.sizeBytes = (static_cast<qint64>(data.nFileSizeHigh) << 32) | static_cast<qint64>(data.nFileSizeLow);
     info.lastWriteTime = toInt64(data.ftLastWriteTime);
+    info.attributes = data.dwFileAttributes;
+    info.creationTime = toInt64(data.ftCreationTime);
+    info.lastAccessTime = toInt64(data.ftLastAccessTime);
 #else
     Q_UNUSED(path);
 #endif

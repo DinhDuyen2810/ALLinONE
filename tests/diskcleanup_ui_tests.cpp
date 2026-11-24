@@ -81,10 +81,15 @@ int main(int argc, char** argv)
     CHECK(cleanupTab != nullptr);
     if (cleanupTab)
     {
-        auto* table = cleanupTab->findChild<QTableWidget*>();
-        CHECK(table != nullptr);
-        // Ngay sau khi dựng, bảng rỗng vì chưa bấm Quét (xem lý do ở đầu file)
-        CHECK(table != nullptr && table->rowCount() == 0);
+        // v1.32.0: bảng hạng mục thành CÂY theo nhóm (Windows / Trình duyệt / Ứng dụng / ...).
+        auto* tree = cleanupTab->findChild<QTreeWidget*>("cleanupCategoryTree");
+        CHECK(tree != nullptr);
+        // Ngay sau khi dựng, cây rỗng vì chưa bấm Quét (xem lý do ở đầu file)
+        CHECK(tree != nullptr && tree->topLevelItemCount() == 0);
+        CHECK(tree != nullptr && tree->columnCount() == 5);
+        // Banner/nút quyền Quản trị chỉ hiện SAU khi quét (khi có hạng mục cần quyền mà chưa nâng quyền)
+        auto* adminBanner = cleanupTab->findChild<QLabel*>("cleanupAdminBanner");
+        CHECK(adminBanner != nullptr && !adminBanner->isVisible());
 
         const auto buttons = cleanupTab->findChildren<QPushButton*>();
         CHECK(buttons.size() >= 2); // ít nhất nút Quét + nút Dọn dẹp

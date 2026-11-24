@@ -27,6 +27,9 @@ struct RawInfo
     bool isLink{false};
     qint64 sizeBytes{0};
     qint64 lastWriteTime{0}; // FILETIME (đơn vị 100ns từ 1601) - chỉ dùng để SO SÁNH, không hiển thị
+    quint32 attributes{0};   // FILE_ATTRIBUTE_* thô (0 nếu chỉ hỏi được qua GetFileAttributesW cho gốc ổ đĩa)
+    qint64 creationTime{0};
+    qint64 lastAccessTime{0};
 };
 
 /// Thông tin của CHÍNH đường dẫn này, không đi theo .lnk/symlink/junction.
@@ -57,6 +60,19 @@ struct WalkEntry
     QString path; // tuyệt đối, dấu '/'
     qint64 sizeBytes{0};
     qint64 lastWriteTime{0};
+    quint32 attributes{0}; // FILE_ATTRIBUTE_* thô của tệp
+    qint64 creationTime{0};
+    qint64 lastAccessTime{0};
+
+    /// Tệp "chỉ có trên mây" (OneDrive/Files On-Demand chưa tải về): kích thước logic là của bản trên
+    /// mây, trên đĩa gần như 0 byte - và ĐỌC nội dung sẽ khiến Windows tải cả tệp về. Không tính vào dung
+    /// lượng có thể giải phóng, không băm.
+    bool cloudOnly() const { return isCloudOnlyAttributes(attributes); }
+    static bool isCloudOnlyAttributes(quint32 attrs)
+    {
+        // FILE_ATTRIBUTE_OFFLINE 0x1000, RECALL_ON_OPEN 0x40000, RECALL_ON_DATA_ACCESS 0x400000
+        return (attrs & (0x1000u | 0x40000u | 0x400000u)) != 0;
+    }
 };
 
 /// Duyệt đệ quy MỌI tệp thường bên dưới 'root' (kể cả tệp ẩn/hệ thống). KHÔNG đi vào thư mục là

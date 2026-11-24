@@ -301,7 +301,8 @@ thật để xác nhận có thật hay chỉ là hiện tượng chụp ảnh.
 
 ## 4f. Disk Cleanup (đã hoàn thiện)
 Tham khảo CCleaner/BleachBit/Windows Disk Cleanup: quét và dọn các hạng mục tệp rác đã biết theo mức
-độ rủi ro, xem dung lượng từng ổ đĩa, tìm tệp lớn. **Mặc định xóa qua Thùng rác** (có thể khôi phục),
+độ rủi ro, xem dung lượng từng ổ đĩa, tìm tệp lớn. **Mặc định xóa qua Thùng rác** (có thể khôi phục - từ v1.32.0 CHỈ áp dụng cho
+tệp của người dùng; bộ nhớ đệm/tệp tạm tự tạo lại được xóa hẳn để giải phóng thật, xem mục 4zzk),
 không xóa vĩnh viễn trừ khi người dùng chủ động bật tùy chọn đó.
 
 **Hạng mục dọn dẹp** (mỗi hạng mục có mức rủi ro Safe/Caution/High quyết định có tick sẵn hay không):
@@ -3451,6 +3452,71 @@ hoặc chỉ âm thanh; nói rõ thêm: "cập nhật thêm tải âm thanh" cho
 **CHƯA kiểm chứng**: bấm chuột phải thật trên giao diện (menu chạy `QMenu::exec` - test chỉ kiểm `setItemFormat` + cột Loại); trang
 `/music/`, `/discover/`, `/explore` (đã thử thật `/search` và `/tag/`); khi đã đăng nhập TikTok (cookie) có lấy thêm kết quả không.
 
+## 4zzk. Disk Cleanup: nâng cấp "Dọn dẹp theo hạng mục" tham khảo roomy (v1.32.0, 24/11/2026)
+
+**Yêu cầu người dùng**: "xem phần dọn dẹp ổ đĩa, tham khảo mã nguồn mở roomy để biết các tối ưu và nâng trình độ dọn dẹp lên,
+sau đó nâng cấp". Có 4 dự án mã nguồn mở cùng tên "roomy" (đều MIT, 2026): **krezio/roomy** (C#/WPF, bản Windows chính, có trên
+Microsoft Store), WiseeCarrot/roomy (C++ Win32), Nyaughh/roomy và KorelUyar/roomy (Rust/Tauri). Đã đọc mã (KHÔNG chép mã - chỉ học
+danh mục đường dẫn, quy tắc an toàn, cách xóa; xem `THIRD_PARTY.md`).
+
+**Lỗi/thiếu sót THẬT của bản cũ (đo trên máy build bằng công cụ mới `cleanup_scan_real_check`, chỉ đọc)**:
+- Chrome/Edge chỉ dọn hồ sơ `Default` - Chrome trên máy này dùng `Profile 2/4/5` -> **667,8 MB** cache bị bỏ sót hoàn toàn.
+- Delivery Optimization trỏ `%WINDIR%\SoftwareDistribution\DeliveryOptimization` - KHÔNG tồn tại trên Windows 10/11; thư mục thật là
+  `%WINDIR%\ServiceProfiles\NetworkService\AppData\Local\Microsoft\Windows\DeliveryOptimization\Cache`.
+- Firefox tìm `cache2` ở `%APPDATA%` - cache đĩa của Firefox nằm ở `%LOCALAPPDATA%\Mozilla\Firefox\Profiles\*\cache2`.
+- "Dọn dẹp" mặc định đưa CẢ bộ nhớ đệm vào Thùng rác: Thùng rác nằm trên chính ổ đó nên **không giải phóng byte nào** trong khi app
+  báo "Đã giải phóng X". Một tệp đang mở trong một thư mục cache làm Shell coi cả thư mục là "không xóa được".
+- Thiếu hẳn: cache ứng dụng (VS Code **1,5 GB** trên máy này, Discord, Slack, Teams, Spotify, Steam, Epic, trình khởi chạy game, các
+  ứng dụng Electron/WebView2 khác **166,9 MB**), cache shader GPU, cache lập trình (pip **158 MB**, npm, NuGet, Go, Gradle, Cargo),
+  `%LOCALAPPDATA%\CrashDumps` (25,6 MB), `LiveKernelReports`, `MEMORY.DMP`, Thùng rác, tệp ngủ đông, bộ cài cũ/tệp tải về lớn,
+  thư mục còn sót của ứng dụng đã gỡ.
+
+**Đã làm**:
+- **Danh mục** (`CategoryRegistry` + mới `CacheLocator`): 43 hạng mục chia 6 nhóm (Windows / Trình duyệt / Ứng dụng & trò chơi /
+  Bộ nhớ đệm đồ họa / Công cụ lập trình / Tệp của bạn - xem kỹ). Chromium: MỌI hồ sơ (Default, Profile N, Guest, thư mục có
+  `Preferences`) x {Cache, Code Cache, GPUCache, Dawn*} + cache đồ họa chung của "User Data" (ShaderCache, GrShaderCache,
+  GraphiteDawnCache, GPUPersistentCache) cho Chrome/Edge/Brave/Vivaldi/Chromium/Opera. Ứng dụng Electron/WebView2 khác nhận ra theo
+  tệp `Local State`/`Preferences` (bố cục Chromium thật, không đoán theo tên "cache"); "Cache" chỉ lấy khi có `Cache_Data` hoặc nằm
+  cạnh `Code Cache`/`GPUCache`. Trình khởi chạy game (Battle.net, EA, Ubisoft, Riot, GOG) dò `Cache/Code Cache/GPUCache` có bố cục
+  Chromium tới 6 cấp. Steam: thư viện từ `HKCU\Software\Valve\Steam\SteamPath` + `libraryfolders.vdf`. Shader + Gradle + Cargo là
+  "Lưu ý" (không tick sẵn). Windows Update/Delivery Optimization giữ gói ghi trong 24 giờ qua (có thể đang cài dở). WER toàn máy
+  (ProgramData) tách hạng mục riêng cần quyền Quản trị.
+- **Xóa hẳn dữ liệu tự tạo lại** (mới `SafePurge`, theo krezio `SafeFs.cs` / Nyaughh `delete.rs`): từng tệp mở bằng
+  `FILE_FLAG_OPEN_REPARSE_POINT`, đường dẫn THẬT của chính handle (`GetFinalPathNameByHandleW`) phải nằm trong thư mục gốc tin cậy (cũng
+  lấy đường dẫn thật) rồi mới xóa bằng `FileDispositionInfoEx(DELETE|POSIX_SEMANTICS|IGNORE_READONLY)` trên CÙNG handle (không có khe hở
+  kiểm-rồi-xóa); FS cũ dùng `FileDispositionInfo` sau khi bỏ cờ chỉ đọc. Tệp đang mở -> bỏ qua (đếm riêng, báo "đóng ứng dụng rồi dọn
+  lại"); không đi vào/gỡ junction, symlink; không xóa tệp chỉ có trên mây; gỡ thư mục con rỗng (sâu trước), KHÔNG BAO GIỜ gỡ thư mục
+  gốc. Dữ liệu của NGƯỜI DÙNG (bộ cài cũ, tệp tải về, Windows.old, thư mục mồ côi) vẫn qua Shell, mặc định Thùng rác; ô đổi tên thành
+  "Xóa vĩnh viễn cả tệp của bạn". `CleanupExecutor` nhận `CleanupTask` (Shell/Purge/EmptyRecycleBin/TurnOffHibernation; làm trống
+  Thùng rác chạy TRƯỚC), báo tiến độ, tách "đã giải phóng" với "đã vào Thùng rác"; thư mục người dùng giao cho Shell còn bị chặn nếu
+  là/chứa thư mục được bảo vệ.
+- **Hạng mục "xem kỹ"** (hiện TỪNG MỤC, không tick sẵn): bộ cài (.exe/.msi/.msix/.appx/.iso) nằm ngay trong Downloads > 7 ngày; tệp
+  >= 250 MB trong Downloads không tạo/sửa/mở > 30 ngày; thư mục AppData (Local/Roaming/LocalLow) >= 50 MB, không đổi > 90 ngày, tên không
+  khớp ứng dụng nào đang cài (khóa Uninstall HKLM 64/32 + HKCU, gói Store, Program Files, Local\Programs) và không thuộc danh sách
+  thư mục của Windows/công cụ (`LeftoverFinder`, theo krezio). Thùng rác (SHQueryRecycleBin/SHEmptyRecycleBin, "Lưu ý"). Tệp ngủ đông
+  `hiberfil.sys` ("Rủi ro cao"): chỉ Windows gỡ được - `powercfg /hibernate off` chạy nâng quyền (UAC).
+- **Giao diện** (`CleanupTab`): bảng -> CÂY nhóm > hạng mục > nguồn (thư mục gốc + dung lượng) hoặc từng mục (hạng mục xem kỹ); cột
+  Ghi chú: "⚠ Chrome đang chạy - tệp đang mở sẽ được bỏ qua" (CreateToolhelp32Snapshot), "🔒 Cần quyền Quản trị" (không tick sẵn
+  khi chưa nâng quyền) + banner + nút "Chạy lại với quyền Quản trị..."; hạng mục rỗng tự ẩn; hộp xác nhận nói rõ phần nào xóa hẳn,
+  phần nào vào Thùng rác, ứng dụng nào đang chạy.
+- **Tối ưu khác**: `DuplicateFinder` băm nhanh 64 KB đầu + 64 KB cuối trước khi băm cả tệp (tệp >= 128 KB) - loại các cặp "trùng kích
+  thước ngẫu nhiên" chỉ với 128 KB đọc; `DuplicateFinder`/`LargeFileScanner`/kích thước hạng mục bỏ qua tệp chỉ có trên mây (OneDrive -
+  đọc để băm sẽ tải cả tệp về, và nó không chiếm chỗ trên đĩa). `FsSafety::RawInfo`/`WalkEntry` có thêm thuộc tính + thời điểm tạo/mở.
+- Công cụ kiểm tra tay CHỈ ĐỌC `cleanup_scan_real_check [--sources] [--items N]` (quét thật, in từng hạng mục/nguồn);
+  `ui_snapshot` thêm `UI_SNAPSHOT_CLEANUP_SCAN=1` (bấm Quét - chỉ đọc - rồi chụp cây hạng mục thật).
+
+**Kiểm chứng THẬT (24/11/2026)**:
+- Quét thật (chỉ đọc, không Admin): 22/43 hạng mục khả dụng, 1.919 mục, 20,07 GB tìm thấy trong ~3,5-10 s; mặc định tick sẵn 3,52 GB
+  (trước: ~1 GB và đưa vào Thùng rác = 0 byte giải phóng). Thùng rác 13,39 GB và hiberfil.sys 3,16 GB được tìm thấy nhưng KHÔNG tick sẵn.
+- `diskcleanup_tests` 4877/0 (thêm: danh mục giả lập đủ loại hồ sơ/ứng dụng/Steam/WebView2, SafePurge với tệp đang mở thật + tệp chỉ
+  đọc + junction + đường dẫn xuyên junction + gốc là tệp, CleanupExecutor Purge, Downloads với mốc thời gian thật, LeftoverFinder,
+  băm nhanh trùng đầu-cuối khác giữa), `diskcleanup_ui_tests` 373/0, `disk_vpn_stress_tests` 7345/0, `ui_theme_tests` 26/0.
+
+**CHƯA kiểm chứng**: bấm "Dọn dẹp" thật trên dữ liệu thật của máy (chỉ kiểm phần xóa trên thư mục tạm của test - không xóa cache thật
+của người dùng); làm trống Thùng rác thật và tắt ngủ đông thật (`powercfg` + UAC - quy tắc 5); các hạng mục cần quyền Quản trị khi
+chạy nâng quyền; ứng dụng không có trên máy build (Discord, Slack, Teams, Spotify, Steam, Epic, trình khởi chạy game, Firefox, NVIDIA/
+AMD/Intel) - chỉ kiểm bằng cây thư mục giả theo bố cục mà các bản roomy dùng.
+
 ## 5. Build và chạy
 `build_app.bat` (cần Qt 6.11.1 MinGW tại `D:\Qt`, CMake, Ninja) → `build\OneForAll.exe`, tự đồng bộ
 sang `OneForAll_Release\` (bản `run_app.bat` chạy). Nếu có `vendor\scrcpy\` (xem `THIRD_PARTY.md` để
@@ -3634,6 +3700,7 @@ Quy tắc đứng nằm ở `CLAUDE.md` (gốc dự án). Tóm tắt - mỗi l�
 | 2026-10-22 | VPN: bỏ OpenVPN -> SSTP; sửa lỗi gốc quay số RAS; kết nối trực tiếp FortiGate/GlobalProtect (v1.19.31) | Mục 4zq. OpenVPN treo vì lời nhắc `ENTER PASSWORD:` không bị xóa khỏi bộ đệm (không gửi `hold release`) + rò `openvpn.exe` nâng quyền khi hết giờ -> gỡ hẳn. VPN Gate nối SSTP (RAS gốc, `<HostName>.opengw.net` khớp chứng chỉ Let's Encrypt). Lỗi gốc `VpnConnector`: mã 6 TẠM THỜI của `RasGetConnectStatusW` ở +16ms bị coi là thất bại -> mọi lần quay số qua app hỏng (cả "Lỗi 6" người dùng gặp từ đầu); `dwNotifierType` sửa lại 1 (v1.19.27 đổi nhầm 2). Đã đổi IP THẬT bằng code của app (VN -> Tokyo). Kết nối trực tiếp FortiGate SSL-VPN/GlobalProtect: client giao thức tự viết (PPP/LCP/IPCP, đăng nhập/OTP/cấu hình), adapter wintun.dll + iphlpapi, tiến trình phụ nâng quyền `--vpn-helper` (pipe + mã một lần, tự dọn khi pipe đóng), ghim vân tay chứng chỉ tự ký. `vpn_tests` 219/0, `vpn_ui_tests` 7/0, `vpn_direct_tests` 150/0 (mới; máy chủ FortiGate/GP giả đầu-cuối). Đã chạy thật: adapter wintun Admin 10/10, thăm dò 3/3 máy chủ thật (không đăng nhập). CHƯA kiểm chứng: đăng nhập + đường hầm bằng tài khoản cơ quan thật. Chỉ push code, KHÔNG tag/Release. |
 | 2026-10-22 | Lấy IP chậm sau khi nối VPN + rà giao diện bằng ảnh chụp thật (v1.19.32) | Mục 4zr. Kết nối HTTPS keep-alive cũ kẹt sau khi tuyến đổi -> 8 s rồi hủy; `clearConnectionCache()` + thử lại 1 lần -> 1093 ms. Công cụ `ui_snapshot` (offscreen hoặc kiểu gốc không hiện màn hình) rà 8 công cụ: sửa cắt chữ hàng điều khiển VPN Gate (2 hàng, NAT chỉ khi L2TP), ô Cổng, nút Android, nhóm ghép đôi Connect bị ép. Nhật ký chẩn đoán kết nối trực tiếp. vpn 219/7, vpn_direct 150, android 153/30, connect_ui 17. Chỉ push code, KHÔNG tag/Release. |
 | 2026-10-23..24 | Kết nối trực tiếp FortiClient IPsec: client IKEv1 tự viết (v1.19.33→39) | Mục 4zs-4zv. v1.19.33: kết nối trực tiếp CHẠY THẬT với FortiGate người dùng + lưu tài khoản + sửa DNS nội bộ. v1.19.34: GlobalProtect nộp HIP (sửa rớt ~60s). v1.19.35: GlobalProtect kênh ESP (gateway bắt buộc). **v1.19.36**: hồ sơ FortiClient IPsec (VPN_CVTLT) nối trực tiếp bằng client **IKEv1 tự viết** (`IkeCrypto`+`IsakmpMessage`+`IkeKeys`+`IkeSession`, dựa BCrypt): Aggressive+PSK+XAuth+Mode-config+Quick Mode+ESP; IKE+ESP chung socket UDP (NAT-T 4500). Test `ike_crypto_check` 47/0, `ike_session_check` 24/0 (bắt tay TRỌN VẸN offline với responder giả, khớp khóa ESP hai bên), `vpn_direct_tests` 357/0. **v1.19.37**: dò thật gateway (`ike_real_probe`, không đăng nhập) xác nhận gateway dùng **nhóm 20 ECP-384 + AES-256 + SHA-256 + XAUTHPSK + NAT-T** → thêm ECDH (nhóm 19/20/21) vào IkeCrypto, IkeSession chào nhiều transform + đọc transform gateway chọn; `ike_crypto_check` 59/0. **v1.19.38**: với PSK + tài khoản thật, `ike_real_connect` hoàn tất **bắt tay IKEv1 đầu-cuối THẬT** (Phase 1→XAuth→Mode-config cấp IP→Quick Mode→khóa ESP). Sửa: mã thuộc tính XAuth (STATUS=16527/MESSAGE=16524), PFS nhóm 20, nhiều transform ESP + đọc transform gateway chọn (AES-256-CBC+SHA1), đóng gói Tunnel(1) (FortiGate từ chối UDP-Tunnel 3/61443), proxy 0/0, ESP seq=1. **v1.19.39**: bắt gói (`pktmon`) so với FortiClient -> client+app nay khớp FortiClient trên dây (UDP 4500↔4500 từ cổng 4500, NAT-T từ msg1, NAT-D). Tầng DỮ LIỆU ESP VẪN CHẶN: gói ESP ra đúng (giống FortiClient) mà gateway im (thử 5 biến thể KEYMAT); SA đã cài; cần nhật ký phía FortiGate. Chỉ push code, KHÔNG tag/Release. |
+| 2026-11-24 | Disk Cleanup: nâng cấp dọn dẹp theo hạng mục theo roomy (v1.32.0) | Mục 4zzk. Sửa 3 lỗi thật (Chrome chỉ hồ sơ Default - bỏ sót 667,8 MB; Delivery Optimization sai đường dẫn trên Win10/11; Firefox cache2 sai chỗ) + cache vào Thùng rác không giải phóng gì. 43 hạng mục/6 nhóm (trình duyệt mọi hồ sơ, ứng dụng, Electron/WebView2, shader, lập trình, dump, Thùng rác, ngủ đông, bộ cài cũ, tệp tải về lớn, thư mục còn sót); `SafePurge` xóa hẳn từng tệp có kiểm đường dẫn thật trên handle; giao diện cây. Quét thật 20,07 GB, tick sẵn 3,52 GB. `diskcleanup_tests` 4877/0, `diskcleanup_ui_tests` 373/0, `disk_vpn_stress_tests` 7345/0. CHƯA: dọn thật trên cache thật, làm trống Thùng rác/tắt ngủ đông thật. |
 | 2026-11-24 | Downloader: link tìm kiếm TikTok ra video + "chỉ âm thanh" đúng tiếng video (v1.31.0) | Mục 4zzj. Trang tìm kiếm/hashtag/âm nhạc TikTok (yt-dlp không hỗ trợ) trước chỉ ra ảnh bìa -> nay lấy từng bài như hồ sơ (link người dùng: 19 video + 38 ảnh + 2 nhạc nền). "Chỉ âm thanh" với TikTok trước lấy nhầm nhạc nền gốc (32,9 s) -> nay trích tiếng của chính video ra mp3 (8,76 s); menu chuột phải chọn âm thanh/nhạc nền/video cho nhiều dòng. Công cụ tay `link_resolve_probe`. `downloader_tests` 726/0, `downloader_ui_tests` 104/0, `secdl_stress_tests` 1.866.770/0. CHƯA: bấm menu thật, /music/, khi đăng nhập. |
 | 2026-11-17 | Microsoft Store: đóng gói MSIX (v1.30.0) | Mục 4zzi. Tự ký không qua được SAC (tài liệu Microsoft) -> thử Store trước. `build_msix.bat` -> `dist\OneForAll_Store.msix` không ký (Store ký lại), full trust + `allowElevation`, danh tính từ `installer/msix/store_identity.txt`; chạy trong gói thì tắt tự cập nhật GitHub. Rủi ro đã báo: Store không nhận gói cần Admin, `allowElevation` duyệt nghiêm ngặt. CHƯA cài/chạy thử gói (Win10, chưa bật Developer Mode), chưa nộp Store. |
 | 2026-11-16 | VPN: chặn rò rỉ IPv6 khi "đổi IP" (v1.29.0) | Mục 4zzh. Ô "Chặn rò rỉ IPv6" (bật sẵn) ở tab Đổi IP theo quốc gia + VPN hệ thống (không chia tuyến): mạng có IPv6 thì trước khi quay số, tiến trình phụ nâng quyền `--ipv6-guard` đặt bộ lọc WFP động chặn `2000::/3` + NAT64 (trừ card VPN và máy chủ VPN), tự gỡ khi phiên đóng, giữ tới khi VPN ngắt. Dòng "IPv6" kiểm thật qua dịch vụ chỉ có IPv6. CHƯA kiểm chứng trên mạng có IPv6 thật. |

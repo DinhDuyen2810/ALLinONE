@@ -37,6 +37,11 @@ protected:
 
 private:
     void scanCategory(const CleanupCategory& category, qint64* outBytes, int* outCount);
+    void emitSpecial(const CleanupCategory& category, CleanupItem item, qint64* outBytes, int* outCount);
+    void scanRecycleBin(const CleanupCategory& category, qint64* outBytes, int* outCount);
+    void scanHibernation(const CleanupCategory& category, qint64* outBytes, int* outCount);
+    void scanDownloads(const CleanupCategory& category, qint64* outBytes, int* outCount);
+    void scanLeftovers(const CleanupCategory& category, qint64* outBytes, int* outCount);
 
     QList<CleanupCategory> m_categories;
     std::atomic_bool m_stopRequested{false};

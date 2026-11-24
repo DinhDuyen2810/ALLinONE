@@ -40,7 +40,8 @@ void LargeFileScanner::run()
         // tệp THẬT nằm trong cây thư mục đã chọn (một junction trỏ sang ổ khác từng có thể đưa tệp ở nơi
         // hoàn toàn khác vào danh sách "xóa vào Thùng rác").
         FsSafety::walkFiles(m_rootPath, m_stopRequested, [&](const FsSafety::WalkEntry& file) {
-            if (file.sizeBytes >= m_minSizeBytes)
+            // Tệp chỉ có trên mây (OneDrive chưa tải về) gần như không chiếm chỗ trên đĩa - không phải "tệp lớn".
+            if (file.sizeBytes >= m_minSizeBytes && !file.cloudOnly())
             {
                 LargeFileEntry e;
                 e.path = file.path;

@@ -10,6 +10,7 @@
 #include "ui/AppTheme.h"
 #include "tools/android/AndroidControlWindow.h"
 #include "tools/connect/ConnectWindow.h"
+#include "tools/diskcleanup/CleanupTab.h"
 #include "tools/diskcleanup/DiskCleanupWindow.h"
 #include "tools/downloader/DownloaderWindow.h"
 #include "tools/qr/QRWindow.h"
@@ -24,6 +25,7 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QFont>
+#include <QPushButton>
 #include <QStyle>
 #include <QTabWidget>
 #include <QTimer>
@@ -56,6 +58,25 @@ void snap(QWidget* w, const QString& tool, const QString& dir)
     w->setAttribute(Qt::WA_DontShowOnScreen, true); // không bao giờ hiện lên màn hình (kể cả ở nền Windows thật)
     w->show();
     settle(1500);
+    // UI_SNAPSHOT_CLEANUP_SCAN=1: bấm "Quét" ở tab Dọn dẹp theo hạng mục (CHỈ ĐỌC - liệt kê + tính kích thước, không
+    // xóa gì) rồi chờ quét xong để ảnh có cây hạng mục thật của máy này.
+    if (tool == QLatin1String("diskcleanup") && !qEnvironmentVariableIsEmpty("UI_SNAPSHOT_CLEANUP_SCAN"))
+    {
+        if (auto* cleanup = w->findChild<CleanupTab*>())
+        {
+            QPushButton* scan = nullptr;
+            for (QPushButton* b : cleanup->findChildren<QPushButton*>())
+                if (b->text().contains(QStringLiteral("Quét")))
+                    scan = b;
+            if (scan)
+            {
+                scan->click();
+                for (int i = 0; i < 600 && cleanup->isBusy(); ++i)
+                    settle(100);
+                std::printf("CleanupTab: quet xong (%s)\n", cleanup->isBusy() ? "CHUA XONG - het gio" : "ok");
+            }
+        }
+    }
     const QSize def = w->size();
     QList<QSize> sizes{def, QSize(820, 640)};
     auto* tabs = w->findChild<QTabWidget*>();

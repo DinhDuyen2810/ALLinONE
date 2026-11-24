@@ -304,9 +304,17 @@ add_library(diskcleanup_core STATIC
     src/tools/diskcleanup/engine/PartitionRelocator.cpp
     src/tools/diskcleanup/engine/ProcessMonitor.h
     src/tools/diskcleanup/engine/ProcessMonitor.cpp
+    src/tools/diskcleanup/engine/SafePurge.h
+    src/tools/diskcleanup/engine/SafePurge.cpp
+    src/tools/diskcleanup/engine/CacheLocator.h
+    src/tools/diskcleanup/engine/CacheLocator.cpp
+    src/tools/diskcleanup/engine/LeftoverFinder.h
+    src/tools/diskcleanup/engine/LeftoverFinder.cpp
+    src/tools/diskcleanup/engine/CleanupSystem.h
+    src/tools/diskcleanup/engine/CleanupSystem.cpp
 )
 target_include_directories(diskcleanup_core PUBLIC src)
-target_link_libraries(diskcleanup_core PUBLIC Qt6::Core shell32 advapi32 psapi core_shared)
+target_link_libraries(diskcleanup_core PUBLIC Qt6::Core shell32 advapi32 psapi ole32 core_shared)
 
 # ---- Kiểm thử lõi Disk Cleanup: cmake --build build --target diskcleanup_tests ----
 add_executable(diskcleanup_tests EXCLUDE_FROM_ALL tests/diskcleanup_tests.cpp)
@@ -491,6 +499,10 @@ target_link_libraries(ike_session_check PRIVATE vpn_core)
 # ---- KIỂM TRA TAY (chỉ đọc): quét THẬT một thư mục/ổ bằng FolderTreeScanner + đối chiếu "chiếm trên đĩa" với AllocationSize thật ----
 add_executable(folder_tree_real_check EXCLUDE_FROM_ALL tests/folder_tree_real_check.cpp)
 target_link_libraries(folder_tree_real_check PRIVATE diskcleanup_core)
+
+# ---- KIEM TRA TAY - CHI DOC: quet THAT cac hang muc don dep cua may nay (khong xoa gi) - xem dau tests/cleanup_scan_real_check.cpp ----
+add_executable(cleanup_scan_real_check EXCLUDE_FROM_ALL tests/cleanup_scan_real_check.cpp)
+target_link_libraries(cleanup_scan_real_check PRIVATE diskcleanup_core)
 
 # ---- KIỂM TRA TAY (chỉ đọc): lấy mẫu THẬT tiến trình/RAM/CPU bằng ProcessSampler để đối chiếu với Get-Process ----
 add_executable(process_monitor_real_check EXCLUDE_FROM_ALL tests/process_monitor_real_check.cpp)

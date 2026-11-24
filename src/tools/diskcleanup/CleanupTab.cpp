@@ -2,23 +2,52 @@
 
 #include "DiskCleanupWindow.h"
 #include "DiskUiStyle.h"
+#include "core/ToolManager.h"
 #include "engine/CategoryRegistry.h"
 #include "engine/CleanupExecutor.h"
+#include "engine/CleanupSystem.h"
 #include "engine/DiskSpaceInfo.h"
+#include "engine/PartitionManager.h"
 #include "ui/widgets/FlowLayout.h"
 
+#include <QApplication>
 #include <QCheckBox>
 #include <QColor>
 #include <QDir>
+#include <QFileInfo>
+#include <QFont>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
 #include <QMessageBox>
 #include <QProgressBar>
 #include <QPushButton>
-#include <QTableWidget>
-#include <QTableWidgetItem>
+#include <QTreeWidget>
+#include <QTreeWidgetItem>
 #include <QVBoxLayout>
+
+#include <algorithm>
+
+namespace
+{
+enum Column
+{
+    ColName = 0,
+    ColRisk = 1,
+    ColCount = 2,
+    ColSize = 3,
+    ColNote = 4,
+};
+
+constexpr int kRoleCategory = Qt::UserRole;      // int(CleanupCategoryId)
+constexpr int kRoleKind = Qt::UserRole + 1;      // "cat" | "item" | "source"
+constexpr int kRoleItemIndex = Qt::UserRole + 2; // chỉ số trong m_itemsByCategory[id]
+
+QString nativePath(const QString& p)
+{
+    return QDir::toNativeSeparators(p);
+}
+} // namespace
 
 CleanupTab::CleanupTab(QWidget* parent)
     : QWidget(parent)
@@ -35,6 +64,12 @@ CleanupTab::CleanupTab(QWidget* parent)
 
     m_executor = new CleanupExecutor(this);
     connect(m_executor, &CleanupExecutor::executionFinished, this, &CleanupTab::onExecutionFinished);
+    connect(m_executor, &CleanupExecutor::progress, this, [this](qint64 done, qint64 total) {
+        if (total <= 0)
+            return;
+        m_progressBar->setRange(0, 1000);
+        m_progressBar->setValue(static_cast<int>(qBound(qint64(0), done * 1000 / total, qint64(1000))));
+    });
 }
 
 CleanupTab::~CleanupTab()
@@ -44,13 +79,14 @@ CleanupTab::~CleanupTab()
         m_scanner->requestStop();
         m_scanner->wait(3000);
     }
-    // CleanupExecutor KHÔNG hỗ trợ hủy giữa chừng (một lệnh SHFileOperationW xử lý CẢ LÔ, không có móc
-    // nào để dừng sớm) - xóa hàng nghìn tệp thật (vd cache trình duyệt) có thể mất LÂU HƠN 5 giây, nên
-    // wait(5000) không đủ và sẽ khiến QThread bị hủy đối tượng trong lúc vẫn đang thực sự chạy (hành vi
-    // KHÔNG XÁC ĐỊNH theo tài liệu Qt). Bình thường không tới đây: DiskCleanupWindow::closeEvent() đã
-    // CHẶN đóng cửa sổ hẳn trong lúc đang dọn dẹp - đây chỉ là lưới an toàn cuối cùng.
+    // Lệnh Shell (Thùng rác) xử lý theo lô, không có móc dừng giữa chừng - bình thường không tới đây trong lúc
+    // đang dọn: DiskCleanupWindow::closeEvent() đã CHẶN đóng cửa sổ hẳn khi đang dọn dẹp - đây chỉ là lưới an
+    // toàn cuối cùng (phần xóa từng tệp thì dừng ngay theo requestStop()).
     if (m_executor && m_executor->isRunning())
+    {
+        m_executor->requestStop();
         m_executor->wait();
+    }
 }
 
 bool CleanupTab::isCleaningNow() const
@@ -87,21 +123,42 @@ void CleanupTab::buildUi()
     catLabel->setStyleSheet("color: #0969da; font-size: 11px; font-weight: bold; letter-spacing: 1.5px; margin-top: 6px;");
     root->addWidget(catLabel);
 
-    m_table = new QTableWidget(0, 5, this);
-    m_table->setHorizontalHeaderLabels({"", "Hạng mục", "Mức độ", "Số mục", "Dung lượng"});
-    m_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    m_table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
-    m_table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-    m_table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
-    m_table->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
-    m_table->verticalHeader()->setVisible(false);
-    m_table->setSelectionMode(QAbstractItemView::NoSelection);
-    m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    m_table->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    m_table->setShowGrid(false);
-    m_table->setStyleSheet(DiskUi::tableStyle());
-    connect(m_table, &QTableWidget::cellChanged, this, &CleanupTab::onTableCellChanged);
-    root->addWidget(m_table, 1);
+    auto* adminRow = new QHBoxLayout();
+    m_adminBanner = new QLabel(this);
+    m_adminBanner->setObjectName("cleanupAdminBanner");
+    m_adminBanner->setWordWrap(true);
+    m_adminBanner->setStyleSheet(DiskUi::bannerStyle("warn"));
+    m_adminBanner->setText("🔒 Đang chạy KHÔNG có quyền Administrator - các hạng mục của Windows (cập nhật, tệp tạm hệ "
+                           "thống, dump, Prefetch...) không được tick sẵn vì sẽ không xóa được.");
+    m_adminBanner->setVisible(false);
+    adminRow->addWidget(m_adminBanner, 1);
+    m_relaunchBtn = new QPushButton("Chạy lại với quyền Quản trị...", this);
+    m_relaunchBtn->setObjectName("cleanupRelaunchButton");
+    m_relaunchBtn->setVisible(false);
+    connect(m_relaunchBtn, &QPushButton::clicked, this, &CleanupTab::onRelaunchElevatedClicked);
+    adminRow->addWidget(m_relaunchBtn);
+    root->addLayout(adminRow);
+
+    m_tree = new QTreeWidget(this);
+    m_tree->setObjectName("cleanupCategoryTree");
+    m_tree->setColumnCount(5);
+    m_tree->setHeaderLabels({"Hạng mục", "Mức độ", "Số mục", "Dung lượng", "Ghi chú"});
+    // QTreeWidget mặc định kéo giãn CỘT CUỐI - để cột tên giãn, các cột số vừa nội dung (xem mục 4f).
+    m_tree->header()->setStretchLastSection(false);
+    m_tree->header()->setSectionResizeMode(ColName, QHeaderView::Stretch);
+    m_tree->header()->setSectionResizeMode(ColRisk, QHeaderView::ResizeToContents);
+    m_tree->header()->setSectionResizeMode(ColCount, QHeaderView::ResizeToContents);
+    m_tree->header()->setSectionResizeMode(ColSize, QHeaderView::ResizeToContents);
+    m_tree->header()->setSectionResizeMode(ColNote, QHeaderView::Interactive);
+    m_tree->header()->resizeSection(ColNote, 300);
+    m_tree->setSelectionMode(QAbstractItemView::NoSelection);
+    m_tree->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_tree->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_tree->setTextElideMode(Qt::ElideMiddle);
+    m_tree->setUniformRowHeights(true);
+    m_tree->setStyleSheet(DiskUi::tableStyle());
+    connect(m_tree, &QTreeWidget::itemChanged, this, &CleanupTab::onTreeItemChanged);
+    root->addWidget(m_tree, 1);
 
     m_progressBar = new QProgressBar(this);
     m_progressBar->setRange(0, 0);
@@ -115,6 +172,7 @@ void CleanupTab::buildUi()
 
     m_statusLabel = new QLabel("Bấm \"Quét\" để tìm tệp có thể dọn dẹp.", this);
     m_statusLabel->setStyleSheet("color: #57606a; font-size: 12px;");
+    m_statusLabel->setWordWrap(true);
     root->addWidget(m_statusLabel);
 
     auto* bottomRow = new QHBoxLayout();
@@ -131,7 +189,13 @@ void CleanupTab::buildUi()
     connect(m_cleanBtn, &QPushButton::clicked, this, &CleanupTab::onCleanClicked);
     bottomRow->addWidget(m_cleanBtn);
 
-    m_permanentCheck = new QCheckBox("Xóa vĩnh viễn (bỏ qua Thùng rác)", this);
+    // Bộ nhớ đệm/tệp tạm LUÔN xóa hẳn (vào Thùng rác không giải phóng byte nào); ô này chỉ quyết định với TỆP CỦA
+    // NGƯỜI DÙNG (bộ cài cũ, tệp tải về, Windows.old, thư mục mồ côi) - mặc định vào Thùng rác.
+    m_permanentCheck = new QCheckBox("Xóa vĩnh viễn cả tệp của bạn (bỏ qua Thùng rác)", this);
+    m_permanentCheck->setToolTip("Bộ nhớ đệm, tệp tạm, dump, nhật ký (tự tạo lại) luôn được xóa hẳn để thật sự giải phóng "
+                                 "dung lượng - đưa chúng vào Thùng rác không giải phóng byte nào.\nÔ này chỉ áp dụng cho TỆP "
+                                 "CỦA BẠN (bộ cài cũ, tệp tải về, Windows.old, thư mục còn sót): mặc định chúng vào Thùng rác "
+                                 "để khôi phục được.");
     m_permanentCheck->setStyleSheet("color: #57606a; font-size: 11px;");
     bottomRow->addWidget(m_permanentCheck);
 
@@ -187,6 +251,35 @@ void CleanupTab::reloadDriveOverview()
     }
 }
 
+const CleanupCategory* CleanupTab::categoryById(CleanupCategoryId id) const
+{
+    for (const CleanupCategory& c : m_categories)
+        if (c.id == id)
+            return &c;
+    return nullptr;
+}
+
+QString CleanupTab::runningLabel(const CleanupCategory& c) const
+{
+    for (const QString& exe : c.processNames)
+        if (m_runningExes.contains(exe))
+            return c.appLabel.isEmpty() ? c.name : c.appLabel;
+    return {};
+}
+
+QString CleanupTab::categoryNote(const CleanupCategory& c) const
+{
+    QStringList parts;
+    if (c.needsAdmin && !m_elevated)
+        parts << "🔒 Cần quyền Quản trị";
+    const QString running = runningLabel(c);
+    if (!running.isEmpty())
+        parts << "⚠ " + running + " đang chạy - tệp đang mở sẽ được bỏ qua";
+    if (!c.note.isEmpty())
+        parts << c.note;
+    return parts.join(" · ");
+}
+
 void CleanupTab::onScanClicked()
 {
     if (m_scanning)
@@ -205,47 +298,80 @@ void CleanupTab::onScanClicked()
         }
     }
 
+    m_elevated = PartitionManager::isElevated();
+    m_runningExes = CleanupSystem::runningExeNamesLower();
     const QList<CleanupCategory> all = CategoryRegistry::buildCategories(CleanupEnvironment::current());
     m_categories.clear();
     for (const CleanupCategory& c : all)
-        if (!c.rootPaths.isEmpty())
+        if (CategoryRegistry::isAvailable(c))
             m_categories.push_back(c);
 
     m_itemsByCategory.clear();
-    m_rowByCategory.clear();
-    m_updatingTable = true;
-    m_table->setRowCount(m_categories.size());
-    for (int i = 0; i < m_categories.size(); ++i)
+    m_categoryNode.clear();
+    m_groupNode.clear();
+    m_updatingTree = true;
+    m_tree->clear();
+
+    bool anyNeedsAdmin = false;
+    QFont boldFont = m_tree->font();
+    boldFont.setBold(true);
+    for (const QString& group : CategoryRegistry::groupOrder())
     {
-        const CleanupCategory& c = m_categories[i];
-        m_rowByCategory[c.id] = i;
-
-        auto* checkItem = new QTableWidgetItem();
-        checkItem->setFlags(Qt::ItemIsUserCheckable | Qt::ItemIsEnabled);
-        checkItem->setCheckState(c.risk == CleanupRisk::Safe ? Qt::Checked : Qt::Unchecked);
-        m_table->setItem(i, 0, checkItem);
-
-        auto* nameItem = new QTableWidgetItem(c.name);
-        nameItem->setToolTip(c.description);
-        nameItem->setFlags(nameItem->flags() & ~Qt::ItemIsEditable);
-        m_table->setItem(i, 1, nameItem);
-
-        auto* riskItem = new QTableWidgetItem(CategoryRegistry::riskName(c.risk));
-        riskItem->setForeground(QColor(DiskUi::riskColor(CategoryRegistry::riskName(c.risk))));
-        riskItem->setFlags(riskItem->flags() & ~Qt::ItemIsEditable);
-        m_table->setItem(i, 2, riskItem);
-
-        auto* countItem = new QTableWidgetItem("—");
-        countItem->setTextAlignment(Qt::AlignCenter);
-        countItem->setFlags(countItem->flags() & ~Qt::ItemIsEditable);
-        m_table->setItem(i, 3, countItem);
-
-        auto* sizeItem = new QTableWidgetItem("Đang quét...");
-        sizeItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        sizeItem->setFlags(sizeItem->flags() & ~Qt::ItemIsEditable);
-        m_table->setItem(i, 4, sizeItem);
+        QTreeWidgetItem* groupNode = nullptr;
+        for (const CleanupCategory& c : m_categories)
+        {
+            if (c.group != group)
+                continue;
+            if (!groupNode)
+            {
+                groupNode = new QTreeWidgetItem(m_tree);
+                groupNode->setText(ColName, group);
+                groupNode->setFont(ColName, boldFont);
+                groupNode->setFlags(Qt::ItemIsEnabled);
+                groupNode->setData(ColName, kRoleKind, "group");
+                groupNode->setTextAlignment(ColSize, Qt::AlignRight | Qt::AlignVCenter);
+                groupNode->setTextAlignment(ColCount, Qt::AlignCenter);
+                m_groupNode.insert(group, groupNode);
+            }
+            auto* node = new QTreeWidgetItem(groupNode);
+            Qt::ItemFlags flags = Qt::ItemIsUserCheckable | Qt::ItemIsEnabled;
+            if (c.showItems)
+                flags |= Qt::ItemIsAutoTristate;
+            node->setFlags(flags);
+            const bool blockedByAdmin = c.needsAdmin && !m_elevated;
+            anyNeedsAdmin = anyNeedsAdmin || blockedByAdmin;
+            node->setCheckState(ColName, (c.risk == CleanupRisk::Safe && !blockedByAdmin) ? Qt::Checked : Qt::Unchecked);
+            node->setText(ColName, c.name);
+            QString tip = c.description;
+            if (!c.rootPaths.isEmpty())
+            {
+                tip += "\n\nThư mục:";
+                for (const QString& r : c.rootPaths)
+                    tip += "\n  " + nativePath(r);
+            }
+            tip += c.regenerable ? "\n\nCách dọn: xóa hẳn (tự tạo lại) - giải phóng dung lượng thật."
+                                 : "\n\nCách dọn: tệp của bạn - mặc định vào Thùng rác.";
+            node->setToolTip(ColName, tip);
+            node->setData(ColName, kRoleCategory, static_cast<int>(c.id));
+            node->setData(ColName, kRoleKind, "cat");
+            const QString risk = CategoryRegistry::riskName(c.risk);
+            node->setText(ColRisk, risk);
+            node->setForeground(ColRisk, QColor(DiskUi::riskColor(risk)));
+            node->setText(ColCount, "—");
+            node->setTextAlignment(ColCount, Qt::AlignCenter);
+            node->setText(ColSize, "Đang quét...");
+            node->setTextAlignment(ColSize, Qt::AlignRight | Qt::AlignVCenter);
+            const QString note = categoryNote(c);
+            node->setText(ColNote, note);
+            node->setToolTip(ColNote, note);
+            m_categoryNode.insert(c.id, node);
+        }
+        if (groupNode)
+            groupNode->setExpanded(true);
     }
-    m_updatingTable = false;
+    m_updatingTree = false;
+    m_adminBanner->setVisible(anyNeedsAdmin);
+    m_relaunchBtn->setVisible(anyNeedsAdmin);
 
     if (m_categories.isEmpty())
     {
@@ -264,6 +390,7 @@ void CleanupTab::onScanClicked()
     m_scanning = true;
     m_scanBtn->setEnabled(false);
     m_cleanBtn->setEnabled(false);
+    m_progressBar->setRange(0, 0);
     m_progressBar->setVisible(true);
     m_statusLabel->setText("⏳ Đang quét...");
 
@@ -285,14 +412,106 @@ void CleanupTab::onItemFound(CleanupItem item)
 
 void CleanupTab::onCategoryFinished(CleanupCategoryId id, qint64 bytes, int count)
 {
-    const int row = m_rowByCategory.value(id, -1);
-    if (row < 0)
+    QTreeWidgetItem* node = m_categoryNode.value(id, nullptr);
+    const CleanupCategory* cat = categoryById(id);
+    if (!node || !cat)
         return;
 
-    m_updatingTable = true;
-    m_table->item(row, 3)->setText(QString::number(count));
-    m_table->item(row, 4)->setText(DiskUi::formatBytes(bytes));
-    m_updatingTable = false;
+    m_updatingTree = true;
+    node->setText(ColCount, QString::number(count));
+    node->setText(ColSize, DiskUi::formatBytes(bytes));
+    const QList<CleanupItem>& items = m_itemsByCategory[id];
+
+    if (cat->showItems)
+    {
+        // Hạng mục "xem kỹ": từng mục một, KHÔNG tick sẵn - người dùng tự chọn.
+        for (int i = 0; i < items.size(); ++i)
+        {
+            const CleanupItem& it = items[i];
+            auto* child = new QTreeWidgetItem(node);
+            child->setFlags(Qt::ItemIsUserCheckable | Qt::ItemIsEnabled);
+            child->setCheckState(ColName, Qt::Unchecked);
+            QString label = QFileInfo(it.path).fileName();
+            for (const QString& r : cat->searchRoots)
+                if (it.path.startsWith(r + QLatin1Char('/'), Qt::CaseInsensitive))
+                    label = QFileInfo(r).fileName() + " › " + nativePath(it.path.mid(r.size() + 1));
+            child->setText(ColName, label);
+            child->setToolTip(ColName, nativePath(it.path));
+            child->setText(ColSize, DiskUi::formatBytes(it.sizeBytes));
+            child->setTextAlignment(ColSize, Qt::AlignRight | Qt::AlignVCenter);
+            child->setText(ColNote, it.detail);
+            child->setToolTip(ColNote, it.detail);
+            child->setData(ColName, kRoleCategory, static_cast<int>(id));
+            child->setData(ColName, kRoleKind, "item");
+            child->setData(ColName, kRoleItemIndex, i);
+        }
+        // Hạng mục cha tự tính trạng thái từ các mục con (tất cả chưa tick -> chưa tick).
+    }
+    else if (cat->kind == CleanupKind::FolderContents && !items.isEmpty())
+    {
+        // Nguồn: mỗi thư mục gốc một dòng (chỉ xem) - người dùng thấy cache NẰM Ở ĐÂU và chiếm bao nhiêu.
+        QStringList order;
+        QHash<QString, QPair<qint64, int>> perRoot;
+        for (const CleanupItem& it : items)
+        {
+            const QString key = it.root.isEmpty() ? it.path : it.root;
+            if (!perRoot.contains(key))
+                order << key;
+            perRoot[key].first += it.sizeBytes;
+            perRoot[key].second += 1;
+        }
+        std::sort(order.begin(), order.end(),
+                  [&](const QString& a, const QString& b) { return perRoot[a].first > perRoot[b].first; });
+        for (const QString& r : order)
+        {
+            auto* child = new QTreeWidgetItem(node);
+            child->setFlags(Qt::ItemIsEnabled);
+            child->setText(ColName, nativePath(r));
+            child->setToolTip(ColName, nativePath(r));
+            child->setText(ColCount, QString::number(perRoot[r].second));
+            child->setTextAlignment(ColCount, Qt::AlignCenter);
+            child->setText(ColSize, DiskUi::formatBytes(perRoot[r].first));
+            child->setTextAlignment(ColSize, Qt::AlignRight | Qt::AlignVCenter);
+            child->setForeground(ColName, QColor("#57606a"));
+            child->setData(ColName, kRoleKind, "source");
+        }
+    }
+    else if (!items.isEmpty() && !items.first().detail.isEmpty())
+    {
+        QString note = categoryNote(*cat);
+        note = note.isEmpty() ? items.first().detail : items.first().detail + " · " + note;
+        node->setText(ColNote, note);
+        node->setToolTip(ColNote, note);
+    }
+
+    // Hạng mục không có gì để dọn: ẩn đi cho gọn (giống roomy) - vẫn giữ trong danh sách, không ảnh hưởng gì.
+    node->setHidden(count == 0);
+    m_updatingTree = false;
+    updateGroupTotals();
+}
+
+void CleanupTab::updateGroupTotals()
+{
+    for (auto it = m_groupNode.constBegin(); it != m_groupNode.constEnd(); ++it)
+    {
+        QTreeWidgetItem* groupNode = it.value();
+        qint64 bytes = 0;
+        int visible = 0;
+        for (int i = 0; i < groupNode->childCount(); ++i)
+        {
+            QTreeWidgetItem* catNode = groupNode->child(i);
+            const auto id = static_cast<CleanupCategoryId>(catNode->data(ColName, kRoleCategory).toInt());
+            for (const CleanupItem& item : m_itemsByCategory.value(id))
+                bytes += item.sizeBytes;
+            if (!catNode->isHidden())
+                ++visible;
+        }
+        m_updatingTree = true;
+        groupNode->setText(ColSize, DiskUi::formatBytes(bytes));
+        m_updatingTree = false;
+        if (!m_scanning)
+            groupNode->setHidden(visible == 0);
+    }
 }
 
 void CleanupTab::onScanFinished(qint64 totalBytes, int totalItems)
@@ -300,6 +519,7 @@ void CleanupTab::onScanFinished(qint64 totalBytes, int totalItems)
     m_scanning = false;
     m_scanBtn->setEnabled(true);
     m_progressBar->setVisible(false);
+    updateGroupTotals();
     m_statusLabel->setText(QString("✓ Quét xong: %1 mục, tổng %2 có thể dọn dẹp.")
                                .arg(totalItems)
                                .arg(DiskUi::formatBytes(totalBytes)));
@@ -315,9 +535,10 @@ void CleanupTab::onScanStopped()
     updateSelectedSummary();
 }
 
-void CleanupTab::onTableCellChanged(int row, int column)
+void CleanupTab::onTreeItemChanged(QTreeWidgetItem* item, int column)
 {
-    if (m_updatingTable || column != 0)
+    Q_UNUSED(item);
+    if (m_updatingTree || column != ColName)
         return;
     updateSelectedSummary();
 }
@@ -325,16 +546,27 @@ void CleanupTab::onTableCellChanged(int row, int column)
 qint64 CleanupTab::selectedTotalBytes() const
 {
     qint64 total = 0;
-    for (int row = 0; row < m_table->rowCount(); ++row)
+    for (const CleanupCategory& c : m_categories)
     {
-        QTableWidgetItem* check = m_table->item(row, 0);
-        if (!check || check->checkState() != Qt::Checked)
+        QTreeWidgetItem* node = m_categoryNode.value(c.id, nullptr);
+        if (!node || node->isHidden())
             continue;
-        if (row >= m_categories.size())
-            continue;
-        const CleanupCategoryId id = m_categories[row].id;
-        for (const CleanupItem& item : m_itemsByCategory.value(id))
-            total += item.sizeBytes;
+        const QList<CleanupItem> items = m_itemsByCategory.value(c.id);
+        if (c.showItems)
+        {
+            for (int i = 0; i < node->childCount(); ++i)
+            {
+                QTreeWidgetItem* child = node->child(i);
+                const int idx = child->data(ColName, kRoleItemIndex).toInt();
+                if (child->checkState(ColName) == Qt::Checked && idx >= 0 && idx < items.size())
+                    total += items[idx].sizeBytes;
+            }
+        }
+        else if (node->checkState(ColName) == Qt::Checked)
+        {
+            for (const CleanupItem& item : items)
+                total += item.sizeBytes;
+        }
     }
     return total;
 }
@@ -343,7 +575,27 @@ void CleanupTab::updateSelectedSummary()
 {
     const qint64 total = selectedTotalBytes();
     m_summaryLabel->setText("Đã chọn: " + DiskUi::formatBytes(total));
-    m_cleanBtn->setEnabled(!m_scanning && total > 0);
+    m_cleanBtn->setEnabled(!m_scanning && !isCleaningNow() && total > 0);
+}
+
+void CleanupTab::onRelaunchElevatedClicked()
+{
+    // Giống PartitionTab::onRelaunchElevatedClicked: không thoát giữa một thao tác không an toàn để hủy.
+    QString busyReason;
+    if (ToolManager::instance().anyToolWindowBusy(&busyReason))
+    {
+        QMessageBox::warning(this, "Không thể chạy lại lúc này",
+            "Đang có một thao tác không an toàn để hủy giữa chừng (" + busyReason + ") - chạy lại ứng "
+            "dụng lúc này có thể làm hỏng dữ liệu. Vui lòng đợi thao tác đó hoàn tất rồi thử lại.");
+        return;
+    }
+    QString error;
+    if (!PartitionManager::relaunchElevated(&error))
+    {
+        QMessageBox::warning(this, "Chạy lại với quyền Quản trị", error.isEmpty() ? "Không thực hiện được." : error);
+        return;
+    }
+    qApp->quit();
 }
 
 void CleanupTab::onCleanClicked()
@@ -361,41 +613,77 @@ void CleanupTab::onCleanClicked()
         }
     }
 
-    QStringList paths;
-    QList<qint64> sizes;
-    QList<int> minAges;
-    QStringList categoryNames;
+    QList<CleanupTask> tasks;
+    QStringList categoryLines;
+    QStringList runningApps;
     qint64 total = 0;
+    qint64 regenerableBytes = 0;
+    qint64 userBytes = 0;
     bool includesHighRisk = false;
+    bool includesRecycleBin = false;
+    bool includesHibernation = false;
 
-    for (int row = 0; row < m_table->rowCount(); ++row)
+    for (const CleanupCategory& cat : m_categories)
     {
-        QTableWidgetItem* check = m_table->item(row, 0);
-        if (!check || check->checkState() != Qt::Checked || row >= m_categories.size())
+        QTreeWidgetItem* node = m_categoryNode.value(cat.id, nullptr);
+        if (!node || node->isHidden())
             continue;
-
-        const CleanupCategory& cat = m_categories[row];
         const QList<CleanupItem> items = m_itemsByCategory.value(cat.id);
-        if (items.isEmpty())
+        QList<CleanupItem> chosen;
+        if (cat.showItems)
+        {
+            for (int i = 0; i < node->childCount(); ++i)
+            {
+                QTreeWidgetItem* child = node->child(i);
+                const int idx = child->data(ColName, kRoleItemIndex).toInt();
+                if (child->checkState(ColName) == Qt::Checked && idx >= 0 && idx < items.size())
+                    chosen << items[idx];
+            }
+        }
+        else if (node->checkState(ColName) == Qt::Checked)
+        {
+            chosen = items;
+        }
+        if (chosen.isEmpty())
             continue;
 
-        // Tên hạng mục + (các) thư mục gốc THẬT sẽ bị dọn - hiện trong hộp xác nhận bên dưới.
-        QString line = cat.name;
-        for (const QString& root : cat.rootPaths)
-            line += "\n        ↳ " + QDir::toNativeSeparators(root);
-        categoryNames << line;
+        qint64 catBytes = 0;
+        for (const CleanupItem& item : chosen)
+        {
+            tasks << CleanupTask::forItem(cat, item);
+            catBytes += item.sizeBytes;
+        }
+        total += catBytes;
+        if (cat.kind == CleanupKind::RecycleBin)
+            includesRecycleBin = true;
+        else if (cat.kind == CleanupKind::Hibernation)
+            includesHibernation = true;
+        else if (cat.regenerable)
+            regenerableBytes += catBytes;
+        else
+            userBytes += catBytes;
         if (cat.risk == CleanupRisk::High)
             includesHighRisk = true;
-        for (const CleanupItem& item : items)
+        const QString running = runningLabel(cat);
+        if (!running.isEmpty() && !runningApps.contains(running))
+            runningApps << running;
+
+        // Tên hạng mục + (các) thư mục gốc THẬT sẽ bị dọn - hiện trong hộp xác nhận bên dưới.
+        QString line = QString("%1 (%2)").arg(cat.name, DiskUi::formatBytes(catBytes));
+        if (cat.showItems)
+            line += QString("\n        ↳ %1 mục bạn đã chọn").arg(chosen.size());
+        else
         {
-            paths << item.path;
-            sizes << item.sizeBytes;
-            minAges << cat.minAgeSeconds; // được kiểm LẠI ngay trước khi xóa (xem CleanupExecutor::setItems)
-            total += item.sizeBytes;
+            const int shown = qMin(3, static_cast<int>(cat.rootPaths.size()));
+            for (int i = 0; i < shown; ++i)
+                line += "\n        ↳ " + nativePath(cat.rootPaths[i]);
+            if (cat.rootPaths.size() > shown)
+                line += QString("\n        ↳ ... và %1 thư mục khác").arg(cat.rootPaths.size() - shown);
         }
+        categoryLines << line;
     }
 
-    if (paths.isEmpty())
+    if (tasks.isEmpty())
     {
         QMessageBox::information(this, "Dọn dẹp", "Chưa có hạng mục nào được chọn.");
         return;
@@ -404,17 +692,32 @@ void CleanupTab::onCleanClicked()
     const bool permanent = m_permanentCheck->isChecked();
     // Hộp xác nhận hiện RÕ thư mục gốc của từng hạng mục: người dùng phải thấy chính xác nơi sắp bị dọn
     // (vd biến môi trường TEMP của máy bị trỏ sang một thư mục lạ) trước khi bấm Yes, không chỉ tên hạng mục.
-    QString message = QString("Sẽ xóa %1 mục (%2) thuộc %3 hạng mục:\n\n  • %4\n\n")
-                          .arg(paths.size())
+    QString message = QString("Sẽ dọn %1 thuộc %2 hạng mục:\n\n  • %3\n")
                           .arg(DiskUi::formatBytes(total))
-                          .arg(categoryNames.size())
-                          .arg(categoryNames.join("\n  • "));
-    message += permanent ? "⚠ XÓA VĨNH VIỄN - KHÔNG qua Thùng rác, không thể khôi phục."
-                         : "Các mục sẽ được chuyển vào Thùng rác và có thể khôi phục lại nếu cần. Mục nào KHÔNG "
-                           "vào Thùng rác được (lớn hơn dung lượng Thùng rác, hoặc ổ đĩa không có Thùng rác) sẽ "
-                           "được GIỮ NGUYÊN, không bị xóa.";
+                          .arg(categoryLines.size())
+                          .arg(categoryLines.join("\n  • "));
+    QStringList how;
+    if (regenerableBytes > 0)
+        how << QString("Bộ nhớ đệm / tệp tạm / dump / nhật ký (%1): XÓA HẲN để giải phóng dung lượng thật - chúng tự "
+                       "tạo lại khi cần. Tệp đang được ứng dụng mở sẽ được bỏ qua.")
+                   .arg(DiskUi::formatBytes(regenerableBytes));
+    if (userBytes > 0)
+        how << (permanent ? QString("⚠ Tệp của bạn (%1): XÓA VĨNH VIỄN - không qua Thùng rác, không thể khôi phục.")
+                                .arg(DiskUi::formatBytes(userBytes))
+                          : QString("Tệp của bạn (%1): chuyển vào Thùng rác, khôi phục được. Mục nào KHÔNG vào Thùng rác "
+                                    "được (quá lớn, ổ không có Thùng rác) được GIỮ NGUYÊN.")
+                                .arg(DiskUi::formatBytes(userBytes)));
+    if (includesRecycleBin)
+        how << "⚠ Thùng rác sẽ được LÀM TRỐNG - các tệp trong đó bị xóa hẳn, không khôi phục được.";
+    if (includesHibernation)
+        how << "⚠ Tắt ngủ đông: Windows sẽ hỏi quyền Quản trị (UAC) rồi tự gỡ hiberfil.sys; mất chế độ Ngủ đông và "
+               "Khởi động nhanh (bật lại: powercfg /hibernate on).";
+    message += "\n" + how.join("\n\n");
+    if (!runningApps.isEmpty())
+        message += "\n\n⚠ Đang chạy: " + runningApps.join(", ") +
+                   " - nên đóng trước để dọn được hết (tệp đang mở sẽ được giữ lại, không ép xóa).";
     if (includesHighRisk)
-        message += "\n\n⚠ Có hạng mục RỦI RO CAO (ví dụ Windows.old) - hãy chắc chắn trước khi tiếp tục.";
+        message += "\n\n⚠ Có hạng mục RỦI RO CAO - hãy chắc chắn trước khi tiếp tục.";
 
     if (QMessageBox::question(this, "Xác nhận dọn dẹp", message, QMessageBox::Yes | QMessageBox::No,
                               QMessageBox::No) != QMessageBox::Yes)
@@ -422,15 +725,16 @@ void CleanupTab::onCleanClicked()
 
     m_cleanBtn->setEnabled(false);
     m_scanBtn->setEnabled(false);
+    m_progressBar->setRange(0, 0);
     m_progressBar->setVisible(true);
     m_statusLabel->setText("⏳ Đang dọn dẹp...");
 
-    m_executor->setItems(paths, sizes, minAges);
+    m_executor->setTasks(tasks);
     m_executor->setPermanentDelete(permanent);
     m_executor->start(QThread::LowPriority);
 }
 
-void CleanupTab::onExecutionFinished(bool success, QString error, qint64 freedBytes, int deletedCount)
+void CleanupTab::onExecutionFinished(bool success, QString error, qint64 freedBytes, int deletedCount, qint64 recycledBytes)
 {
     m_scanBtn->setEnabled(true);
     m_progressBar->setVisible(false);
@@ -438,14 +742,16 @@ void CleanupTab::onExecutionFinished(bool success, QString error, qint64 freedBy
 
     if (success)
     {
-        m_statusLabel->setText(QString("✓ Đã dọn dẹp %1 mục, giải phóng %2.")
-                                   .arg(deletedCount)
-                                   .arg(DiskUi::formatBytes(freedBytes)));
-        QString info = QString("Đã giải phóng %1 (%2 mục).").arg(DiskUi::formatBytes(freedBytes)).arg(deletedCount);
+        const qint64 reallyFreed = qMax<qint64>(0, freedBytes - recycledBytes);
+        QString info = QString("Đã giải phóng %1 (%2 tệp/mục).").arg(DiskUi::formatBytes(reallyFreed)).arg(deletedCount);
+        if (recycledBytes > 0)
+            info += QString("\n%1 đã chuyển vào Thùng rác - dung lượng này chỉ được giải phóng khi làm trống Thùng rác.")
+                        .arg(DiskUi::formatBytes(recycledBytes));
+        m_statusLabel->setText("✓ " + info.section('\n', 0, 0));
         // 'error' ở đây là GHI CHÚ, không phải lỗi nghiêm trọng - vài tệp tạm tự mất giữa lúc quét và
         // lúc xóa (hoặc đang được chương trình khác dùng) là chuyện bình thường, không đáng báo đỏ.
         if (!error.isEmpty())
-            info += "\n\nLưu ý: " + error;
+            info += "\n\nLưu ý:\n" + error;
         QMessageBox::information(this, "Hoàn tất", info);
         // Xóa xong, quét lại để làm mới danh sách (các mục đã xóa không còn nữa)
         onScanClicked();

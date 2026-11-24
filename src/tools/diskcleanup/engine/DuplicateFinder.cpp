@@ -38,6 +38,35 @@ QString hashFile(const QString& path, const std::atomic_bool& stopFlag, bool* ok
     *ok = true;
     return QString::fromLatin1(hasher.result().toHex());
 }
+
+/// Băm NHANH: SHA-256 của 64 KB đầu + 64 KB cuối (theo Nyaughh/roomy dupes.rs, WiseeCarrot/roomy scan.cpp). Hai
+/// tệp cùng kích thước mà khác phần đầu hoặc phần cuối chắc chắn khác nhau - loại được gần hết các cặp "trùng
+/// kích thước ngẫu nhiên" (video, ảnh đĩa...) mà chỉ phải đọc 128 KB thay vì cả tệp nhiều GB. Chỉ dùng để LỌC:
+/// nhóm còn lại vẫn được băm toàn bộ trước khi kết luận trùng.
+QString quickHash(const QString& path, qint64 size, bool* ok)
+{
+    *ok = false;
+    constexpr qint64 kChunk = 64 * 1024;
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly))
+        return {};
+    QCryptographicHash hasher(QCryptographicHash::Sha256);
+    const QByteArray head = f.read(kChunk);
+    if (head.size() != qMin(size, kChunk))
+        return {};
+    hasher.addData(head);
+    if (!f.seek(size - kChunk))
+        return {};
+    const QByteArray tail = f.read(kChunk);
+    if (tail.size() != kChunk)
+        return {};
+    hasher.addData(tail);
+    *ok = true;
+    return QString::fromLatin1(hasher.result().toHex());
+}
+
+/// Tệp nhỏ hơn ngưỡng này đọc thẳng toàn bộ (băm nhanh không tiết kiệm được gì).
+constexpr qint64 kQuickHashMinSize = 2 * 64 * 1024;
 } // namespace
 
 DuplicateFinder::DuplicateFinder(QObject* parent)
@@ -90,7 +119,9 @@ void DuplicateFinder::run()
     if (!m_rootPath.isEmpty())
     {
         FsSafety::walkFiles(m_rootPath, m_stopRequested, [&](const FsSafety::WalkEntry& file) {
-            if (file.sizeBytes >= m_minSizeBytes)
+            // Tệp chỉ có trên mây (OneDrive chưa tải về): đọc nội dung để băm sẽ khiến Windows TẢI CẢ TỆP về
+            // máy - và nó gần như không chiếm chỗ trên đĩa, xóa "bản trùng" không giải phóng gì.
+            if (file.sizeBytes >= m_minSizeBytes && !file.cloudOnly())
                 bySize[file.sizeBytes].push_back({file.path, file.lastWriteTime});
 
             // Cứ mỗi 200 tệp thì báo tiến độ (kèm đường dẫn hiện tại) - quét cả ổ đĩa hệ thống có thể gặp
@@ -153,6 +184,31 @@ void DuplicateFinder::run()
         }
         if (distinctFiles.size() < 2)
             continue;
+
+        // Bước 2a (tệp lớn): lọc bằng băm nhanh đầu+cuối, chỉ giữ các tệp có ít nhất một "bạn" cùng băm nhanh.
+        if (sizeIt.key() >= kQuickHashMinSize)
+        {
+            QHash<QString, QList<Candidate>> byQuick;
+            for (const Candidate& candidate : distinctFiles)
+            {
+                if (m_stopRequested)
+                {
+                    emit scanStopped();
+                    return;
+                }
+                bool ok = false;
+                const QString q = quickHash(candidate.path, sizeIt.key(), &ok);
+                if (ok)
+                    byQuick[q].push_back(candidate);
+            }
+            QList<Candidate> survivors;
+            for (auto qIt = byQuick.constBegin(); qIt != byQuick.constEnd(); ++qIt)
+                if (qIt.value().size() >= 2)
+                    survivors += qIt.value();
+            distinctFiles = survivors;
+            if (distinctFiles.size() < 2)
+                continue;
+        }
 
         QHash<QString, QList<Candidate>> byHash;
         for (const Candidate& candidate : distinctFiles)

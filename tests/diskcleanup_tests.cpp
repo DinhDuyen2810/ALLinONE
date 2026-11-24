@@ -31,7 +31,9 @@
 
 #include "core/AppPaths.h"
 
+#include "tools/diskcleanup/engine/CacheLocator.h"
 #include "tools/diskcleanup/engine/CategoryRegistry.h"
+#include "tools/diskcleanup/engine/CleanupSystem.h"
 #include "tools/diskcleanup/engine/CleanupExecutor.h"
 #include "tools/diskcleanup/engine/CleanupScanner.h"
 #include "tools/diskcleanup/engine/DiskLayout.h"
@@ -41,9 +43,11 @@
 #include "tools/diskcleanup/engine/FolderTreeScanner.h"
 #include "tools/diskcleanup/engine/FsSafety.h"
 #include "tools/diskcleanup/engine/LargeFileScanner.h"
+#include "tools/diskcleanup/engine/LeftoverFinder.h"
 #include "tools/diskcleanup/engine/PartitionManager.h"
 #include "tools/diskcleanup/engine/ProcessMonitor.h"
 #include "tools/diskcleanup/engine/RecycleBinOps.h"
+#include "tools/diskcleanup/engine/SafePurge.h"
 #include "tools/diskcleanup/engine/TreeDeleteGuard.h"
 
 static int g_fail = 0, g_pass = 0;
@@ -3077,6 +3081,613 @@ int main(int argc, char** argv)
         worker.requestStop();
         CHECK(worker.wait(5000));
         CHECK(!worker.isRunning());
+    }
+
+    // =====================================================================================
+    // v1.32.0 - nâng cấp dọn dẹp theo hạng mục (tham khảo roomy). Mọi thứ chỉ đụng QTemporaryDir
+    // của test - KHÔNG làm trống Thùng rác thật, KHÔNG tắt ngủ đông thật (quy tắc 5).
+    // =====================================================================================
+    auto setTimesDaysAgo = [](const QString& path, int days) -> bool {
+        const HANDLE h = CreateFileW(reinterpret_cast<const wchar_t*>(QDir::toNativeSeparators(path).utf16()),
+                                     FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                                     OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+        if (h == INVALID_HANDLE_VALUE)
+            return false;
+        const qint64 t = FsSafety::nowFileTime() - static_cast<qint64>(days) * 24LL * 3600LL * 10000000LL;
+        FILETIME ft;
+        ft.dwLowDateTime = static_cast<DWORD>(t & 0xFFFFFFFF);
+        ft.dwHighDateTime = static_cast<DWORD>(t >> 32);
+        const BOOL ok = SetFileTime(h, &ft, &ft, &ft);
+        CloseHandle(h);
+        return ok != 0;
+    };
+
+    // ---- CategoryRegistry v1.32.0: mọi hồ sơ Chromium, đường dẫn mới, ứng dụng, shader, lập trình ----
+    {
+        QTemporaryDir tmp;
+        CHECK(tmp.isValid());
+        const QString t = tmp.path();
+        auto mk = [&](const QString& rel) { QDir(t).mkpath(rel); };
+        auto touch = [&](const QString& rel) { writeFile(t + "/" + rel, 10); };
+
+        // Chrome: hồ sơ "Profile 2" + "Default" + thư mục có Preferences ("Custom") + thư mục KHÔNG phải hồ sơ.
+        const QString ud = "Local/Google/Chrome/User Data";
+        mk(ud + "/Profile 2/Cache/Cache_Data");
+        mk(ud + "/Profile 2/Code Cache/js");
+        mk(ud + "/Default/GPUCache");
+        mk(ud + "/GrShaderCache");
+        mk(ud + "/Custom/Cache");
+        touch(ud + "/Custom/Preferences");
+        mk(ud + "/Some Other/Cache"); // không có Preferences, không đúng tên hồ sơ -> KHÔNG lấy
+        mk(ud + "/Profile 2/IndexedDB"); // dữ liệu trang web - KHÔNG phải cache
+        // Firefox: cache đĩa ở LOCAL (bản cũ chỉ tìm ở Roaming - bỏ sót)
+        mk("Local/Mozilla/Firefox/Profiles/p1.default-release/cache2/entries");
+        // Delivery Optimization ở hồ sơ dịch vụ NetworkService (đường dẫn thật trên Windows 10/11)
+        mk("Windows/ServiceProfiles/NetworkService/AppData/Local/Microsoft/Windows/DeliveryOptimization/Cache");
+        // MEMORY.DMP là một TỆP
+        mk("Windows");
+        writeFile(t + "/Windows/MEMORY.DMP", 1234);
+        // VS Code
+        mk("Roaming/Code/CachedData/abc");
+        mk("Roaming/Code/CachedExtensionVSIXs");
+        mk("Roaming/Code/User"); // cài đặt người dùng - KHÔNG lấy
+        // Ứng dụng Electron khác (Notion) + thư mục có tên Cache nhưng không phải Chromium
+        mk("Roaming/Notion/Cache/Cache_Data");
+        mk("Roaming/Notion/Code Cache");
+        mk("Roaming/Notion/IndexedDB");
+        touch("Roaming/Notion/Local State");
+        mk("Roaming/RandomApp/Cache");
+        mk("Roaming/discord/Cache/Cache_Data");
+        touch("Roaming/discord/Local State");
+        // Ứng dụng WebView2: "<Ứng dụng>/EBWebView" có Local State + hồ sơ Default/Cache
+        mk("Local/SomeTool/EBWebView/Default/Cache/Cache_Data");
+        mk("Local/SomeTool/EBWebView/GrShaderCache");
+        touch("Local/SomeTool/EBWebView/Local State");
+        // WER toàn máy (ProgramData) tách hạng mục riêng cần quyền Quản trị
+        mk("ProgramData/Microsoft/Windows/WER/ReportArchive");
+        mk("Local/Microsoft/Windows/WER/ReportQueue");
+        // Trình khởi chạy game nhúng Chromium
+        mk("Local/Battle.net/BrowserCaches/abc/Cache/Cache_Data");
+        mk("Local/Battle.net/BrowserCaches/abc/GPUCache");
+        mk("Local/Battle.net/Logs/Cache"); // không có bố cục Chromium -> KHÔNG lấy
+        // Spotify: Data (cache nghe trực tuyến) có, Storage (nhạc tải về) KHÔNG
+        mk("Local/Spotify/Data");
+        mk("Local/Spotify/Storage");
+        // Shader + Steam (2 thư viện)
+        mk("Local/D3DSCache");
+        mk("Local/NVIDIA/DXCache");
+        mk("Steam/steamapps/shadercache/123");
+        mk("Lib2/steamapps/shadercache/456");
+        {
+            QFile vdf(t + "/Steam/steamapps/libraryfolders.vdf");
+            CHECK(vdf.open(QIODevice::WriteOnly));
+            vdf.write(QString("\"libraryfolders\"\n{\n\t\"0\"\n\t{\n\t\t\"path\"\t\t\"%1\"\n\t}\n\t\"1\"\n\t{\n\t\t\"path\"\t\t\"%2\"\n\t}\n}\n")
+                          .arg(QDir::toNativeSeparators(t + "/Steam").replace("\\", "\\\\"),
+                               QDir::toNativeSeparators(t + "/Lib2").replace("\\", "\\\\"))
+                          .toUtf8());
+        }
+        // Lập trình
+        mk("Local/npm-cache/_cacache");
+        mk("Local/pip/Cache");
+        mk("Home/.gradle/caches");
+        mk("Downloads");
+
+        CleanupEnvironment env;
+        env.tempDir = t + "/Temp";
+        env.windowsDir = t + "/Windows";
+        env.localAppData = t + "/Local";
+        env.roamingAppData = t + "/Roaming";
+        env.userProfile = t + "/Home";
+        env.programData = t + "/ProgramData";
+        env.steamDir = t + "/Steam";
+        env.downloadsDir = t + "/Downloads";
+        const QList<CleanupCategory> cats = CategoryRegistry::buildCategories(env);
+        auto find = [&](CleanupCategoryId id) -> const CleanupCategory* {
+            for (const auto& c : cats)
+                if (c.id == id)
+                    return &c;
+            return nullptr;
+        };
+        auto has = [](const CleanupCategory* c, const QString& path) {
+            return c && c->rootPaths.contains(path, Qt::CaseInsensitive);
+        };
+
+        const CleanupCategory* chrome = find(CleanupCategoryId::BrowserCacheChrome);
+        CHECK(has(chrome, t + "/" + ud + "/Profile 2/Cache"));
+        CHECK(has(chrome, t + "/" + ud + "/Profile 2/Code Cache"));
+        CHECK(has(chrome, t + "/" + ud + "/Default/GPUCache"));
+        CHECK(has(chrome, t + "/" + ud + "/GrShaderCache"));
+        CHECK(has(chrome, t + "/" + ud + "/Custom/Cache"));
+        CHECK(!has(chrome, t + "/" + ud + "/Some Other/Cache"));
+        CHECK(!has(chrome, t + "/" + ud + "/Profile 2/IndexedDB"));
+        CHECK(chrome && chrome->rootPaths.size() == 5);
+        CHECK(chrome && chrome->regenerable && chrome->processNames.contains("chrome.exe"));
+        CHECK(chrome && chrome->group == "Trình duyệt");
+
+        const CleanupCategory* ff = find(CleanupCategoryId::BrowserCacheFirefox);
+        CHECK(has(ff, t + "/Local/Mozilla/Firefox/Profiles/p1.default-release/cache2"));
+
+        const CleanupCategory* dopt = find(CleanupCategoryId::DeliveryOptimization);
+        CHECK(dopt && dopt->rootPaths.size() == 1 && dopt->needsAdmin && dopt->minAgeSeconds >= 3600);
+
+        const CleanupCategory* dumps = find(CleanupCategoryId::MemoryDumps);
+        CHECK(has(dumps, t + "/Windows/MEMORY.DMP"));
+
+        const CleanupCategory* code = find(CleanupCategoryId::AppCacheVsCode);
+        CHECK(has(code, t + "/Roaming/Code/CachedData"));
+        CHECK(has(code, t + "/Roaming/Code/CachedExtensionVSIXs"));
+        CHECK(!has(code, t + "/Roaming/Code/User"));
+
+        const CleanupCategory* other = find(CleanupCategoryId::AppCacheOtherChromium);
+        CHECK(has(other, t + "/Roaming/Notion/Cache"));
+        CHECK(has(other, t + "/Roaming/Notion/Code Cache"));
+        CHECK(!has(other, t + "/Roaming/Notion/IndexedDB"));
+        CHECK(!has(other, t + "/Roaming/RandomApp/Cache")); // không có Local State/Preferences
+        CHECK(!has(other, t + "/Roaming/discord/Cache"));   // Discord có hạng mục riêng
+        CHECK(other && other->note.contains("Notion"));
+        CHECK(has(other, t + "/Local/SomeTool/EBWebView/Default/Cache"));
+        CHECK(has(other, t + "/Local/SomeTool/EBWebView/GrShaderCache"));
+        CHECK(other && other->note.contains("SomeTool") && !other->note.contains("EBWebView"));
+        const CleanupCategory* werUser = find(CleanupCategoryId::WindowsErrorReports);
+        const CleanupCategory* werSys = find(CleanupCategoryId::SystemErrorReports);
+        CHECK(werUser && werUser->rootPaths == QStringList{t + "/Local/Microsoft/Windows/WER/ReportQueue"} && !werUser->needsAdmin);
+        CHECK(werSys && werSys->rootPaths == QStringList{t + "/ProgramData/Microsoft/Windows/WER/ReportArchive"} &&
+              werSys->needsAdmin);
+        const CleanupCategory* discord = find(CleanupCategoryId::AppCacheDiscord);
+        CHECK(has(discord, t + "/Roaming/discord/Cache"));
+
+        const CleanupCategory* launchers = find(CleanupCategoryId::AppCacheGameLaunchers);
+        CHECK(has(launchers, t + "/Local/Battle.net/BrowserCaches/abc/Cache"));
+        CHECK(has(launchers, t + "/Local/Battle.net/BrowserCaches/abc/GPUCache"));
+        CHECK(!has(launchers, t + "/Local/Battle.net/Logs/Cache"));
+
+        const CleanupCategory* spotify = find(CleanupCategoryId::AppCacheSpotify);
+        CHECK(has(spotify, t + "/Local/Spotify/Data"));
+        CHECK(!has(spotify, t + "/Local/Spotify/Storage"));
+
+        const CleanupCategory* dx = find(CleanupCategoryId::ShaderCacheDirectX);
+        CHECK(dx && dx->rootPaths.size() == 1 && dx->risk == CleanupRisk::Caution); // không tick sẵn
+        const CleanupCategory* gpu = find(CleanupCategoryId::ShaderCacheGpuVendor);
+        CHECK(has(gpu, t + "/Local/NVIDIA/DXCache"));
+        const CleanupCategory* steamShader = find(CleanupCategoryId::ShaderCacheSteamGames);
+        CHECK(has(steamShader, t + "/Steam/steamapps/shadercache"));
+        CHECK(has(steamShader, t + "/Lib2/steamapps/shadercache"));
+
+        CHECK(has(find(CleanupCategoryId::DevCacheNode), t + "/Local/npm-cache/_cacache"));
+        CHECK(has(find(CleanupCategoryId::DevCachePython), t + "/Local/pip/Cache"));
+        const CleanupCategory* gradle = find(CleanupCategoryId::DevCacheGradle);
+        CHECK(has(gradle, t + "/Home/.gradle/caches") && gradle->risk == CleanupRisk::Caution);
+
+        // Hạng mục "xem kỹ": dữ liệu của người dùng - không tự tạo lại, hiện từng mục, mặc định Thùng rác.
+        const CleanupCategory* inst = find(CleanupCategoryId::OldInstallers);
+        CHECK(inst && inst->kind == CleanupKind::OldInstallers && inst->showItems && !inst->regenerable);
+        CHECK(inst && inst->searchRoots == QStringList{t + "/Downloads"} && inst->rootPaths.isEmpty());
+        CHECK(inst && CategoryRegistry::isAvailable(*inst));
+        // Môi trường giả: KHÔNG truy vấn Thùng rác/registry/ngủ đông thật
+        const CleanupCategory* bin = find(CleanupCategoryId::RecycleBin);
+        CHECK(bin && !CategoryRegistry::isAvailable(*bin));
+        const CleanupCategory* left = find(CleanupCategoryId::AppDataLeftovers);
+        CHECK(left && !CategoryRegistry::isAvailable(*left) && left->risk == CleanupRisk::High);
+        const CleanupCategory* hib = find(CleanupCategoryId::Hibernation);
+        CHECK(hib && !CategoryRegistry::isAvailable(*hib) && hib->risk == CleanupRisk::High && !hib->needsAdmin);
+        const CleanupCategory* wo = find(CleanupCategoryId::WindowsOld);
+        CHECK(wo && !wo->regenerable);
+
+        // Mọi hạng mục có nhóm hợp lệ + khóa định danh riêng, không trùng.
+        QSet<QString> keys;
+        for (const CleanupCategory& c : cats)
+        {
+            CHECK(CategoryRegistry::groupOrder().contains(c.group));
+            const QString key = CategoryRegistry::categoryIdKey(c.id);
+            CHECK(key != "Unknown" && !keys.contains(key));
+            keys.insert(key);
+        }
+        CHECK(keys.size() == cats.size());
+
+        // CleanupScanner trên các hạng mục thật vừa dựng: mục ghi đúng thư mục gốc (giới hạn tin cậy khi xóa);
+        // tệp gốc (MEMORY.DMP) là chính một mục.
+        writeFile(t + "/" + ud + "/Profile 2/Cache/Cache_Data/data_1", 5000);
+        QList<CleanupCategory> toScan;
+        for (const CleanupCategory& c : cats)
+            if (c.id == CleanupCategoryId::BrowserCacheChrome || c.id == CleanupCategoryId::MemoryDumps)
+                toScan << c;
+        CleanupScanner scanner;
+        scanner.setCategories(toScan);
+        QList<CleanupItem> items;
+        bool done = false;
+        QObject::connect(&scanner, &CleanupScanner::itemFound, [&](CleanupItem i) { items.push_back(i); });
+        QObject::connect(&scanner, &CleanupScanner::scanFinished, [&](qint64, int) { done = true; });
+        scanner.startScan();
+        CHECK(waitUntil([&] { return done; }, 15000));
+        scanner.wait();
+        bool sawCacheData = false, sawDump = false;
+        for (const CleanupItem& it : items)
+        {
+            CHECK(!it.root.isEmpty() && (it.path == it.root || it.path.startsWith(it.root + "/")));
+            if (it.path.endsWith("/Profile 2/Cache/Cache_Data"))
+            {
+                sawCacheData = true;
+                CHECK(it.sizeBytes == 5000 && it.fileCount == 1 && it.isDirectory);
+                CHECK(it.root == t + "/" + ud + "/Profile 2/Cache");
+            }
+            if (it.path.endsWith("/MEMORY.DMP"))
+            {
+                sawDump = true;
+                CHECK(it.root == it.path && it.sizeBytes == 1234);
+            }
+        }
+        CHECK(sawCacheData && sawDump);
+    }
+
+    // ---- CleanupTask::forItem: mục đã quét -> cách xóa ----
+    {
+        CleanupCategory cache;
+        cache.kind = CleanupKind::FolderContents;
+        cache.regenerable = true;
+        cache.minAgeSeconds = 300;
+        CleanupItem it;
+        it.path = "C:/X/Cache/a";
+        it.root = "C:/X/Cache";
+        it.sizeBytes = 42;
+        CleanupTask t = CleanupTask::forItem(cache, it);
+        CHECK(t.mode == CleanupTask::Mode::Purge && t.trustedRoot == "C:/X/Cache" && t.minAgeSeconds == 300 && t.sizeBytes == 42);
+        CleanupItem noRoot = it;
+        noRoot.root.clear();
+        CHECK(CleanupTask::forItem(cache, noRoot).mode == CleanupTask::Mode::Shell); // không có gốc tin cậy -> không xóa hẳn
+        CleanupCategory user = cache;
+        user.regenerable = false; // Windows.old, Downloads, thư mục mồ côi
+        CHECK(CleanupTask::forItem(user, it).mode == CleanupTask::Mode::Shell);
+        CleanupCategory bin;
+        bin.kind = CleanupKind::RecycleBin;
+        CHECK(CleanupTask::forItem(bin, it).mode == CleanupTask::Mode::EmptyRecycleBin);
+        CleanupCategory hib;
+        hib.kind = CleanupKind::Hibernation;
+        CHECK(CleanupTask::forItem(hib, it).mode == CleanupTask::Mode::TurnOffHibernation);
+    }
+
+    // ---- CacheLocator: libraryfolders.vdf của Steam + nhận diện hồ sơ Chromium ----
+    {
+        const QString vdf = "\"libraryfolders\"\n{\n \"0\"\n {\n  \"path\"  \"C:\\\\Program Files (x86)\\\\Steam\"\n  \"label\" \"\"\n }\n"
+                            " \"1\"\n {\n  \"path\"  \"D:\\\\SteamLibrary\"\n }\n \"2\" { \"PATH\" \"D:\\\\SteamLibrary\" }\n}\n";
+        const QStringList libs = CacheLocator::parseSteamLibraryFolders(vdf);
+        CHECK(libs.size() == 2);
+        CHECK(libs.value(0) == "C:/Program Files (x86)/Steam");
+        CHECK(libs.value(1) == "D:/SteamLibrary");
+        CHECK(CacheLocator::parseSteamLibraryFolders("").isEmpty());
+        CHECK(CacheLocator::steamLibraries("").isEmpty());
+        CHECK(CacheLocator::chromiumBrowserCaches("").isEmpty());
+        // Thư mục rỗng KHÔNG được hiểu thành thư mục làm việc hiện hành
+        CHECK(CacheLocator::otherChromiumApps({"", ""}, {}).isEmpty());
+        CHECK(CacheLocator::chromiumCachesUnder("").isEmpty());
+    }
+
+    // ---- WalkEntry: tệp chỉ có trên mây (OneDrive) ----
+    {
+        CHECK(FsSafety::WalkEntry::isCloudOnlyAttributes(0x400000));  // RECALL_ON_DATA_ACCESS
+        CHECK(FsSafety::WalkEntry::isCloudOnlyAttributes(0x40000));   // RECALL_ON_OPEN
+        CHECK(FsSafety::WalkEntry::isCloudOnlyAttributes(0x1000));    // OFFLINE
+        CHECK(!FsSafety::WalkEntry::isCloudOnlyAttributes(0x20));     // ARCHIVE
+        CHECK(!FsSafety::WalkEntry::isCloudOnlyAttributes(0x80000));  // PINNED (đã tải về, luôn giữ)
+    }
+
+    // ---- SafePurge: xóa hẳn từng tệp, bỏ qua tệp đang mở, không đi qua junction, không gỡ thư mục gốc ----
+    {
+        QTemporaryDir tmp;
+        CHECK(tmp.isValid());
+        const QString root = tmp.path() + "/cache";
+        QDir(tmp.path()).mkpath("cache/a/b");
+        QDir(tmp.path()).mkpath("cache/sub");
+        QDir(tmp.path()).mkpath("outside");
+        writeFile(root + "/a/b/c.txt", 300);
+        writeFile(root + "/x.bin", 200);
+        SetFileAttributesW(reinterpret_cast<const wchar_t*>(QDir::toNativeSeparators(root + "/x.bin").utf16()),
+                           FILE_ATTRIBUTE_READONLY);
+        writeFile(root + "/shortcut.lnk", 50); // tệp .lnk thường trong cache: là dữ liệu, xóa được
+        writeFile(root + "/sub/locked.txt", 100);
+        writeFile(tmp.path() + "/outside/keep.txt", 70);
+        const bool haveJunction = makeJunction(root + "/junc", tmp.path() + "/outside");
+        if (!haveJunction)
+            std::printf("LUU Y: khong tao duoc junction - bo qua kiem tra junction cua SafePurge\n");
+
+        // Khóa thật: mở KHÔNG chia sẻ quyền xóa (như một ứng dụng đang ghi tệp cache).
+        const HANDLE lockH = CreateFileW(reinterpret_cast<const wchar_t*>(QDir::toNativeSeparators(root + "/sub/locked.txt").utf16()),
+                                         GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+        CHECK(lockH != INVALID_HANDLE_VALUE);
+
+        std::atomic_bool stop{false};
+        qint64 progressBytes = 0;
+        const SafePurge::Result r = SafePurge::purge(root, root, stop, [&](qint64 b) { progressBytes += b; });
+        CHECK(!r.rootRefused && !r.stopped);
+        CHECK(r.deletedFiles == 3);
+        CHECK(r.freedBytes == 300 + 200 + 50);
+        CHECK(progressBytes == r.freedBytes);
+        CHECK(r.inUseFiles == 1);
+        CHECK(!QFileInfo::exists(root + "/a/b/c.txt"));
+        CHECK(!QFileInfo::exists(root + "/a")); // thư mục con rỗng được gỡ
+        CHECK(!QFileInfo::exists(root + "/x.bin")); // tệp chỉ đọc vẫn xóa được
+        CHECK(!QFileInfo::exists(root + "/shortcut.lnk"));
+        CHECK(QFileInfo::exists(root + "/sub/locked.txt")); // đang mở -> giữ lại, không ép
+        CHECK(QFileInfo::exists(root)); // thư mục gốc KHÔNG BAO GIỜ bị gỡ
+        CHECK(QFileInfo::exists(tmp.path() + "/outside/keep.txt")); // đích của junction còn nguyên
+        if (haveJunction)
+        {
+            CHECK(FsSafety::rawInfo(root + "/junc").isLink); // junction không bị gỡ, không bị đi vào
+            CHECK(r.refusedFiles >= 1);
+        }
+        CloseHandle(lockH);
+
+        // Đã đóng tệp: lượt sau xóa nốt, gỡ "sub"; gốc vẫn còn.
+        const SafePurge::Result r2 = SafePurge::purge(root, root, stop);
+        CHECK(r2.deletedFiles == 1 && r2.inUseFiles == 0);
+        CHECK(!QFileInfo::exists(root + "/sub"));
+        CHECK(QFileInfo::exists(root));
+        CHECK(QFileInfo::exists(tmp.path() + "/outside/keep.txt"));
+
+        // Mục nằm NGOÀI thư mục gốc tin cậy -> từ chối, không xóa.
+        writeFile(tmp.path() + "/outside/other.txt", 10);
+        const SafePurge::Result r3 = SafePurge::purge(tmp.path() + "/outside/other.txt", root, stop);
+        CHECK(r3.deletedFiles == 0 && r3.refusedFiles == 1);
+        CHECK(QFileInfo::exists(tmp.path() + "/outside/other.txt"));
+
+        // Đi XUYÊN junction ở thành phần giữa: đường dẫn thật nằm ngoài gốc -> từ chối.
+        if (haveJunction)
+        {
+            const SafePurge::Result r4 = SafePurge::purge(root + "/junc/keep.txt", root, stop);
+            CHECK(r4.deletedFiles == 0 && r4.refusedFiles == 1);
+            CHECK(QFileInfo::exists(tmp.path() + "/outside/keep.txt"));
+        }
+
+        // Gốc là MỘT TỆP (vd MEMORY.DMP): xóa chính tệp đó.
+        writeFile(tmp.path() + "/MEMORY.DMP", 99);
+        const SafePurge::Result r5 = SafePurge::purge(tmp.path() + "/MEMORY.DMP", tmp.path() + "/MEMORY.DMP", stop);
+        CHECK(r5.deletedFiles == 1 && r5.freedBytes == 99 && r5.removedItself);
+
+        // Gốc rỗng / gốc ổ đĩa -> không làm gì.
+        CHECK(SafePurge::purge(root, "", stop).rootRefused);
+        CHECK(SafePurge::purge(root, QDir(tmp.path()).rootPath(), stop).rootRefused);
+
+        // Mục đã tự biến mất: không lỗi.
+        const SafePurge::Result r6 = SafePurge::purge(root + "/khong-co", root, stop);
+        CHECK(r6.removedItself && r6.deletedFiles == 0 && r6.failedFiles == 0);
+
+        CHECK(SafePurge::isInside("C:/A/B", "C:/A"));
+        CHECK(SafePurge::isInside("c:/a", "C:/A"));
+        CHECK(!SafePurge::isInside("C:/AB", "C:/A"));
+        CHECK(!SafePurge::isInside("", "C:/A"));
+    }
+
+    // ---- CleanupExecutor: việc Purge giải phóng thật (không vào Thùng rác), gốc sai -> từ chối ----
+    {
+        QTemporaryDir tmp;
+        CHECK(tmp.isValid());
+        const QString root = tmp.path() + "/Cache";
+        QDir(tmp.path()).mkpath("Cache/item1/deep");
+        writeFile(root + "/item1/deep/f1", 1000);
+        writeFile(root + "/item1/f2", 500);
+        writeFile(root + "/item2.bin", 700);
+        writeFile(tmp.path() + "/notmine.bin", 33);
+
+        QList<CleanupTask> tasks;
+        CleanupTask t1;
+        t1.path = root + "/item1";
+        t1.sizeBytes = 1500;
+        t1.mode = CleanupTask::Mode::Purge;
+        t1.trustedRoot = root;
+        CleanupTask t2 = t1;
+        t2.path = root + "/item2.bin";
+        t2.sizeBytes = 700;
+        CleanupTask bad = t1; // mục không nằm trong gốc tin cậy
+        bad.path = tmp.path() + "/notmine.bin";
+        bad.sizeBytes = 33;
+        tasks << t1 << t2 << bad;
+
+        CleanupExecutor executor;
+        executor.setTasks(tasks);
+        bool done = false, success = false;
+        qint64 freed = -1, recycled = -1, lastProgress = -1;
+        int count = -1;
+        QString notes;
+        QObject::connect(&executor, &CleanupExecutor::progress, [&](qint64 d, qint64) { lastProgress = d; });
+        QObject::connect(&executor, &CleanupExecutor::executionFinished,
+                         [&](bool ok, QString n, qint64 bytes, int cnt, qint64 rec) {
+                             success = ok;
+                             notes = n;
+                             freed = bytes;
+                             count = cnt;
+                             recycled = rec;
+                             done = true;
+                         });
+        executor.start();
+        CHECK(waitUntil([&] { return done; }, 15000));
+        executor.wait();
+        CHECK(success);
+        CHECK(freed == 2200);
+        CHECK(recycled == 0); // xóa hẳn - KHÔNG vào Thùng rác
+        CHECK(count == 3);    // 3 tệp
+        CHECK(!QFileInfo::exists(root + "/item1"));
+        CHECK(!QFileInfo::exists(root + "/item2.bin"));
+        CHECK(QFileInfo::exists(root)); // gốc còn
+        CHECK(QFileInfo::exists(tmp.path() + "/notmine.bin"));
+        CHECK(notes.contains("lý do an toàn"));
+        CHECK(lastProgress == 2233);
+
+        // Tuổi tối thiểu vẫn được kiểm lại trước khi xóa hẳn.
+        QDir(tmp.path()).mkpath("Cache/fresh");
+        writeFile(root + "/fresh/new.tmp", 10);
+        CleanupTask fresh;
+        fresh.path = root + "/fresh";
+        fresh.sizeBytes = 10;
+        fresh.minAgeSeconds = 3600;
+        fresh.mode = CleanupTask::Mode::Purge;
+        fresh.trustedRoot = root;
+        CleanupExecutor ex2;
+        ex2.setTasks({fresh});
+        bool done2 = false;
+        QString notes2;
+        QObject::connect(&ex2, &CleanupExecutor::executionFinished, [&](bool, QString n, qint64, int, qint64) {
+            notes2 = n;
+            done2 = true;
+        });
+        ex2.start();
+        CHECK(waitUntil([&] { return done2; }, 15000));
+        ex2.wait();
+        CHECK(QFileInfo::exists(root + "/fresh/new.tmp"));
+        CHECK(notes2.contains("GIỮ LẠI"));
+    }
+
+    // ---- CleanupScanner: bộ cài cũ + tệp tải về lớn lâu không dùng trong Downloads ----
+    {
+        QTemporaryDir tmp;
+        CHECK(tmp.isValid());
+        const QString dl = tmp.path() + "/Downloads";
+        QDir(tmp.path()).mkpath("Downloads/sub");
+        writeFile(dl + "/old-setup.exe", 4000);
+        writeFile(dl + "/new-setup.msi", 3000);
+        writeFile(dl + "/sub/portable.exe", 2000);
+        writeFile(dl + "/notes.txt", 100);
+        CHECK(setTimesDaysAgo(dl + "/old-setup.exe", 10));
+        CHECK(setTimesDaysAgo(dl + "/sub/portable.exe", 10));
+        CHECK(setTimesDaysAgo(dl + "/notes.txt", 100));
+        // Tệp lớn: đặt kích thước 251 MB (NTFS cấp phát nhanh, không phải ghi từng byte) rồi đặt mốc 40 ngày trước.
+        {
+            QFile big(dl + "/sub/movie.mkv");
+            CHECK(big.open(QIODevice::WriteOnly) && big.resize(251LL * 1024 * 1024));
+            big.close();
+            QFile big2(dl + "/recent.zip");
+            CHECK(big2.open(QIODevice::WriteOnly) && big2.resize(251LL * 1024 * 1024));
+        }
+        CHECK(setTimesDaysAgo(dl + "/sub/movie.mkv", 40));
+
+        CleanupEnvironment env;
+        env.downloadsDir = dl;
+        QList<CleanupCategory> toScan;
+        for (const CleanupCategory& c : CategoryRegistry::buildCategories(env))
+            if (c.kind == CleanupKind::OldInstallers || c.kind == CleanupKind::BigOldDownloads)
+                toScan << c;
+        CHECK(toScan.size() == 2);
+        CleanupScanner scanner;
+        scanner.setCategories(toScan);
+        QList<CleanupItem> items;
+        bool done = false;
+        QObject::connect(&scanner, &CleanupScanner::itemFound, [&](CleanupItem i) { items.push_back(i); });
+        QObject::connect(&scanner, &CleanupScanner::scanFinished, [&](qint64, int) { done = true; });
+        scanner.startScan();
+        CHECK(waitUntil([&] { return done; }, 30000));
+        scanner.wait();
+        QStringList installers, bigs;
+        for (const CleanupItem& it : items)
+        {
+            CHECK(!it.selected); // dữ liệu người dùng: không bao giờ tick sẵn
+            CHECK(!it.detail.isEmpty());
+            if (it.categoryId == CleanupCategoryId::OldInstallers)
+                installers << QFileInfo(it.path).fileName();
+            else if (it.categoryId == CleanupCategoryId::BigOldDownloads)
+                bigs << QFileInfo(it.path).fileName();
+        }
+        CHECK(installers == QStringList{"old-setup.exe"}); // không lấy bộ cài mới, không lấy .exe trong thư mục con
+        CHECK(bigs == QStringList{"movie.mkv"});            // không lấy tệp lớn vừa tạo
+        QFile::remove(dl + "/sub/movie.mkv");
+        QFile::remove(dl + "/recent.zip");
+    }
+
+    // ---- LeftoverFinder: suy đoán thư mục mồ côi THẬN TRỌNG ----
+    {
+        CHECK(LeftoverFinder::normalizeName("Google Chrome 2.0") == "googlechrome20");
+        const QSet<QString> keys = LeftoverFinder::nameKeys({"Visual Studio Code", "JetBrains s.r.o.", "7-Zip", ""});
+        CHECK(keys.contains("visualstudiocode") && keys.contains("visual") && keys.contains("studio"));
+        CHECK(keys.contains("code") && keys.contains("jetbrains") && keys.contains("7zip"));
+        CHECK(LeftoverFinder::belongsToInstalled("Code", keys));
+        CHECK(LeftoverFinder::belongsToInstalled("JetBrains", keys));
+        CHECK(LeftoverFinder::belongsToInstalled("abc", keys));   // quá ngắn để kết luận -> coi là đang cài
+        CHECK(!LeftoverFinder::belongsToInstalled("OldGameXyz", keys));
+        CHECK(LeftoverFinder::isNeverCandidate("Microsoft") && LeftoverFinder::isNeverCandidate("microsoft"));
+        CHECK(LeftoverFinder::isNeverCandidate("OneForAll"));
+        CHECK(!LeftoverFinder::isNeverCandidate("OldGameXyz"));
+
+        QTemporaryDir tmp;
+        CHECK(tmp.isValid());
+        const QString r = tmp.path() + "/AppData";
+        for (const char* d : {"OldGameXyz", "FreshToolQq", "Microsoft", "VisualStudioCodeData", "TinyAppWw", "ProtectedOld"})
+            QDir(r).mkpath(d);
+        writeFile(r + "/OldGameXyz/save.dat", 5000);
+        writeFile(r + "/FreshToolQq/cfg.dat", 5000);
+        writeFile(r + "/Microsoft/x.dat", 5000);
+        writeFile(r + "/VisualStudioCodeData/x.dat", 5000);
+        writeFile(r + "/TinyAppWw/x.dat", 10);
+        writeFile(r + "/ProtectedOld/x.dat", 5000);
+        for (const char* f : {"OldGameXyz/save.dat", "OldGameXyz", "Microsoft/x.dat", "Microsoft", "VisualStudioCodeData/x.dat",
+                              "VisualStudioCodeData", "TinyAppWw/x.dat", "TinyAppWw", "ProtectedOld/x.dat", "ProtectedOld"})
+            CHECK(setTimesDaysAgo(r + "/" + f, 200));
+        std::atomic_bool stop{false};
+        const QList<LeftoverFinder::Leftover> found =
+            LeftoverFinder::find({r, ""}, keys, FsSafety::nowFileTime(), stop, {r + "/ProtectedOld"}, 1000, 90);
+        CHECK(found.size() == 1);
+        if (found.size() == 1)
+        {
+            CHECK(found[0].path == r + "/OldGameXyz");
+            CHECK(found[0].sizeBytes == 5000 && found[0].fileCount == 1);
+        }
+    }
+
+    // ---- DuplicateFinder: băm nhanh đầu+cuối loại tệp cùng cỡ khác nội dung mà không đọc hết ----
+    {
+        QTemporaryDir tmp;
+        CHECK(tmp.isValid());
+        const int size = 300 * 1024;
+        QByteArray base(size, 'a');
+        for (int i = 0; i < size; ++i)
+            base[i] = static_cast<char>((i * 31) & 0xFF);
+        QByteArray middleDiff = base;
+        middleDiff[size / 2] = static_cast<char>(middleDiff[size / 2] ^ 0x55); // khác ở GIỮA: băm nhanh trùng, băm đủ khác
+        QByteArray headDiff = base;
+        headDiff[10] = static_cast<char>(headDiff[10] ^ 0x55);
+        auto put = [&](const QString& name, const QByteArray& data) {
+            QFile f(tmp.path() + "/" + name);
+            CHECK(f.open(QIODevice::WriteOnly) && f.write(data) == data.size());
+        };
+        put("a.bin", base);
+        put("b.bin", base);
+        put("mid.bin", middleDiff);
+        put("head.bin", headDiff);
+        DuplicateFinder finder;
+        finder.setRootPath(tmp.path());
+        finder.setMinSizeBytes(1000);
+        QList<DuplicateGroup> groups;
+        bool finished = false;
+        QObject::connect(&finder, &DuplicateFinder::scanFinished, [&](QList<DuplicateGroup> g, qint64, int) {
+            groups = g;
+            finished = true;
+        });
+        finder.startScan();
+        CHECK(waitUntil([&] { return finished; }, 15000));
+        finder.wait();
+        CHECK(groups.size() == 1);
+        if (groups.size() == 1)
+        {
+            CHECK(groups[0].paths.size() == 2);
+            for (const QString& p : groups[0].paths)
+                CHECK(p.endsWith("/a.bin") || p.endsWith("/b.bin"));
+        }
+    }
+
+    // ---- CleanupSystem: chỉ ĐỌC (danh sách tiến trình, kích thước hiberfil.sys) ----
+    {
+        const QSet<QString> running = CleanupSystem::runningExeNamesLower();
+        CHECK(running.contains("diskcleanup_tests.exe"));
+        CHECK(CleanupSystem::hibernationFilePath("C:/") == "C:/hiberfil.sys");
+        CHECK(CleanupSystem::hibernationFilePath("C:\\") == "C:/hiberfil.sys");
+        CHECK(CleanupSystem::hibernationFilePath("").isEmpty());
+        CHECK(CleanupSystem::hibernationFileSize("") == 0);
+        const qint64 hiber = CleanupSystem::hibernationFileSize(QDir::rootPath());
+        CHECK(hiber >= 0);
+        std::printf("hiberfil.sys tren o he thong: %lld byte (chi doc)\n", static_cast<long long>(hiber));
+        // Môi trường thật: hạng mục mới khả dụng theo máy (chỉ in, không xóa gì)
+        int available = 0;
+        for (const CleanupCategory& c : CategoryRegistry::buildCategories(CleanupEnvironment::current()))
+            if (CategoryRegistry::isAvailable(c))
+                ++available;
+        std::printf("Hang muc kha dung tren may that: %d\n", available);
+        CHECK(available > 0);
     }
 
     std::printf("passed=%d failed=%d\n", g_pass, g_fail);
