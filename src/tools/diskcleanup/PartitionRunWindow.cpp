@@ -6,6 +6,7 @@
 #include "engine/PartitionMover.h"
 
 #include <QCloseEvent>
+#include <QColor>
 #include <QDir>
 #include <QFileInfo>
 #include <QFrame>
@@ -102,7 +103,7 @@ PartitionRunWindow::PartitionRunWindow(const PartitionRelocator::Plan& plan, qui
     m_holdersTable->setSelectionMode(QAbstractItemView::NoSelection);
     m_holdersTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_holdersTable->setWordWrap(false);
-    m_holdersTable->setTextElideMode(Qt::ElideMiddle);
+    m_holdersTable->setTextElideMode(Qt::ElideRight); // phần đầu (cách gỡ / tệp đầu tiên) luôn hiện; đủ nội dung ở chú thích khi rê chuột
     m_holdersTable->setStyleSheet(DiskUi::tableStyle());
     hp->addWidget(m_holdersTable, 1);
     auto* hrow = new QHBoxLayout();
@@ -419,10 +420,17 @@ void PartitionRunWindow::scanHolders()
     if (height() < 600)
         resize(std::max(width(), 820), 620);
     const QString letter = m_plan.letter.left(1).toUpper();
-    setHoldersBusy(true, QStringLiteral("⏳ Đang tìm chương trình/dịch vụ đang giữ ổ %1: (vài giây)...").arg(letter));
+    setHoldersBusy(true, QStringLiteral("⏳ Đang kiểm KỸ ổ %1: - chương trình, dịch vụ, nhân Windows, WSL/máy ảo, ổ ảo... (khoảng 10-60 giây)").arg(letter));
     m_holdersStop = false;
     auto result = std::make_shared<VolumeHolders::Report>();
-    runInBackground([this, result, letter]() { *result = VolumeHolders::scan(letter, &m_holdersStop); },
+    // Tiến độ từ luồng quét -> nhãn (luồng giao diện).
+    auto progress = [this, letter](int n) {
+        QMetaObject::invokeMethod(this, [this, letter, n]() {
+            if (m_holdersBusy)
+                m_holdersLabel->setText(QStringLiteral("⏳ Đang kiểm KỸ ổ %1: - đã hỏi %2 tệp/thư mục có thể đang bị giữ...").arg(letter).arg(n));
+        }, Qt::QueuedConnection);
+    };
+    runInBackground([this, result, letter, progress]() { *result = VolumeHolders::scan(letter, &m_holdersStop, true, progress); },
                     [this, result]() {
                         setHoldersBusy(false, QString());
                         showHolders(*result);
@@ -456,10 +464,12 @@ void PartitionRunWindow::showHolders(const VolumeHolders::Report& report)
             tip += "\n\nĐang mở:\n  " + h.samplePaths.join("\n  ");
         nameItem->setToolTip(tip);
         m_holdersTable->setItem(i, 0, nameItem);
-        auto* pidItem = new QTableWidgetItem(QString::number(h.pid));
+        auto* pidItem = new QTableWidgetItem(h.pid == 0 ? QStringLiteral("—") : QString::number(h.pid));
         pidItem->setTextAlignment(Qt::AlignCenter);
         m_holdersTable->setItem(i, 1, pidItem);
         auto* holdItem = new QTableWidgetItem(h.holdingSummary());
+        if (h.kind == VolumeHolders::HolderKind::System)
+            holdItem->setForeground(QColor("#9a6700"));
         holdItem->setToolTip(tip);
         m_holdersTable->setItem(i, 2, holdItem);
 
@@ -475,22 +485,23 @@ void PartitionRunWindow::showHolders(const VolumeHolders::Report& report)
                            "font-size: 12px; }");
         btn->setObjectName(QStringLiteral("runHolderStop_%1").arg(i));
         btn->setCursor(Qt::PointingHandCursor);
-        if (h.self)
+        btn->setText(h.stopLabel());
+        if (!h.stoppable())
         {
-            btn->setText("Ứng dụng này");
             btn->setEnabled(false);
-        }
-        else if (!h.stoppable())
-        {
-            btn->setText("Hệ thống");
-            btn->setEnabled(false);
-            btn->setToolTip("Tiến trình hệ thống của Windows - không được dừng.");
+            btn->setToolTip(h.self ? QStringLiteral("Chính ứng dụng này.")
+                                   : h.hint.isEmpty() ? QStringLiteral("Thành phần hệ thống của Windows - không được dừng từ đây.")
+                                                      : QStringLiteral("Không dừng được từ đây - cách gỡ: ") + h.hint);
         }
         else
         {
-            btn->setText(QStringLiteral("⛔ Dừng"));
-            btn->setToolTip(h.serviceNames.isEmpty() ? QStringLiteral("Buộc dừng %1 (PID %2)").arg(h.name).arg(h.pid)
-                                                     : QStringLiteral("Dừng dịch vụ: %1").arg(h.serviceLabels.join(", ")));
+            if (h.kind == VolumeHolders::HolderKind::Wsl)
+                btn->setToolTip(QStringLiteral("wsl --shutdown: tắt máy ảo WSL (dừng mọi bản Linux đang chạy)"));
+            else if (h.kind == VolumeHolders::HolderKind::VirtualDisk)
+                btn->setToolTip(QStringLiteral("Tháo ổ đĩa ảo %1").arg(h.diskImagePath));
+            else
+                btn->setToolTip(h.serviceNames.isEmpty() ? QStringLiteral("Buộc dừng %1 (PID %2)").arg(h.name).arg(h.pid)
+                                                         : QStringLiteral("Dừng dịch vụ: %1").arg(h.serviceLabels.join(", ")));
             btn->setStyleSheet("QPushButton { background-color: #cf222e; color: white; border: none; border-radius: 6px; padding: 0px 8px; "
                                "font-size: 12px; font-weight: bold; }"
                                "QPushButton:hover { background-color: #a40e26; }"
@@ -504,10 +515,21 @@ void PartitionRunWindow::showHolders(const VolumeHolders::Report& report)
     m_stopAllBtn->setEnabled(stoppable > 0 && !m_running);
 
     QStringList lines;
+    bool anyStoppable = false;
+    for (const VolumeHolders::Holder& h : report.holders)
+        anyStoppable = anyStoppable || h.stoppable();
     if (!report.error.isEmpty())
         lines << "⚠ " + report.error;
     else if (report.holders.isEmpty())
-        lines << QStringLiteral("Không thấy chương trình/dịch vụ nào đang mở tệp trên ổ %1:. Bấm \"Thử lại\".").arg(letter);
+        lines << QStringLiteral("Đã kiểm kỹ mà KHÔNG thấy chương trình/dịch vụ/thành phần Windows nào đang mở tệp trên ổ %1:. Bấm \"Thử lại\". Nếu vẫn "
+                                "không khóa được: (1) tạm tắt bảo vệ thời gian thực của phần mềm diệt virus/mã hóa/sao lưu (trình điều khiển của chúng "
+                                "giữ tệp mà không ứng dụng nào thấy được); (2) tắt \"Bảo vệ hệ thống\" (điểm khôi phục) cho ổ %1:; (3) khởi động lại "
+                                "máy rồi dời NGAY, trước khi mở chương trình khác.")
+                     .arg(letter);
+    else if (!anyStoppable)
+        lines << QStringLiteral("Ổ %1: đang bị giữ bởi thành phần của Windows (không dừng được từ đây) - xem cột \"Đang giữ\" để biết cách gỡ, rồi bấm "
+                                "\"Thử lại\".")
+                     .arg(letter);
     else
         lines << QStringLiteral("%1 chương trình/dịch vụ đang giữ ổ %2: - bấm \"Dừng\" từng cái (hoặc \"Dừng tất cả\") rồi bấm \"Thử lại\". "
                                 "Dừng chương trình thường = buộc thoát (mất dữ liệu chưa lưu); dịch vụ được dừng đúng cách và chạy lại khi khởi "
@@ -520,7 +542,14 @@ void PartitionRunWindow::showHolders(const VolumeHolders::Report& report)
                      .arg(letter);
     if (!report.handleScanComplete)
         lines << QStringLiteral("Lưu ý: chưa quét hết được mọi tệp đang mở (một số truy vấn bị treo) - danh sách có thể thiếu.");
-    if (!report.unreadable.isEmpty())
+    for (const QString& note : report.notes)
+        lines << note;
+    if (report.deepScanDone)
+        lines << QStringLiteral("Đã kiểm kỹ: liệt kê %1 tệp/thư mục, hỏi \"ai đang mở\" %2 tệp có khả năng bị giữ%3.")
+                     .arg(report.entriesListed)
+                     .arg(report.filesChecked)
+                     .arg(report.deepLimited ? QStringLiteral(" (chạm giới hạn - có thể còn sót)") : QString());
+    if (!report.unreadable.isEmpty() && report.holders.isEmpty())
         lines << QStringLiteral("Không đọc được %1 tiến trình được bảo vệ (vd phần mềm diệt virus: %2) - nếu sau khi dừng hết vẫn không khóa được ổ, "
                                 "hãy tạm tắt bảo vệ thời gian thực/phần mềm đó.")
                      .arg(report.unreadable.size())
@@ -538,7 +567,14 @@ void PartitionRunWindow::onStopHolder(int row)
     if (!h.stoppable())
         return;
     QString text;
-    if (!h.serviceNames.isEmpty())
+    if (h.kind == VolumeHolders::HolderKind::Wsl)
+        text = QStringLiteral("Tắt WSL (wsl --shutdown)?\n\nMọi bản Linux WSL đang chạy (và Docker Desktop nếu dùng WSL) sẽ dừng NGAY - chương trình đang chạy "
+                              "trong đó mất dữ liệu chưa lưu. Mở lại WSL sau khi dời xong.");
+    else if (h.kind == VolumeHolders::HolderKind::VirtualDisk)
+        text = QStringLiteral("Tháo ổ đĩa ảo %1?\n\nỔ ảo này đang được gắn từ một tệp trên ổ cần dời. Nếu nó là ổ của một máy ảo đang chạy, hãy tắt máy "
+                              "ảo trước.")
+                   .arg(h.diskImagePath);
+    else if (!h.serviceNames.isEmpty())
         text = QStringLiteral("Dừng dịch vụ: %1 (PID %2)?\n\nDịch vụ được dừng đúng cách qua Windows (kèm các dịch vụ phụ thuộc đang chạy) và sẽ chạy "
                               "lại khi khởi động lại máy, hoặc bật lại trong services.msc.")
                    .arg(h.serviceLabels.join(", "))

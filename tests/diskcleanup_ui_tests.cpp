@@ -738,7 +738,7 @@ int main(int argc, char** argv)
             auto* stopAll = hw.findChild<QPushButton*>("runHoldersStopAll");
             CHECK(stopAll && stopAll->isEnabled());
             auto* label = hw.findChild<QLabel*>("runHoldersLabel");
-            CHECK(label && label->text().contains("pagefile") && label->text().contains("MsMpEng.exe"));
+            CHECK(label && label->text().contains("pagefile"));
             // Bấm "Dừng" dòng đầu (tiến trình con của test) -> nó thoát thật.
             const bool invoked = QMetaObject::invokeMethod(&hw, "onStopHolder", Qt::DirectConnection, Q_ARG(int, 0));
             CHECK(invoked && hw.holdersBusy()); // đang dừng ở luồng nền
@@ -762,8 +762,51 @@ int main(int argc, char** argv)
             CHECK(stopAll && !stopAll->isEnabled());
             VolumeHolders::Report none;
             none.elevated = true;
+            none.deepScanDone = true;
+            none.entriesListed = 130704;
+            none.filesChecked = 668;
+            none.unreadable = {"MsMpEng.exe (PID 3000)"};
             hw.setHoldersForTest(none);
-            CHECK(table && table->rowCount() == 0 && label && label->text().contains("Không thấy"));
+            CHECK(table && table->rowCount() == 0 && label && label->text().contains("KHÔNG thấy"));
+            CHECK(label && label->text().contains("130704") && label->text().contains("MsMpEng.exe"));
+            // Thứ nhân Windows / WSL / ổ ảo giữ: nút theo loại (KHÔNG bấm - sẽ tắt WSL/tháo ổ thật).
+            VolumeHolders::Report special;
+            special.elevated = true;
+            VolumeHolders::Holder kern;
+            kern.kind = VolumeHolders::HolderKind::System;
+            kern.pid = 4;
+            kern.name = "System (nhân Windows)";
+            kern.critical = true;
+            kern.openHandles = 2;
+            kern.samplePaths = {"D:\\System Volume Information\\{3808876b}"};
+            kern.hint = VolumeHolders::systemHoldHint(kern.samplePaths.first());
+            VolumeHolders::Holder wsl;
+            wsl.kind = VolumeHolders::HolderKind::Wsl;
+            wsl.name = "WSL - máy ảo Linux (Ubuntu)";
+            wsl.samplePaths = {"D:\\wsl\\Ubuntu\\ext4.vhdx"};
+            VolumeHolders::Holder vd;
+            vd.kind = VolumeHolders::HolderKind::VirtualDisk;
+            vd.pid = 4;
+            vd.name = "Ổ đĩa ảo: a.vhdx";
+            vd.diskImagePath = "D:\\VMs\\a.vhdx";
+            special.holders = {wsl, vd, kern};
+            hw.setHoldersForTest(special);
+            CHECK(table && table->rowCount() == 3);
+            if (table && table->rowCount() == 3)
+            {
+                auto btnAt = [&](int r) { return table->cellWidget(r, 3) ? table->cellWidget(r, 3)->findChild<QPushButton*>() : nullptr; };
+                CHECK(btnAt(0) && btnAt(0)->isEnabled() && btnAt(0)->text().contains("Tắt WSL"));
+                CHECK(btnAt(1) && btnAt(1)->isEnabled() && btnAt(1)->text().contains("Tháo ổ ảo"));
+                CHECK(btnAt(2) && !btnAt(2)->isEnabled() && btnAt(2)->text() == "Windows" && btnAt(2)->toolTip().contains("bản sao bóng"));
+                CHECK(table->item(0, 1)->text() == "—"); // WSL không có PID riêng
+                CHECK(table->item(2, 2)->text().contains("bản sao bóng"));
+            }
+            CHECK(stopAll && stopAll->isEnabled());
+            VolumeHolders::Report onlyKernel;
+            onlyKernel.elevated = true;
+            onlyKernel.holders = {kern};
+            hw.setHoldersForTest(onlyKernel);
+            CHECK(stopAll && !stopAll->isEnabled() && label && label->text().contains("thành phần của Windows"));
         }
         // Chờ ứng dụng gốc: PID đang sống (chính test) -> chưa cho bắt đầu.
         PartitionRunWindow w3(plan, GetCurrentProcessId(), QString());

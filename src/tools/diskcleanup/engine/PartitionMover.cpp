@@ -253,7 +253,7 @@ public:
                                   .arg(driveLetter.isEmpty() ? QString() : (" " + driveLetter.left(1).toUpper() + ":"), winError(code));
                 // v1.33.0: chỉ ra ĐÚNG ai đang giữ ổ - kể cả chương trình chỉ MỞ TỆP trên ổ (phần mềm đồng bộ, trình đánh chỉ mục, dịch vụ...),
                 // không chỉ chương trình chạy từ ổ. Cửa sổ dời phân vùng còn có bảng để dừng từng cái (VolumeHolders).
-                const VolumeHolders::Report holders = VolumeHolders::scan(driveLetter);
+                const VolumeHolders::Report holders = VolumeHolders::scan(driveLetter, nullptr, /*deep=*/false); // nhanh - cửa sổ dời tự kiểm kỹ sau
                 QStringList names;
                 for (const VolumeHolders::Holder& h : holders.holders)
                     if (!h.self)

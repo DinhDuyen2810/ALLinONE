@@ -1,13 +1,21 @@
 #include "VolumeHolders.h"
 
 #include "FsSafety.h"
+#include "core/AppPaths.h"
+#include "core/PowerShellRunner.h"
 #include "core/WinElevation.h"
 
 #include <QDir>
 #include <QHash>
+#include <QProcess>
 #include <QSet>
+#include <QSettings>
+
+#include <QElapsedTimer>
 
 #include <algorithm>
+#include <atomic>
+#include <thread>
 #include <vector>
 
 #ifdef Q_OS_WIN
@@ -332,8 +340,218 @@ bool stopService(SC_HANDLE scm, const QString& name, QString* error)
 #endif
 } // namespace
 
+namespace
+{
+#ifdef Q_OS_WIN
+using NtQueryInformationFileFn = LONG(NTAPI*)(HANDLE, PVOID, PVOID, ULONG, ULONG);
+constexpr ULONG kFileProcessIdsUsingFileInformation = 47;
+constexpr LONG kStatusBufferOverflow = static_cast<LONG>(0x80000005);
+
+struct IoStatus
+{
+    LONG status;
+    ULONG_PTR information;
+};
+
+/// "D:\..." -> "\\?\D:\..." (vượt MAX_PATH).
+std::wstring longPath(const QString& path)
+{
+    return (QStringLiteral("\\\\?\\") + path).toStdWString();
+}
+
+/// PID các tiến trình đang mở 'path' (tệp/thư mục/thiết bị). Mở CHỈ đọc thuộc tính, chia sẻ toàn phần (không cản ai, không đọc nội dung, không đi
+/// theo liên kết). *exclusive = ngay cả cách mở đó cũng bị từ chối "đang dùng" (nhân Windows giữ độc quyền, vd pagefile); *denied = thiếu quyền.
+QList<quint32> pidsUsing(const std::wstring& nativePath, bool* exclusive, bool* denied)
+{
+    static const auto query = reinterpret_cast<NtQueryInformationFileFn>(
+        reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationFile")));
+    *exclusive = false;
+    *denied = false;
+    QList<quint32> out;
+    const HANDLE h = CreateFileW(nativePath.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                                 OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (h == INVALID_HANDLE_VALUE)
+    {
+        const DWORD e = GetLastError();
+        *exclusive = (e == ERROR_SHARING_VIOLATION || e == ERROR_LOCK_VIOLATION);
+        *denied = (e == ERROR_ACCESS_DENIED);
+        return out;
+    }
+    if (query)
+    {
+        std::vector<BYTE> buf(4096);
+        for (int attempt = 0; attempt < 6; ++attempt)
+        {
+            IoStatus iosb{};
+            const LONG st = query(h, &iosb, buf.data(), static_cast<ULONG>(buf.size()), kFileProcessIdsUsingFileInformation);
+            if (st == kStatusInfoLengthMismatch || st == kStatusBufferOverflow)
+            {
+                buf.resize(buf.size() * 4);
+                continue;
+            }
+            if (st == 0)
+            {
+                const ULONG n = *reinterpret_cast<const ULONG*>(buf.data());
+                const auto* ids = reinterpret_cast<const ULONG_PTR*>(buf.data() + sizeof(ULONG_PTR));
+                const size_t maxIds = (buf.size() - sizeof(ULONG_PTR)) / sizeof(ULONG_PTR);
+                for (ULONG k = 0; k < n && k < maxIds; ++k)
+                    out << static_cast<quint32>(ids[k]);
+            }
+            break;
+        }
+    }
+    CloseHandle(h);
+    return out;
+}
+
+struct DirEntry
+{
+    QString name;
+    DWORD attributes{0};
+    qint64 lastWrite{0};
+};
+
+/// Liệt kê một thư mục qua HANDLE mở với FILE_FLAG_BACKUP_SEMANTICS (GetFileInformationByHandleEx FileIdBothDirectoryInfo) - với SeBackupPrivilege
+/// (Administrator) đọc được cả thư mục mà FindFirstFile bị từ chối, như "System Volume Information" (bản sao bóng, chỉ mục, tracking.log...).
+bool listDirectoryByHandle(const QString& dirWithSlash, std::vector<DirEntry>* out)
+{
+    const HANDLE h = CreateFileW(longPath(dirWithSlash).c_str(), FILE_LIST_DIRECTORY, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                                 OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (h == INVALID_HANDLE_VALUE)
+        return false;
+    alignas(8) static thread_local BYTE buf[64 * 1024];
+    bool any = false;
+    while (GetFileInformationByHandleEx(h, FileIdBothDirectoryInfo, buf, sizeof(buf)))
+    {
+        any = true;
+        const BYTE* p = buf;
+        for (;;)
+        {
+            const auto* info = reinterpret_cast<const FILE_ID_BOTH_DIR_INFO*>(p);
+            const QString name = QString::fromWCharArray(info->FileName, static_cast<int>(info->FileNameLength / sizeof(wchar_t)));
+            if (name != QLatin1String(".") && name != QLatin1String(".."))
+                out->push_back({name, info->FileAttributes, info->LastWriteTime.QuadPart});
+            if (info->NextEntryOffset == 0)
+                break;
+            p += info->NextEntryOffset;
+        }
+    }
+    CloseHandle(h);
+    return any;
+}
+
+bool enablePrivilege(const wchar_t* name)
+{
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token))
+        return false;
+    TOKEN_PRIVILEGES tp{};
+    tp.PrivilegeCount = 1;
+    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+    const bool ok = LookupPrivilegeValueW(nullptr, name, &tp.Privileges[0].Luid) &&
+                    AdjustTokenPrivileges(token, FALSE, &tp, sizeof(tp), nullptr, nullptr) && GetLastError() == ERROR_SUCCESS;
+    CloseHandle(token);
+    return ok;
+}
+
+struct WslDistro
+{
+    QString name;
+    QString basePath;
+};
+
+/// Các bản Linux WSL của tài khoản này (HKCU\Software\Microsoft\Windows\CurrentVersion\Lxss\{GUID}: DistributionName, BasePath).
+QList<WslDistro> wslDistros()
+{
+    QList<WslDistro> out;
+    QSettings reg(QStringLiteral("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss"), QSettings::NativeFormat);
+    for (const QString& key : reg.childGroups())
+    {
+        reg.beginGroup(key);
+        WslDistro d;
+        d.name = reg.value("DistributionName").toString();
+        d.basePath = reg.value("BasePath").toString();
+        reg.endGroup();
+        if (d.basePath.startsWith(QLatin1String("\\\\?\\")))
+            d.basePath = d.basePath.mid(4);
+        if (!d.basePath.isEmpty())
+            out << d;
+    }
+    return out;
+}
+
+/// Tệp registry (hive) đang nạp từ ổ có thiết bị 'deviceName' ("\Device\HarddiskVolume4") - trả về dạng "X:\...".
+QStringList hivesOnDevice(const QString& deviceName, const QString& letter)
+{
+    QStringList out;
+    if (deviceName.isEmpty())
+        return out;
+    QSettings reg(QStringLiteral("HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\hivelist"), QSettings::NativeFormat);
+    const QString prefix = deviceName + QLatin1Char('\\');
+    for (const QString& key : reg.allKeys())
+    {
+        const QString v = reg.value(key).toString();
+        if (v.startsWith(prefix, Qt::CaseInsensitive))
+            out << letter + QStringLiteral(":\\") + v.mid(prefix.size());
+    }
+    return out;
+}
+#endif
+} // namespace
+
 namespace VolumeHolders
 {
+
+QList<quint32> processesUsingPath(const QString& path)
+{
+#ifdef Q_OS_WIN
+    bool exclusive = false, denied = false;
+    QList<quint32> pids = pidsUsing(longPath(QDir::toNativeSeparators(path)), &exclusive, &denied);
+    pids.removeAll(GetCurrentProcessId()); // chính lần mở để hỏi
+    return pids;
+#else
+    Q_UNUSED(path);
+    return {};
+#endif
+}
+
+QStringList directoryEntriesByHandle(const QString& dir)
+{
+    QStringList out;
+#ifdef Q_OS_WIN
+    QString d = QDir::toNativeSeparators(dir);
+    if (!d.endsWith(QLatin1Char('\\')))
+        d += QLatin1Char('\\');
+    std::vector<DirEntry> entries;
+    listDirectoryByHandle(d, &entries);
+    for (const DirEntry& e : entries)
+        out << e.name;
+#else
+    Q_UNUSED(dir);
+#endif
+    return out;
+}
+
+bool Holder::stoppable() const
+{
+    if (kind == HolderKind::Wsl || kind == HolderKind::VirtualDisk)
+        return true;
+    return kind == HolderKind::Process && !critical && !self && pid > 4;
+}
+
+QString Holder::stopLabel() const
+{
+    switch (kind)
+    {
+        case HolderKind::Wsl: return QStringLiteral("⛔ Tắt WSL");
+        case HolderKind::VirtualDisk: return QStringLiteral("⏏ Tháo ổ ảo");
+        case HolderKind::System: return QStringLiteral("Windows");
+        case HolderKind::Process: break;
+    }
+    if (self)
+        return QStringLiteral("Ứng dụng này");
+    return stoppable() ? QStringLiteral("⛔ Dừng") : QStringLiteral("Hệ thống");
+}
 
 QString Holder::holdingSummary() const
 {
@@ -349,6 +567,14 @@ QString Holder::holdingSummary() const
             s += QStringLiteral(": ") + samplePaths.first();
         parts << s;
     }
+    if (!hint.isEmpty())
+    {
+        // Thứ không phải chương trình thường (nhân Windows/WSL/ổ ảo): cách gỡ quan trọng hơn danh sách tệp - đặt lên trước (cột hẹp cắt phần sau).
+        if (kind == HolderKind::Process)
+            parts << hint;
+        else
+            parts.prepend(hint);
+    }
     return parts.join(QStringLiteral(" · "));
 }
 
@@ -356,29 +582,56 @@ bool isCriticalProcessName(const QString& exeName)
 {
     static const QSet<QString> critical{"system", "registry", "secure system", "memory compression", "smss.exe", "csrss.exe",
                                         "wininit.exe", "winlogon.exe", "services.exe", "lsass.exe", "lsaiso.exe", "fontdrvhost.exe",
-                                        "dwm.exe", "system idle process", "[system process]"};
+                                        "dwm.exe", "system idle process", "[system process]",
+                                        // máy ảo Hyper-V/WSL: diệt tiến trình = tắt ngang máy ảo (hỏng dữ liệu trong máy ảo). WSL có nút riêng.
+                                        "vmmem", "vmmemwsl", "vmwp.exe", "vmcompute.exe", "vmms.exe"};
     return critical.contains(exeName.trimmed().toLower());
+}
+
+bool isDiskImagePath(const QString& path)
+{
+    static const QStringList ext{".vhd", ".vhdx", ".avhd", ".avhdx", ".iso", ".vhds"};
+    for (const QString& e : ext)
+        if (path.endsWith(e, Qt::CaseInsensitive))
+            return true;
+    return false;
+}
+
+QString systemHoldHint(const QString& path)
+{
+    const QString p = QDir::toNativeSeparators(path);
+    const QString name = p.section(QLatin1Char('\\'), -1);
+    if (name.compare(QLatin1String("pagefile.sys"), Qt::CaseInsensitive) == 0 ||
+        name.compare(QLatin1String("swapfile.sys"), Qt::CaseInsensitive) == 0)
+        return QStringLiteral("tệp hoán trang (bộ nhớ ảo) - tắt bộ nhớ ảo trên ổ này rồi khởi động lại máy");
+    if (name.compare(QLatin1String("ext4.vhdx"), Qt::CaseInsensitive) == 0)
+        return QStringLiteral("ổ đĩa của một bản Linux WSL - tắt WSL (wsl --shutdown)");
+    if (isDiskImagePath(p))
+        return QStringLiteral("ổ đĩa ảo đang gắn từ tệp này (máy ảo, WSL, Docker hoặc ổ ảo/ISO đã Mount) - tháo ổ ảo / tắt máy ảo");
+    if (p.contains(QLatin1String("\\System Volume Information\\"), Qt::CaseInsensitive) ||
+        p.endsWith(QLatin1String("\\System Volume Information"), Qt::CaseInsensitive))
+        return QStringLiteral("bản sao bóng (Volume Shadow Copy) / điểm khôi phục / chỉ mục của Windows trên ổ - tắt \"Bảo vệ hệ thống\" cho ổ này "
+                              "(hoặc xóa bản sao bóng) rồi thử lại");
+    if (name.compare(QLatin1String("NTUSER.DAT"), Qt::CaseInsensitive) == 0 ||
+        name.compare(QLatin1String("UsrClass.dat"), Qt::CaseInsensitive) == 0 || p.contains(QLatin1String("\\config\\"), Qt::CaseInsensitive))
+        return QStringLiteral("tệp registry (hive) đang nạp - thường là hồ sơ người dùng nằm trên ổ này; đăng xuất tài khoản đó");
+    if (p.contains(QLatin1String("\\$Extend\\"), Qt::CaseInsensitive) || name.startsWith(QLatin1Char('$')))
+        return QStringLiteral("siêu dữ liệu NTFS");
+    return {};
 }
 
 bool enableDebugPrivilege()
 {
 #ifdef Q_OS_WIN
-    HANDLE token = nullptr;
-    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token))
-        return false;
-    TOKEN_PRIVILEGES tp{};
-    tp.PrivilegeCount = 1;
-    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
-    bool ok = LookupPrivilegeValueW(nullptr, L"SeDebugPrivilege", &tp.Privileges[0].Luid) &&
-              AdjustTokenPrivileges(token, FALSE, &tp, sizeof(tp), nullptr, nullptr) && GetLastError() == ERROR_SUCCESS;
-    CloseHandle(token);
-    return ok;
+    const bool debug = enablePrivilege(L"SeDebugPrivilege");
+    enablePrivilege(L"SeBackupPrivilege"); // mở được tệp/thư mục bị hạn chế quyền để HỎI ai đang dùng (không đọc nội dung)
+    return debug;
 #else
     return false;
 #endif
 }
 
-Report scan(const QString& driveLetter, const std::atomic_bool* stopFlag)
+Report scan(const QString& driveLetter, const std::atomic_bool* stopFlag, bool deep, const std::function<void(int)>& progress)
 {
     Report report;
     const QString letter = normalizedLetter(driveLetter);
@@ -422,8 +675,10 @@ Report scan(const QString& driveLetter, const std::atomic_bool* stopFlag)
             CloseHandle(snap);
         }
     }
+    names.insert(4, QStringLiteral("System"));
     const quint32 self = GetCurrentProcessId();
     QHash<quint32, Holder> holders;
+    QHash<quint32, QHash<QString, QString>> pathsByPid; // tệp KHÁC NHAU mỗi tiến trình đang mở (khóa chữ thường -> đường dẫn gốc), gộp mọi bước
     auto holderFor = [&](quint32 pid) -> Holder& {
         auto it = holders.find(pid);
         if (it == holders.end())
@@ -432,9 +687,25 @@ Report scan(const QString& driveLetter, const std::atomic_bool* stopFlag)
             h.pid = pid;
             h.name = names.value(pid, QStringLiteral("PID %1").arg(pid));
             h.self = pid == self;
+            if (pid == 4)
+            {
+                h.kind = HolderKind::System;
+                h.name = QStringLiteral("System (nhân Windows)");
+                h.critical = true;
+            }
             it = holders.insert(pid, h);
         }
         return it.value();
+    };
+    auto addPath = [&](quint32 pid, const QString& path) {
+        Holder& h = holderFor(pid);
+        QHash<QString, QString>& seen = pathsByPid[pid];
+        const QString key = path.toLower();
+        if (seen.contains(key))
+            return;
+        seen.insert(key, path);
+        if (h.samplePaths.size() < 5)
+            h.samplePaths << path;
     };
 
     // 1) exe / DLL nạp từ ổ.
@@ -452,7 +723,7 @@ Report scan(const QString& driveLetter, const std::atomic_bool* stopFlag)
             holderFor(pid).moduleOnDrive = true;
     }
 
-    // 2) handle tệp/thư mục trên ổ.
+    // 2) handle tệp/thư mục trên ổ (nhân bản handle - thấy được tiến trình thường).
     HANDLE probe = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
     std::vector<char> table;
     if (probe != INVALID_HANDLE_VALUE && snapshotHandles(&table))
@@ -494,15 +765,14 @@ Report scan(const QString& driveLetter, const std::atomic_bool* stopFlag)
                 }
                 else
                 {
-                    HANDLE proc = nullptr;
                     if (!processHandles.contains(pid))
                     {
-                        proc = pid == self ? GetCurrentProcess() : OpenProcess(PROCESS_DUP_HANDLE, FALSE, pid);
+                        HANDLE proc = pid == self ? GetCurrentProcess() : OpenProcess(PROCESS_DUP_HANDLE, FALSE, pid);
                         processHandles.insert(pid, proc);
                         if (!proc)
                             unreadable.insert(pid);
                     }
-                    proc = processHandles.value(pid);
+                    const HANDLE proc = processHandles.value(pid);
                     if (!proc)
                         continue;
                     HANDLE dup = nullptr;
@@ -523,12 +793,7 @@ Report scan(const QString& driveLetter, const std::atomic_bool* stopFlag)
                 }
                 if (!job.onTarget)
                     continue;
-                Holder& h = holderFor(pid);
-                ++h.openHandles;
-                const QString path = job.path.empty() ? QStringLiteral("%1: (cả ổ)").arg(letter)
-                                                      : stripWin32Prefix(QString::fromStdWString(job.path));
-                if (h.samplePaths.size() < 5 && !h.samplePaths.contains(path, Qt::CaseInsensitive))
-                    h.samplePaths << path;
+                addPath(pid, job.path.empty() ? QStringLiteral("%1: (cả ổ)").arg(letter) : stripWin32Prefix(QString::fromStdWString(job.path)));
             }
             if (worker)
             {
@@ -539,8 +804,7 @@ Report scan(const QString& driveLetter, const std::atomic_bool* stopFlag)
                 if (it.value() && it.key() != self)
                     CloseHandle(it.value());
             for (quint32 pid : unreadable)
-                if (!holders.contains(pid))
-                    report.unreadable << QStringLiteral("%1 (PID %2)").arg(names.value(pid, QStringLiteral("?")), QString::number(pid));
+                report.unreadable << QStringLiteral("%1 (PID %2)").arg(names.value(pid, QStringLiteral("?")), QString::number(pid));
             std::sort(report.unreadable.begin(), report.unreadable.end(),
                       [](const QString& a, const QString& b) { return a.compare(b, Qt::CaseInsensitive) < 0; });
         }
@@ -556,11 +820,256 @@ Report scan(const QString& driveLetter, const std::atomic_bool* stopFlag)
     if (probe != INVALID_HANDLE_VALUE)
         CloseHandle(probe);
 
-    // 3) dịch vụ + mức "hệ thống".
+    // 3) KIỂM KỸ: hỏi Windows "PID nào đang mở tệp này" (FileProcessIdsUsingFileInformation) - thấy CẢ nhân Windows (PID 4), tiến trình được bảo
+    //    vệ, máy ảo. Mỗi lần hỏi Windows phải duyệt cả bảng handle của hệ thống (đo thật: ~22 ms/tệp) nên KHÔNG hỏi mọi tệp (140.000 tệp ~ 50 phút):
+    //    liệt kê cả ổ (rẻ) rồi chỉ hỏi các tệp CÓ KHẢ NĂNG đang bị giữ, chạy song song, có trần số tệp + thời gian.
+    if (deep && !stopped())
+    {
+        struct Candidate
+        {
+            QString display;
+            std::wstring native;
+            int priority; // 0 luôn kiểm (thiết bị ổ, gốc, ổ ảo, System Volume Information, WSL); 1 ghi trong 24 giờ; 2 CSDL/nhật ký; 3 thư mục 3 cấp đầu
+        };
+        static const QStringList imageExt{".vhd", ".vhdx", ".avhd", ".avhdx", ".vhds", ".iso", ".vmdk", ".vdi", ".hc", ".tc", ".img", ".qcow2"};
+        static const QStringList dbExt{".db", ".db-wal", ".db-shm", ".db-journal", ".sqlite", ".sqlite3", ".sqlite-wal", ".sqlite-shm", ".ldb",
+                                       ".edb", ".jrs", ".chk", ".mdf", ".ldf", ".ndf", ".pst", ".ost", ".lock", ".lck", ".log", ".etl",
+                                       ".blf", ".regtrans-ms"};
+        auto endsWithAny = [](const QString& name, const QStringList& exts) {
+            for (const QString& e : exts)
+                if (name.endsWith(e, Qt::CaseInsensitive))
+                    return true;
+            return false;
+        };
+        QStringList wslBases;
+        for (const WslDistro& d : wslDistros())
+            if (d.basePath.startsWith(prefix, Qt::CaseInsensitive))
+                wslBases << QDir::toNativeSeparators(d.basePath).toLower() + QLatin1Char('\\');
+        auto underWsl = [&](const QString& path) {
+            const QString l = path.toLower() + QLatin1Char('\\');
+            for (const QString& b : wslBases)
+                if (l.startsWith(b))
+                    return true;
+            return false;
+        };
+
+        // KHÔNG hỏi trên chính thiết bị ổ ("\\.\X:"): đo thật, Windows trả về MỌI tiến trình của máy cho câu hỏi đó - vô nghĩa.
+        std::vector<Candidate> cands;
+        cands.push_back({prefix, longPath(prefix), 0});
+        const qint64 recentLimit = FsSafety::nowFileTime() - 24LL * 3600LL * 10000000LL;
+        struct Dir
+        {
+            QString path; // kết thúc bằng '\'
+            int depth;
+            bool special; // trong System Volume Information hoặc thư mục WSL: kiểm hết
+        };
+        std::vector<Dir> stack{{prefix, 0, false}};
+        while (!stack.empty() && !stopped())
+        {
+            const Dir d = stack.back();
+            stack.pop_back();
+            std::vector<DirEntry> entries;
+            {
+                WIN32_FIND_DATAW data;
+                const HANDLE find = FindFirstFileExW(longPath(d.path + QLatin1Char('*')).c_str(), FindExInfoBasic, &data, FindExSearchNameMatch,
+                                                     nullptr, FIND_FIRST_EX_LARGE_FETCH);
+                if (find != INVALID_HANDLE_VALUE)
+                {
+                    do
+                    {
+                        const wchar_t* n = data.cFileName;
+                        if (n[0] == L'.' && (n[1] == 0 || (n[1] == L'.' && n[2] == 0)))
+                            continue;
+                        entries.push_back({QString::fromWCharArray(n), data.dwFileAttributes,
+                                           (static_cast<qint64>(data.ftLastWriteTime.dwHighDateTime) << 32) | data.ftLastWriteTime.dwLowDateTime});
+                    } while (FindNextFileW(find, &data));
+                    FindClose(find);
+                }
+                else if (GetLastError() == ERROR_ACCESS_DENIED)
+                {
+                    listDirectoryByHandle(d.path, &entries); // vd System Volume Information - cần SeBackupPrivilege (Administrator)
+                }
+            }
+            for (const DirEntry& entry : entries)
+            {
+                if (stopped())
+                    break;
+                ++report.entriesListed;
+                const QString& name = entry.name;
+                const QString full = d.path + name;
+                const bool special = d.special || (d.depth == 0 && name.compare(QLatin1String("System Volume Information"), Qt::CaseInsensitive) == 0) ||
+                                     underWsl(full);
+                if (entry.attributes & FILE_ATTRIBUTE_DIRECTORY)
+                {
+                    if (special || d.depth < 3)
+                        cands.push_back({full, longPath(full), special ? 0 : 3});
+                    if (!(entry.attributes & FILE_ATTRIBUTE_REPARSE_POINT)) // junction/điểm gắn: KHÔNG đi vào
+                        stack.push_back({full + QLatin1Char('\\'), d.depth + 1, special});
+                    continue;
+                }
+                const qint64 written = entry.lastWrite;
+                int priority = -1;
+                if (special || d.depth == 0 || endsWithAny(name, imageExt))
+                    priority = 0;
+                else if (written >= recentLimit)
+                    priority = 1;
+                else if (endsWithAny(name, dbExt))
+                    priority = 2;
+                if (priority >= 0)
+                    cands.push_back({full, longPath(full), priority});
+            }
+        }
+        std::stable_sort(cands.begin(), cands.end(), [](const Candidate& a, const Candidate& b) { return a.priority < b.priority; });
+        constexpr size_t kMaxCandidates = 6000;
+        if (cands.size() > kMaxCandidates)
+        {
+            cands.resize(kMaxCandidates);
+            report.deepLimited = true;
+        }
+
+        // Hỏi song song: mỗi luồng lấy tệp kế tiếp; tổng thời gian tối đa 90 giây.
+        std::vector<QList<quint32>> results(cands.size());
+        std::vector<char> processed(cands.size(), 0), exclusiveHold(cands.size(), 0), deniedOpen(cands.size(), 0);
+        std::atomic<size_t> next{0};
+        std::atomic<int> done{0};
+        QElapsedTimer budget;
+        budget.start();
+        auto work = [&]() {
+            for (;;)
+            {
+                if (stopped() || budget.elapsed() > 90000)
+                    return;
+                const size_t i = next.fetch_add(1);
+                if (i >= cands.size())
+                    return;
+                bool exclusive = false, denied = false;
+                results[i] = pidsUsing(cands[i].native, &exclusive, &denied);
+                exclusiveHold[i] = exclusive;
+                deniedOpen[i] = denied;
+                processed[i] = 1;
+                const int n = done.fetch_add(1) + 1;
+                if (progress && (n % 200) == 0)
+                    progress(n);
+            }
+        };
+        const unsigned hw = std::thread::hardware_concurrency();
+        const int threadCount = static_cast<int>(std::clamp<unsigned>(hw == 0 ? 4 : hw, 4, 12));
+        std::vector<std::thread> pool;
+        for (int t = 0; t < threadCount; ++t)
+            pool.emplace_back(work);
+        for (std::thread& t : pool)
+            t.join();
+        report.filesChecked = done.load();
+        if (static_cast<size_t>(report.filesChecked) < cands.size())
+            report.deepLimited = true;
+        for (size_t i = 0; i < cands.size(); ++i)
+        {
+            if (!processed[i])
+                continue;
+            if (deniedOpen[i])
+                ++report.filesDenied;
+            if (exclusiveHold[i])
+                addPath(4, cands[i].display); // ngay cả mở-đọc-thuộc-tính cũng bị từ chối: nhân Windows giữ độc quyền
+            for (quint32 pid : results[i])
+                if (pid != self) // chính lần mở để hỏi của tiến trình này cũng nằm trong danh sách
+                    addPath(pid, cands[i].display);
+        }
+        report.deepScanDone = !stopped();
+    }
+
+    // 4) registry hive nạp từ ổ (nhân Windows giữ).
+    {
+        wchar_t dev[512] = {};
+        const std::wstring drive = (letter + QLatin1Char(':')).toStdWString();
+        const QString deviceName = QueryDosDeviceW(drive.c_str(), dev, 512) ? QString::fromWCharArray(dev) : QString();
+        for (const QString& hive : hivesOnDevice(deviceName, letter))
+            addPath(4, hive);
+    }
+
+    // 5) WSL: bản Linux nằm trên ổ + máy ảo WSL đang chạy.
+    {
+        QStringList onDrive;
+        QStringList vhdxPaths;
+        for (const WslDistro& d : wslDistros())
+            if (d.basePath.startsWith(prefix, Qt::CaseInsensitive))
+            {
+                onDrive << d.name;
+                vhdxPaths << QDir::toNativeSeparators(d.basePath + QStringLiteral("\\ext4.vhdx"));
+            }
+        if (!onDrive.isEmpty())
+        {
+            quint32 vmPid = 0;
+            for (auto it = names.constBegin(); it != names.constEnd(); ++it)
+                if (it.value().compare(QLatin1String("vmmemWSL"), Qt::CaseInsensitive) == 0 ||
+                    it.value().compare(QLatin1String("vmmem"), Qt::CaseInsensitive) == 0)
+                    vmPid = it.key();
+            bool vhdxHeld = false;
+            for (auto it = pathsByPid.constBegin(); it != pathsByPid.constEnd(); ++it)
+                for (const QString& v : vhdxPaths)
+                    if (it.value().contains(v.toLower()))
+                        vhdxHeld = true;
+            if (vmPid != 0 || vhdxHeld)
+            {
+                Holder w;
+                w.kind = HolderKind::Wsl;
+                w.pid = vmPid;
+                w.name = QStringLiteral("WSL - máy ảo Linux (%1)").arg(onDrive.join(", "));
+                w.samplePaths = vhdxPaths.mid(0, 5);
+                w.openHandles = static_cast<int>(vhdxPaths.size());
+                w.hint = QStringLiteral("ổ đĩa ext4.vhdx của các bản Linux WSL nằm trên ổ này - máy ảo WSL đang chạy giữ chúng; \"Tắt WSL\" = wsl --shutdown "
+                                        "(dừng MỌI bản Linux đang chạy)");
+                report.holders << w;
+                // Tiến trình vmmem tương ứng không hiện riêng (đã gộp vào dòng WSL).
+                holders.remove(vmPid);
+            }
+            else
+            {
+                report.notes << QStringLiteral("WSL có %1 bản Linux trên ổ %2: (%3) - đang tắt; đừng mở WSL/Docker trong lúc dời.")
+                                    .arg(onDrive.size())
+                                    .arg(letter)
+                                    .arg(onDrive.join(", "));
+            }
+        }
+    }
+
+    // 6) dịch vụ + mức "hệ thống" + gợi ý cho thứ nhân Windows giữ; tách ổ ảo thành dòng "Tháo" riêng.
     const QHash<quint32, QList<ServiceInfo>> services = servicesByPid();
     for (auto it = holders.begin(); it != holders.end(); ++it)
     {
         Holder& h = it.value();
+        h.openHandles = static_cast<int>(pathsByPid.value(h.pid).size());
+        if (h.kind == HolderKind::System)
+        {
+            // Mỗi tệp ổ ảo (không phải WSL) mà nhân đang giữ -> một dòng "Tháo ổ ảo".
+            QStringList rest;
+            QStringList hints;
+            for (const QString& display : pathsByPid.value(4))
+            {
+                if (isDiskImagePath(display) && !display.endsWith(QLatin1String("ext4.vhdx"), Qt::CaseInsensitive))
+                {
+                    Holder v;
+                    v.kind = HolderKind::VirtualDisk;
+                    v.pid = 4;
+                    v.name = QStringLiteral("Ổ đĩa ảo: %1").arg(display.section(QLatin1Char('\\'), -1));
+                    v.diskImagePath = display;
+                    v.samplePaths = {display};
+                    v.openHandles = 1;
+                    v.hint = systemHoldHint(display);
+                    report.holders << v;
+                    continue;
+                }
+                const QString hint = systemHoldHint(display);
+                if (!hint.isEmpty() && !hints.contains(hint))
+                    hints << hint;
+                rest << display;
+            }
+            if (rest.isEmpty())
+                continue; // chỉ có ổ ảo - đã thành dòng riêng
+            h.openHandles = static_cast<int>(rest.size());
+            h.hint = hints.join(QStringLiteral("; "));
+            report.holders << h;
+            continue;
+        }
         h.imagePath = processImagePath(h.pid);
         for (const ServiceInfo& s : services.value(h.pid))
         {
@@ -570,6 +1079,9 @@ Report scan(const QString& driveLetter, const std::atomic_bool* stopFlag)
         h.critical = isCriticalProcessName(h.name) || processIsCritical(h.pid) ||
                      // svchost không có dịch vụ dừng được: KHÔNG bao giờ diệt cả tiến trình chủ dịch vụ
                      (h.name.compare(QLatin1String("svchost.exe"), Qt::CaseInsensitive) == 0 && h.serviceNames.isEmpty());
+        if (h.critical && isCriticalProcessName(h.name) &&
+            (h.name.startsWith(QLatin1String("vm"), Qt::CaseInsensitive)))
+            h.hint = QStringLiteral("máy ảo Hyper-V đang chạy - tắt máy ảo đó (Hyper-V Manager) rồi thử lại");
         report.holders << h;
     }
     std::sort(report.holders.begin(), report.holders.end(), [](const Holder& a, const Holder& b) {
@@ -581,6 +1093,8 @@ Report scan(const QString& driveLetter, const std::atomic_bool* stopFlag)
     });
 #else
     Q_UNUSED(stopFlag);
+    Q_UNUSED(deep);
+    Q_UNUSED(progress);
     report.error = QStringLiteral("Chỉ hỗ trợ trên Windows.");
 #endif
     return report;
@@ -595,8 +1109,39 @@ bool stop(const Holder& holder, QString* error)
     };
     if (!holder.stoppable())
         return fail(holder.self ? QStringLiteral("Đây là chính ứng dụng này.")
-                                : QStringLiteral("%1 là tiến trình hệ thống của Windows - không được dừng.").arg(holder.name));
+                                : QStringLiteral("%1 là thành phần hệ thống của Windows - không được dừng từ đây.").arg(holder.name));
 #ifdef Q_OS_WIN
+    if (holder.kind == HolderKind::Wsl)
+    {
+        QProcess p;
+        p.start(AppPaths::systemExecutable("wsl.exe"), {"--shutdown"});
+        if (!p.waitForStarted(10000))
+            return fail(QStringLiteral("Không chạy được wsl.exe: %1").arg(p.errorString()));
+        if (!p.waitForFinished(90000))
+        {
+            p.kill();
+            return fail(QStringLiteral("wsl --shutdown chưa xong sau 90 giây."));
+        }
+        if (p.exitCode() != 0)
+            return fail(QStringLiteral("wsl --shutdown báo lỗi (mã %1): %2")
+                            .arg(p.exitCode())
+                            .arg(QString::fromLocal8Bit(p.readAllStandardError() + p.readAllStandardOutput()).trimmed()));
+        return true;
+    }
+    if (holder.kind == HolderKind::VirtualDisk)
+    {
+        if (holder.diskImagePath.isEmpty())
+            return fail(QStringLiteral("Không có đường dẫn tệp ổ ảo."));
+        bool ok = false;
+        QString err;
+        PowerShellRunner::run(QStringLiteral("Dismount-DiskImage -ImagePath %1 -ErrorAction Stop | Out-Null")
+                                  .arg(PowerShellRunner::quoteLiteral(holder.diskImagePath)),
+                              &ok, &err, 60000);
+        if (!ok)
+            return fail(QStringLiteral("Không tháo được ổ ảo %1 (nếu là ổ của máy ảo Hyper-V/Docker, hãy tắt máy ảo đó): %2")
+                            .arg(holder.diskImagePath, err));
+        return true;
+    }
     if (!holder.serviceNames.isEmpty())
     {
         const SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);

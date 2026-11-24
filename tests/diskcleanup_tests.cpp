@@ -3367,6 +3367,30 @@ int main(int argc, char** argv)
         me.name = "diskcleanup_tests.exe";
         me.self = true;
         CHECK(!me.stoppable() && !VolumeHolders::stop(me, &err));
+        // Các loại "đang giữ" khác + gợi ý cho thứ nhân Windows giữ.
+        VolumeHolders::Holder kern;
+        kern.kind = VolumeHolders::HolderKind::System;
+        kern.pid = 4;
+        kern.name = "System (nhân Windows)";
+        kern.critical = true;
+        CHECK(!kern.stoppable() && kern.stopLabel() == "Windows" && !VolumeHolders::stop(kern, &err));
+        VolumeHolders::Holder wsl;
+        wsl.kind = VolumeHolders::HolderKind::Wsl;
+        CHECK(wsl.stoppable() && wsl.stopLabel().contains("WSL"));
+        VolumeHolders::Holder vd;
+        vd.kind = VolumeHolders::HolderKind::VirtualDisk;
+        vd.pid = 4;
+        CHECK(vd.stoppable() && vd.stopLabel().contains("Tháo"));
+        CHECK(!VolumeHolders::stop(vd, &err)); // không có đường dẫn ổ ảo -> từ chối, không gọi gì
+        CHECK(VolumeHolders::isDiskImagePath("D:\\VMs\\a.VHDX") && VolumeHolders::isDiskImagePath("D:\\b.iso"));
+        CHECK(!VolumeHolders::isDiskImagePath("D:\\b.txt"));
+        CHECK(VolumeHolders::systemHoldHint("D:\\wsl\\Ubuntu\\ext4.vhdx").contains("WSL"));
+        CHECK(VolumeHolders::systemHoldHint("D:\\VMs\\x.vhdx").contains("ổ đĩa ảo"));
+        CHECK(VolumeHolders::systemHoldHint("D:\\System Volume Information\\{3808876b-c176-4e48-b7ae-04046e6cc752}").contains("bản sao bóng"));
+        CHECK(VolumeHolders::systemHoldHint("D:\\pagefile.sys").contains("hoán trang"));
+        CHECK(VolumeHolders::systemHoldHint("D:\\Users\\a\\NTUSER.DAT").contains("registry"));
+        CHECK(VolumeHolders::systemHoldHint("D:\\docs\\a.txt").isEmpty());
+        CHECK(VolumeHolders::isCriticalProcessName("vmmemWSL") && VolumeHolders::isCriticalProcessName("vmwp.exe"));
         VolumeHolders::Holder sum;
         sum.openHandles = 2;
         sum.samplePaths = {"C:\\A\\b.db"};
@@ -3379,6 +3403,11 @@ int main(int argc, char** argv)
         QDir(tmp.path()).mkpath("giu_o");
         const QString holdDir = tmp.path() + "/giu_o";
         writeFile(holdDir + "/dang_mo.txt", 10);
+        writeFile(holdDir + "/thu_hai.bin", 10);
+        // Liệt kê qua handle "sao lưu" (đường dự phòng cho System Volume Information) cho kết quả như liệt kê thường.
+        const QStringList byHandle = VolumeHolders::directoryEntriesByHandle(holdDir);
+        CHECK(byHandle.size() == 2 && byHandle.contains("dang_mo.txt") && byHandle.contains("thu_hai.bin"));
+        CHECK(VolumeHolders::directoryEntriesByHandle(holdDir + "/khong_co").isEmpty());
         QProcess child;
         child.setWorkingDirectory(holdDir);
         child.start(AppPaths::systemExecutable("cmd.exe"), {"/k"}); // chờ đọc stdin (ống dẫn) mãi - vừa giữ ổ vừa thử truy vấn "ống dẫn treo"
@@ -3388,7 +3417,8 @@ int main(int argc, char** argv)
         const QString letter = QDir::toNativeSeparators(holdDir).left(1);
         QElapsedTimer t;
         t.start();
-        const VolumeHolders::Report r = VolumeHolders::scan(letter);
+        // deep=false: kiểm kỹ cả ổ C: mất cả phút (600.000 mục) - phần "hỏi ai đang mở" được kiểm riêng bằng processesUsingPath bên dưới.
+        const VolumeHolders::Report r = VolumeHolders::scan(letter, nullptr, false);
         std::printf("VolumeHolders::scan(%s): %d chuong trinh giu o, %d khong doc duoc, %lld ms, day du=%d\n", qPrintable(letter),
                     static_cast<int>(r.holders.size()), static_cast<int>(r.unreadable.size()), static_cast<long long>(t.elapsed()),
                     r.handleScanComplete ? 1 : 0);
@@ -3401,6 +3431,12 @@ int main(int argc, char** argv)
         if (found)
         {
             CHECK(found->name.compare("cmd.exe", Qt::CaseInsensitive) == 0);
+            CHECK(found->kind == VolumeHolders::HolderKind::Process && found->stopLabel() == "⛔ Dừng");
+            // Bước KIỂM KỸ: hỏi Windows "PID nào đang mở thư mục này" - thấy tiến trình con (đứng trong thư mục), không tính chính mình.
+            const QList<quint32> users = VolumeHolders::processesUsingPath(holdDir);
+            CHECK(users.contains(childPid));
+            CHECK(!users.contains(static_cast<quint32>(GetCurrentProcessId())));
+            CHECK(!VolumeHolders::processesUsingPath(holdDir + "/dang_mo.txt").contains(childPid)); // tệp không mở -> không có
             CHECK(found->openHandles >= 1 && found->stoppable() && !found->critical && !found->self);
             bool sawDir = false;
             for (const QString& p : found->samplePaths)
